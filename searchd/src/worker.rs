@@ -53,23 +53,40 @@ fn scan(sh: &Shared, info: &VolumeInfo) -> Result<(Index, JournalCursor), String
     let mut b = IndexBuilder::new(true);
     b.add_volume(vol, 5);
     let mut count = 0u64;
-    scan_volume(
+    let mut last_log = Instant::now();
+    let mut last_pct = 0u64;
+    let stats = scan_volume(
         l,
         &mut |e| {
             count += 1;
             b.push(vol, e.frn, e.parent_frn, &e.name, e.is_dir, e.size, e.mtime);
         },
-        &mut |done, total| sh.set_state(l, VolumeState::Scanning { done, total }),
+        &mut |done, total| {
+            sh.set_state(l, VolumeState::Scanning { done, total });
+            let pct = (done * 100).checked_div(total).unwrap_or(0);
+            if last_log.elapsed() >= Duration::from_secs(2) || pct >= last_pct + 10 {
+                let secs = t.elapsed().as_secs_f64();
+                info!(
+                    "scan {l}: {pct}% ({:.1}M/{:.1}M records, {secs:.1} s, {:.0}k rec/s)",
+                    done as f64 / 1e6,
+                    total as f64 / 1e6,
+                    done as f64 / secs.max(0.001) / 1e3
+                );
+                last_log = Instant::now();
+                last_pct = pct;
+            }
+        },
     )
     .map_err(|e| e.to_string())?;
-    info!("{l}: scanned {count} entries in {:.1?}", t.elapsed());
+    info!("{l}: scanned {count} entries in {:.1?}; stats: {stats:?}", t.elapsed());
+    let t_sort = Instant::now();
     let mut ix = b.finish();
     if let Some(m) = ix.volume_mut(vol) {
         m.serial = info.serial;
         m.journal_id = cursor.journal_id;
         m.next_usn = cursor.next_usn;
     }
-    info!("{l}: index built (scan + sort) in {:.1?}", t.elapsed());
+    info!("{l}: index sorted in {:.1?}; built (scan + sort) in {:.1?}", t_sort.elapsed(), t.elapsed());
     Ok((ix, cursor))
 }
 

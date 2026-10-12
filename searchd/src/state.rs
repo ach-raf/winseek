@@ -22,7 +22,11 @@ pub const RECENT_CAP: usize = 2000;
 /// Max stat() calls per batch (to refine size/mtime of created/modified files).
 const STAT_BUDGET: usize = 256;
 const SUB_QUEUE: usize = 4096;
-const COUNTS_TTL: Duration = Duration::from_secs(10);
+/// Live changes mark counts dirty; recompute (an O(N) pass) at most this often.
+#[cfg(not(test))]
+const COUNTS_MIN_INTERVAL: Duration = Duration::from_secs(5);
+#[cfg(test)]
+const COUNTS_MIN_INTERVAL: Duration = Duration::ZERO;
 
 /// Per-volume control flags shared with that volume's worker thread.
 #[derive(Default)]
@@ -49,6 +53,7 @@ pub struct Shared {
     pub ctl: BTreeMap<char, std::sync::Arc<VolCtl>>,
     subs: Mutex<Vec<Sub>>,
     counts: Mutex<Option<(Instant, Counts)>>,
+    counts_dirty: AtomicBool,
     pub shutdown: AtomicBool,
     /// Asks the main loop to save a snapshot soon (set after a volume replace).
     pub save_now: AtomicBool,
@@ -64,6 +69,7 @@ impl Shared {
             ctl: letters.iter().map(|&l| (l, Default::default())).collect(),
             subs: Mutex::new(Vec::new()),
             counts: Mutex::new(None),
+            counts_dirty: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             save_now: AtomicBool::new(false),
             started: Instant::now(),
@@ -174,6 +180,11 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         }
         ring.truncate(RECENT_CAP);
     }
+    if !events.is_empty() {
+        // Counts are recomputed lazily by Status, at most every COUNTS_MIN_INTERVAL,
+        // so a busy volume costs one O(N) pass per interval, not one per batch.
+        sh.counts_dirty.store(true, Ordering::Relaxed);
+    }
     for ev in &events {
         sh.notify(ev);
     }
@@ -231,7 +242,9 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
 pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
     let counts = {
         let mut c = sh.counts.lock().unwrap();
-        if c.as_ref().is_none_or(|(t, _)| t.elapsed() > COUNTS_TTL) {
+        let stale = |t: &Instant| sh.counts_dirty.load(Ordering::Relaxed) && t.elapsed() >= COUNTS_MIN_INTERVAL;
+        if c.as_ref().is_none_or(|(t, _)| stale(t)) {
+            sh.counts_dirty.store(false, Ordering::Relaxed);
             let ix = sh.index.read().unwrap();
             let mut m = Counts::new();
             for i in 0..ix.slots() as u32 {
@@ -297,6 +310,22 @@ mod tests {
         assert!(rx_other.try_recv().is_err());
         let st = status(&sh);
         assert_eq!((st[0].files, st[0].folders), (2, 1));
+    }
+
+    #[test]
+    fn status_counts_follow_live_changes() {
+        let sh = shared();
+        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (0, 1)); // primes the cache
+        apply_batch(&sh, b'C', &[create(100, 10, "a.txt"), Change::Create(UsnRecord { frn: 20, parent_frn: 10, usn: 0, reason: 0, attrs: 0x10, name: "Sub".into() }), create(101, 20, "b.txt")], CUR);
+        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (2, 2));
+        // rename: no change
+        let ren = Change::Rename { frn: 100, old_parent: 10, old_name: "a.txt".into(), new_parent: 10, new_name: "c.txt".into() };
+        apply_batch(&sh, b'C', &[ren], CUR);
+        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (2, 2));
+        // recursive folder delete removes the folder and its child
+        let del = Change::Delete(UsnRecord { frn: 20, parent_frn: 10, usn: 0, reason: 0, attrs: 0x10, name: "Sub".into() });
+        apply_batch(&sh, b'C', &[del], CUR);
+        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (1, 1));
     }
 
     #[test]
