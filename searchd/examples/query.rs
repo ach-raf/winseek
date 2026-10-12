@@ -1,4 +1,4 @@
-//! Quick client check: `cargo run -p searchd --example query -- <query> [limit]`
+//! Quick client check: `cargo run -p searchd --example query -- <query> [limit]` (or `-- --rescan C`)
 //! Connects to the running searchd, prints status, total, the first 10 paths and the elapsed time.
 
 use std::time::{Duration, Instant};
@@ -21,6 +21,11 @@ fn main() {
         write_message(&mut c, &req).expect("send");
         read_message(&mut c).expect("receive")
     };
+    if query == "--rescan" {
+        let volume = args.next().and_then(|s| s.chars().next()).unwrap_or('C').to_ascii_uppercase();
+        println!("{:?}", call(Request::Rescan { id: 1, volume }));
+        return;
+    }
     if let Response::StatusResult { volumes, uptime_s, .. } = call(Request::Status { id: 1 }) {
         println!("uptime {uptime_s}s");
         for v in volumes {
