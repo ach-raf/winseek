@@ -197,6 +197,8 @@ fn load_snapshot(path: &std::path::Path, letters: &[char]) -> Index {
             }
             Err(e) => warn!("cannot load snapshot {}: {e}; rescanning", path.display()),
         }
+    } else {
+        info!("no snapshot at {}", path.display());
     }
     Index::new(true)
 }
