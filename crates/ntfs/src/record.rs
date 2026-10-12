@@ -40,7 +40,7 @@ pub enum RecordError {
 }
 
 /// One `$FILE_NAME` attribute.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NameAttr {
     /// Full 64-bit parent file reference (record number + sequence).
     pub parent_ref: u64,
@@ -144,6 +144,29 @@ pub fn decode_data_runs(buf: &[u8], runs_off: usize, max_len: usize) -> Vec<(u64
     runs
 }
 
+/// UTF-16LE bytes -> String (lossy, same result as `String::from_utf16_lossy`)
+/// without an intermediate `Vec<u16>`; ASCII-only names take a fast path.
+fn utf16le_to_string(b: &[u8]) -> String {
+    let n = b.len() / 2;
+    let mut s = String::with_capacity(n);
+    let mut it = b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]));
+    // Fast path: copy ASCII units until the first non-ASCII one.
+    let mut rest = None;
+    for u in it.by_ref() {
+        if u < 0x80 {
+            s.push(u as u8 as char);
+        } else {
+            rest = Some(u);
+            break;
+        }
+    }
+    if let Some(first) = rest {
+        let tail = std::iter::once(first).chain(it);
+        s.extend(char::decode_utf16(tail).map(|r| r.unwrap_or(char::REPLACEMENT_CHARACTER)));
+    }
+    s
+}
+
 /// Parse one MFT record in place (fixup mutates `rec`).
 pub fn parse_record(rec: &mut [u8], recno: u32, cluster: u64) -> Result<Parsed, RecordError> {
     if rec.len() < 0x30 || &rec[0..4] != b"FILE" {
@@ -160,6 +183,7 @@ pub fn parse_record(rec: &mut [u8], recno: u32, cluster: u64) -> Result<Parsed, 
         seq: u16_at(rec, 0x10),
         is_dir: flags & 0x02 != 0,
         base_ref: (u64_at(rec, 0x20) & REC_NO_MASK) as u32,
+        names: Vec::with_capacity(2),
         ..Default::default()
     };
 
@@ -192,14 +216,11 @@ pub fn parse_record(rec: &mut [u8], recno: u32, cluster: u64) -> Result<Parsed, 
                 if v + 0x42 <= end {
                     let nm_len = rec[v + 0x40] as usize;
                     if v + 0x42 + nm_len * 2 <= end {
-                        let units: Vec<u16> = rec[v + 0x42..v + 0x42 + nm_len * 2]
-                            .as_chunks::<2>().0.iter()
-                            .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                            .collect();
+                        let name = utf16le_to_string(&rec[v + 0x42..v + 0x42 + nm_len * 2]);
                         p.names.push(NameAttr {
                             parent_ref: u64_at(rec, v),
                             namespace: rec[v + 0x41],
-                            name: String::from_utf16_lossy(&units),
+                            name,
                         });
                     }
                 }
@@ -255,11 +276,53 @@ pub fn select_names(names: &[NameAttr]) -> Vec<&NameAttr> {
     out
 }
 
-#[cfg(test)]
-mod tests {
+/// Synthetic-record builder shared by unit tests, the offline decode benchmark
+/// and the bench example (`testutil` feature). Not part of the stable API.
+/// Owned variant of [`select_names`] (same semantics) that moves the names out
+/// instead of cloning them.
+pub fn select_names_owned(mut names: Vec<NameAttr>) -> Vec<NameAttr> {
+    if names.len() <= 1 {
+        return names;
+    }
+    if names.len() == 2 {
+        // Common case (Win32 + DOS alias, or two hard links): no extra allocation.
+        let (a, b) = (&names[0], &names[1]);
+        let same_parent = a.parent_ref & REC_NO_MASK == b.parent_ref & REC_NO_MASK;
+        if same_parent && b.namespace == 2 && a.namespace != 2 {
+            names.truncate(1);
+        } else if same_parent && a.namespace == 2 && b.namespace != 2 {
+            names.swap_remove(0);
+        } else if a.parent_ref == b.parent_ref && a.name == b.name {
+            names.truncate(1);
+        }
+        return names;
+    }
+    let mut keep: Vec<usize> = Vec::with_capacity(names.len());
+    for (i, n) in names.iter().enumerate() {
+        if n.namespace == 2
+            && names
+                .iter()
+                .any(|o| o.namespace != 2 && o.parent_ref & REC_NO_MASK == n.parent_ref & REC_NO_MASK)
+        {
+            continue;
+        }
+        if keep
+            .iter()
+            .any(|&k| names[k].parent_ref == n.parent_ref && names[k].name == n.name)
+        {
+            continue;
+        }
+        keep.push(i);
+    }
+    keep.iter().map(|&i| std::mem::take(&mut names[i])).collect()
+}
+
+#[cfg(any(test, feature = "testutil"))]
+#[doc(hidden)]
+pub mod testutil {
     use super::*;
 
-    pub(crate) struct Rb {
+    pub struct Rb {
         pub rec: Vec<u8>,
         pub off: usize,
     }
@@ -349,6 +412,12 @@ mod tests {
             self.rec
         }
     }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::testutil::Rb;
+    use super::*;
 
     const CL: u64 = 4096;
 
@@ -450,6 +519,44 @@ mod tests {
         let sel = select_names(&p.names);
         assert_eq!(sel.len(), 1);
         assert_eq!(sel[0].name, "Real Name.txt");
+    }
+
+    #[test]
+    fn owned_selection_matches_borrowed() {
+        let mut rec = Rb::new(true, false)
+            .name(5, "a.txt", 1)
+            .name(9, "b.txt", 3)
+            .name(9, "B~1.TXT", 2)
+            .name(5, "a.txt", 1)
+            .name(7, "ONLY~1.TXT", 2)
+            .seal();
+        let p = parse_record(&mut rec, 1, CL).unwrap();
+        let a: Vec<NameAttr> = select_names(&p.names).into_iter().cloned().collect();
+        assert_eq!(select_names_owned(p.names), a);
+    }
+
+    #[test]
+    fn owned_selection_two_names_exhaustive() {
+        for (pa, pb) in [(5u64, 5u64), (5, 9), (5 | (1 << 48), 5 | (2 << 48))] {
+            for (na, nb) in [("x", "x"), ("x", "y")] {
+                for (sa, sb) in (0..4u8).flat_map(|a| (0..4u8).map(move |b| (a, b))) {
+                    let v = vec![
+                        NameAttr { parent_ref: pa, namespace: sa, name: na.into() },
+                        NameAttr { parent_ref: pb, namespace: sb, name: nb.into() },
+                    ];
+                    let want: Vec<NameAttr> = select_names(&v).into_iter().cloned().collect();
+                    assert_eq!(select_names_owned(v.clone()), want, "{v:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn utf16_lossy_matches_std() {
+        let units: [u16; 6] = [b'a' as u16, 0xD83D, 0xDE00, b'z' as u16, 0xD800, 0xE9];
+        let bytes: Vec<u8> = units.iter().flat_map(|u| u.to_le_bytes()).collect();
+        assert_eq!(utf16le_to_string(&bytes), String::from_utf16_lossy(&units));
+        assert_eq!(utf16le_to_string(b"h\x00i\x00"), "hi");
     }
 
     #[test]

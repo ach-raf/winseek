@@ -8,17 +8,22 @@
 use std::collections::HashMap;
 use std::fmt;
 use std::io;
-use std::sync::mpsc;
+use std::sync::{mpsc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::ffi::{self, AlignedBuf, Handle};
 use crate::record::{
-    apply_fixup, decode_data_runs, parse_record, select_names, u16_at, u32_at, u64_at, Parsed,
+    apply_fixup, decode_data_runs, parse_record, select_names_owned, u16_at, u32_at, u64_at, Parsed,
     RecordError, ATTR_ATTRIBUTE_LIST, ATTR_DATA, REC_NO_MASK,
 };
 
-const BATCH_RECORDS: usize = 512;
-const PROGRESS_EVERY_BATCHES: u64 = 32;
+/// Records per read (2 MiB with 1 KiB records).
+const BATCH_RECORDS: usize = 2048;
+const PROGRESS_EVERY_BATCHES: u64 = 8;
+/// Decoder threads cap (the calling thread also runs the sink).
+const MAX_WORKERS: usize = 8;
+/// Extra buffers beyond 2 per worker so the reader never starves.
+const READ_AHEAD: usize = 4;
 
 /// One NTFS volume as reported by [`list_ntfs_volumes`].
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,6 +74,18 @@ pub struct ScanStats {
     pub nameless: u64,
     pub bytes_read: u64,
     pub elapsed: Duration,
+    /// Decoder threads used.
+    pub workers: u32,
+    /// Reader thread: time inside `ReadFile` (disk-bound if ~= elapsed).
+    pub read_time: Duration,
+    /// Reader thread: time blocked waiting for a free buffer (decode-bound if large).
+    pub reader_buf_wait: Duration,
+    /// Sum over all decoder threads of time in fixup+parse+select (CPU time, not wall).
+    pub decode_time: Duration,
+    /// Calling thread: time in sink + merge + final parked resolution.
+    pub sink_time: Duration,
+    /// Calling thread: time idle waiting for decoded batches.
+    pub main_wait: Duration,
 }
 
 #[derive(Debug)]
@@ -342,94 +359,147 @@ struct Batch {
 }
 
 enum Msg {
-    Batch(Batch),
+    Done { n: usize, decoded: Box<Decoded> },
     Failed(ScanError),
 }
 
-/// Folds records into entries: extension records are merged into their base
-/// via header +0x20; bases with an $ATTRIBUTE_LIST (or already-seen
-/// extensions) are parked until the end of the sweep.
-struct Decoder<'a, F: FnMut(MftEntry)> {
-    sink: &'a mut F,
-    parked: HashMap<u32, Parsed>,
-    orphans: HashMap<u32, Vec<Parsed>>,
-    stats: ScanStats,
+/// Result of decoding one batch of records on a worker thread.
+#[derive(Default)]
+pub(crate) struct Decoded {
+    /// Entries of plain (no $ATTRIBUTE_LIST) in-use base records.
+    pub entries: Vec<MftEntry>,
+    /// Bases with an $ATTRIBUTE_LIST: resolved globally after the sweep.
+    pub parked: Vec<Parsed>,
+    /// Extension records whose base was not seen (earlier) inside this batch.
+    pub orphans: Vec<Parsed>,
+    /// Counters only (no timings).
+    pub stats: ScanStats,
 }
 
-impl<F: FnMut(MftEntry)> Decoder<'_, F> {
-    fn record(&mut self, recno: u32, rec: &mut [u8], cluster: u64) {
-        match parse_record(rec, recno, cluster) {
-            Err(RecordError::BadMagic) => self.stats.bad_magic += 1,
-            Err(RecordError::NotInUse) => self.stats.deleted_or_unused += 1,
-            Err(_) => self.stats.bad_fixup += 1,
+fn build_entries(p: Parsed, stats: &mut ScanStats, out: &mut impl FnMut(MftEntry)) {
+    let Parsed { recno, seq, is_dir, names, std, size, alloc, .. } = p;
+    let frn = (recno as u64) | ((seq as u64) << 48);
+    let names = select_names_owned(names);
+    if names.is_empty() {
+        stats.nameless += 1;
+        return;
+    }
+    let (mtime, mut attrs) = std.unwrap_or((0, 0));
+    if is_dir {
+        attrs |= 0x10;
+    }
+    for n in names {
+        out(MftEntry {
+            frn,
+            parent_frn: n.parent_ref,
+            name: n.name,
+            is_dir,
+            size: size.unwrap_or(0),
+            alloc,
+            mtime: mtime as i64,
+            attrs,
+        });
+        stats.entries += 1;
+    }
+}
+
+/// Decode `n` records of `rs` bytes starting at `data[skip..]` (record numbers
+/// `first_recno..`), with `got` valid bytes counted from the start of `data`.
+/// A pure function of its input: this is what the workers (and the offline
+/// benchmark) run. An extension record is merged into a base with no
+/// $ATTRIBUTE_LIST when both fall in the same slice (extension first); every
+/// other extension record is returned as an orphan, every base with an
+/// $ATTRIBUTE_LIST as parked, for global resolution after the sweep.
+pub(crate) fn decode_slice(
+    data: &mut [u8],
+    first_recno: u64,
+    skip: usize,
+    n: usize,
+    got: usize,
+    rs: usize,
+    cluster: u64,
+) -> Decoded {
+    let mut out = Decoded { entries: Vec::with_capacity(n), ..Default::default() };
+    let mut local_orphans: HashMap<u32, Vec<Parsed>> = HashMap::new();
+    for k in 0..n {
+        let base = skip + k * rs;
+        if base + rs > skip + got || base + rs > data.len() {
+            break; // short read: ignore trailing partial record
+        }
+        let recno = (first_recno + k as u64) as u32;
+        match parse_record(&mut data[base..base + rs], recno, cluster) {
+            Err(RecordError::BadMagic) => out.stats.bad_magic += 1,
+            Err(RecordError::NotInUse) => out.stats.deleted_or_unused += 1,
+            Err(_) => out.stats.bad_fixup += 1,
             Ok(p) if p.base_ref != 0 => {
-                self.stats.extension_records += 1;
-                match self.parked.get_mut(&p.base_ref) {
-                    Some(b) => b.merge(p),
-                    None => self.orphans.entry(p.base_ref).or_default().push(p),
-                }
+                out.stats.extension_records += 1;
+                local_orphans.entry(p.base_ref).or_default().push(p);
             }
             Ok(mut p) => {
-                self.stats.in_use_base += 1;
-                if !self.orphans.is_empty() {
-                    if let Some(v) = self.orphans.remove(&recno) {
+                out.stats.in_use_base += 1;
+                if !local_orphans.is_empty() {
+                    if let Some(v) = local_orphans.remove(&recno) {
                         for e in v {
                             p.merge(e);
                         }
                     }
                 }
                 if p.has_attr_list {
-                    self.parked.insert(recno, p);
+                    out.parked.push(p);
                 } else {
-                    self.emit(&p);
+                    build_entries(p, &mut out.stats, &mut |e| out.entries.push(e));
                 }
             }
         }
     }
+    out.orphans = local_orphans.into_values().flatten().collect();
+    out
+}
 
-    fn emit(&mut self, p: &Parsed) {
-        let names = select_names(&p.names);
-        if names.is_empty() {
-            self.stats.nameless += 1;
-            return;
-        }
-        let (mtime, mut attrs) = p.std.unwrap_or((0, 0));
-        if p.is_dir {
-            attrs |= 0x10;
-        }
-        for n in names {
-            (self.sink)(MftEntry {
-                frn: p.frn(),
-                parent_frn: n.parent_ref,
-                name: n.name.clone(),
-                is_dir: p.is_dir,
-                size: p.size.unwrap_or(0),
-                alloc: p.alloc,
-                mtime: mtime as i64,
-                attrs,
-            });
-            self.stats.entries += 1;
+fn add_counts(dst: &mut ScanStats, s: &ScanStats) {
+    dst.in_use_base += s.in_use_base;
+    dst.extension_records += s.extension_records;
+    dst.deleted_or_unused += s.deleted_or_unused;
+    dst.bad_magic += s.bad_magic;
+    dst.bad_fixup += s.bad_fixup;
+    dst.nameless += s.nameless;
+    dst.entries += s.entries;
+}
+
+/// Final global pass: attach every orphaned extension record to its parked
+/// base (in record-number order, like the old serial sweep), then emit the
+/// parked bases in record-number order.
+fn resolve_parked(
+    parked: Vec<Parsed>,
+    mut orphans: Vec<Parsed>,
+    stats: &mut ScanStats,
+    sink: &mut impl FnMut(MftEntry),
+) {
+    let mut map: HashMap<u32, Parsed> = parked.into_iter().map(|p| (p.recno, p)).collect();
+    orphans.sort_unstable_by_key(|o| (o.base_ref, o.recno));
+    for o in orphans {
+        if let Some(b) = map.get_mut(&o.base_ref) {
+            b.merge(o);
         }
     }
-
-    fn finish(&mut self) {
-        let mut keys: Vec<u32> = self.parked.keys().copied().collect();
-        keys.sort_unstable();
-        for k in keys {
-            if let Some(p) = self.parked.remove(&k) {
-                self.emit(&p);
-            }
+    let mut keys: Vec<u32> = map.keys().copied().collect();
+    keys.sort_unstable();
+    for k in keys {
+        if let Some(p) = map.remove(&k) {
+            build_entries(p, stats, sink);
         }
-        self.orphans.clear();
     }
 }
 
 /// Scan `letter:` and stream one [`MftEntry`] per (parent, name) of every
-/// in-use base record to `sink`. Needs an elevated process. `progress` is
-/// called as `(records_done, records_total)` periodically and once at the end.
+/// in-use base record to `sink` (always called on the calling thread).
+/// Needs an elevated process. `progress` is called as `(records_done,
+/// records_total)` periodically and once at the end.
 ///
-/// Entries for records whose attributes live in extension records are
-/// delivered at the very end of the sweep (after all plain records).
+/// Records are decoded on a pool of worker threads, so entries arrive in
+/// batch-completion order (not MFT order). Entries for records whose
+/// attributes live in extension records are delivered at the very end of the
+/// sweep (after all plain records).
 pub fn scan_volume(
     letter: char,
     sink: &mut impl FnMut(MftEntry),
@@ -446,96 +516,191 @@ pub fn scan_volume(
     let total = g.mft_valid_len / rs as u64;
     let extents = extents_from_record0(&vol, &g)?;
 
-    let mut dec = Decoder {
-        sink,
-        parked: HashMap::new(),
-        orphans: HashMap::new(),
-        stats: ScanStats { mft_records: total, ..Default::default() },
-    };
+    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, MAX_WORKERS);
+    let nbufs = workers * 2 + READ_AHEAD;
     let buf_size = BATCH_RECORDS * rs + sector;
-    let (tx, rx) = mpsc::channel::<Msg>();
+    let (out_tx, out_rx) = mpsc::channel::<Msg>();
+    let (batch_tx, batch_rx) = mpsc::sync_channel::<Batch>(nbufs);
+    let batch_rx = Mutex::new(batch_rx);
     let (free_tx, free_rx) = mpsc::channel::<AlignedBuf>();
-    for _ in 0..2 {
+    for _ in 0..nbufs {
         let _ = free_tx.send(AlignedBuf::new(buf_size));
     }
+
+    let mut stats = ScanStats { mft_records: total, workers: workers as u32, ..Default::default() };
     let mut failure: Option<ScanError> = None;
-    let mut bytes_read = 0u64;
+    let mut parked: Vec<Parsed> = Vec::new();
+    let mut orphans: Vec<Parsed> = Vec::new();
 
     std::thread::scope(|s| {
-        let vol_ref = &vol;
-        let extents = &extents;
-        s.spawn(move || {
-            let mut recno: u64 = 0;
-            while recno < total {
-                let (offset, run_remaining, sparse) = locate(extents, recno, cluster, rs);
-                if sparse > 0 {
-                    recno += (sparse * cluster / rs as u64).min(total - recno);
-                    continue;
-                }
-                let Some(offset) = offset else { break };
-                let n = (BATCH_RECORDS as u64).min(run_remaining).min(total - recno) as usize;
-                if n == 0 {
-                    break;
-                }
-                let aligned = offset / sector as u64 * sector as u64;
-                let skip = (offset - aligned) as usize;
-                let read_len = (skip + n * rs).div_ceil(sector) * sector;
-                let Ok(mut buf) = free_rx.recv() else { return };
-                match vol_ref.read_at(&mut buf.as_mut_slice()[..read_len], aligned) {
-                    Ok(got) => {
-                        let b = Batch { buf, recno, skip, n, got };
-                        if tx.send(Msg::Batch(b)).is_err() {
-                            return;
+        // Reader: sequential extent walk, one synchronous buffered read per batch.
+        let reader = {
+            let (vol_ref, extents, out_tx) = (&vol, &extents, out_tx.clone());
+            s.spawn(move || {
+                let (mut read_time, mut buf_wait, mut bytes) = (Duration::ZERO, Duration::ZERO, 0u64);
+                let mut recno: u64 = 0;
+                while recno < total {
+                    let (offset, run_remaining, sparse) = locate(extents, recno, cluster, rs);
+                    if sparse > 0 {
+                        recno += (sparse * cluster / rs as u64).min(total - recno);
+                        continue;
+                    }
+                    let Some(offset) = offset else { break };
+                    let n = (BATCH_RECORDS as u64).min(run_remaining).min(total - recno) as usize;
+                    if n == 0 {
+                        break;
+                    }
+                    let aligned = offset / sector as u64 * sector as u64;
+                    let skip = (offset - aligned) as usize;
+                    let read_len = (skip + n * rs).div_ceil(sector) * sector;
+                    let tw = Instant::now();
+                    let Ok(mut buf) = free_rx.recv() else { break };
+                    buf_wait += tw.elapsed();
+                    let tr = Instant::now();
+                    let res = vol_ref.read_at(&mut buf.as_mut_slice()[..read_len], aligned);
+                    read_time += tr.elapsed();
+                    match res {
+                        Ok(got) => {
+                            bytes += got as u64;
+                            if batch_tx.send(Batch { buf, recno, skip, n, got }).is_err() {
+                                break;
+                            }
+                        }
+                        Err(source) => {
+                            let _ = out_tx.send(Msg::Failed(ScanError::Read { offset: aligned, source }));
+                            break;
                         }
                     }
-                    Err(source) => {
-                        let _ = tx.send(Msg::Failed(ScanError::Read { offset: aligned, source }));
-                        return;
-                    }
+                    recno += n as u64;
                 }
-                recno += n as u64;
-            }
-        });
+                (read_time, buf_wait, bytes)
+            })
+        };
 
-        let mut batches = 0u64;
-        for msg in rx {
+        // Decoders: pull batches, decode without touching the sink.
+        let decoders: Vec<_> = (0..workers)
+            .map(|_| {
+                let (out_tx, free_tx, batch_rx) = (out_tx.clone(), free_tx.clone(), &batch_rx);
+                s.spawn(move || {
+                    let mut decode_time = Duration::ZERO;
+                    loop {
+                        let Ok(mut b) = batch_rx.lock().unwrap().recv() else { break };
+                        let t = Instant::now();
+                        let decoded =
+                            decode_slice(b.buf.as_mut_slice(), b.recno, b.skip, b.n, b.got, rs, cluster);
+                        decode_time += t.elapsed();
+                        let _ = free_tx.send(b.buf);
+                        if out_tx.send(Msg::Done { n: b.n, decoded: Box::new(decoded) }).is_err() {
+                            break;
+                        }
+                    }
+                    decode_time
+                })
+            })
+            .collect();
+        drop(out_tx);
+        drop(free_tx);
+
+        let (mut done_recs, mut batches) = (0u64, 0u64);
+        loop {
+            let tw = Instant::now();
+            let Ok(msg) = out_rx.recv() else { break };
+            stats.main_wait += tw.elapsed();
             match msg {
                 Msg::Failed(e) => {
                     failure = Some(e);
                     break;
                 }
-                Msg::Batch(mut b) => {
-                    bytes_read += b.got as u64;
-                    let data = b.buf.as_mut_slice();
-                    for k in 0..b.n {
-                        let base = b.skip + k * rs;
-                        if base + rs > b.skip + b.got {
-                            break; // short read: ignore trailing partial record
-                        }
-                        dec.record((b.recno + k as u64) as u32, &mut data[base..base + rs], cluster);
+                Msg::Done { n, decoded } => {
+                    let t = Instant::now();
+                    add_counts(&mut stats, &decoded.stats);
+                    parked.extend(decoded.parked);
+                    orphans.extend(decoded.orphans);
+                    for e in decoded.entries {
+                        sink(e);
                     }
+                    stats.sink_time += t.elapsed();
+                    done_recs += n as u64;
                     batches += 1;
                     if batches.is_multiple_of(PROGRESS_EVERY_BATCHES) {
-                        progress(b.recno + b.n as u64, total);
+                        progress(done_recs.min(total), total);
                     }
-                    let _ = free_tx.send(b.buf);
                 }
             }
         }
-        // Dropping free_tx (moved into this closure) unblocks a reader that is
-        // waiting for a free buffer after an early break; rx is already dropped.
-        drop(free_tx);
+        // Early break: dropping the receiver makes the workers' sends fail so
+        // they (and, via the closed channels, the reader) wind down.
+        drop(out_rx);
+        let (rt, bw, bytes) = reader.join().unwrap_or_default();
+        stats.read_time = rt;
+        stats.reader_buf_wait = bw;
+        stats.bytes_read = bytes;
+        for d in decoders {
+            stats.decode_time += d.join().unwrap_or_default();
+        }
     });
 
     if let Some(e) = failure {
         return Err(e);
     }
-    dec.finish();
+    let t = Instant::now();
+    resolve_parked(parked, orphans, &mut stats, sink);
+    stats.sink_time += t.elapsed();
     progress(total, total);
-    let mut stats = dec.stats;
-    stats.bytes_read = bytes_read;
     stats.elapsed = t0.elapsed();
     Ok(stats)
+}
+
+/// Offline benchmark hook (no disk I/O): decode `batches` copies of `template`
+/// (a sealed run of `rs`-byte records) on `threads` workers using the same
+/// decode/merge path as [`scan_volume`]. Returns `(records, entries, elapsed)`.
+#[cfg(feature = "testutil")]
+#[doc(hidden)]
+pub fn bench_decode(template: &[u8], rs: usize, batches: usize, threads: usize) -> (u64, u64, Duration) {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let per = template.len() / rs;
+    let next = AtomicUsize::new(0);
+    let (tx, rx) = mpsc::channel::<Decoded>();
+    let t0 = Instant::now();
+    let (mut entries, mut records) = (0u64, 0u64);
+    let (mut parked, mut orphans) = (Vec::new(), Vec::new());
+    let mut stats = ScanStats::default();
+    std::thread::scope(|s| {
+        for _ in 0..threads.max(1) {
+            let tx = tx.clone();
+            let next = &next;
+            s.spawn(move || {
+                let mut buf = template.to_vec();
+                loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= batches {
+                        break;
+                    }
+                    buf.copy_from_slice(template);
+                    let d = decode_slice(&mut buf, (i * per) as u64, 0, per, per * rs, rs, 4096);
+                    if tx.send(d).is_err() {
+                        break;
+                    }
+                }
+            });
+        }
+        drop(tx);
+        for d in rx {
+            records += per as u64;
+            add_counts(&mut stats, &d.stats);
+            parked.extend(d.parked);
+            orphans.extend(d.orphans);
+            for e in d.entries {
+                entries += 1;
+                std::hint::black_box(&e);
+            }
+        }
+    });
+    resolve_parked(parked, orphans, &mut stats, &mut |e| {
+        entries += 1;
+        std::hint::black_box(&e);
+    });
+    (records, entries, t0.elapsed())
 }
 
 #[cfg(test)]
@@ -589,16 +754,10 @@ mod tests {
     }
 
     #[test]
-    fn decoder_merges_extension_before_and_after_base() {
+    fn parked_bases_merge_extensions_found_before_or_after() {
         use crate::record::NameAttr;
         let mut out = Vec::new();
         let mut sink = |e: MftEntry| out.push(e);
-        let mut dec = Decoder {
-            sink: &mut sink,
-            parked: HashMap::new(),
-            orphans: HashMap::new(),
-            stats: ScanStats::default(),
-        };
         let base = |recno: u32| Parsed {
             recno,
             seq: 2,
@@ -613,23 +772,63 @@ mod tests {
             alloc: 4096,
             ..Default::default()
         };
-        // ext first (orphan) then base; and base first then ext
-        dec.orphans.entry(10).or_default().push(ext(50, 10));
-        let mut b10 = base(10);
-        if let Some(v) = dec.orphans.remove(&10) {
-            for e in v {
-                b10.merge(e);
-            }
-        }
-        dec.parked.insert(10, b10);
-        dec.parked.insert(20, base(20));
-        dec.parked.get_mut(&20).unwrap().merge(ext(60, 20));
-        dec.finish();
-        drop(dec);
+        let mut stats = ScanStats::default();
+        resolve_parked(
+            vec![base(20), base(10)],
+            vec![ext(60, 20), ext(50, 10), ext(70, 999)],
+            &mut stats,
+            &mut sink,
+        );
         assert_eq!(out.len(), 2);
         assert_eq!(out[0].name, "f10");
         assert_eq!((out[0].size, out[0].alloc), (1000, 4096));
         assert_eq!(out[1].frn, 20 | (2u64 << 48));
         assert_eq!(out[1].size, 1000);
+    }
+
+    /// Splitting the same record stream into different batch sizes must give
+    /// the same entry set (extensions straddling batches resolve globally).
+    #[test]
+    fn batch_split_does_not_change_result() {
+        use crate::record::testutil::Rb;
+        const CL: u64 = 4096;
+        let recs: Vec<Vec<u8>> = vec![
+            Rb::new(true, false).name(5, "zero", 1).seal(), // 0
+            Rb::new(true, false).name(5, "big", 1).attr_list().seal(), // 1
+            Rb::new(true, false).base(3 | (7 << 48)).data_nonres(0, 777, 2).seal(), // 2: ext of 3
+            Rb::new(true, false).name(5, "later", 1).attr_list().seal(), // 3
+            Rb::new(false, false).name(5, "gone", 1).seal(), // 4
+            vec![0u8; 1024], // 5
+            Rb::new(true, false).base(1 | (7 << 48)).data_nonres(0, 555, 3).seal(), // 6: ext of 1
+            Rb::new(true, true).name(5, "d", 1).name(5, "D~1", 2).seal(), // 7
+        ];
+        let flat: Vec<u8> = recs.concat();
+        let run = |per: usize| {
+            let mut got: Vec<MftEntry> = Vec::new();
+            let (mut parked, mut orphans) = (Vec::new(), Vec::new());
+            let mut st = ScanStats::default();
+            let mut data = flat.clone();
+            for (ci, chunk) in data.chunks_mut(per * 1024).enumerate() {
+                let n = chunk.len() / 1024;
+                let d = decode_slice(chunk, (ci * per) as u64, 0, n, n * 1024, 1024, CL);
+                add_counts(&mut st, &d.stats);
+                got.extend(d.entries);
+                parked.extend(d.parked);
+                orphans.extend(d.orphans);
+            }
+            resolve_parked(parked, orphans, &mut st, &mut |e| got.push(e));
+            got.sort_by_key(|e| (e.frn & REC_NO_MASK, e.name.clone()));
+            (got, st.bad_magic, st.deleted_or_unused, st.extension_records)
+        };
+        let whole = run(8);
+        for per in [1, 2, 3, 5] {
+            assert_eq!(run(per), whole, "per={per}");
+        }
+        let (e, bad, del, ext) = whole;
+        assert_eq!((bad, del, ext), (1, 1, 2));
+        let by = |n: &str| e.iter().find(|x| x.name == n).unwrap();
+        assert_eq!(by("big").size, 555);
+        assert_eq!(by("later").size, 777);
+        assert_eq!(e.len(), 4); // zero, big, later, d (DOS alias dropped)
     }
 }

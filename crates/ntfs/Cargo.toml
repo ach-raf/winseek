@@ -5,3 +5,10 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+
+[features]
+testutil = []
+
+[[example]]
+name = "decode_bench"
+required-features = ["testutil"]

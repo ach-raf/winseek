@@ -16,3 +16,6 @@ pub use scan::{
     list_ntfs_volumes, open_volume_for_usn, scan_volume, MftEntry, ScanError, ScanStats,
     VolumeInfo,
 };
+#[cfg(feature = "testutil")]
+#[doc(hidden)]
+pub use scan::bench_decode;
