@@ -1,7 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, Sort, VolumeStatus } from "./types";
 import { FileIcon } from "./FileIcon";
-import { formatDate, formatSize, matchRanges, splitDir } from "./format";
+import { formatDate, formatSize, kindOf, matchRanges, splitDir } from "./format";
 
 const ROW_H = 54;
 const PAGE = 80;
@@ -36,10 +36,52 @@ function Highlight({ text, query }: { text: string; query: string }) {
   return <>{out}</>;
 }
 
+function RenameInput({ initial, isDir, onCommit, onCancel }: {
+  initial: string; isDir: boolean; onCommit: (name: string) => void; onCancel: () => void;
+}) {
+  const ref = useRef<HTMLInputElement>(null);
+  const done = useRef(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const dot = initial.lastIndexOf(".");
+    const end = !isDir && dot > 0 ? dot : initial.length;
+    const apply = () => { el.focus(); el.setSelectionRange(0, end); };
+    apply();
+    const t = window.setTimeout(apply, 0); // some engines re-select-all after a keyboard-initiated focus
+    return () => window.clearTimeout(t);
+  }, [initial, isDir]);
+  const finish = (commit: boolean) => {
+    if (done.current) return;
+    done.current = true;
+    if (commit) onCommit(ref.current!.value); else onCancel();
+  };
+  return (
+    <input
+      ref={ref}
+      className="rename"
+      defaultValue={initial}
+      spellCheck={false}
+      autoComplete="off"
+      aria-label="New name"
+      onKeyDown={(e) => {
+        e.stopPropagation(); // global handler must not see keys while renaming
+        if (e.key === "Enter") { e.preventDefault(); finish(true); }
+        else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+      }}
+      onBlur={() => finish(false)}
+      onClick={(e) => e.stopPropagation()}
+      onMouseDown={(e) => e.stopPropagation()}
+    />
+  );
+}
+
 const Row = memo(function Row({
-  hit, query, selected, top, onPick, onHover,
+  hit, query, selected, top, icon, thumb, renaming, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
 }: {
-  hit: Hit | undefined; query: string; selected: boolean; top: number; onPick: () => void; onHover: () => void;
+  hit: Hit | undefined; query: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
+  onPick: () => void; onHover: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
+  onRenameCommit: (name: string) => void; onRenameCancel: () => void;
 }) {
   if (!hit) {
     return (
@@ -56,13 +98,19 @@ const Row = memo(function Row({
       style={{ transform: `translateY(${top}px)` }}
       role="option"
       aria-selected={selected}
-      onClick={onPick}
-      onMouseMove={onHover}
+      onClick={renaming ? undefined : onPick}
+      onMouseMove={renaming ? undefined : onHover}
+      onMouseDown={onDown}
+      onContextMenu={onMenu}
       title={hit.path}
     >
-      <FileIcon name={hit.name} isDir={hit.is_dir} />
+      <FileIcon name={hit.name} isDir={hit.is_dir} src={icon} thumb={thumb} />
       <div className="meta">
-        <div className="name"><Highlight text={hit.name} query={query} /></div>
+        <div className="name">
+          {renaming
+            ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={onRenameCommit} onCancel={onRenameCancel} />
+            : <Highlight text={hit.name} query={query} />}
+        </div>
         <div className="path"><span className="head">{head}</span><span className="tail">{tail}</span></div>
       </div>
       <div className="side">
@@ -72,6 +120,8 @@ const Row = memo(function Row({
     </div>
   );
 });
+
+type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] };
 
 interface Data { total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean }
 
@@ -83,7 +133,8 @@ export default function App({ backend }: { backend: Backend }) {
   const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true });
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<VolumeStatus[]>([]);
-  const [toast, setToast] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
+  const [renaming, setRenaming] = useState(false); // inline rename of the selected row
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
@@ -94,6 +145,11 @@ export default function App({ backend }: { backend: Backend }) {
   const inflight = useRef(new Set<number>());
   const rowsRef = useRef<(Hit | undefined)[]>([]);
   const toastTimer = useRef<number | undefined>(undefined);
+  // One-level undo (last rename or recycle). Ctrl+Z triggers it only while the search box is empty or
+  // unchanged since the action; otherwise Ctrl+Z is left to the browser (text undo).
+  const undoRef = useRef<Undo | null>(null);
+  const undoQuery = useRef("");
+  const suppressClick = useRef(false);
 
   const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
 
@@ -171,11 +227,15 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
 
   // ---- actions -------------------------------------------------------------
-  const flash = useCallback((msg: string) => {
-    setToast(msg);
+  const flash = useCallback((msg: string, undo = false, ms = undo ? 5000 : 1600) => {
+    setToast({ msg, undo });
     window.clearTimeout(toastTimer.current);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1600);
+    toastTimer.current = window.setTimeout(() => setToast(null), ms);
   }, []);
+  const fail = useCallback((e: unknown) => {
+    flash(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""), false, 3500);
+  }, [flash]);
+  const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
 
   const current = data.rows[sel];
 
@@ -185,8 +245,93 @@ export default function App({ backend }: { backend: Backend }) {
       if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
       if (kind === "open") await backend.openPath(h.path); else await backend.revealPath(h.path);
       await backend.hide();
-    } catch (e) { flash(String(e)); }
-  }, [backend, flash]);
+    } catch (e) { fail(e); }
+  }, [backend, flash, fail]);
+
+  const removeRow = useCallback((i: number) => {
+    const rows = rowsRef.current.slice();
+    rows.splice(i, 1);
+    rowsRef.current = rows;
+    setData((d) => ({ ...d, rows, total: Math.max(0, d.total - 1) }));
+    setSel((s) => Math.max(0, Math.min(s, rows.length - 1)));
+  }, []);
+
+  const pushUndo = useCallback((u: Undo, msg: string) => {
+    undoRef.current = u;
+    undoQuery.current = inputRef.current?.value ?? "";
+    flash(msg, true);
+  }, [flash]);
+
+  const doRecycle = useCallback(async (i: number) => {
+    const h = rowsRef.current[i];
+    if (!h) return;
+    try {
+      await backend.recycle([h.path]);
+      removeRow(i);
+      pushUndo({ kind: "recycle", paths: [h.path] }, "Moved to Recycle Bin");
+    } catch (e) { fail(e); }
+  }, [backend, removeRow, pushUndo, fail]);
+
+  const doRename = useCallback(async (i: number, newName: string) => {
+    setRenaming(false);
+    refocus();
+    const h = rowsRef.current[i];
+    const name = newName.trim();
+    if (!h || !name || name === h.name) return;
+    try {
+      const np = await backend.renamePath(h.path, name);
+      const rows = rowsRef.current.slice();
+      rows[i] = { ...h, name, path: np };
+      rowsRef.current = rows;
+      setData((d) => ({ ...d, rows }));
+      pushUndo({ kind: "rename", newPath: np, oldName: h.name }, "Renamed");
+    } catch (e) { fail(e); }
+  }, [backend, pushUndo, fail, refocus]);
+
+  const doUndo = useCallback(async () => {
+    const u = undoRef.current;
+    if (!u) return;
+    undoRef.current = null;
+    window.clearTimeout(toastTimer.current);
+    setToast(null);
+    try {
+      if (u.kind === "rename") {
+        await backend.renamePath(u.newPath, u.oldName);
+        flash("Rename undone");
+      } else {
+        const n = await backend.restoreRecycled(u.paths);
+        flash(n > 0 ? "Restored" : "Nothing to restore");
+      }
+      setEpoch((e) => e + 1); // re-run the search to refresh the list
+    } catch (e) { fail(e); }
+  }, [backend, flash, fail]);
+
+  const openMenu = useCallback(async (i: number, x: number, y: number) => {
+    const h = rowsRef.current[i];
+    if (!h) return;
+    try {
+      const r = await backend.showContextMenu(h.path, x, y);
+      if (r === "rename") setRenaming(true);
+      else if (r === "deleted") { removeRow(i); pushUndo({ kind: "recycle", paths: [h.path] }, "Moved to Recycle Bin"); }
+      else if (r === "invoked") { await backend.hide(); return; } // Open / Open with / Send to... moved on to another app
+    } catch (e) { fail(e); }
+    refocus();
+  }, [backend, removeRow, pushUndo, fail, refocus]);
+
+  const onRowDown = useCallback((e: React.MouseEvent, h: Hit) => {
+    suppressClick.current = false;
+    if (e.button !== 0) return;
+    const sx = e.clientX, sy = e.clientY;
+    const stop = () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", stop); };
+    const mv = (ev: MouseEvent) => {
+      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) <= 4) return;
+      stop();
+      suppressClick.current = true; // the click that follows the drag must not open the file
+      backend.startDrag([h.path]).catch(fail);
+    };
+    window.addEventListener("mousemove", mv);
+    window.addEventListener("mouseup", stop);
+  }, [backend, fail]);
 
   const move = useCallback((to: number) => {
     const n = Math.max(0, Math.min(data.total - 1, to));
@@ -200,6 +345,17 @@ export default function App({ backend }: { backend: Backend }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (renaming) return;
+      const inp = inputRef.current;
+      const inInput = !!inp && document.activeElement === inp;
+      const hasSelection = inInput && inp!.selectionStart !== inp!.selectionEnd;
+      const atEnd = !inInput || (!hasSelection && inp!.selectionStart === inp!.value.length);
+      const menuAtSelection = () => {
+        const el = listRef.current;
+        if (!el || !current) return;
+        const r = el.getBoundingClientRect();
+        void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
+      };
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); move(sel + 1); break;
@@ -218,12 +374,45 @@ export default function App({ backend }: { backend: Backend }) {
         }
         case "c": case "C":
           if (e.ctrlKey && e.shiftKey) { e.preventDefault(); void act("copy", current); }
+          else if (e.ctrlKey && !hasSelection && current) {
+            e.preventDefault();
+            backend.copyFiles([current.path]).then(() => flash("File copied")).catch(fail);
+          }
+          break;
+        case "F2":
+          e.preventDefault();
+          if (current) setRenaming(true);
+          break;
+        case "Delete":
+          if (atEnd && current) { e.preventDefault(); void doRecycle(sel); }
+          break;
+        case "z": case "Z":
+          if (e.ctrlKey && !e.shiftKey && undoRef.current && (!inInput || inp!.value === "" || inp!.value === undoQuery.current)) {
+            e.preventDefault();
+            void doUndo();
+          }
+          break;
+        case "ContextMenu":
+          e.preventDefault();
+          menuAtSelection();
+          break;
+        case "F10":
+          if (e.shiftKey) { e.preventDefault(); menuAtSelection(); }
           break;
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, filter, data.total, backend]);
+  }, [move, sel, viewH, act, current, filter, data.total, backend, renaming, flash, fail, doRecycle, doUndo, openMenu]);
+
+  useEffect(() => {
+    const noMenu = (e: Event) => e.preventDefault();
+    window.addEventListener("contextmenu", noMenu);
+    return () => window.removeEventListener("contextmenu", noMenu);
+  }, []);
+
+  // moving the selection / reloading the list cancels an inline rename
+  useEffect(() => { setRenaming(false); }, [sel, epoch, query, filter, sort]);
 
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
@@ -243,13 +432,25 @@ export default function App({ backend }: { backend: Backend }) {
   const visible = useMemo(() => {
     const out: React.ReactNode[] = [];
     for (let i = first; i <= last; i++) {
+      const h = data.rows[i];
+      const thumbKind = h ? ["image", "video"].includes(kindOf(h.name, h.is_dir)) : false;
       out.push(
-        <Row key={i} hit={data.rows[i]} query={query} selected={i === sel} top={i * ROW_H}
-             onPick={() => { setSel(i); void act("open", data.rows[i]); }} onHover={() => setSel((s) => (s === i ? s : i))} />,
+        <Row key={i} hit={h} query={query} selected={i === sel} top={i * ROW_H}
+             icon={h ? backend.iconUrl(h.path, h.is_dir, thumbKind) : null} thumb={thumbKind}
+             renaming={renaming && i === sel}
+             onPick={() => {
+               if (suppressClick.current) { suppressClick.current = false; return; }
+               setSel(i); void act("open", h);
+             }}
+             onHover={() => setSel((s) => (s === i ? s : i))}
+             onDown={(e) => { if (h) onRowDown(e, h); }}
+             onMenu={(e) => { e.preventDefault(); if (!h) return; setSel(i); void openMenu(i, e.clientX, e.clientY); }}
+             onRenameCommit={(n) => void doRename(i, n)}
+             onRenameCancel={() => { setRenaming(false); refocus(); }} />,
       );
     }
     return out;
-  }, [first, last, data.rows, query, sel, act]);
+  }, [first, last, data.rows, query, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
 
   return (
     <div className="shell">
@@ -306,7 +507,10 @@ export default function App({ backend }: { backend: Backend }) {
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>
         {toast ? (
-          <span className="toast" role="status">{toast}</span>
+          <span className="toast" role="status">
+            {toast.msg}
+            {toast.undo && <> · <button className="undo" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => void doUndo()}>Undo</button></>}
+          </span>
         ) : (
           !data.recent && loaded && <span className="count">{data.total.toLocaleString("en-US")} result{data.total === 1 ? "" : "s"}{data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}</span>
         )}
@@ -314,7 +518,9 @@ export default function App({ backend }: { backend: Backend }) {
         <span className="hints">
           <span><kbd>↵</kbd> Open</span>
           <span><kbd>Ctrl ↵</kbd> Reveal</span>
-          <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
+          <span><kbd>Ctrl ⇧ C</kbd> Path</span>
+          <span><kbd>F2</kbd> Rename</span>
+          <span><kbd>Del</kbd> Recycle</span>
         </span>
       </footer>
     </div>

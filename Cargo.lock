@@ -4467,12 +4467,14 @@ dependencies = [
 name = "winseek-app"
 version = "0.1.0"
 dependencies = [
+ "png 0.17.16",
  "serde",
  "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-global-shortcut",
  "window-vibrancy 0.6.0",
+ "windows",
  "winseek-ipc",
 ]
 

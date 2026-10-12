@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { kindOf } from "./format";
 
 const PATHS: Record<string, string> = {
@@ -12,8 +13,16 @@ const PATHS: Record<string, string> = {
   file: "M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm6 0v5h5",
 };
 
-export function FileIcon({ name, isDir }: { name: string; isDir: boolean }) {
+export function FileIcon({ name, isDir, src, thumb }: { name: string; isDir: boolean; src?: string | null; thumb?: boolean }) {
   const k = kindOf(name, isDir);
+  const [failed, setFailed] = useState<string | null>(null);
+  if (src && failed !== src) {
+    return (
+      <span className={"ficon has-img" + (thumb ? " thumb" : "")} aria-hidden>
+        <img src={src} loading="lazy" draggable={false} alt="" onError={() => setFailed(src)} />
+      </span>
+    );
+  }
   return (
     <span className={`ficon k-${k}`} aria-hidden>
       <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

@@ -31,6 +31,8 @@ const DB: E[] = (() => {
   return out;
 })();
 
+const bin: { e: E; at: number }[] = [];
+
 const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? null : e.size, mtime: Math.floor(e.mtime) });
 const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -53,6 +55,38 @@ export const mockBackend: Backend = {
   async openPath(p) { console.info("[mock] open", p); },
   async revealPath(p) { console.info("[mock] reveal", p); },
   async copyPath(p) { try { await navigator.clipboard.writeText(p); } catch { /* ignore */ } console.info("[mock] copy", p); },
+  async copyFiles(p) { console.info("[mock] copy files", p); },
+  async recycle(paths) {
+    for (const path of paths) {
+      const i = DB.findIndex((e) => e.path === path);
+      if (i < 0) throw new Error("File not found");
+      bin.push({ e: DB.splice(i, 1)[0], at: Date.now() });
+    }
+    console.info("[mock] recycle", paths);
+  },
+  async restoreRecycled(paths) {
+    let n = 0;
+    for (const path of paths) {
+      let k = -1;
+      bin.forEach((b, i) => { if (b.e.path === path && (k < 0 || b.at >= bin[k].at)) k = i; });
+      if (k >= 0) { DB.push(bin.splice(k, 1)[0].e); n++; }
+    }
+    console.info("[mock] restore", paths, n);
+    return n;
+  },
+  async renamePath(path, newName) {
+    if (!newName.trim() || /[\\/:*?"<>|]/.test(newName)) throw new Error("Invalid file name");
+    const e = DB.find((x) => x.path === path);
+    if (!e) throw new Error("File not found");
+    const np = path.slice(0, path.lastIndexOf("\\") + 1) + newName;
+    if (DB.some((x) => x.path === np)) throw new Error("A file with that name already exists");
+    e.name = newName; e.lower = newName.toLowerCase(); e.path = np;
+    console.info("[mock] rename", path, "->", np);
+    return np;
+  },
+  async showContextMenu(path, x, y) { console.info("[mock] context menu", path, x, y); return "cancelled"; },
+  async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
+  iconUrl() { return null; },
   async hide() { console.info("[mock] hide"); },
   async onShown() { return () => {}; },
 };

@@ -1,11 +1,12 @@
 //! Popup window lifecycle: pre-warmed hidden, shown on the monitor under the cursor.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 
 pub const LABEL: &str = "popup";
 static SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
+static MODAL: AtomicBool = AtomicBool::new(false);
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -53,9 +54,33 @@ pub fn toggle(app: &AppHandle) {
     }
 }
 
+/// Suppress hide-on-blur while a shell context menu or drag owns the foreground.
+pub fn set_modal(on: bool) {
+    MODAL.store(on, Ordering::Relaxed);
+}
+
+/// Clears the blur guard on drop (all exit paths).
+pub struct ModalGuard;
+
+impl ModalGuard {
+    pub fn new() -> Self {
+        set_modal(true);
+        Self
+    }
+}
+
+impl Drop for ModalGuard {
+    fn drop(&mut self) {
+        set_modal(false);
+    }
+}
+
 /// Focus loss hides the popup, except for the brief window right after showing
 /// (the OS may bounce focus while the window is being activated).
 pub fn on_blur(app: &AppHandle) {
+    if MODAL.load(Ordering::Relaxed) {
+        return;
+    }
     if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) > 250 {
         hide(app);
     }

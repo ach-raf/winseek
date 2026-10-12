@@ -3,6 +3,7 @@
 mod commands;
 mod pipe_source;
 mod popup;
+mod shell;
 mod source;
 
 use commands::AppState;
@@ -48,8 +49,17 @@ fn main() {
             commands::recent,
             commands::open_path,
             commands::reveal_path,
-            commands::copy_path
+            commands::copy_path,
+            shell::copy_files,
+            shell::recycle,
+            shell::restore_recycled,
+            shell::rename_path,
+            shell::show_context_menu,
+            shell::start_drag
         ])
+        .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
+            shell::icons::handle(req, responder)
+        })
         .on_window_event(|win, ev| {
             if win.label() == popup::LABEL {
                 match ev {

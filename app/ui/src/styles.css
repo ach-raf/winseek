@@ -151,6 +151,9 @@ html.web .shell {
   display: grid; place-items: center;
   background: var(--chip); color: var(--fg-2);
 }
+.ficon.has-img { background: transparent; }
+.ficon img { width: 20px; height: 20px; object-fit: contain; display: block; }
+.ficon.thumb img { width: 34px; height: 34px; object-fit: cover; border-radius: 6px; }
 .k-folder { background: rgba(240, 177, 50, 0.18); color: #d49a1a; }
 .k-image { background: rgba(60, 170, 120, 0.16); color: #2f9e6e; }
 .k-doc { background: rgba(0, 120, 212, 0.14); color: #1a74c8; }
@@ -185,17 +188,25 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .empty span { font-size: 12.5px; }
 
 .footer {
-  display: flex; align-items: center; gap: 14px; flex: none;
+  display: flex; align-items: center; gap: 12px; flex: none;
   height: 34px; padding: 0 16px; border-top: 1px solid var(--line);
   font-size: 12px; color: var(--fg-3);
 }
-.status { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
+.status { min-width: 0; white-space: nowrap; display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); }
 .s-live .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
 .s-scanning .dot, .s-paused .dot, .s-demo .dot, .s-offline .dot { background: var(--warn); }
 .count { font-variant-numeric: tabular-nums; }
-.toast { color: var(--accent); font-weight: 600; animation: fade 160ms var(--ease); }
-.hints { display: inline-flex; gap: 14px; }
+.toast { color: var(--accent); font-weight: 600; animation: fade 160ms var(--ease); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.toast .undo { color: var(--accent); font-weight: 600; text-decoration: underline; text-underline-offset: 2px; margin-left: 2px; }
+.toast .undo:hover { text-decoration-thickness: 2px; }
+.name input.rename {
+  width: 100%; height: 22px; margin: -3px 0; padding: 0 5px;
+  font: inherit; font-weight: 500; color: var(--fg);
+  background: var(--bg-solid); border: 1px solid var(--accent); border-radius: 4px; outline: 0;
+  user-select: text; cursor: text; caret-color: var(--accent);
+}
+.hints { display: inline-flex; gap: 10px; flex: none; }
 .hints span { display: inline-flex; align-items: center; gap: 5px; }
 
 @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }

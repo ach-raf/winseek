@@ -22,6 +22,14 @@ function tauriBackend(t: TauriGlobal): Backend {
     openPath: (path) => inv("open_path", { path }),
     revealPath: (path) => inv("reveal_path", { path }),
     copyPath: (path) => inv("copy_path", { path }),
+    copyFiles: (paths) => inv("copy_files", { paths }),
+    recycle: (paths) => inv("recycle", { paths }),
+    restoreRecycled: (paths) => inv("restore_recycled", { paths }),
+    renamePath: (path, newName) => inv("rename_path", { path, newName }),
+    showContextMenu: (path, x, y) => inv("show_context_menu", { path, x, y }),
+    startDrag: (paths) => inv("start_drag", { paths }),
+    iconUrl: (path, isDir, thumb) =>
+      `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${thumb ? 40 : 32}&t=${thumb ? 1 : 0}`,
     hide: () => t.window.getCurrentWindow().hide(),
     onShown: (cb) => t.event.listen("popup-shown", cb),
   };
