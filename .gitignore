@@ -1,6 +1,6 @@
 /target
 node_modules/
-/app/dist/
+/app/ui/dist/
 /app/src-tauri/gen/
 *.log
 .env
