@@ -18,6 +18,8 @@ pub(crate) const FILE_SHARE_READ: DWORD = 0x1;
 pub(crate) const FILE_SHARE_WRITE: DWORD = 0x2;
 pub(crate) const OPEN_EXISTING: DWORD = 3;
 pub(crate) const FILE_FLAG_NO_BUFFERING: DWORD = 0x2000_0000;
+pub(crate) const FILE_FLAG_OVERLAPPED: DWORD = 0x4000_0000;
+const ERROR_IO_PENDING: i32 = 997;
 pub(crate) const FILE_BEGIN: DWORD = 0;
 pub(crate) const DRIVE_FIXED: DWORD = 3;
 pub(crate) const DRIVE_REMOVABLE: DWORD = 2;
@@ -35,6 +37,19 @@ extern "system" {
         hTemplateFile: HANDLE,
     ) -> HANDLE;
     fn CloseHandle(hObject: HANDLE) -> BOOL;
+    fn CreateEventW(
+        lpEventAttributes: *mut core::ffi::c_void,
+        bManualReset: BOOL,
+        bInitialState: BOOL,
+        lpName: *const u16,
+    ) -> HANDLE;
+    fn GetOverlappedResult(
+        hFile: HANDLE,
+        lpOverlapped: *mut OVERLAPPED,
+        lpNumberOfBytesTransferred: *mut DWORD,
+        bWait: BOOL,
+    ) -> BOOL;
+    fn CancelIoEx(hFile: HANDLE, lpOverlapped: *mut OVERLAPPED) -> BOOL;
     fn ReadFile(
         hFile: HANDLE,
         lpBuffer: *mut core::ffi::c_void,
@@ -79,6 +94,15 @@ extern "system" {
     ) -> BOOL;
 }
 
+#[repr(C)]
+struct OVERLAPPED {
+    internal: usize,
+    internal_high: usize,
+    offset: u32,
+    offset_high: u32,
+    h_event: HANDLE,
+}
+
 /// NUL-terminated UTF-16 for Win32 calls.
 pub(crate) fn wide(s: &str) -> Vec<u16> {
     OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
@@ -95,7 +119,12 @@ unsafe impl Sync for Handle {}
 impl Handle {
     /// Open `\\.\X:` with the given access and flags.
     pub(crate) fn open_volume(letter: char, access: DWORD, flags: DWORD) -> io::Result<Handle> {
-        let path = wide(&format!("\\\\.\\{}:", letter.to_ascii_uppercase()));
+        Self::open_path(&format!("\\\\.\\{}:", letter.to_ascii_uppercase()), access, flags)
+    }
+
+    /// Open an arbitrary path (volume device or file) with the given access and flags.
+    pub(crate) fn open_path(path: &str, access: DWORD, flags: DWORD) -> io::Result<Handle> {
+        let path = wide(path);
         // SAFETY: path is NUL-terminated; no security attributes / template.
         let h = unsafe {
             CreateFileW(
@@ -175,7 +204,86 @@ impl Drop for Handle {
     }
 }
 
-/// Page-aligned zeroed heap buffer (volume reads need sector alignment).
+/// One in-flight `FILE_FLAG_OVERLAPPED` read. Owns its buffer, so the memory
+/// stays valid for the kernel until the request completes; dropping a request
+/// that was never collected cancels it and waits for the cancellation.
+pub(crate) struct AsyncRead {
+    vol: HANDLE,
+    ov: Box<OVERLAPPED>,
+    pending: bool,
+    buf: Option<AlignedBuf>,
+}
+
+impl AsyncRead {
+    /// Issue a read of `len` bytes at `offset` into the start of `buf`. `vol`
+    /// must have been opened with `FILE_FLAG_OVERLAPPED` and outlive the read.
+    pub(crate) fn start(vol: &Handle, mut buf: AlignedBuf, len: usize, offset: u64) -> io::Result<AsyncRead> {
+        assert!(len <= buf.as_mut_slice().len() && len <= u32::MAX as usize);
+        // SAFETY: plain event creation; manual-reset, unsignalled, unnamed.
+        let ev = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
+        if ev == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let ov = Box::new(OVERLAPPED {
+            internal: 0,
+            internal_high: 0,
+            offset: offset as u32,
+            offset_high: (offset >> 32) as u32,
+            h_event: ev,
+        });
+        let mut r = AsyncRead { vol: vol.0, ov, pending: false, buf: None };
+        let ptr = buf.as_mut_slice().as_mut_ptr();
+        r.buf = Some(buf);
+        // SAFETY: `ptr` is valid for `len` bytes and kept alive (and unmoved: heap)
+        // by `r.buf`; the boxed OVERLAPPED has a stable address until collected.
+        let ok = unsafe {
+            ReadFile(
+                vol.0,
+                ptr.cast(),
+                len as DWORD,
+                std::ptr::null_mut(),
+                (&mut *r.ov as *mut OVERLAPPED).cast(),
+            )
+        };
+        if ok == 0 {
+            let e = io::Error::last_os_error();
+            if e.raw_os_error() != Some(ERROR_IO_PENDING) {
+                return Err(e);
+            }
+        }
+        // Completed inline or pending: either way the result is read via GetOverlappedResult.
+        r.pending = true;
+        Ok(r)
+    }
+
+    /// Wait for completion; returns the byte count (or error) and gives the buffer back.
+    pub(crate) fn finish(mut self) -> (io::Result<usize>, AlignedBuf) {
+        let mut done: DWORD = 0;
+        // SAFETY: the OVERLAPPED belongs to a request issued on `self.vol`.
+        let ok = unsafe { GetOverlappedResult(self.vol, &mut *self.ov, &mut done, 1) };
+        self.pending = false;
+        let res = if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(done as usize) };
+        let buf = self.buf.take().expect("buffer present until finish");
+        (res, buf)
+    }
+}
+
+impl Drop for AsyncRead {
+    fn drop(&mut self) {
+        if self.pending {
+            let mut done: DWORD = 0;
+            // SAFETY: cancel then wait so the kernel is done with the buffer before it is freed.
+            unsafe {
+                CancelIoEx(self.vol, &mut *self.ov);
+                GetOverlappedResult(self.vol, &mut *self.ov, &mut done, 1);
+            }
+        }
+        // SAFETY: event created in `start`, owned by this request.
+        unsafe { CloseHandle(self.ov.h_event) };
+    }
+}
+
+/// Page-aligned (4096) zeroed heap buffer (volume reads need sector alignment).
 pub(crate) struct AlignedBuf {
     ptr: *mut u8,
     layout: Layout,
@@ -191,6 +299,10 @@ impl AlignedBuf {
         let ptr = unsafe { alloc_zeroed(layout) };
         assert!(!ptr.is_null(), "AlignedBuf::new({size}) allocation failed");
         AlignedBuf { ptr, layout }
+    }
+    #[cfg(test)]
+    pub(crate) fn addr(&self) -> usize {
+        self.ptr as usize
     }
     pub(crate) fn as_mut_slice(&mut self) -> &mut [u8] {
         // SAFETY: as above, uniquely borrowed.
@@ -260,5 +372,47 @@ pub(crate) fn disk_geometry(letter: char) -> Option<(u32, u32)> {
         None
     } else {
         Some((bps, bps.saturating_mul(spc)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aligned_buf_is_page_aligned() {
+        for sz in [1, 512, 4096, 1 << 20, (1 << 20) + 4096] {
+            assert_eq!(AlignedBuf::new(sz).addr() % 4096, 0);
+        }
+    }
+
+    /// Overlapped + unbuffered reads of a plain file, several in flight,
+    /// collected out of issue order, must return the right bytes.
+    #[test]
+    fn async_reads_return_correct_bytes() {
+        let path = std::env::temp_dir().join(format!("winseek-ffi-async-{}.bin", std::process::id()));
+        let data: Vec<u8> = (0..(1usize << 20)).map(|i| (i * 31 % 251) as u8).collect();
+        std::fs::write(&path, &data).unwrap();
+        let h = Handle::open_path(
+            path.to_str().unwrap(),
+            GENERIC_READ,
+            FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING,
+        )
+        .unwrap();
+        let reqs = [(0u64, 65536usize), (65536, 131072), (8192, 4096), ((1 << 20) - 4096, 4096)];
+        let inflight: Vec<_> = reqs
+            .iter()
+            .map(|&(off, len)| AsyncRead::start(&h, AlignedBuf::new(len), len, off).unwrap())
+            .collect();
+        for (r, &(off, len)) in inflight.into_iter().zip(&reqs).rev() {
+            let (res, mut buf) = r.finish();
+            assert_eq!(res.unwrap(), len);
+            assert_eq!(&buf.as_mut_slice()[..len], &data[off as usize..off as usize + len]);
+        }
+        // Dropping an uncollected request must not crash or leak a live buffer.
+        let r = AsyncRead::start(&h, AlignedBuf::new(1 << 20), 1 << 20, 0).unwrap();
+        drop(r);
+        drop(h);
+        let _ = std::fs::remove_file(&path);
     }
 }
