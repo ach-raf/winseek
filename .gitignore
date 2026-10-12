@@ -1,0 +1,11 @@
+/target
+node_modules/
+/app/dist/
+/app/src-tauri/gen/
+*.log
+.env
+/backups/
+/data/
+*.gguf
+/models/
+/llama-bin/

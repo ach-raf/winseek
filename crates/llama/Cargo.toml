@@ -1,0 +1,7 @@
+[package]
+name = "winseek-llama"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
