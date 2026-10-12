@@ -1,0 +1,86 @@
+{
+  "llama": {
+    "build": "b11279",
+    "assets": [
+      {
+        "backend": "cuda12",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11279/llama-b11279-bin-win-cuda-12.4-x64.zip",
+        "sha256": "TODO-pin-in-CI",
+        "extra": [
+          {
+            "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11279/cudart-llama-bin-win-cuda-12.4-x64.zip",
+            "sha256": "TODO-pin-in-CI"
+          }
+        ]
+      },
+      {
+        "backend": "vulkan",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11279/llama-b11279-bin-win-vulkan-x64.zip",
+        "sha256": "TODO-pin-in-CI",
+        "extra": []
+      },
+      {
+        "backend": "cpu",
+        "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11279/llama-b11279-bin-win-cpu-x64.zip",
+        "sha256": "TODO-pin-in-CI",
+        "extra": []
+      }
+    ]
+  },
+  "models": [
+    {
+      "id": "embeddinggemma-2",
+      "profile": "default",
+      "files": [
+        {
+          "role": "model",
+          "url": "TODO-pin-in-CI/embeddinggemma-2.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 0
+        },
+        {
+          "role": "mmproj",
+          "url": "TODO-pin-in-CI/embeddinggemma-2.mmproj.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 0
+        }
+      ]
+    },
+    {
+      "id": "infinity-parser2-flash",
+      "profile": "default",
+      "files": [
+        {
+          "role": "model",
+          "url": "https://huggingface.co/prithivMLmods/Infinity-Parser2-Flash-GGUF/resolve/main/Infinity-Parser2-Flash.Q4_K_M.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 1270000000
+        },
+        {
+          "role": "mmproj",
+          "url": "https://huggingface.co/prithivMLmods/Infinity-Parser2-Flash-GGUF/resolve/main/Infinity-Parser2-Flash.mmproj-q8_0.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 365000000
+        }
+      ]
+    },
+    {
+      "id": "infinity-parser2-flash",
+      "profile": "quality",
+      "files": [
+        {
+          "role": "model",
+          "url": "https://huggingface.co/prithivMLmods/Infinity-Parser2-Flash-GGUF/resolve/main/Infinity-Parser2-Flash.Q8_0.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 2010000000
+        },
+        {
+          "role": "mmproj",
+          "url": "https://huggingface.co/prithivMLmods/Infinity-Parser2-Flash-GGUF/resolve/main/Infinity-Parser2-Flash.mmproj-q8_0.gguf",
+          "sha256": "TODO-pin-in-CI",
+          "size": 365000000
+        }
+      ]
+    }
+  ]
+}
