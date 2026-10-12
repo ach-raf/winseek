@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 winseek-ipc = { path = "../../crates/ipc" }
 
 [build-dependencies]
-tauri-build = "2"
+tauri-build = { version = "2", features = [] }
 
 [[bin]]
 name = "winseek-app"
