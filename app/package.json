@@ -1,0 +1,14 @@
+{
+  "name": "winseek-app",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Workspace for the winseek Tauri app. Frontend lives in ./ui (Vite+React+TS); Rust in ./src-tauri. Scripts proxy to ui/ and the Tauri CLI.",
+  "scripts": {
+    "dev": "npm run dev --prefix ui",
+    "build": "npm run build --prefix ui",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

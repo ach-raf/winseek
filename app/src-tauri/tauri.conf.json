@@ -1,0 +1,35 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "winseek",
+  "version": "0.1.0",
+  "identifier": "local.winseek",
+  "build": {
+    "frontendDist": "../ui/dist",
+    "devUrl": "http://localhost:5173",
+    "beforeDevCommand": "npm run dev --prefix ../ui",
+    "beforeBuildCommand": "npm run build --prefix ../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "popup",
+        "title": "winseek",
+        "url": "index.html",
+        "width": 720,
+        "height": 480,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "visible": false,
+        "shadow": true,
+        "center": true,
+        "focus": false
+      }
+    ],
+    "security": { "csp": null }
+  },
+  "bundle": { "active": false }
+}

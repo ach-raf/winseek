@@ -1,0 +1,6 @@
+{
+  "identifier": "default",
+  "description": "Popup window: core APIs (events, window) + app commands",
+  "windows": ["popup"],
+  "permissions": ["core:default", "core:window:allow-hide", "core:window:allow-start-dragging"]
+}
