@@ -9,7 +9,7 @@ use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Mutex, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use winseek_index::{Index, SearchOptions};
 use winseek_ipc::{ChangeKind, Hit, Response, Sort, VolumeState, VolumeStatus};
@@ -22,11 +22,6 @@ pub const RECENT_CAP: usize = 2000;
 /// Max stat() calls per batch (to refine size/mtime of created/modified files).
 const STAT_BUDGET: usize = 256;
 const SUB_QUEUE: usize = 4096;
-/// Live changes mark counts dirty; recompute (an O(N) pass) at most this often.
-#[cfg(not(test))]
-const COUNTS_MIN_INTERVAL: Duration = Duration::from_secs(5);
-#[cfg(test)]
-const COUNTS_MIN_INTERVAL: Duration = Duration::ZERO;
 
 /// Per-volume control flags shared with that volume's worker thread.
 #[derive(Default)]
@@ -36,9 +31,6 @@ pub struct VolCtl {
     /// Set together with `stop` to request a full rescan.
     pub rescan: AtomicBool,
 }
-
-/// volume letter -> (files, folders)
-type Counts = BTreeMap<u8, (u64, u64)>;
 
 struct Sub {
     /// Lowercased, no trailing backslash. Empty = everything.
@@ -52,8 +44,6 @@ pub struct Shared {
     pub vols: Mutex<BTreeMap<char, VolumeState>>,
     pub ctl: BTreeMap<char, std::sync::Arc<VolCtl>>,
     subs: Mutex<Vec<Sub>>,
-    counts: Mutex<Option<(Instant, Counts)>>,
-    counts_dirty: AtomicBool,
     pub shutdown: AtomicBool,
     /// Asks the main loop to save a snapshot soon (set after a volume replace).
     pub save_now: AtomicBool,
@@ -68,8 +58,6 @@ impl Shared {
             vols: Mutex::new(letters.iter().map(|&l| (l, VolumeState::Scanning { done: 0, total: 0 })).collect()),
             ctl: letters.iter().map(|&l| (l, Default::default())).collect(),
             subs: Mutex::new(Vec::new()),
-            counts: Mutex::new(None),
-            counts_dirty: AtomicBool::new(false),
             shutdown: AtomicBool::new(false),
             save_now: AtomicBool::new(false),
             started: Instant::now(),
@@ -180,11 +168,6 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         }
         ring.truncate(RECENT_CAP);
     }
-    if !events.is_empty() {
-        // Counts are recomputed lazily by Status, at most every COUNTS_MIN_INTERVAL,
-        // so a busy volume costs one O(N) pass per interval, not one per batch.
-        sh.counts_dirty.store(true, Ordering::Relaxed);
-    }
     for ev in &events {
         sh.notify(ev);
     }
@@ -204,7 +187,6 @@ fn replace(sh: &Shared, fresh: Index) {
     let new = merged.unwrap_or(fresh);
     let old = std::mem::replace(&mut *sh.index.write().unwrap(), new);
     drop(old);
-    *sh.counts.lock().unwrap() = None;
     for l in letters {
         sh.set_state(l as char, VolumeState::Live);
     }
@@ -240,33 +222,12 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
 }
 
 pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
-    let counts = {
-        let mut c = sh.counts.lock().unwrap();
-        let stale = |t: &Instant| sh.counts_dirty.load(Ordering::Relaxed) && t.elapsed() >= COUNTS_MIN_INTERVAL;
-        if c.as_ref().is_none_or(|(t, _)| stale(t)) {
-            sh.counts_dirty.store(false, Ordering::Relaxed);
-            let ix = sh.index.read().unwrap();
-            let mut m = Counts::new();
-            for i in 0..ix.slots() as u32 {
-                if ix.is_deleted(i) || ix.is_stub(i) || ix.root_of(ix.vol(i)) == Some(i) {
-                    continue;
-                }
-                let e = m.entry(ix.vol(i)).or_default();
-                if ix.is_dir(i) {
-                    e.1 += 1;
-                } else {
-                    e.0 += 1;
-                }
-            }
-            *c = Some((Instant::now(), m));
-        }
-        c.as_ref().unwrap().1.clone()
-    };
     let states = sh.vols.lock().unwrap().clone();
+    let ix = sh.index.read().unwrap();
     states
         .into_iter()
         .map(|(letter, state)| {
-            let (files, folders) = counts.get(&(letter as u8)).copied().unwrap_or_default();
+            let (files, folders) = ix.counts(letter as u8);
             VolumeStatus { letter, files, folders, state }
         })
         .collect()

@@ -326,6 +326,7 @@ impl Index {
         ix.rank = ix.compute_rank(&order);
         ix.order = order;
         ix.live = live;
+        ix.recount();
         Ok(ix)
     }
 }

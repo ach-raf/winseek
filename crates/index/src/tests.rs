@@ -336,3 +336,80 @@ fn fuzz_garbage_never_panics() {
         let _ = Index::from_bytes(&m); // Ok or Err, never a panic
     }
 }
+
+/// Brute-force recount: live, non-stub, non-root records per volume.
+fn recount(ix: &Index, vol: u8) -> (u64, u64) {
+    let (mut files, mut folders) = (0, 0);
+    for i in 0..ix.slots() as u32 {
+        if ix.is_deleted(i) || ix.is_stub(i) || ix.root_of(ix.vol(i)) == Some(i) || ix.vol(i) != vol {
+            continue;
+        }
+        if ix.is_dir(i) {
+            folders += 1;
+        } else {
+            files += 1;
+        }
+    }
+    (files, folders)
+}
+
+#[test]
+fn incremental_counts_match_recount() {
+    let mut ix = sample();
+    let mut seed = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rnd = move |m: u64| {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (seed >> 33) % m
+    };
+    let mut dirs: Vec<u64> = vec![5];
+    let mut next = 10_000u64;
+    for step in 0..3000 {
+        match rnd(7) {
+            0..=2 => {
+                let p = dirs[rnd(dirs.len() as u64) as usize];
+                let is_dir = rnd(4) == 0;
+                ix.insert(C, next, p, &format!("n{}", rnd(60)), is_dir, 0, 0);
+                if is_dir {
+                    dirs.push(next);
+                }
+                next += 1;
+            }
+            3 => {
+                // orphan: unknown parent creates a stub, later possibly filled
+                ix.insert(C, next, 900_000 + rnd(5), &format!("o{}", rnd(10)), false, 0, 0);
+                next += 1;
+            }
+            4 => {
+                // fill a stub (or no-op)
+                ix.insert(C, 900_000 + rnd(5), 5, &format!("filled{}", rnd(5)), true, 0, 0);
+            }
+            5 => {
+                let f = dirs[rnd(dirs.len() as u64) as usize];
+                if f != 5 {
+                    ix.remove_folder(C, f); // recursive
+                    dirs.retain(|&d| ix.folder_idx(C, d).is_some());
+                }
+            }
+            _ => {
+                let p = dirs[rnd(dirs.len() as u64) as usize];
+                ix.remove_file(C, p, &format!("n{}", rnd(60)));
+                if let (Some(&a), Some(&b)) = (dirs.get(rnd(dirs.len() as u64) as usize), dirs.get(rnd(dirs.len() as u64) as usize)) {
+                    if let (Some(ai), Some(bi)) = (ix.folder_idx(C, a), ix.folder_idx(C, b)) {
+                        ix.rename(ai, bi, &format!("r{}", rnd(60)));
+                    }
+                }
+            }
+        }
+        if step % 50 == 0 {
+            ix.refresh();
+        }
+        if step % 97 == 0 {
+            assert_eq!(ix.counts(C), recount(&ix, C), "step {step}");
+        }
+    }
+    ix.refresh();
+    assert_eq!(ix.counts(C), recount(&ix, C));
+    let rt = Index::from_bytes(&ix.to_bytes()).unwrap();
+    assert_eq!(rt.counts(C), ix.counts(C));
+    assert_eq!(ix.counts(b'Z'), (0, 0));
+}

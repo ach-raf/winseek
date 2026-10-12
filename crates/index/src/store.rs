@@ -121,6 +121,9 @@ pub struct Index {
     pub(crate) free: Vec<u32>,
     pub(crate) dirty: bool,
     pub(crate) live: usize,
+    /// Per-volume live (files, folders), indexed by volume letter byte. Excludes deleted
+    /// slots, stubs and volume roots. Maintained incrementally; never recounted.
+    pub(crate) vcount: Vec<(u64, u64)>,
     // lazily built mutation structures
     links_on: bool,
     first: Vec<u32>,
@@ -274,6 +277,38 @@ impl Index {
         String::from_utf8(v).unwrap_or_default()
     }
 
+    /// O(1) live (files, folders) of a volume (no deleted slots, stubs or the root).
+    pub fn counts(&self, vol: u8) -> (u64, u64) {
+        self.vcount.get(vol as usize).copied().unwrap_or_default()
+    }
+
+    /// Adjust a volume's counter for a record with `flags` (no-op for stubs/roots/deleted).
+    #[inline]
+    fn count_adj(&mut self, vol: u8, flags: u8, add: bool) {
+        if flags & (F_STUB | F_ROOT | F_DELETED) != 0 {
+            return;
+        }
+        if self.vcount.is_empty() {
+            self.vcount = vec![(0, 0); 256];
+        }
+        let e = &mut self.vcount[vol as usize];
+        let c = if flags & F_DIR != 0 { &mut e.1 } else { &mut e.0 };
+        if add {
+            *c += 1;
+        } else {
+            *c -= 1;
+        }
+    }
+
+    /// One-time recount (snapshot load).
+    pub(crate) fn recount(&mut self) {
+        self.vcount.clear();
+        for i in 0..self.parent.len() {
+            let (v, f) = (self.vol[i], self.flags[i]);
+            self.count_adj(v, f, true);
+        }
+    }
+
     // ---------------------------------------------------------------- alloc
     fn push_name(&mut self, name: &str) -> (u32, u16) {
         let name = clamp_name(name);
@@ -304,6 +339,7 @@ impl Index {
     pub(crate) fn alloc(&mut self, vol: u8, frn: u64, parent: u32, name: &str, flags: u8, size: u64, mtime: i64) -> u32 {
         let (off, len) = self.push_name(name);
         self.live += 1;
+        self.count_adj(vol, flags, true);
         if let Some(r) = self.free.pop() {
             let i = r as usize;
             self.parent[i] = parent;
@@ -556,6 +592,7 @@ impl Index {
                     self.parent[e as usize] = parent;
                     self.set_name(e, name);
                     self.flags[e as usize] &= !F_STUB;
+                    self.count_adj(vol, F_DIR, true);
                     self.link(e);
                     self.tbl_insert(e);
                     self.update_meta(e, size, mtime);
@@ -618,6 +655,7 @@ impl Index {
             self.first[ru] = NONE;
             self.next[ru] = NONE;
             self.prev[ru] = NONE;
+            self.count_adj(self.vol[ru], self.flags[ru], false);
             self.flags[ru] = (self.flags[ru] & (F_INORDER | F_PENDING)) | F_DELETED;
             self.live -= 1;
             if self.flags[ru] & (F_INORDER | F_PENDING) == 0 {
