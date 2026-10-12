@@ -1,16 +1,29 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod pipe_source;
 mod popup;
 mod source;
 
 use commands::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+
+/// Prefer the real index (searchd); fall back to generated demo data when it is not running.
+fn pick_source() -> Arc<dyn source::NameSource> {
+    match pipe_source::PipeSource::connect(Duration::from_millis(300)) {
+        Ok(p) => Arc::new(p),
+        Err(e) => {
+            eprintln!("winseek: searchd not reachable ({e}); using demo data");
+            Arc::new(source::MockSource::generate(200_000))
+        }
+    }
+}
 
 fn main() {
     let hotkey = Shortcut::new(Some(Modifiers::ALT), Code::Space);
@@ -26,7 +39,7 @@ fn main() {
                 .build(),
         )
         .manage(AppState {
-            source: Arc::new(source::MockSource::generate(200_000)),
+            source: pick_source(),
             paused: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![

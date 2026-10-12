@@ -1,6 +1,6 @@
 //! Name data source abstraction. `MockSource` generates fake entries; the real
-//! implementation will talk to `searchd` over the named pipe (winseek-ipc) and
-//! return the same shapes.
+//! implementation is `pipe_source::PipeSource` (searchd over the named pipe); the mock
+//! is the fallback when searchd is not running and reports state "demo".
 
 use serde::Serialize;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -27,7 +27,7 @@ pub struct VolumeStatus {
     pub letter: String,
     pub files: u64,
     pub folders: u64,
-    /// "live" | "scanning" | "paused" | "offline"
+    /// "live" | "scanning" | "paused" | "offline" | "demo" (MockSource: searchd not running)
     pub state: String,
 }
 
@@ -179,8 +179,8 @@ impl NameSource for MockSource {
     fn status(&self) -> Vec<VolumeStatus> {
         let folders = self.entries.iter().filter(|e| e.is_dir).count() as u64;
         vec![
-            VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "live".into() },
-            VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "live".into() },
+            VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "demo".into() },
+            VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "demo".into() },
         ]
     }
 

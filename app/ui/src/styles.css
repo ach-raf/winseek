@@ -192,7 +192,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .status { display: inline-flex; align-items: center; gap: 7px; font-variant-numeric: tabular-nums; }
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-3); }
 .s-live .dot { background: var(--ok); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ok) 22%, transparent); }
-.s-scanning .dot, .s-paused .dot { background: var(--warn); }
+.s-scanning .dot, .s-paused .dot, .s-demo .dot, .s-offline .dot { background: var(--warn); }
 .count { font-variant-numeric: tabular-nums; }
 .toast { color: var(--accent); font-weight: 600; animation: fade 160ms var(--ease); }
 .hints { display: inline-flex; gap: 14px; }

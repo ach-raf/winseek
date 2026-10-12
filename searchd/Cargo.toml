@@ -3,5 +3,10 @@ name = "searchd"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "winseek Tier 0 daemon: MFT scan + USN follow + named-pipe search server"
 
 [dependencies]
+winseek-ntfs = { path = "../crates/ntfs" }
+winseek-usn = { path = "../crates/usn" }
+winseek-index = { path = "../crates/index" }
+winseek-ipc = { path = "../crates/ipc" }

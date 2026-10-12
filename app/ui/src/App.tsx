@@ -228,6 +228,12 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
   const state = status.find((v) => v.state !== "live")?.state ?? (status.length ? "live" : "connecting");
+  const statusText =
+    state === "demo" ? "demo data — searchd not running"
+    : state === "offline" ? "searchd offline — reconnecting…"
+    : totalFiles ? `${totalFiles.toLocaleString("en-US")} files · ${state}`
+    : state === "scanning" ? "Indexing…"
+    : "Connecting…";
   const heading = data.recent
     ? "Recent"
     : query.trim() === ""
@@ -298,7 +304,7 @@ export default function App({ backend }: { backend: Backend }) {
       </div>
 
       <footer className="footer">
-        <span className={"status s-" + state}><i className="dot" />{totalFiles ? `${totalFiles.toLocaleString("en-US")} files · ${state}` : "Connecting…"}</span>
+        <span className={"status s-" + state}><i className="dot" />{statusText}</span>
         {toast ? (
           <span className="toast" role="status">{toast}</span>
         ) : (
