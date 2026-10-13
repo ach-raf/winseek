@@ -227,6 +227,70 @@ pub struct Stats {
     pub vectors: u64,
 }
 
+/// A finished image file, as the library window lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageRow {
+    pub file_id: FileId,
+    pub path: String,
+    pub size: u64,
+    /// Modified time, unix ms.
+    pub mtime: i64,
+    pub content_hash: String,
+}
+
+/// Files that share one content hash (byte-identical).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DupGroup {
+    pub hash: String,
+    /// Newest first.
+    pub files: Vec<ImageRow>,
+}
+
+impl DupGroup {
+    /// Bytes freed by keeping one copy (the others are redundant).
+    pub fn reclaimable(&self) -> u64 {
+        let largest = self.files.iter().map(|f| f.size).max().unwrap_or(0);
+        self.files.iter().map(|f| f.size).sum::<u64>().saturating_sub(largest)
+    }
+}
+
+/// Group `vecs` (pre-normalised) whose cosine similarity is `>= threshold`, transitively
+/// (single linkage). Only groups of two or more are returned, as sorted index lists ordered by
+/// their first index.
+pub fn cluster_near(vecs: &[&[f32]], threshold: f32) -> Vec<Vec<usize>> {
+    let n = vecs.len();
+    let mut parent: Vec<usize> = (0..n).collect();
+    fn find(p: &mut [usize], mut i: usize) -> usize {
+        while p[i] != i {
+            p[i] = p[p[i]];
+            i = p[i];
+        }
+        i
+    }
+    for i in 0..n {
+        for j in (i + 1)..n {
+            if vecs[i].len() != vecs[j].len() {
+                continue;
+            }
+            let dot: f32 = vecs[i].iter().zip(vecs[j]).map(|(a, b)| a * b).sum();
+            if dot >= threshold {
+                let (a, b) = (find(&mut parent, i), find(&mut parent, j));
+                if a != b {
+                    parent[a.max(b)] = a.min(b);
+                }
+            }
+        }
+    }
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
+    for i in 0..n {
+        let r = find(&mut parent, i);
+        groups.entry(r).or_default().push(i);
+    }
+    let mut out: Vec<Vec<usize>> = groups.into_values().filter(|g| g.len() > 1).collect();
+    out.sort_by_key(|g| g[0]);
+    out
+}
+
 /// Folder scopes. A path is in scope if it is under an `include` prefix, not under an
 /// `exclude` prefix, and has no ignored name below its root. An empty `include` list
 /// means nothing is in scope.
@@ -831,6 +895,74 @@ impl Store {
         })
     }
 
+    // ------------------------------------------------------------ library
+
+    fn image_row(r: &rusqlite::Row<'_>) -> rusqlite::Result<ImageRow> {
+        Ok(ImageRow {
+            file_id: FileId(r.get(0)?),
+            path: r.get(1)?,
+            size: r.get::<_, i64>(2)?.max(0) as u64,
+            mtime: r.get(3)?,
+            content_hash: r.get(4)?,
+        })
+    }
+
+    /// Every finished image file, newest first (the library timeline).
+    pub fn list_images(&self) -> Result<Vec<ImageRow>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT id, path, size, mtime, content_hash FROM files
+             WHERE state = 1 AND kind = 'image' AND content_hash IS NOT NULL
+             ORDER BY mtime DESC, id DESC",
+        )?;
+        let rows = st.query_map([], Self::image_row)?.collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
+    /// Byte-identical files (same content hash, any kind), biggest saving first.
+    pub fn dup_groups(&self) -> Result<Vec<DupGroup>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT id, path, size, mtime, content_hash FROM files
+             WHERE state = 1 AND content_hash IN (
+                 SELECT content_hash FROM files WHERE state = 1 AND content_hash IS NOT NULL
+                 GROUP BY content_hash HAVING COUNT(*) > 1)
+             ORDER BY content_hash, mtime DESC, id DESC",
+        )?;
+        let mut groups: Vec<DupGroup> = Vec::new();
+        let mut rows = st.query([])?;
+        while let Some(r) = rows.next()? {
+            let row = Self::image_row(r)?;
+            match groups.last_mut() {
+                Some(g) if g.hash == row.content_hash => g.files.push(row),
+                _ => groups.push(DupGroup { hash: row.content_hash.clone(), files: vec![row] }),
+            }
+        }
+        groups.sort_by(|a, b| b.reclaimable().cmp(&a.reclaimable()).then_with(|| a.hash.cmp(&b.hash)));
+        Ok(groups)
+    }
+
+    /// Finished images modified in `[from_ms, to_ms)` with their image vector (chunk 0), newest
+    /// first. Used by the near-duplicate scan, one time bucket at a time.
+    pub fn images_with_vectors(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(ImageRow, Vec<f32>)>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT f.id, f.path, f.size, f.mtime, f.content_hash, v.vec
+             FROM files f JOIN vectors v ON v.hash = f.content_hash AND v.chunk = 0 AND v.kind = 'image'
+             WHERE f.state = 1 AND f.kind = 'image' AND f.mtime >= ?1 AND f.mtime < ?2
+             ORDER BY f.mtime DESC, f.id DESC",
+        )?;
+        let mut rows = st.query(params![from_ms, to_ms])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let row = Self::image_row(r)?;
+            let blob: Vec<u8> = r.get(5)?;
+            if blob.len() != self.dims * 4 {
+                continue;
+            }
+            let v = blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            out.push((row, v));
+        }
+        Ok(out)
+    }
+
     // ------------------------------------------------------------ settings
 
     /// Free-form string setting (`None` when unset).
@@ -1397,5 +1529,75 @@ mod tests {
             .pragma_update(None, "user_version", 99)
             .unwrap();
         assert!(matches!(Store::open(&p, &meta()), Err(Error::SchemaTooNew(99))));
+    }
+
+    #[test]
+    fn library_listings_and_dup_groups() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 300);
+        let b = add(&mut s, 2, r"C:\p\copy of a.jpg", 100);
+        let c = add(&mut s, 3, r"C:\p\c.png", 200);
+        let d = s.upsert_file(&key(4), r"C:\p\notes.pdf", 10, 400, "pdf").unwrap();
+        add(&mut s, 5, r"C:\p\pending.jpg", 500);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(b, "ha", &[], &[]).unwrap(); // same content as a
+        s.complete(c, "hc", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        s.complete(d, "hd", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+
+        let imgs = s.list_images().unwrap();
+        let paths: Vec<_> = imgs.iter().map(|i| i.path.as_str()).collect();
+        assert_eq!(paths, vec![r"C:\p\a.jpg", r"C:\p\c.png", r"C:\p\copy of a.jpg"], "done images only, newest first");
+        assert_eq!((imgs[0].size, imgs[0].mtime, imgs[0].content_hash.as_str()), (10, 300, "ha"));
+
+        let groups = s.dup_groups().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].hash, "ha");
+        assert_eq!(groups[0].files.iter().map(|f| f.mtime).collect::<Vec<_>>(), vec![300, 100]);
+        assert_eq!(groups[0].reclaimable(), 10);
+    }
+
+    #[test]
+    fn dup_groups_sorted_by_reclaimable() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let mk = |s: &mut Store, n: u64, size: u64, hash: &str| {
+            let id = s.upsert_file(&key(n), &format!("C:\\x\\{n}.jpg"), size, n as i64, "image").unwrap();
+            s.complete(id, hash, &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        };
+        mk(&mut s, 1, 5, "small");
+        mk(&mut s, 2, 5, "small");
+        mk(&mut s, 3, 100, "big");
+        mk(&mut s, 4, 100, "big");
+        mk(&mut s, 5, 100, "big");
+        let g = s.dup_groups().unwrap();
+        assert_eq!(g.iter().map(|g| (g.hash.as_str(), g.reclaimable())).collect::<Vec<_>>(), vec![("big", 200), ("small", 5)]);
+    }
+
+    #[test]
+    fn images_with_vectors_filters_by_time_and_decodes() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 100);
+        let b = add(&mut s, 2, r"C:\p\b.jpg", 200);
+        let c = add(&mut s, 3, r"C:\p\c.jpg", 300);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.]), cv(1, [0., 0., 1., 0.])], &[]).unwrap();
+        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[]).unwrap();
+        let r = s.images_with_vectors(100, 300).unwrap();
+        assert_eq!(r.len(), 2, "[from, to) range");
+        assert_eq!(r[0].0.path, r"C:\p\b.jpg");
+        assert_eq!(r[0].1, vec![0., 1., 0., 0.], "chunk 0 only");
+        assert_eq!(r[1].1, vec![1., 0., 0., 0.]);
+    }
+
+    #[test]
+    fn cluster_near_is_transitive_and_thresholded() {
+        let a = [1.0f32, 0.0];
+        let b = [0.96f32, 0.28]; // cos(a,b) = 0.96
+        let c = [0.848f32, 0.53]; // cos(b,c) ~ 0.96, cos(a,c) ~ 0.85
+        let d = [0.0f32, 1.0];
+        let v: Vec<&[f32]> = vec![&a, &b, &c, &d];
+        assert_eq!(cluster_near(&v, 0.95), vec![vec![0, 1, 2]], "single linkage joins a-b-c");
+        assert!(cluster_near(&v, 0.99).is_empty());
+        assert_eq!(cluster_near(&v, 0.5), vec![vec![0, 1, 2, 3]]);
+        assert!(cluster_near(&[], 0.9).is_empty());
     }
 }

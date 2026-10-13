@@ -1,4 +1,4 @@
-import type { Backend, IgnoreList, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, Collection, DupGroup, Hit, IgnoreList, LibImage, NearState, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -28,8 +28,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     renamePath: (path, newName) => inv("rename_path", { path, newName }),
     showContextMenu: (path, x, y) => inv("show_context_menu", { path, x, y }),
     startDrag: (paths) => inv("start_drag", { paths }),
-    iconUrl: (path, isDir, thumb) =>
-      `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${thumb ? 40 : 32}&t=${thumb ? 1 : 0}`,
+    iconUrl: (path, isDir, thumb, size) =>
+      `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${size ?? (thumb ? 40 : 32)}&t=${thumb ? 1 : 0}`,
     hide: () => t.window.getCurrentWindow().hide(),
     onShown: (cb) => t.event.listen("popup-shown", cb),
     serviceState: () => inv<ServiceState>("service_state"),
@@ -61,6 +61,16 @@ function tauriBackend(t: TauriGlobal): Backend {
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
     onOpenStatus: (cb) => t.event.listen("open-status", cb),
+    openLibrary: () => inv("open_library"),
+    libraryImages: () => inv<LibImage[]>("library_images"),
+    libraryCollections: () => inv<Collection[]>("library_collections"),
+    librarySetCollections: (list) => inv<Collection[]>("library_set_collections", { list }),
+    libraryCollection: (query, threshold, cap) => inv<SemanticResult>("library_collection", { query, threshold, cap }),
+    libraryDupGroups: () => inv<DupGroup[]>("library_dup_groups"),
+    libraryNearStart: (threshold) => inv("library_near_start", { threshold }),
+    libraryNearPoll: () => inv<NearState>("library_near_poll"),
+    libraryBigFiles: (limit) => inv<Hit[]>("library_big_files", { limit }),
+    libraryDims: (paths) => inv<([number, number] | null)[]>("library_dims", { paths }),
   };
 }
 

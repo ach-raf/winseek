@@ -390,6 +390,7 @@ export default function App({ backend }: { backend: Backend }) {
     flash(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""), false, 3500);
   }, [flash]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
+  const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
 
   const semSel = sel >= data.total ? semRows[sel - data.total] : undefined;
   const current: Hit | undefined = sel < data.total
@@ -553,6 +554,7 @@ export default function App({ backend }: { backend: Backend }) {
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLibrary(); return; }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); return; }
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); navigated.current = true; move(sel + 1); break;
@@ -622,7 +624,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, query, pvOpen, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus]);
+  }, [move, sel, viewH, act, current, query, pvOpen, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -865,6 +867,7 @@ export default function App({ backend }: { backend: Backend }) {
               <span><kbd>Del</kbd> Recycle</span>
             </>
           )}
+          <button className="lib-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={openLibrary} title="Photos by month, smart collections, clean up (Ctrl+L)">Library</button>
         </span>
       </footer>
     </div>

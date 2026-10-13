@@ -107,6 +107,8 @@ export interface StatusTier1 {
   rate: number | null;
   eta_s: number | null;
   can_rebuild: boolean;
+  /** No Windows OCR language is installed, so screenshot text is not read. */
+  ocr_unavailable: boolean;
 }
 export interface StatusModelFile {
   name: string;
@@ -172,6 +174,43 @@ export type Sort = "rel" | "name" | "size" | "date";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";
 
+// ---- library window ----
+export interface LibImage {
+  path: string;
+  size: number;
+  /** Modified time, unix ms. */
+  mtime: number;
+}
+/** A saved semantic query. `rule: "screenshots"` selects by file name instead of by meaning. */
+export interface Collection {
+  name: string;
+  query: string;
+  /** Minimum cosine score for a file to belong. */
+  threshold: number;
+  rule?: "screenshots" | null;
+}
+export interface DupMember {
+  path: string;
+  size: number;
+  mtime: number;
+  /** Cosine similarity to the group's newest member (near-duplicates only). */
+  sim: number | null;
+}
+export interface DupGroup {
+  id: string;
+  /** Newest first. */
+  members: DupMember[];
+  /** Bytes freed by keeping only the largest member. */
+  reclaimable: number;
+}
+export interface NearState {
+  state: "idle" | "running" | "done" | "error";
+  done: number;
+  total: number;
+  groups: DupGroup[];
+  error: string | null;
+}
+
 export interface Backend {
   search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter }): Promise<SearchResult>;
   status(): Promise<VolumeStatus[]>;
@@ -186,7 +225,7 @@ export interface Backend {
   showContextMenu(path: string, x: number, y: number): Promise<MenuResult>;
   startDrag(paths: string[]): Promise<string>;
   /** Shell icon/thumbnail URL, or null when unavailable (mock) -> SVG glyph. */
-  iconUrl(path: string, isDir: boolean, thumb: boolean): string | null;
+  iconUrl(path: string, isDir: boolean, thumb: boolean, size?: number): string | null;
   hide(): Promise<void>;
   onShown(cb: () => void): Promise<() => void>;
   serviceState(): Promise<ServiceState>;
@@ -220,6 +259,24 @@ export interface Backend {
   onModelsDone(cb: (d: ModelsDone) => void): Promise<() => void>;
   /** Fired when the app swaps from demo data to the real searchd source. */
   onSourceChanged(cb: () => void): Promise<() => void>;
+  /** Show (or create) the library window. */
+  openLibrary(): Promise<void>;
+  /** Every indexed image, newest first. */
+  libraryImages(): Promise<LibImage[]>;
+  libraryCollections(): Promise<Collection[]>;
+  /** Validates and saves the list; resolves to what was stored. */
+  librarySetCollections(list: Collection[]): Promise<Collection[]>;
+  /** Best matches of a phrase with score >= threshold (at most `cap`, <= 500). */
+  libraryCollection(query: string, threshold: number, cap: number): Promise<SemanticResult>;
+  /** Byte-identical files (same content hash), biggest saving first. */
+  libraryDupGroups(): Promise<DupGroup[]>;
+  /** Start (or restart) the background near-duplicate scan. */
+  libraryNearStart(threshold: number): Promise<void>;
+  libraryNearPoll(): Promise<NearState>;
+  /** The largest files under the user's profile (name index, sorted by size). */
+  libraryBigFiles(limit: number): Promise<Hit[]>;
+  /** Pixel sizes read from the file headers (null: unknown format). */
+  libraryDims(paths: string[]): Promise<([number, number] | null)[]>;
   /** The tray's "Status" item asks the popup to show the status page. */
   onOpenStatus(cb: () => void): Promise<() => void>;
 }

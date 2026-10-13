@@ -55,6 +55,8 @@ pub struct Tier1PageDto {
     pub rate: Option<f64>,
     pub eta_s: Option<u64>,
     pub can_rebuild: bool,
+    /// Screenshots could not be read for text: no Windows OCR language is installed.
+    pub ocr_unavailable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -149,6 +151,7 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
             rate: None,
             eta_s: None,
             can_rebuild: false,
+            ocr_unavailable: false,
         };
     };
     let st = t.status();
@@ -165,7 +168,13 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
         queue,
         rate,
         can_rebuild: true,
+        ocr_unavailable: t.store.lock().map(|s| ocr_unavailable(&s)).unwrap_or(false),
     }
+}
+
+/// The worker's `ocr_unavailable` store setting.
+fn ocr_unavailable(store: &Store) -> bool {
+    store.get_setting(tier1::process::SETTING_OCR_UNAVAILABLE).ok().flatten().is_some()
 }
 
 // ---------------------------------------------------------------- Models
@@ -335,6 +344,16 @@ mod tests {
     }
 
     #[test]
+    fn ocr_unavailable_follows_the_store_setting() {
+        let mut s = Store::open_in_memory(&embedder::index_meta("test")).unwrap();
+        assert!(!ocr_unavailable(&s));
+        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, Some("1")).unwrap();
+        assert!(ocr_unavailable(&s));
+        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, None).unwrap();
+        assert!(!ocr_unavailable(&s));
+    }
+
+    #[test]
     fn dto_json_shape() {
         let t1 = tier1_section(None, Some("open store: locked".into()));
         let page = StatusPageDto {
@@ -369,6 +388,7 @@ mod tests {
         assert_eq!(v["tier1"]["state"], "unavailable");
         assert_eq!(v["tier1"]["error"], "open store: locked");
         assert_eq!(v["tier1"]["can_rebuild"], false);
+        assert_eq!(v["tier1"]["ocr_unavailable"], false);
         assert!(v["tier1"]["coverage"].is_null() && v["tier1"]["eta_s"].is_null());
         assert_eq!(v["models"]["backend"], "vulkan");
         assert_eq!(v["models"]["server"]["running"], false);

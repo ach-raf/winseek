@@ -49,6 +49,11 @@ pub(crate) fn popup_hwnd(app: &AppHandle) -> Result<(HWND, WebviewWindow), Strin
     Ok((h, w))
 }
 
+/// HWND of the window that invoked a command (popup or library).
+pub(crate) fn window_hwnd(w: &WebviewWindow) -> Result<HWND, String> {
+    w.hwnd().map_err(|e| e.to_string())
+}
+
 /// Run `f` on the main thread (COM STA, message pump) and wait for its result.
 pub(crate) fn on_main<T: Send + 'static>(
     app: &AppHandle,
@@ -64,17 +69,17 @@ pub(crate) fn on_main<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub async fn copy_files(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+pub async fn copy_files(app: AppHandle, window: WebviewWindow, paths: Vec<String>) -> Result<(), String> {
     on_main(&app.clone(), move || {
-        let (hwnd, _) = popup_hwnd(&app)?;
+        let hwnd = window_hwnd(&window)?;
         clipboard::copy_files(hwnd, &paths)
     })
 }
 
 #[tauri::command]
-pub async fn recycle(app: AppHandle, paths: Vec<String>) -> Result<(), String> {
+pub async fn recycle(app: AppHandle, window: WebviewWindow, paths: Vec<String>) -> Result<(), String> {
     on_main(&app.clone(), move || {
-        let (hwnd, _) = popup_hwnd(&app)?;
+        let hwnd = window_hwnd(&window)?;
         fileop::recycle(hwnd, &paths)
     })
 }
@@ -93,9 +98,10 @@ pub async fn rename_path(app: AppHandle, path: String, new_name: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn show_context_menu(app: AppHandle, path: String, x: f64, y: f64) -> Result<String, String> {
+pub async fn show_context_menu(app: AppHandle, window: WebviewWindow, path: String, x: f64, y: f64) -> Result<String, String> {
     on_main(&app.clone(), move || {
-        let (hwnd, w) = popup_hwnd(&app)?;
+        let hwnd = window_hwnd(&window)?;
+        let w = window;
         let scale = w.scale_factor().map_err(|e| e.to_string())?;
         let _modal = crate::popup::ModalGuard::new();
         menu::show(hwnd, &path, x * scale, y * scale)

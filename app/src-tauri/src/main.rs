@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod libwindow;
 mod models;
 mod pipe_source;
 mod popup;
@@ -46,6 +47,7 @@ fn main() {
                 .build(),
         )
         .manage(models::Models::default())
+        .manage(tier1::library::LibState::default())
         .manage(AppState {
             source: RwLock::new(pick_source()),
             paused: AtomicBool::new(false),
@@ -74,6 +76,16 @@ fn main() {
             tier1::tier1_get_ignore,
             tier1::tier1_set_ignore,
             tier1::semantic_search,
+            tier1::library::library_images,
+            tier1::library::library_collections,
+            tier1::library::library_set_collections,
+            tier1::library::library_collection,
+            tier1::library::library_dup_groups,
+            tier1::library::library_near_start,
+            tier1::library::library_near_poll,
+            tier1::library::library_big_files,
+            tier1::library::library_dims,
+            libwindow::open_library,
             status::status_page,
             status::rescan_volume,
             status::tier1_rebuild,
@@ -115,15 +127,21 @@ fn main() {
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));
+            let library = MenuItemBuilder::with_id("library", "Library").build(app)?;
             let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &pause, &status, &quit]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&show, &library, &pause, &status, &quit]).build()?;
             let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
                 .tooltip("winseek (Alt+Space)")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, ev| match ev.id().as_ref() {
                     "show" => popup::show(app),
+                    "library" => {
+                        if let Err(e) = libwindow::open(app) {
+                            eprintln!("winseek: could not open the library: {e}");
+                        }
+                    }
                     "status" => {
                         popup::show(app);
                         let _ = app.emit("open-status", ());

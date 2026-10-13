@@ -1,6 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
-import type { Backend, Filter, Hit, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, PreviewInfo, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
+import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, PreviewInfo, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -30,6 +31,24 @@ const DB: E[] = (() => {
   }
   return out;
 })();
+
+// ---- library window data (images over three years, duplicates, big files) ----
+const LIB = buildLibrary(Date.now());
+const libByPath = new Map<string, LibFile>();
+for (const f of LIB) {
+  libByPath.set(f.path, f);
+  DB.push({ name: f.name, lower: f.name.toLowerCase(), path: f.path, dir: false, size: f.size, mtime: f.mtime, kind: f.kind });
+}
+const livePaths = () => new Set(DB.map((e) => e.path));
+let collections: Collection[] = [
+  { name: "Receipts", query: "a photo of a paper receipt or invoice", threshold: 0.2 },
+  { name: "Whiteboards", query: "a whiteboard with handwritten notes and diagrams", threshold: 0.2 },
+  { name: "Memes", query: "a meme: an image with a funny caption", threshold: 0.2 },
+  { name: "Documents to sign", query: "a contract or form with a signature line to sign", threshold: 0.2 },
+  { name: "Screenshots", query: "", threshold: 0, rule: "screenshots" },
+];
+let nearStartedAt: number | null = null;
+const NEAR_MS = 2400;
 
 // ---- name-service simulation (query: ?installed=1 skips first run, ?stopped=1, ?fail=1, ?accent=1,
 // ?searchd=down: running service that does not answer, ?volerr=1: volume H reports an error) ----
@@ -197,6 +216,7 @@ function mockStatusPage(): StatusPage {
       rate: t1.state === "indexing" ? rate : null,
       eta_s: rate && queue > 0 ? Math.ceil(queue / rate) : null,
       can_rebuild: t1.state !== "unavailable",
+      ocr_unavailable: params.get("noocr") === "1",
     },
     models: {
       llama_build: "b11588",
@@ -320,11 +340,12 @@ async function mockPreview(path: string): Promise<PreviewInfo> {
   };
   if (e.dir) return { ...base, kind: "folder" };
   if (PV_IMG.includes(ext)) {
-    const w = 1600, h = 1200;
+    const lf = libByPath.get(path);
+    const w = lf?.w || 1600, h = lf?.h || 1200;
     const shell = ext === "heic";
     const h1 = hash01(path);
     return {
-      ...base, kind: "image", src: shell ? null : svgImage(e.name, w, h),
+      ...base, kind: "image", src: shell ? null : lf?.tile ? tileUrl(lf.tile, 1024) : svgImage(e.name, w, h),
       image: {
         width: w, height: h, thumb: shell,
         exif: ext === "jpg" || ext === "jpeg" || shell ? { date: "2025-07-1" + Math.floor(h1 * 9) + " 14:22:10", camera: h1 < 0.5 ? "Canon EOS R5" : "Apple iPhone 15 Pro", gps: h1 > 0.4 } : null,
@@ -397,7 +418,10 @@ export const mockBackend: Backend = {
   },
   async showContextMenu(path, x, y) { console.info("[mock] context menu", path, x, y); return "cancelled"; },
   async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
-  iconUrl() { return null; },
+  iconUrl(path, _isDir, thumb, size) {
+    const f = libByPath.get(path);
+    return f?.tile && thumb ? tileUrl(f.tile, size && size > 300 ? 512 : 256) : null;
+  },
   async hide() { console.info("[mock] hide"); },
   async onShown() { return () => {}; },
   async serviceState() { return svc; },
@@ -484,5 +508,73 @@ export const mockBackend: Backend = {
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
+  async openLibrary() { window.open(`${location.pathname}?view=library`, "winseek-library"); },
+  async libraryImages(): Promise<LibImage[]> {
+    await sleep(30);
+    const live = livePaths();
+    return LIB.filter((f) => f.kind === 1 && live.has(f.path)).sort((a, b) => b.mtime - a.mtime).map((f) => ({ path: f.path, size: f.size, mtime: f.mtime }));
+  },
+  async libraryCollections() { return collections.map((c) => ({ ...c })); },
+  async librarySetCollections(list) {
+    await sleep(30);
+    const seen = new Set<string>();
+    const out = list.map((c) => ({ ...c, name: c.name.trim(), query: c.query.trim(), threshold: Math.max(-1, Math.min(1, c.threshold)) }));
+    for (const c of out) {
+      if (!c.name || c.name.length > 60) throw new Error("A collection needs a name of 1 to 60 characters");
+      if (!c.rule && !c.query) throw new Error(`"${c.name}" needs a search phrase`);
+      if (seen.has(c.name.toLowerCase())) throw new Error(`There is already a collection named "${c.name}"`);
+      seen.add(c.name.toLowerCase());
+    }
+    collections = out;
+    return out.map((c) => ({ ...c }));
+  },
+  async libraryCollection(query, threshold, cap) {
+    const st = t1Status().state;
+    if (!modelsInstalled || st === "unavailable") return { state: st === "unavailable" ? "unavailable" : "models_missing", hits: [] };
+    await sleep(80 + Math.random() * 80);
+    const q = query.toLowerCase();
+    const want = /receipt|invoice/.test(q) ? "receipt" : /whiteboard/.test(q) ? "whiteboard" : /meme|funny/.test(q) ? "meme" : /sign|contract|form/.test(q) ? "document" : /screenshot/.test(q) ? "screenshot" : null;
+    const live = livePaths();
+    const hits = LIB.filter((f) => f.kind === 1 && f.tile && live.has(f.path))
+      .map((f) => {
+        const h = hash01(q + "|" + f.path);
+        const score = want ? (f.tile!.theme === want ? 0.26 + 0.2 * h : 0.03 + 0.15 * h) : 0.05 + 0.3 * h;
+        return { path: f.path, score, size: f.size, mtime: Math.floor(f.mtime), snippet: null };
+      })
+      .filter((h) => h.score >= threshold)
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(1, Math.min(cap, 500)));
+    return { state: st, hits };
+  },
+  async libraryDupGroups(): Promise<DupGroup[]> {
+    await sleep(40);
+    const live = livePaths();
+    const by = new Map<string, LibFile[]>();
+    for (const f of LIB) if (f.dupKey && live.has(f.path)) by.set(f.dupKey, [...(by.get(f.dupKey) ?? []), f]);
+    return [...by.entries()].filter(([, m]) => m.length > 1).map(([id, m]) => {
+      const members = m.sort((a, b) => b.mtime - a.mtime).map((f) => ({ path: f.path, size: f.size, mtime: f.mtime, sim: null }));
+      return { id, members, reclaimable: members.reduce((a, x) => a + x.size, 0) - Math.max(...members.map((x) => x.size)) };
+    }).sort((a, b) => b.reclaimable - a.reclaimable);
+  },
+  async libraryNearStart() { nearStartedAt = performance.now(); },
+  async libraryNearPoll(): Promise<NearState> {
+    if (nearStartedAt === null) return { state: "idle", done: 0, total: 0, groups: [], error: null };
+    const total = LIB.filter((f) => f.kind === 1).length;
+    const frac = Math.min(1, (performance.now() - nearStartedAt) / NEAR_MS);
+    if (frac < 1) return { state: "running", done: Math.floor(total * frac), total, groups: [], error: null };
+    const live = livePaths();
+    const by = new Map<string, LibFile[]>();
+    for (const f of LIB) if (f.nearKey && live.has(f.path)) by.set(f.nearKey, [...(by.get(f.nearKey) ?? []), f]);
+    const groups: DupGroup[] = [...by.entries()].filter(([, m]) => m.length > 1).map(([id, m]) => {
+      const members = m.sort((a, b) => b.mtime - a.mtime).map((f) => ({ path: f.path, size: f.size, mtime: f.mtime, sim: f.tile!.variant === 0 ? 1 : 0.998 - f.tile!.variant * 0.01 }));
+      return { id, members, reclaimable: members.reduce((a, x) => a + x.size, 0) - Math.max(...members.map((x) => x.size)) };
+    }).sort((a, b) => b.members.length - a.members.length || b.members[0].mtime - a.members[0].mtime);
+    return { state: "done", done: total, total, groups, error: null };
+  },
+  async libraryBigFiles(limit) {
+    await sleep(40);
+    return DB.filter((e) => !e.dir && e.path.startsWith("C:\\Users\\User\\")).sort((a, b) => b.size - a.size).slice(0, limit).map(toHit);
+  },
+  async libraryDims(paths) { return paths.map((p) => { const f = libByPath.get(p); return f && f.w ? [f.w, f.h] as [number, number] : null; }); },
   async onOpenStatus() { return () => {}; },
 };

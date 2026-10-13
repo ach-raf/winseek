@@ -190,11 +190,13 @@ impl Processor {
                     let mut chunks = vec![ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec.clone() }];
                     let mut texts: Vec<(u32, String)> = Vec::new();
                     if let Some(t) = ocr_by_slot.get(&p.slot) {
-                        // Line rectangles ride on the image vector's locator (preview bbox highlight).
-                        chunks[0].locator = Some(t.locator_json());
+                        // Line rectangles ride on both vectors' locator (preview bbox highlight),
+                        // so a hit exposes them whichever chunk wins the per-file ranking.
+                        let loc = t.locator_json();
+                        chunks[0].locator = Some(loc.clone());
                         texts.push((OCR_CHUNK, t.text.clone()));
                         if let Some(v) = text_vecs.get(&p.slot) {
-                            chunks.push(ChunkVec { chunk: OCR_CHUNK, kind: VecKind::Text, locator: None, vec: v.clone() });
+                            chunks.push(ChunkVec { chunk: OCR_CHUNK, kind: VecKind::Text, locator: Some(loc), vec: v.clone() });
                         }
                     }
                     // A duplicate in the same batch finds the content already stored and just links.
@@ -540,6 +542,7 @@ mod tests {
         assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap(), None);
         let doc_hit = s.search_vectors(&vec_of(b"doc"), 5, Some(VecKind::Text)).unwrap();
         assert_eq!(doc_hit.len(), 1);
+        assert!(doc_hit[0].locator.as_deref().unwrap().contains("\"ocr\""), "OCR text hit keeps the boxes: {:?}", doc_hit[0].locator);
         let img_hit = s.search_vectors(&vec_of(b"img"), 5, Some(VecKind::Image)).unwrap();
         let shot = img_hit.iter().find(|h| h.path.ends_with("Screenshot 1.png")).unwrap();
         assert!(shot.locator.as_deref().unwrap().contains("\"ocr\""), "bbox locator kept: {:?}", shot.locator);

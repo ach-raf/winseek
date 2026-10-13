@@ -110,6 +110,9 @@ function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: ()
             <Row k="Skipped" title="Not images, too large, or ignored">{s ? fmt(s.skipped) : "—"}</Row>
             <Row k="Files in scope">{s ? fmt(s.files) : "—"}</Row>
             <Row k="Speed" title="Files per second over the last minute">{t1.rate != null ? formatRate(t1.rate) : "—"}</Row>
+            <Row k="Screenshot text recognition" title="Reads text in screenshots with Windows OCR">
+              {t1.ocr_unavailable ? "unavailable — install a Windows OCR language (Settings › Time & language › Language)" : "on"}
+            </Row>
             <Row k="Time left">{t1.eta_s != null ? `about ${formatDuration(t1.eta_s)}` : "—"}</Row>
           </dl>
           {t1.error && <div className="fr-error" role="alert">Last error: {t1.error}</div>}
