@@ -9,6 +9,7 @@ pub mod crawler;
 pub mod embedder;
 pub mod feed;
 pub mod identity;
+pub mod ocr;
 pub mod policy;
 pub mod process;
 pub mod progress;

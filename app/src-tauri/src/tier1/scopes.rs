@@ -5,11 +5,11 @@ use std::path::PathBuf;
 use windows::core::GUID;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Screenshots, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
 };
 use winseek_store::Scopes;
 
-fn known_folder(id: &GUID) -> Option<PathBuf> {
+pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
     // SAFETY: on success the returned PWSTR is a CoTaskMem allocation we free below.
     unsafe {
         let p = SHGetKnownFolderPath(id, KF_FLAG_DEFAULT, None).ok()?;
@@ -36,6 +36,11 @@ pub fn effective(saved: Scopes) -> (Scopes, bool) {
     } else {
         (saved, false)
     }
+}
+
+/// The user's known Screenshots folder (`Pictures\Screenshots` by default), if it resolves.
+pub fn screenshots_dir() -> Option<String> {
+    known_folder(&FOLDERID_Screenshots).map(|p| p.to_string_lossy().into_owned())
 }
 
 #[cfg(test)]

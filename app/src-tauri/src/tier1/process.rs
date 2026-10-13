@@ -10,6 +10,7 @@ use winseek_llama::prep::prepare_jpeg;
 use winseek_store::{ChunkVec, PendingFile, Store, VecKind};
 
 use super::embedder::{EmbedError, Embedder};
+use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
 
 pub const BATCH: usize = 16;
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -33,10 +34,27 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
 }
 
 /// Per-process state of the pass loop.
-#[derive(Default)]
 pub struct Processor {
     strikes: HashMap<i64, u32>,
+    ocr: Box<dyn Ocr>,
+    /// Screenshots folder used by detection (None = name / dimension rules only).
+    screenshots_dir: Option<String>,
+    /// Last value written to the `ocr_unavailable` setting.
+    ocr_flag: Option<bool>,
 }
+
+impl Default for Processor {
+    fn default() -> Self {
+        Processor::with_ocr(Box::new(WinOcr::new()), ocr::screenshots_dir().map(str::to_owned))
+    }
+}
+
+/// Setting key: "1" while screenshots could not be OCR-ed (no engine / language installed).
+pub const SETTING_OCR_UNAVAILABLE: &str = "ocr_unavailable";
+/// Longest OCR text sent to the embedder (characters).
+const OCR_EMBED_CHARS: usize = 3000;
+/// Chunk index of the OCR text vector / FTS row (the image vector is chunk 0).
+const OCR_CHUNK: u32 = 1;
 
 struct Prepared {
     file: PendingFile,
@@ -50,6 +68,28 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 }
 
 impl Processor {
+    pub fn with_ocr(ocr: Box<dyn Ocr>, screenshots_dir: Option<String>) -> Self {
+        Processor { strikes: HashMap::new(), ocr, screenshots_dir, ocr_flag: None }
+    }
+
+    /// OCR `bytes` when the file looks like a screenshot. `Ok(None)` = not a screenshot or no
+    /// text; an unavailable engine is remembered in `unavailable`.
+    fn ocr_screenshot(&mut self, path: &str, bytes: &[u8], unavailable: &mut bool) -> Option<OcrText> {
+        let dims = ocr::image_dimensions(bytes);
+        if !ocr::is_screenshot(path, dims, self.screenshots_dir.as_deref()) {
+            return None;
+        }
+        match self.ocr.recognize(bytes) {
+            Ok(t) if !t.is_empty() => Some(t),
+            Ok(_) => None,
+            Err(OcrError::Unavailable) => {
+                *unavailable = true;
+                None
+            }
+            Err(OcrError::Failed(_)) => None, // OCR is best-effort; the image vector is still stored
+        }
+    }
+
     /// One pass over up to [`BATCH`] pending files.
     pub fn run_pass(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, paused: &AtomicBool) -> Result<Pass, String> {
         if paused.load(Ordering::Relaxed) {
@@ -63,6 +103,10 @@ impl Processor {
         let mut prepared: Vec<Prepared> = Vec::new();
         let mut jpegs: Vec<Vec<u8>> = Vec::new();
         let mut by_hash: HashMap<String, usize> = HashMap::new();
+        // OCR output per unique JPEG slot.
+        let mut ocr_by_slot: HashMap<usize, OcrText> = HashMap::new();
+        let mut ocr_unavailable = false;
+        let mut ocr_ran = false;
 
         for f in pending {
             if f.size > MAX_FILE_BYTES {
@@ -96,6 +140,10 @@ impl Processor {
             }
             match prepare_jpeg(&bytes) {
                 Ok(j) => {
+                    if let Some(t) = self.ocr_screenshot(&f.path, &bytes, &mut ocr_unavailable) {
+                        ocr_ran = true;
+                        ocr_by_slot.insert(jpegs.len(), t);
+                    }
                     by_hash.insert(hash.clone(), jpegs.len());
                     prepared.push(Prepared { file: f, hash, slot: jpegs.len() });
                     jpegs.push(j);
@@ -107,6 +155,7 @@ impl Processor {
             }
         }
 
+        self.record_ocr_flag(store, ocr_unavailable, ocr_ran);
         if prepared.is_empty() {
             return Ok(Pass::Progress(handled));
         }
@@ -132,19 +181,62 @@ impl Processor {
             }
         };
 
+        let text_vecs = Self::embed_ocr_texts(embedder, &ocr_by_slot);
+
         for p in prepared {
             self.strikes.remove(&p.file.id.0);
             match &vectors[p.slot] {
                 Ok(vec) => {
-                    let chunk = ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec.clone() };
+                    let mut chunks = vec![ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec.clone() }];
+                    let mut texts: Vec<(u32, String)> = Vec::new();
+                    if let Some(t) = ocr_by_slot.get(&p.slot) {
+                        // Line rectangles ride on the image vector's locator (preview bbox highlight).
+                        chunks[0].locator = Some(t.locator_json());
+                        texts.push((OCR_CHUNK, t.text.clone()));
+                        if let Some(v) = text_vecs.get(&p.slot) {
+                            chunks.push(ChunkVec { chunk: OCR_CHUNK, kind: VecKind::Text, locator: None, vec: v.clone() });
+                        }
+                    }
                     // A duplicate in the same batch finds the content already stored and just links.
-                    lock(store).complete(p.file.id, &p.hash, &[chunk], &[]).map_err(|e| e.to_string())?;
+                    lock(store).complete(p.file.id, &p.hash, &chunks, &texts).map_err(|e| e.to_string())?;
                 }
                 Err(msg) => lock(store).fail(p.file.id, &format!("embed: {msg}")).map_err(|e| e.to_string())?,
             }
             handled += 1;
         }
         Ok(Pass::Progress(handled))
+    }
+
+    /// Best-effort text embeddings of the OCR output (FTS still gets the text if this fails).
+    fn embed_ocr_texts(embedder: &Mutex<Box<dyn Embedder + Send>>, by_slot: &HashMap<usize, OcrText>) -> HashMap<usize, Vec<f32>> {
+        if by_slot.is_empty() {
+            return HashMap::new();
+        }
+        let slots: Vec<usize> = by_slot.keys().copied().collect();
+        let docs: Vec<String> = slots.iter().map(|s| by_slot[s].text.chars().take(OCR_EMBED_CHARS).collect()).collect();
+        match lock(embedder).embed_documents(&docs) {
+            Ok(v) if v.len() == slots.len() => slots.into_iter().zip(v).collect(),
+            _ => HashMap::new(),
+        }
+    }
+
+    /// Keep the `ocr_unavailable` setting in step: set when a screenshot needed OCR and no
+    /// engine / language exists, cleared once OCR works again.
+    fn record_ocr_flag(&mut self, store: &Mutex<Store>, unavailable: bool, ran: bool) {
+        let want = if unavailable {
+            true
+        } else if ran {
+            false
+        } else {
+            return;
+        };
+        if self.ocr_flag == Some(want) {
+            return;
+        }
+        let v = want.then_some("1");
+        if lock(store).set_setting(SETTING_OCR_UNAVAILABLE, v).is_ok() {
+            self.ocr_flag = Some(want);
+        }
     }
 
     /// Embed the batch; on a batch error retry one by one so a single poison image cannot
@@ -390,6 +482,95 @@ mod tests {
         assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(3));
         let s = store.lock().unwrap().stats().unwrap();
         assert_eq!((s.done, s.failed), (2, 1));
+    }
+
+    /// Fake OCR returning fixed text (or unavailable); counts calls.
+    struct FakeOcr {
+        text: Option<&'static str>,
+        calls: Arc<AtomicUsize>,
+    }
+    impl Ocr for FakeOcr {
+        fn recognize(&mut self, _: &[u8]) -> Result<OcrText, OcrError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            match self.text {
+                Some(t) => Ok(OcrText {
+                    text: t.into(),
+                    lines: vec![super::super::ocr::OcrLine { text: t.into(), rect: [1, 2, 3, 4] }],
+                    width: 8,
+                    height: 8,
+                }),
+                None => Err(OcrError::Unavailable),
+            }
+        }
+    }
+
+    /// Embedder that supports document embedding.
+    struct DocEmbedder;
+    impl Embedder for DocEmbedder {
+        fn embed_images(&mut self, j: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(j.iter().map(|_| vec_of(b"img")).collect())
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    #[test]
+    fn screenshot_ocr_text_is_fts_indexed_and_embedded() {
+        let (store, dir) = setup();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(DocEmbedder));
+        add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
+        add(&store, dir.path(), "holiday.png", &png(8, 8, 2), 2); // not a screenshot
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some("Invoice 4711 total"), calls: calls.clone() }), None);
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(2));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only the screenshot is OCR-ed");
+        let s = store.lock().unwrap();
+        let hits = s.search_text(&winseek_store::fts_escape("invoice"), 10).unwrap();
+        assert_eq!(hits.len(), 1);
+        assert!(hits[0].path.ends_with("Screenshot 1.png") && hits[0].snippet.contains("[Invoice]"), "{:?}", hits[0].snippet);
+        // image vector + OCR text vector for the screenshot, image only for the other file
+        assert_eq!(s.stats().unwrap().vectors, 3);
+        assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap(), None);
+        let doc_hit = s.search_vectors(&vec_of(b"doc"), 5, Some(VecKind::Text)).unwrap();
+        assert_eq!(doc_hit.len(), 1);
+        let img_hit = s.search_vectors(&vec_of(b"img"), 5, Some(VecKind::Image)).unwrap();
+        let shot = img_hit.iter().find(|h| h.path.ends_with("Screenshot 1.png")).unwrap();
+        assert!(shot.locator.as_deref().unwrap().contains("\"ocr\""), "bbox locator kept: {:?}", shot.locator);
+    }
+
+    #[test]
+    fn ocr_unavailable_is_recorded_and_file_still_indexed() {
+        let (store, dir) = setup();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let (fake, _c, images) = Fake::new();
+        let e = emb(fake);
+        add(&store, dir.path(), "Screenshot 2.png", &png(8, 8, 3), 1);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: None, calls }), None);
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(images.load(Ordering::SeqCst), 1);
+        let s = store.lock().unwrap();
+        assert_eq!(s.stats().unwrap().done, 1);
+        assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap().as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn ocr_text_without_document_embedding_still_goes_to_fts() {
+        let (store, dir) = setup();
+        let (fake, _c, _i) = Fake::new(); // default embed_documents -> unsupported
+        let e = emb(fake);
+        add(&store, dir.path(), "Capture 3.png", &png(8, 8, 4), 1);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some("hello world"), calls: Arc::new(AtomicUsize::new(0)) }), None);
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        assert_eq!(s.search_text("hello", 5).unwrap().len(), 1);
+        assert_eq!(s.stats().unwrap().vectors, 1, "image vector only");
     }
 
     #[test]

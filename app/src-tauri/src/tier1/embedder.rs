@@ -52,6 +52,11 @@ pub trait Embedder {
     fn embed_images(&mut self, jpegs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>>;
     /// One 768-d L2-normalised query vector.
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>>;
+    /// One 768-d vector per document text (e.g. OCR output), in order. Backends without text
+    /// embedding keep the default error; callers treat that as "no text vector".
+    fn embed_documents(&mut self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        Err(EmbedError::Other("document embedding not supported".into()))
+    }
     fn meta(&self) -> IndexMeta;
     /// Cheap check that embedding can be attempted (files on disk). Default: always.
     fn models_present(&self) -> bool {
@@ -182,6 +187,12 @@ impl Embedder for LlamaEmbedder {
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>> {
         let raw = self.client()?.embed_queries(&[q]).map_err(other)?;
         finish(raw)?.into_iter().next().ok_or_else(|| EmbedError::Other("empty embedding response".into()))
+    }
+
+    fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
+        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        let raw = self.client()?.embed_documents(&refs).map_err(other)?;
+        finish(raw)
     }
 
     fn meta(&self) -> IndexMeta {

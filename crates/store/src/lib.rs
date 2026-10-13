@@ -833,6 +833,32 @@ impl Store {
 
     // ------------------------------------------------------------ settings
 
+    /// Free-form string setting (`None` when unset).
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        let v: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .optional()?;
+        Ok(v)
+    }
+
+    /// Set (`Some`) or clear (`None`) a free-form string setting.
+    pub fn set_setting(&mut self, key: &str, value: Option<&str>) -> Result<()> {
+        match value {
+            Some(v) => {
+                self.conn.execute(
+                    "INSERT INTO settings(key, value) VALUES (?1, ?2)
+                     ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                    params![key, v],
+                )?;
+            }
+            None => {
+                self.conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+            }
+        }
+        Ok(())
+    }
+
     pub fn get_scopes(&self) -> Result<Scopes> {
         let v: Option<String> = self
             .conn
