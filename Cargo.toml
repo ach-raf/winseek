@@ -5,6 +5,7 @@ members = [
     "crates/index",
     "crates/usn",
     "crates/ipc",
+    "crates/store",
     "crates/llama",
     "searchd",
     "app/src-tauri",

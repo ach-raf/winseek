@@ -54,6 +54,10 @@ pub fn build_args(
     a.extend(["--api-key".into(), api_key.to_string()]);
     if role == Role::Embedding {
         a.push("--embeddings".into());
+        a.extend(
+            ["--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-b", "8192", "-ub", "8192"]
+                .map(String::from),
+        );
     }
     a.extend(extra.iter().cloned());
     a
@@ -328,6 +332,16 @@ mod tests {
         );
         let e = build_args(Path::new("m.gguf"), None, 1, "K", Role::Embedding, &[]);
         assert!(e.contains(&"--embeddings".to_string()) && !e.contains(&"--mmproj".to_string()));
+        assert_eq!(
+            e,
+            [
+                "-m", "m.gguf", "--host", "127.0.0.1", "--port", "1", "--api-key", "K", "--embeddings", "--pooling", "mean",
+                "--image-min-tokens", "280", "--image-max-tokens", "280", "-b", "8192", "-ub", "8192"
+            ]
+        );
+        let e2 = build_args(Path::new("m.gguf"), None, 1, "K", Role::Embedding, &["-ngl".into(), "0".into()]);
+        assert_eq!(&e2[e2.len() - 2..], ["-ngl", "0"]);
+        assert!(!a.contains(&"--pooling".to_string()));
     }
 
     #[test]

@@ -3,6 +3,7 @@
 //! See docs/PLAN.md "llama.cpp distribution".
 
 pub mod backend;
+pub mod embed;
 pub mod fetch;
 pub mod install;
 pub mod manifest;
@@ -12,7 +13,8 @@ pub mod server;
 use std::fmt;
 
 pub use backend::{detect_backend, Backend, Detected};
-pub use fetch::{fetch, sha256_file, sha256_hex, Progress};
+pub use embed::EmbedClient;
+pub use fetch::{fetch, fetch_with, rewrite_hf, FetchOptions, sha256_file, sha256_hex, Progress};
 pub use manifest::{Manifest, ModelProfile, ModelRole};
 pub use reaper::{Clock, IdleReaper, IdleSlot, SystemClock};
 pub use server::{fallback_chain, fallback_order, LlamaServer, Role, SpawnConfig};
@@ -29,6 +31,10 @@ pub enum Error {
     Spawn(String),
     HealthTimeout,
     NotFound(String),
+    /// Download made too little progress within the stall window.
+    Stalled(String),
+    /// Embedding request/response problem (bad dims, malformed reply).
+    Embed(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -47,6 +53,8 @@ impl fmt::Display for Error {
             Error::Spawn(e) => write!(f, "spawn: {e}"),
             Error::HealthTimeout => write!(f, "llama-server did not become healthy in time"),
             Error::NotFound(e) => write!(f, "not found: {e}"),
+            Error::Stalled(e) => write!(f, "stalled: {e}"),
+            Error::Embed(e) => write!(f, "embed: {e}"),
         }
     }
 }
