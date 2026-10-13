@@ -3,6 +3,7 @@ import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./t
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings } from "./Settings";
+import { Status } from "./Status";
 import { SemRow, SemanticHint, baseName, dedupe, pathKey } from "./Semantic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
@@ -156,6 +157,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
   const [setupOpen, setSetupOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [statusOpen, setStatusOpen] = useState(false);
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const t0 = useRef<number | null>(null);
@@ -464,7 +466,7 @@ export default function App({ backend }: { backend: Backend }) {
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
-      if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setSettingsOpen(true); refreshT1(); return; }
+      if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); return; }
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); move(sel + 1); break;
         case "ArrowUp": e.preventDefault(); move(sel - 1); break;
@@ -484,7 +486,7 @@ export default function App({ backend }: { backend: Backend }) {
           e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
         case "Escape":
           e.preventDefault();
-          if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
+          if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); refocus(); } else void backend.hide();
           break;
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
@@ -538,7 +540,7 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- first run -----------------------------------------------------------
   const demo = status.length > 0 && status.every((v) => v.state === "demo");
   const needsSetup = demo && (service === "not_installed" || service === "stopped") && !dismissed;
-  const panelOpen = setupOpen || settingsOpen;
+  const panelOpen = setupOpen || settingsOpen || statusOpen;
   const showPanel = panelOpen || (query.trim() === "" && (counting || needsSetup));
   showPanelRef.current = panelOpen || (needsSetup && query.trim() === "");
   setupOpenRef.current = panelOpen;
@@ -559,16 +561,23 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend, service, setupBusy, startCounting, refocus]);
   primaryRef.current = runSetup;
   useEffect(() => { if (query.trim() && counting && summary) setCounting(false); }, [query, counting, summary]);
-  useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
+  useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
   const openSetup = useCallback(() => {
-    setSettingsOpen(false);
+    setSettingsOpen(false); setStatusOpen(false);
     setSetupOpen(true);
     models.refreshPlan();
     refreshT1();
   }, [models, refreshT1]);
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
-  const openSettings = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
+  const openSettings = useCallback(() => { setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
   const closeSettings = useCallback(() => { setSettingsOpen(false); refocus(); }, [refocus]);
+  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(true); }, []);
+  const closeStatus = useCallback(() => { setStatusOpen(false); refocus(); }, [refocus]);
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.onOpenStatus(openStatus).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend, openStatus]);
   const setFolders = useCallback((include: string[]) => {
     backend.tier1SetScopes(include, t1?.exclude ?? []).then(refreshT1).catch(fail);
   }, [backend, t1, refreshT1, fail]);
@@ -657,8 +666,10 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
 
-      {showPanel && (settingsOpen ? (
-        <Settings backend={backend} t1={t1} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onClose={closeSettings} onError={fail} />
+      {showPanel && (statusOpen ? (
+        <Status backend={backend} onClose={closeStatus} onError={fail} />
+      ) : settingsOpen ? (
+        <Settings backend={backend} t1={t1} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onStatus={openStatus} onClose={closeSettings} onError={fail} />
       ) : setupOpen ? (
         <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
       ) : (

@@ -61,3 +61,27 @@ export function kindOf(name: string, isDir: boolean): Kind {
   if (["exe","msi","dll"].includes(e)) return "app";
   return "file";
 }
+
+/** "45 s", "12 min", "3 h 05 min", "2 d 4 h": coarse on purpose, for uptimes and ETAs. */
+export function formatDuration(s: number): string {
+  s = Math.max(0, Math.round(s));
+  if (s < 60) return `${s} s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m} min`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h} h ${String(m % 60).padStart(2, "0")} min`;
+  return `${Math.floor(h / 24)} d ${h % 24} h`;
+}
+
+/** Files per second: "12.4 files/s" above 10, one decimal below. */
+export function formatRate(r: number): string {
+  return `${r >= 10 ? r.toFixed(0) : r.toFixed(1)} files/s`;
+}
+
+/** Percentage that never rounds to 0 or 100 unless it really is: 99.97% -> "99.9%", 0.02% -> "0.1%". */
+export function formatPercent(frac: number): string {
+  const p = frac * 100;
+  if (p <= 0) return "0%";
+  if (p >= 100) return "100%";
+  return `${Math.min(99.9, Math.max(0.1, Math.floor(p * 10) / 10)).toFixed(1)}%`;
+}

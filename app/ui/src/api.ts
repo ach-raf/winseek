@@ -1,4 +1,4 @@
-import type { Backend, IgnoreList, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, Tier1Status } from "./types";
+import type { Backend, IgnoreList, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -42,12 +42,16 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
     tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),
     semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
+    statusPage: () => inv<StatusPage>("status_page"),
+    rescanVolume: (letter) => inv("rescan_volume", { letter }),
+    tier1Rebuild: () => inv("tier1_rebuild"),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
     modelsDownload: () => inv("models_download"),
     modelsCancel: () => inv("models_cancel"),
     onModelsProgress: (cb) => t.event.listen<ModelsProgress>("models-progress", (e) => cb(e.payload)),
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
+    onOpenStatus: (cb) => t.event.listen("open-status", cb),
   };
 }
 

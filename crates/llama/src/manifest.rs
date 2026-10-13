@@ -25,6 +25,9 @@ pub struct Asset {
     pub backend: Backend,
     pub url: String,
     pub sha256: String,
+    /// Zip size in bytes (for the setup plan and progress totals); `None` when not pinned.
+    #[serde(default)]
+    pub size: Option<u64>,
     /// Additional zips extracted into the same dir (cudart for CUDA).
     #[serde(default)]
     pub extra: Vec<UrlHash>,
@@ -34,6 +37,8 @@ pub struct Asset {
 pub struct UrlHash {
     pub url: String,
     pub sha256: String,
+    #[serde(default)]
+    pub size: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -123,6 +128,12 @@ mod tests {
             assert!(a.url.contains(&m.llama.build) && a.url.ends_with(".zip"), "{}", a.url);
         }
         assert_eq!(m.asset(Backend::Cuda12).unwrap().extra.len(), 1);
+        for a in &m.llama.assets {
+            assert!(a.size.is_some_and(|s| s > 0), "{} has no size", a.url);
+            for e in &a.extra {
+                assert!(e.size.is_some_and(|s| s > 0), "{} has no size", e.url);
+            }
+        }
         let q4 = m.model("infinity-parser2-flash", ModelProfile::Default).unwrap();
         assert_eq!(q4.files.len(), 2);
         assert_eq!(q4.files[0].file_name(), "Infinity-Parser2-Flash.Q4_K_M.gguf");

@@ -10,8 +10,31 @@ use crate::commands::AppState;
 use crate::pipe_source::PipeSource;
 use crate::service;
 use crate::source::VolumeStatus;
+use crate::tier1::policy::PauseReason;
 
 pub const TRAY_ID: &str = "winseek-tray";
+
+/// The tray's pause/resume menu item, kept in managed state so any pause change can refresh it.
+pub struct PauseItem(pub tauri::menu::MenuItem<tauri::Wry>);
+
+/// Tray label for the effective Tier 1 pause state.
+pub fn pause_label(r: Option<PauseReason>) -> &'static str {
+    match r {
+        None => "Pause indexing",
+        Some(PauseReason::User) => "Resume indexing",
+        Some(PauseReason::Battery) => "Indexing paused (on battery)",
+        Some(PauseReason::Fullscreen) => "Indexing paused (full screen)",
+    }
+}
+
+/// Re-sync the tray item text with the real Tier 1 state. Call after every pause change
+/// (tray, panel, automatic policy); cheap and idempotent.
+pub fn refresh_pause_item(app: &AppHandle) {
+    let (Some(item), Ok(t)) = (app.try_state::<PauseItem>(), app.state::<crate::tier1::Handle>().get()) else {
+        return;
+    };
+    let _ = item.0.set_text(pause_label(t.paused_reason()));
+}
 
 fn thousands(n: u64) -> String {
     let s = n.to_string();
@@ -46,6 +69,7 @@ pub fn spawn(app: AppHandle) {
         let mut last_poll = std::time::Instant::now();
         let mut real = false;
         loop {
+            refresh_pause_item(&app); // picks up automatic (battery / full-screen) pauses
             if !real {
                 if let Ok(p) = PipeSource::connect(Duration::from_millis(300)) {
                     app.state::<AppState>().set_source(Arc::new(p));
@@ -84,6 +108,14 @@ mod tests {
 
     fn v(letter: &str, files: u64, folders: u64, state: &str, done: Option<u64>, total: Option<u64>) -> VolumeStatus {
         VolumeStatus { letter: letter.into(), files, folders, state: state.into(), done, total }
+    }
+
+    #[test]
+    fn pause_labels() {
+        assert_eq!(pause_label(None), "Pause indexing");
+        assert_eq!(pause_label(Some(PauseReason::User)), "Resume indexing");
+        assert!(pause_label(Some(PauseReason::Battery)).contains("battery"));
+        assert!(pause_label(Some(PauseReason::Fullscreen)).contains("full screen"));
     }
 
     #[test]

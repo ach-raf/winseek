@@ -7,6 +7,7 @@ mod popup;
 mod shell;
 mod service;
 mod source;
+mod status;
 mod tier1;
 mod watcher;
 
@@ -16,7 +17,7 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
-use tauri::{Manager, WindowEvent};
+use tauri::{Emitter, Manager, WindowEvent};
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 /// Prefer the real index (searchd); fall back to generated demo data when it is not running.
@@ -71,6 +72,9 @@ fn main() {
             tier1::tier1_get_ignore,
             tier1::tier1_set_ignore,
             tier1::semantic_search,
+            status::status_page,
+            status::rescan_volume,
+            status::tier1_rebuild,
             models::models_plan,
             models::models_download,
             models::models_cancel
@@ -105,23 +109,33 @@ fn main() {
 
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
+            app.manage(watcher::PauseItem(pause.clone()));
+            let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &pause, &quit]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&show, &pause, &status, &quit]).build()?;
             let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
                 .tooltip("winseek (Alt+Space)")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, ev| match ev.id().as_ref() {
                     "show" => popup::show(app),
+                    "status" => {
+                        popup::show(app);
+                        let _ = app.emit("open-status", ());
+                    }
                     "pause" => {
                         // Flips the flag status() reports and pauses the Tier 1 worker.
                         let st = app.state::<AppState>();
-                        let now = !st.paused.load(Ordering::Relaxed);
+                        // Toggle the user's pause (the panel may have changed it behind our back).
+                        let now = match app.state::<tier1::Handle>().get() {
+                            Ok(t) => !matches!(t.paused_reason(), Some(tier1::policy::PauseReason::User)),
+                            Err(_) => !st.paused.load(Ordering::Relaxed),
+                        };
                         st.paused.store(now, Ordering::Relaxed);
                         if let Ok(t) = app.state::<tier1::Handle>().get() {
                             t.set_paused(now);
                         }
-                        let _ = pause.set_text(if now { "Resume indexing" } else { "Pause indexing" });
+                        watcher::refresh_pause_item(app);
                     }
                     "quit" => app.exit(0),
                     _ => {}

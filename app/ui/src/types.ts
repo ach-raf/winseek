@@ -70,6 +70,62 @@ export interface ModelsDone {
   ok: boolean;
   error: string | null;
 }
+/** One volume of the name index, as the status page shows it. */
+export interface VolumeDetail {
+  letter: string;
+  files: number;
+  folders: number;
+  state: "live" | "scanning" | "rescanning" | "error" | "demo";
+  done: number | null;
+  total: number | null;
+  error: string | null;
+}
+export interface StatusTier0 {
+  source: "searchd" | "demo" | "unavailable";
+  service: ServiceState;
+  uptime_s: number | null;
+  volumes: VolumeDetail[];
+  can_rescan: boolean;
+  /** Tooltip for the disabled Rescan button. */
+  rescan_hint: string | null;
+}
+export interface StatusTier1 {
+  state: Tier1State;
+  paused_reason: PausedReason | null;
+  error: string | null;
+  stats: Tier1Status["stats"];
+  /** embedded / (embedded + pending + failed), 0..1. */
+  coverage: number | null;
+  /** Files waiting to be embedded. */
+  queue: number;
+  /** Files per second over the last minute; null when idle or unknown. */
+  rate: number | null;
+  eta_s: number | null;
+  can_rebuild: boolean;
+}
+export interface StatusModelFile {
+  name: string;
+  role: "model" | "mmproj";
+  expected_bytes: number;
+  /** On-disk size; null when the file is missing. */
+  bytes: number | null;
+}
+export interface StatusModels {
+  llama_build: string;
+  backend: "cuda12" | "vulkan" | "cpu";
+  gpu: string | null;
+  llama_present: boolean;
+  model_id: string;
+  profile: string;
+  quant: string;
+  files: StatusModelFile[];
+  server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
+}
+export interface StatusPage {
+  tier0: StatusTier0;
+  tier1: StatusTier1;
+  models: StatusModels;
+}
 export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders";
 export type Sort = "rel" | "name" | "size" | "date";
 
@@ -106,6 +162,12 @@ export interface Backend {
   /** `null` resets to the defaults; an empty list is a valid choice. Returns what was saved. */
   tier1SetIgnore(list: string[] | null): Promise<IgnoreList>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;
+  /** Everything the status page shows. Never rejects because searchd is down (tier0.source says so). */
+  statusPage(): Promise<StatusPage>;
+  /** Ask searchd to rebuild one volume's name index. */
+  rescanVolume(letter: string): Promise<void>;
+  /** Drop all embeddings and index the chosen folders again. Never touches the name index. */
+  tier1Rebuild(): Promise<void>;
   modelsPlan(): Promise<ModelsPlan>;
   /** Starts the background download; progress arrives via onModelsProgress / onModelsDone. */
   modelsDownload(): Promise<void>;
@@ -115,4 +177,6 @@ export interface Backend {
   onModelsDone(cb: (d: ModelsDone) => void): Promise<() => void>;
   /** Fired when the app swaps from demo data to the real searchd source. */
   onSourceChanged(cb: () => void): Promise<() => void>;
+  /** The tray's "Status" item asks the popup to show the status page. */
+  onOpenStatus(cb: () => void): Promise<() => void>;
 }

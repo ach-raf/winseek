@@ -340,3 +340,38 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .ig-x:hover { background: var(--hover); color: var(--fg); }
 .ig-x:focus-visible, .gear:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
 .settings .folders ul { display: flex; flex-wrap: wrap; column-gap: 18px; }
+
+/* ---- status page ---- */
+.statuspage { gap: 12px; }
+.st-cols { display: flex; flex-direction: column; gap: 14px; }
+.st-sec { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.st-head { display: flex; align-items: center; gap: 8px; margin-top: 0; }
+.st-head .dot, .st-state .dot { flex: none; }
+.s-rescanning .dot, .s-warn .dot { background: var(--warn); }
+.s-error .dot { background: #c42b1c; }
+@media (prefers-color-scheme: dark) { .s-error .dot { background: #ff99a4; } }
+.st-vols { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.st-vols .none { color: var(--fg-3); font-size: 12.5px; }
+.st-vol {
+  display: grid; grid-template-columns: 22px minmax(0, 1fr) auto auto; align-items: center; column-gap: 10px; row-gap: 4px;
+  font-size: 13px; font-variant-numeric: tabular-nums;
+}
+.st-vol .letter { font-weight: 600; }
+.st-vol .nums { color: var(--fg-2); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-3); white-space: nowrap; }
+.st-vol .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.st-vol .bar, .st-vol .st-err { grid-column: 2 / 5; }
+.st-err { max-width: none; }
+.st-cov { display: flex; flex-direction: column; gap: 6px; max-width: 520px; }
+.st-cov .bar { grid-column: auto; }
+.st-grid { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 14px; row-gap: 3px; margin: 0; font-size: 12.5px; line-height: 1.45; }
+.st-grid dt { color: var(--fg-3); }
+.st-grid dd { margin: 0; color: var(--fg); font-variant-numeric: tabular-nums; min-width: 0; overflow-wrap: anywhere; }
+.st-miss { color: var(--warn); }
+.st-files li span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-files li .sz { flex: none; }
+.st-act { margin-top: 2px; }
+.st-confirm { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 12.5px; color: var(--fg-2); }
+.st-confirm span { flex: 1 1 100%; }
+.st-confirm .btn { height: 28px; padding: 0 12px; }
+.st-act .btn.quiet { margin-left: -10px; padding: 0 10px; }

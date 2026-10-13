@@ -34,10 +34,36 @@ pub struct VolumeStatus {
     pub total: Option<u64>,
 }
 
+/// One volume as the status page shows it (keeps the error text that `VolumeStatus` drops).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct VolumeDetail {
+    pub letter: String,
+    pub files: u64,
+    pub folders: u64,
+    /// "live" | "scanning" | "rescanning" | "error" | "demo"
+    pub state: String,
+    pub done: Option<u64>,
+    pub total: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Tier 0 as seen by the status page.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Tier0Detail {
+    /// "searchd" | "demo" (searchd not running) | "unavailable" (searchd did not answer)
+    pub kind: &'static str,
+    pub uptime_s: Option<u64>,
+    pub volumes: Vec<VolumeDetail>,
+}
+
 pub trait NameSource: Send + Sync {
     fn search(&self, query: &str, filter: &str, offset: usize, limit: usize, sort: &str) -> SearchResult;
     fn status(&self) -> Vec<VolumeStatus>;
     fn recent(&self, limit: usize) -> Vec<Hit>;
+    /// Detailed Tier 0 state for the status page.
+    fn detail(&self) -> Tier0Detail;
+    /// Ask searchd to rebuild one volume's index from the MFT.
+    fn rescan(&self, volume: char) -> Result<(), String>;
 }
 
 struct Entry {
@@ -185,6 +211,19 @@ impl NameSource for MockSource {
             VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "demo".into(), done: None, total: None },
             VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "demo".into(), done: None, total: None },
         ]
+    }
+
+    fn detail(&self) -> Tier0Detail {
+        let volumes = self
+            .status()
+            .into_iter()
+            .map(|v| VolumeDetail { letter: v.letter, files: v.files, folders: v.folders, state: v.state, done: None, total: None, error: None })
+            .collect();
+        Tier0Detail { kind: "demo", uptime_s: None, volumes }
+    }
+
+    fn rescan(&self, _volume: char) -> Result<(), String> {
+        Err("The name service is not running".into())
     }
 
     fn recent(&self, limit: usize) -> Vec<Hit> {

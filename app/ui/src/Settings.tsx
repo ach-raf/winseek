@@ -74,10 +74,10 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
   );
 }
 
-export function Settings({ backend, t1, onFolders, onPause, onSetup, onClose, onError }: {
+export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
   backend: Backend; t1: Tier1Status | null;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
-  onSetup: () => void; onClose: () => void; onError: (e: unknown) => void;
+  onSetup: () => void; onStatus: () => void; onClose: () => void; onError: (e: unknown) => void;
 }) {
   const root = useRef<HTMLElement>(null);
   useEffect(() => { root.current?.querySelector<HTMLElement>("input, button")?.focus(); }, []);
@@ -114,6 +114,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onClose, on
 
       <div className="actions">
         <span className="muted">Changes are saved right away.</span>
+        <button className="btn quiet" onClick={onStatus}>Status…</button>
         <button className="btn primary" onClick={onClose}>Done</button>
       </div>
     </section>

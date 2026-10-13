@@ -36,6 +36,15 @@ impl fmt::Display for EmbedError {
 
 impl std::error::Error for EmbedError {}
 
+/// What the status page shows about the embedding server.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeInfo {
+    pub running: bool,
+    pub port: Option<u16>,
+    /// Seconds until the idle unload frees the VRAM (only while running).
+    pub unload_in_s: Option<u64>,
+}
+
 pub type Result<T> = std::result::Result<T, EmbedError>;
 
 pub trait Embedder {
@@ -52,6 +61,10 @@ pub trait Embedder {
     fn tick_idle(&mut self) {}
     /// Drop any loaded resources (e.g. after a failure) so the next call starts clean.
     fn reset(&mut self) {}
+    /// Server state for the status page. Default: nothing running.
+    fn runtime_info(&mut self) -> RuntimeInfo {
+        RuntimeInfo::default()
+    }
 }
 
 /// Matches the stored meta for a given llama build.
@@ -187,6 +200,24 @@ impl Embedder for LlamaEmbedder {
 
     fn reset(&mut self) {
         self.running = None;
+    }
+
+    fn runtime_info(&mut self) -> RuntimeInfo {
+        let idle = self.reaper.idle_for();
+        match self.running.as_mut() {
+            Some(r) => {
+                if r.server.is_running() {
+                    RuntimeInfo {
+                        running: true,
+                        port: Some(r.server.port()),
+                        unload_in_s: Some(IDLE_UNLOAD.saturating_sub(idle).as_secs()),
+                    }
+                } else {
+                    RuntimeInfo::default()
+                }
+            }
+            None => RuntimeInfo::default(),
+        }
     }
 }
 

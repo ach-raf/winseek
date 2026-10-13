@@ -1,6 +1,6 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
-import type { Backend, Filter, Hit, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ServiceState, Sort, Tier1Status, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -31,7 +31,8 @@ const DB: E[] = (() => {
   return out;
 })();
 
-// ---- name-service simulation (query: ?installed=1 skips first run, ?stopped=1, ?fail=1, ?accent=1) ----
+// ---- name-service simulation (query: ?installed=1 skips first run, ?stopped=1, ?fail=1, ?accent=1,
+// ?searchd=down: running service that does not answer, ?volerr=1: volume H reports an error) ----
 const params = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
 const SCAN_MS = 4000;
 const VOLS = [
@@ -125,6 +126,97 @@ function t1Status(): Tier1Status {
     state,
     stats: { files: T1_FILES, pending: T1_FILES - done, done, failed: modelsInstalled && done > 100 ? 3 : 0, skipped: 0, vectors: done },
     include: [...include], exclude: [...exclude], error: null, paused_reason: reason,
+  };
+}
+
+// ---- status page ----
+const SERVER_PORT = 51234;
+const IDLE_UNLOAD_S = 120;
+const rescanAt: Record<string, number> = {}; // letter -> performance.now() of the click
+let lastEmbedAt: number | null = null; // last time the (fake) embedding server was busy
+const bootAt = performance.now();
+let rateSamples: { t: number; done: number }[] = [];
+
+function mockStatusPage(): StatusPage {
+  const now = performance.now();
+  const t1 = t1Status();
+  const down = params.get("searchd") === "down" && svc === "running";
+  const up = svc === "running" && scanStart !== null && now >= scanStart;
+  const source = down ? "unavailable" : up ? "searchd" : "demo";
+  const volumes: VolumeDetail[] = down ? [] : !up
+    ? [{ letter: "C", files: 12580243, folders: 1204511, state: "demo", done: null, total: null, error: null }]
+    : VOLS.map((v): VolumeDetail => {
+        const total = v.files + v.folders;
+        const el = now - (scanStart as number);
+        const rs = rescanAt[v.letter] !== undefined ? now - rescanAt[v.letter] : Infinity;
+        if (v.letter === "H" && params.get("volerr") === "1") {
+          return { letter: "H", files: 0, folders: 0, state: "error", done: null, total: null, error: "USN journal is not active and could not be created (access denied)" };
+        }
+        if (rs < 1500) return { letter: v.letter, files: v.files, folders: v.folders, state: "rescanning", done: null, total: null, error: null };
+        if (rs < 1500 + v.ms) {
+          const p = 1 - Math.pow(1 - (rs - 1500) / v.ms, 2);
+          return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
+        }
+        if (el >= v.ms) return { letter: v.letter, files: v.files, folders: v.folders, state: "live", done: null, total: null, error: null };
+        const p = 1 - Math.pow(1 - el / v.ms, 2);
+        return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
+      });
+
+  const s = t1.stats;
+  const indexing = t1.state === "indexing";
+  if (indexing) lastEmbedAt = now;
+  // Rolling rate over the last ~60 s of samples, like the real worker.
+  if (s) {
+    rateSamples.push({ t: now, done: s.done });
+    rateSamples = rateSamples.filter((x) => now - x.t <= 60000);
+  }
+  const first = rateSamples[0];
+  const rate = indexing && s && first && now - first.t >= 1000 ? Math.max(0, (s.done - first.done) / ((now - first.t) / 1000)) || null : null;
+  const queue = s?.pending ?? 0;
+  const failed = s?.failed ?? 0;
+  const denom = s ? s.done + s.pending + failed : 0;
+  const idleFor = lastEmbedAt === null ? Infinity : (now - lastEmbedAt) / 1000;
+  const running = modelsInstalled && t1.state !== "unavailable" && idleFor < IDLE_UNLOAD_S;
+  const bytes = (expected: number, name: string) => (modelsInstalled || (dlDone[name] ?? 0) >= expected ? expected : null);
+  return {
+    tier0: {
+      source,
+      service: svc,
+      uptime_s: source === "searchd" ? Math.floor((now - bootAt) / 1000) + 5400 : null,
+      volumes,
+      can_rescan: source === "searchd",
+      rescan_hint: source === "searchd" ? null : source === "demo" ? "Needs the name service, which is not running." : "The name service is not answering.",
+    },
+    tier1: {
+      state: t1.state,
+      paused_reason: t1.paused_reason,
+      error: t1.error,
+      stats: t1.stats,
+      coverage: denom > 0 && s ? s.done / denom : null,
+      queue,
+      rate: t1.state === "indexing" ? rate : null,
+      eta_s: rate && queue > 0 ? Math.ceil(queue / rate) : null,
+      can_rebuild: t1.state !== "unavailable",
+    },
+    models: {
+      llama_build: "b11588",
+      backend: MOCK_BACKEND,
+      gpu: MOCK_BACKEND === "cuda12" ? "NVIDIA GeForce RTX 4070" : MOCK_BACKEND === "vulkan" ? "AMD Radeon RX 6600" : null,
+      llama_present: modelsInstalled || MOCK_ITEMS.filter((i) => i.name.startsWith("llama.cpp")).every(itemHave),
+      model_id: "embeddinggemma-2",
+      profile: "default",
+      quant: "Q8_0",
+      files: [
+        { name: "embeddinggemma-2-Q8_0.gguf", role: "model", expected_bytes: 309855456, bytes: bytes(309855456, "EmbeddingGemma-2 model") },
+        { name: "mmproj-embeddinggemma-2-Q8_0.gguf", role: "mmproj", expected_bytes: 554821024, bytes: bytes(554821024, "EmbeddingGemma-2 vision projector") },
+      ],
+      server: {
+        running,
+        port: running ? SERVER_PORT : null,
+        unload_in_s: running ? Math.max(0, Math.round(IDLE_UNLOAD_S - idleFor)) : null,
+        idle_unload_s: IDLE_UNLOAD_S,
+      },
+    },
   };
 }
 
@@ -234,6 +326,20 @@ export const mockBackend: Backend = {
       .slice(0, Math.max(1, Math.min(k, 200)));
     return { state: st, hits };
   },
+  async statusPage() { await sleep(20); return mockStatusPage(); },
+  async rescanVolume(letter) {
+    await sleep(60);
+    if (svc !== "running" || params.get("searchd") === "down") throw new Error("The name service is not running");
+    if (!VOLS.some((v) => v.letter === letter)) throw new Error(`volume ${letter}: is not indexed`);
+    rescanAt[letter] = performance.now();
+  },
+  async tier1Rebuild() {
+    await sleep(120);
+    if (params.get("unavailable") === "1") throw new Error("Search by meaning is unavailable");
+    indexed = 0;
+    indexTick = performance.now();
+    rateSamples = [];
+  },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
     const items = MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: modelsInstalled || itemHave(i) }));
@@ -255,4 +361,5 @@ export const mockBackend: Backend = {
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
+  async onOpenStatus() { return () => {}; },
 };

@@ -26,7 +26,7 @@ pub const EMIT_EVERY: Duration = Duration::from_millis(100);
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PlanItem {
     pub name: String,
-    /// `None` when the manifest does not carry a size (llama.cpp zips): learned once the download starts.
+    /// `None` when the manifest does not carry a size: learned once the download starts.
     pub bytes: Option<u64>,
     pub present: bool,
 }
@@ -89,12 +89,12 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
     let mut out = Vec::new();
     if let Some(asset) = manifest.asset(backend) {
         let present = resolve_exe(root, manifest, backend).is_some();
-        let mut push = |name: String, url: &str| {
-            out.push(Job { item: PlanItem { name, bytes: None, present }, source: Source::Llama { file: zip_name(url) } });
+        let mut push = |name: String, url: &str, bytes: Option<u64>| {
+            out.push(Job { item: PlanItem { name, bytes, present }, source: Source::Llama { file: zip_name(url) } });
         };
-        push(format!("llama.cpp {} ({})", manifest.llama.build, backend_label(backend)), &asset.url);
+        push(format!("llama.cpp {} ({})", manifest.llama.build, backend_label(backend)), &asset.url, asset.size);
         for e in &asset.extra {
-            push("CUDA runtime libraries".into(), &e.url);
+            push("CUDA runtime libraries".into(), &e.url, e.size);
         }
     }
     if let Some(entry) = manifest.model(embedder::MODEL_ID, ModelProfile::Default) {
@@ -265,6 +265,13 @@ fn detect_cached(slot: &Mutex<Option<Detected>>) -> Detected {
     locked(slot).get_or_insert_with(detect_backend).clone()
 }
 
+impl Models {
+    /// The detected GPU backend (cached after the first, slower, call).
+    pub fn detected(&self) -> Detected {
+        detect_cached(&self.detected)
+    }
+}
+
 /// Clears the running flag even if the download thread panics.
 struct RunGuard(Arc<AtomicBool>);
 impl Drop for RunGuard {
@@ -339,8 +346,8 @@ mod tests {
         assert_eq!(names[1], "CUDA runtime libraries");
         assert_eq!(&names[2..], ["EmbeddingGemma-2 model", "EmbeddingGemma-2 vision projector"]);
         assert!(p.items.iter().all(|i| !i.present));
-        assert_eq!(p.total_bytes_missing, 309_855_456 + 554_821_024);
-        assert!(p.size_unknown && !p.downloading);
+        assert_eq!(p.total_bytes_missing, 265_217_350 + 391_443_627 + 309_855_456 + 554_821_024);
+        assert!(!p.size_unknown && !p.downloading);
         assert_eq!(p.backend, Backend::Cuda12);
         let cpu = build_plan(d.path(), &man, &det(Backend::Cpu), true);
         assert_eq!(cpu.items.len(), 3);

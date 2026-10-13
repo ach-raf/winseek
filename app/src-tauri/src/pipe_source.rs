@@ -9,7 +9,7 @@ use std::time::Duration;
 use winseek_ipc::pipe::{connect, PipeConn};
 use winseek_ipc::{read_message, write_message, Request, Response, Sort, VolumeState, PIPE_NAME};
 
-use crate::source::{Hit, NameSource, SearchResult, VolumeStatus};
+use crate::source::{Hit, NameSource, SearchResult, Tier0Detail, VolumeDetail, VolumeStatus};
 
 const RECONNECT_TIMEOUT: Duration = Duration::from_millis(300);
 
@@ -75,6 +75,16 @@ fn hit(h: winseek_ipc::Hit) -> Hit {
     Hit { name: h.name, path: h.path, is_dir: h.is_dir, size: h.size, mtime: h.mtime }
 }
 
+fn volume_detail(v: winseek_ipc::VolumeStatus) -> VolumeDetail {
+    let (state, done, total, error) = match v.state {
+        VolumeState::Live => ("live", None, None, None),
+        VolumeState::Scanning { done, total } => ("scanning", Some(done), Some(total), None),
+        VolumeState::Rescanning => ("rescanning", None, None, None),
+        VolumeState::Error { msg } => ("error", None, None, Some(msg)),
+    };
+    VolumeDetail { letter: v.letter.to_string(), files: v.files, folders: v.folders, state: state.into(), done, total, error }
+}
+
 fn offline() -> Vec<VolumeStatus> {
     vec![VolumeStatus { letter: "-".into(), files: 0, folders: 0, state: "offline".into(), done: None, total: None }]
 }
@@ -125,10 +135,46 @@ impl NameSource for PipeSource {
         }
     }
 
+    fn detail(&self) -> Tier0Detail {
+        match self.call(&Request::Status { id: self.id() }) {
+            Ok(Response::StatusResult { volumes, uptime_s, .. }) => {
+                Tier0Detail { kind: "searchd", uptime_s: Some(uptime_s), volumes: volumes.into_iter().map(volume_detail).collect() }
+            }
+            _ => Tier0Detail { kind: "unavailable", uptime_s: None, volumes: vec![] },
+        }
+    }
+
+    /// The pipe's DACL gives the interactive user read/write and searchd does not check elevation,
+    /// so a normal (non-admin) app may ask for a rescan.
+    fn rescan(&self, volume: char) -> Result<(), String> {
+        match self.call(&Request::Rescan { id: self.id(), volume }) {
+            Ok(Response::Error { message, .. }) => Err(message),
+            Ok(_) => Ok(()),
+            Err(e) => Err(format!("The name service did not answer: {e}")),
+        }
+    }
+
     fn recent(&self, limit: usize) -> Vec<Hit> {
         match self.call(&Request::Recent { id: self.id(), limit: limit.min(u32::MAX as usize) as u32 }) {
             Ok(Response::RecentResult { hits, .. }) => hits.into_iter().map(hit).collect(),
             _ => vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn volume_detail_keeps_state_progress_and_error_text() {
+        let v = |state| winseek_ipc::VolumeStatus { letter: 'C', files: 7, folders: 2, state };
+        let d = volume_detail(v(VolumeState::Scanning { done: 3, total: 9 }));
+        assert_eq!((d.state.as_str(), d.done, d.total, d.letter.as_str()), ("scanning", Some(3), Some(9), "C"));
+        let d = volume_detail(v(VolumeState::Error { msg: "journal gone".into() }));
+        assert_eq!((d.state.as_str(), d.error.as_deref()), ("error", Some("journal gone")));
+        assert_eq!(volume_detail(v(VolumeState::Rescanning)).state, "rescanning");
+        let d = volume_detail(v(VolumeState::Live));
+        assert_eq!((d.state.as_str(), d.files, d.folders, d.error), ("live", 7, 2, None));
     }
 }

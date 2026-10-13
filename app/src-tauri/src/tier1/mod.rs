@@ -11,6 +11,7 @@ pub mod feed;
 pub mod identity;
 pub mod policy;
 pub mod process;
+pub mod progress;
 pub mod scopes;
 
 use std::path::PathBuf;
@@ -22,7 +23,7 @@ use serde::Serialize;
 use winseek_llama::Manifest;
 use winseek_store::{default_ignore, in_scope_with, Ignore, Scopes, Stats, Store};
 
-use embedder::{EmbedError, Embedder, LlamaEmbedder};
+use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
 use policy::PauseReason;
 use process::{Pass, Processor};
 
@@ -49,6 +50,10 @@ pub struct Tier1 {
     snap: RwLock<Snapshot>,
     gen: AtomicU64,
     last_error: Mutex<Option<String>>,
+    /// Rolling completed-files rate for the status page (fed by the worker loop).
+    throughput: Mutex<progress::Throughput>,
+    /// Last known embedding-server state (the embedder lock is held for whole passes).
+    runtime: Mutex<RuntimeInfo>,
 }
 
 /// Scopes + compiled ignore list + generation, read together so a walk never mixes versions.
@@ -154,6 +159,8 @@ impl Tier1 {
             snap: RwLock::new(Snapshot { scopes, ignore, gen: 1 }),
             gen: AtomicU64::new(1),
             last_error: Mutex::new(None),
+            throughput: Mutex::new(progress::Throughput::default()),
+            runtime: Mutex::new(RuntimeInfo::default()),
         })
     }
 
@@ -271,6 +278,43 @@ impl Tier1 {
         }
     }
 
+    /// Files per second over the last minute, `None` when idle or unknown.
+    pub fn rate(&self) -> Option<f64> {
+        lock(&self.throughput).rate(std::time::Instant::now())
+    }
+
+    /// Embedding-server state without waiting for a running pass: while the embedder is busy
+    /// the server is by definition up, so the last known port is reused.
+    pub fn runtime_info(&self) -> RuntimeInfo {
+        match self.embedder.try_lock() {
+            Ok(mut e) => {
+                let r = e.runtime_info();
+                *lock(&self.runtime) = r.clone();
+                r
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().runtime_info(),
+            Err(std::sync::TryLockError::WouldBlock) => RuntimeInfo { running: true, unload_in_s: None, ..lock(&self.runtime).clone() },
+        }
+    }
+
+    /// Swap in a freshly reset store (embeddings dropped, files back to pending) and make the
+    /// crawler re-run. `reset` builds the new store; the store lock is held throughout so the
+    /// worker cannot write to the old one meanwhile. Never touches Tier 0.
+    pub fn rebuild_with(&self, reset: impl FnOnce() -> Result<Store, String>) -> Result<(), String> {
+        {
+            let mut store = lock(&self.store);
+            *store = reset()?;
+        }
+        *lock(&self.last_error) = None;
+        lock(&self.throughput).clear();
+        {
+            let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
+            snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        }
+        self.kick();
+        Ok(())
+    }
+
     /// Embed the query and return the best `k` in-scope files.
     pub fn semantic_search(&self, query: &str, k: usize) -> Result<SemanticResult, String> {
         let k = k.clamp(1, 200);
@@ -317,9 +361,11 @@ fn worker_loop(t: Arc<Tier1>) {
                 continue;
             }
         }
+        let started = std::time::Instant::now();
         let r = proc.run_pass(&t.store, &t.embedder, &t.paused);
         match r {
-            Ok(Pass::Progress(_)) => {
+            Ok(Pass::Progress(n)) => {
+                lock(&t.throughput).record(started, std::time::Instant::now(), n);
                 t.state.store(ST_INDEXING, Ordering::Relaxed);
                 *lock(&t.last_error) = None;
             }
@@ -410,8 +456,9 @@ pub fn tier1_set_ignore(h: tauri::State<'_, Handle>, list: Option<Vec<String>>) 
 }
 
 #[tauri::command]
-pub fn tier1_pause(h: tauri::State<'_, Handle>, paused: bool) -> Result<(), String> {
+pub fn tier1_pause(app: tauri::AppHandle, h: tauri::State<'_, Handle>, paused: bool) -> Result<(), String> {
     h.get()?.set_paused(paused);
+    crate::watcher::refresh_pause_item(&app);
     Ok(())
 }
 
@@ -533,6 +580,32 @@ mod tests {
         t.set_paused(false);
         assert!(!t.paused.load(Ordering::Relaxed));
         assert_eq!((t.status().state.as_str(), t.status().paused_reason), ("idle", None));
+    }
+
+    #[test]
+    fn rebuild_swaps_the_store_and_restarts_the_crawl() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        add_done(&t, 1, r"C:\Pics\cat.jpg", 1);
+        assert_eq!(lock(&t.store).stats().unwrap().done, 1);
+        *lock(&t.last_error) = Some("old".into());
+        let g0 = t.snapshot().gen;
+        t.rebuild_with(|| Store::open_in_memory(&index_meta("test")).map_err(|e| e.to_string())).unwrap();
+        assert_eq!(lock(&t.store).stats().unwrap().files, 0);
+        assert!(t.snapshot().gen > g0); // the crawler sees a new generation and walks the scopes again
+        assert_eq!(t.status().error, None);
+        // a failing reset leaves the current store alone
+        add_done(&t, 2, r"C:\Pics\dog.jpg", 2);
+        assert_eq!(t.rebuild_with(|| Err("boom".into())), Err("boom".to_string()));
+        assert_eq!(lock(&t.store).stats().unwrap().done, 1);
+    }
+
+    #[test]
+    fn runtime_info_reports_busy_embedder_as_running() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        assert_eq!(t.runtime_info(), RuntimeInfo::default());
+        let held = lock(&t.embedder); // a pass in progress: the server must be up
+        assert!(t.runtime_info().running);
+        drop(held);
     }
 
     #[test]
