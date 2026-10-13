@@ -1,6 +1,6 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
-import type { Backend, Filter, Hit, Sort } from "./types";
+import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -31,6 +31,22 @@ const DB: E[] = (() => {
   return out;
 })();
 
+// ---- name-service simulation (query: ?installed=1 skips first run, ?stopped=1, ?fail=1, ?accent=1) ----
+const params = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
+const SCAN_MS = 4000;
+const VOLS = [
+  { letter: "C", files: 5210442, folders: 740569, ms: SCAN_MS },
+  { letter: "H", files: 998120, folders: 206391, ms: SCAN_MS * 0.6 },
+];
+let svc: ServiceState = params.get("installed") === "1" ? "running" : params.get("stopped") === "1" ? "stopped" : "not_installed";
+let scanStart: number | null = svc === "running" ? -Infinity : null; // when the "pipe" comes up
+const listeners = new Set<() => void>();
+function bringUp() {
+  svc = "running";
+  scanStart = performance.now() + 300; // pipe connects shortly after the service starts
+  setTimeout(() => listeners.forEach((f) => f()), 300);
+}
+
 const bin: { e: E; at: number }[] = [];
 
 const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? null : e.size, mtime: Math.floor(e.mtime) });
@@ -50,7 +66,16 @@ export const mockBackend: Backend = {
     await sleep(8);
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
   },
-  async status() { return [{ letter: "C", files: 12580243, folders: 1204511, state: "live" }]; },
+  async status(): Promise<VolumeStatus[]> {
+    if (scanStart === null || performance.now() < scanStart) return [{ letter: "C", files: 0, folders: 0, state: "demo" }];
+    const el = performance.now() - scanStart;
+    return VOLS.map((v) => {
+      const total = v.files + v.folders;
+      if (el >= v.ms) return { letter: v.letter, files: v.files, folders: v.folders, state: "live", done: null, total: null };
+      const p = 1 - Math.pow(1 - el / v.ms, 2);
+      return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total };
+    });
+  },
   async recent(limit) { return [...DB].filter((e) => !e.dir).sort((a, b) => b.mtime - a.mtime).slice(0, limit).map(toHit); },
   async openPath(p) { console.info("[mock] open", p); },
   async revealPath(p) { console.info("[mock] reveal", p); },
@@ -89,4 +114,17 @@ export const mockBackend: Backend = {
   iconUrl() { return null; },
   async hide() { console.info("[mock] hide"); },
   async onShown() { return () => {}; },
+  async serviceState() { return svc; },
+  async installService() {
+    await sleep(1500);
+    if (params.get("fail") === "1") throw new Error("Installation cancelled");
+    bringUp();
+  },
+  async startService() { await sleep(500); bringUp(); },
+  async accentPalette() {
+    return params.get("accent") === "1"
+      ? ["#d6c6f5", "#b9a0ee", "#9a78e2", "#7b52d3", "#6038b8", "#4a2a93", "#351d6b", "#201040"]
+      : null;
+  },
+  async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
 };

@@ -1,5 +1,6 @@
 //! searchd: Tier 0 daemon. MFT scan -> in-memory name index, USN journal follow, snapshot,
-//! named-pipe search server. P3 scope: `--console` only (Windows service comes in P4).
+//! named-pipe search server. Runs as `--console` (dev) or a Windows service (`--service`,
+//! managed with `--install` / `--uninstall`).
 //!
 //! Threads: main (signals, periodic snapshot) | writer (sole index mutator) |
 //! one worker per volume (scan / USN monitor) | pipe accept loop + one per connection.
@@ -7,6 +8,7 @@
 mod index_ops;
 mod log;
 mod server;
+mod service;
 mod state;
 mod worker;
 
@@ -23,21 +25,37 @@ use winseek_ntfs::{list_ntfs_volumes, open_volume_for_usn, VolumeInfo};
 use log::{error, info, warn};
 use state::{Msg, Shared};
 
-const USAGE: &str = "usage: searchd --console [--data <dir>] [--volumes C,D] [--log <file>]";
+const USAGE: &str = "usage: searchd --console [--data <dir>] [--volumes C,D] [--log <file>]
+       searchd --service [--data <dir>] [--volumes C,D] [--log <file>]   (started by the SCM)
+       searchd --install [--volumes C,D]     (elevated)
+       searchd --uninstall                   (elevated)";
 const SAVE_EVERY: Duration = Duration::from_secs(300);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Mode {
+    Console,
+    Service,
+    Install,
+    Uninstall,
+}
+
+#[derive(Debug)]
 struct Args {
+    mode: Mode,
     data: PathBuf,
     volumes: Option<Vec<char>>,
     log: PathBuf,
 }
 
 fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
-    let (mut console, mut data, mut volumes, mut log) = (false, None, None, None);
+    let (mut modes, mut data, mut volumes, mut log) = (Vec::new(), None, None, None);
     while let Some(a) = it.next() {
         let mut val = |name: &str| it.next().ok_or_else(|| format!("{name} needs a value"));
         match a.as_str() {
-            "--console" => console = true,
+            "--console" => modes.push(Mode::Console),
+            "--service" => modes.push(Mode::Service),
+            "--install" => modes.push(Mode::Install),
+            "--uninstall" => modes.push(Mode::Uninstall),
             "--data" => data = Some(PathBuf::from(val("--data")?)),
             "--log" => log = Some(PathBuf::from(val("--log")?)),
             "--volumes" => {
@@ -52,20 +70,37 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
             other => return Err(format!("unknown argument '{other}'")),
         }
     }
-    if !console {
-        return Err("--console is required (service mode is not implemented yet)".into());
+    let mode = match modes.as_slice() {
+        [] => return Err("exactly one of --console, --service, --install, --uninstall is required".into()),
+        [m] => *m,
+        _ => return Err("--console, --service, --install and --uninstall are mutually exclusive".into()),
+    };
+    let allowed = |opt: bool, name: &str| {
+        if opt && matches!(mode, Mode::Install | Mode::Uninstall) {
+            Err(format!("{name} is not valid with --install/--uninstall"))
+        } else {
+            Ok(())
+        }
+    };
+    allowed(data.is_some(), "--data")?;
+    allowed(log.is_some(), "--log")?;
+    if mode == Mode::Uninstall && volumes.is_some() {
+        return Err("--volumes is not valid with --uninstall".into());
     }
-    let data = data.unwrap_or_else(|| {
-        PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into())).join("winseek")
-    });
+    let data = data.unwrap_or_else(default_data_dir);
     let log = log.unwrap_or_else(|| data.join("searchd.log"));
-    Ok(Args { data, volumes, log })
+    Ok(Args { mode, data, volumes, log })
 }
 
-static CTRL_C: AtomicBool = AtomicBool::new(false);
+fn default_data_dir() -> PathBuf {
+    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into())).join("winseek")
+}
+
+/// The one stop flag: set by console Ctrl+C or by the service control handler.
+static STOP: AtomicBool = AtomicBool::new(false);
 
 extern "system" fn on_ctrl(_event: u32) -> i32 {
-    CTRL_C.store(true, Ordering::SeqCst);
+    STOP.store(true, Ordering::SeqCst);
     1 // handled: let main shut down and save
 }
 
@@ -75,18 +110,32 @@ extern "system" {
 }
 
 fn main() {
-    std::process::exit(run());
-}
-
-fn run() -> i32 {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("searchd: {e}\n{USAGE}");
-            return 2;
+            eprintln!("searchd: {e}
+{USAGE}");
+            std::process::exit(2);
         }
     };
-    log::init(&args.log);
+    std::process::exit(match args.mode {
+        Mode::Console => {
+            log::init(&args.log);
+            // SAFETY: registering a plain `extern "system"` handler.
+            unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
+            run(&args, &STOP, &|| {})
+        }
+        Mode::Service => {
+            log::init(&args.log);
+            service::run_dispatcher(args)
+        }
+        Mode::Install | Mode::Uninstall => service::manage(&args),
+    });
+}
+
+/// Run the daemon until `stop` is set. `ready` is called once the pipe is bound and the
+/// workers are running (the service reports RUNNING from it). Returns the process exit code.
+fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     info!("searchd starting (data dir {}, log {})", args.data.display(), args.log.display());
     let _ = std::fs::create_dir_all(&args.data);
 
@@ -153,12 +202,11 @@ fn run() -> i32 {
         workers.push(std::thread::spawn(move || worker::run(sh, tx, v, cur)));
     }
     server::spawn_accept_loop(sh.clone(), pipe);
-    // SAFETY: registering a plain `extern "system"` handler.
-    unsafe { SetConsoleCtrlHandler(Some(on_ctrl), 1) };
     info!("ready; serving {PIPE_NAME} (Ctrl+C to stop)");
+    ready();
 
     let mut last_save = Instant::now();
-    while !CTRL_C.load(Ordering::SeqCst) {
+    while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
         if sh.save_now.swap(false, Ordering::Relaxed) || last_save.elapsed() >= SAVE_EVERY {
             save_snapshot(&sh, &snap_path);
@@ -229,8 +277,35 @@ mod tests {
         assert!(p(&["--console", "--bogus"]).is_err());
         assert!(p(&["--console", "--data"]).is_err());
         let a = p(&["--console", "--data", "D:\\x", "--volumes", "c, d:"]).unwrap();
+        assert_eq!(a.mode, Mode::Console);
         assert_eq!(a.volumes, Some(vec!['C', 'D']));
         assert_eq!(a.log, PathBuf::from("D:\\x").join("searchd.log"));
         assert!(p(&["--console", "--volumes", "1"]).is_err());
+    }
+
+    #[test]
+    fn modes() {
+        assert_eq!(p(&["--service"]).unwrap().mode, Mode::Service);
+        let s = p(&["--service", "--data", "D:\\x", "--log", "L.txt", "--volumes", "C"]).unwrap();
+        assert_eq!(s.log, PathBuf::from("L.txt"));
+        assert_eq!(p(&["--install"]).unwrap().mode, Mode::Install);
+        assert_eq!(p(&["--install", "--volumes", "c,d"]).unwrap().volumes, Some(vec!['C', 'D']));
+        assert_eq!(p(&["--uninstall"]).unwrap().mode, Mode::Uninstall);
+        // mutual exclusion
+        for pair in [
+            ["--console", "--service"],
+            ["--console", "--install"],
+            ["--service", "--install"],
+            ["--install", "--uninstall"],
+            ["--service", "--uninstall"],
+            ["--console", "--uninstall"],
+        ] {
+            assert!(p(&pair).is_err(), "{pair:?}");
+        }
+        // options that make no sense for management modes
+        assert!(p(&["--install", "--data", "x"]).is_err());
+        assert!(p(&["--install", "--log", "x"]).is_err());
+        assert!(p(&["--uninstall", "--volumes", "C"]).is_err());
+        assert!(p(&["--bogus"]).is_err());
     }
 }

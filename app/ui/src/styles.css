@@ -10,10 +10,10 @@
   --fg-3: #8a8f98;
   --line: rgba(20, 24, 32, 0.09);
   --hover: rgba(20, 24, 32, 0.045);
-  --select: rgba(0, 103, 192, 0.11);
+  --select: color-mix(in srgb, var(--accent) 11%, transparent);
   --accent: #0067c0;
   --accent-fg: #fff;
-  --mark: rgba(0, 103, 192, 0.16);
+  --mark: color-mix(in srgb, var(--accent) 16%, transparent);
   --chip: rgba(20, 24, 32, 0.055);
   --kbd-bg: rgba(20, 24, 32, 0.06);
   --ok: #0f8a4b;
@@ -30,10 +30,10 @@
     --fg-3: #7d828c;
     --line: rgba(255, 255, 255, 0.09);
     --hover: rgba(255, 255, 255, 0.055);
-    --select: rgba(96, 205, 255, 0.14);
+    --select: color-mix(in srgb, var(--accent) 14%, transparent);
     --accent: #60cdff;
     --accent-fg: #00253a;
-    --mark: rgba(96, 205, 255, 0.24);
+    --mark: color-mix(in srgb, var(--accent) 24%, transparent);
     --chip: rgba(255, 255, 255, 0.07);
     --kbd-bg: rgba(255, 255, 255, 0.09);
     --ok: #4cc38a;
@@ -209,9 +209,46 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .hints { display: inline-flex; gap: 10px; flex: none; }
 .hints span { display: inline-flex; align-items: center; gap: 5px; }
 
+/* ---- first-run panel ---- */
+.firstrun { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 44px 12px; gap: 14px; animation: fade 200ms var(--ease); outline: 0; }
+.firstrun h2 { margin: 0; font: 600 20px/1.2 var(--font-display); letter-spacing: -0.01em; }
+.firstrun p { margin: 0; max-width: 520px; color: var(--fg-2); font-size: 13.5px; line-height: 1.5; }
+.firstrun .actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px;
+  border-radius: 5px; font-weight: 600; font-size: 13px; border: 1px solid transparent;
+}
+.btn.primary { background: var(--accent); color: var(--accent-fg); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--accent-fg)); }
+.btn.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, var(--accent-fg)); }
+.btn.primary:disabled { opacity: 0.75; }
+.btn.quiet { color: var(--fg-2); font-weight: 500; }
+.btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.btn:disabled { cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.btn .shield { flex: none; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: spin 800ms linear infinite; flex: none; }
+.fr-error { color: #c42b1c; font-size: 12.5px; max-width: 520px; }
+@media (prefers-color-scheme: dark) { .fr-error { color: #ff99a4; } }
+
+.vols { display: flex; flex-direction: column; gap: 10px; max-width: 520px; }
+.vol { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; column-gap: 10px; row-gap: 5px; font-variant-numeric: tabular-nums; font-size: 13px; }
+.vol .letter { font-weight: 600; }
+.vol .nums { color: var(--fg-2); font-size: 12.5px; }
+.bar { grid-column: 2 / 4; height: 4px; border-radius: 2px; background: var(--chip); overflow: hidden; }
+.bar > i { display: block; height: 100%; background: var(--accent); border-radius: 2px; transition: width 240ms linear; }
+.bar.indet > i { width: 30% !important; animation: indet 1.2s var(--ease) infinite; }
+.bigcount { font: 600 34px/1 var(--font-display); letter-spacing: -0.02em; font-variant-numeric: tabular-nums; }
+.bigcount small { font: 400 13px/1 var(--font); color: var(--fg-3); letter-spacing: 0; margin-left: 8px; }
+.summary { font-size: 14px; color: var(--fg-2); }
+.summary b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }
 @keyframes grow { from { transform: scaleY(0.3); opacity: 0; } to { transform: none; opacity: 1; } }
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+.list[hidden] { display: none; }

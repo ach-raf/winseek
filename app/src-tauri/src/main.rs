@@ -4,11 +4,13 @@ mod commands;
 mod pipe_source;
 mod popup;
 mod shell;
+mod service;
 mod source;
+mod watcher;
 
 use commands::AppState;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -40,7 +42,7 @@ fn main() {
                 .build(),
         )
         .manage(AppState {
-            source: pick_source(),
+            source: RwLock::new(pick_source()),
             paused: AtomicBool::new(false),
         })
         .invoke_handler(tauri::generate_handler![
@@ -55,7 +57,11 @@ fn main() {
             shell::restore_recycled,
             shell::rename_path,
             shell::show_context_menu,
-            shell::start_drag
+            shell::start_drag,
+            service::service_state,
+            service::install_service,
+            service::start_service,
+            service::accent_palette
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
@@ -85,7 +91,7 @@ fn main() {
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &pause, &quit]).build()?;
-            let mut tray = TrayIconBuilder::new()
+            let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
                 .tooltip("winseek (Alt+Space)")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
@@ -115,6 +121,7 @@ fn main() {
                 tray = tray.icon(icon.clone());
             }
             tray.build(app)?;
+            watcher::spawn(app.handle().clone());
             Ok(())
         })
         .run(tauri::generate_context!())

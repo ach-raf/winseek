@@ -336,7 +336,8 @@ mod tests {
         assert!(w > 0 && h > 0 && alpha);
         let a = render(exe, false, 32, false).expect("render");
         let b = render(exe, false, 32, false).expect("cached");
-        assert!(Arc::ptr_eq(&a, &b));
+        // Byte equality, not ptr_eq: parallel tests share the global cache.
+        assert_eq!(a, b);
     }
 
     #[test]

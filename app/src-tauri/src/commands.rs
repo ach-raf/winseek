@@ -2,10 +2,19 @@ use crate::source::{Hit, NameSource, SearchResult, VolumeStatus};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
+
+impl AppState {
+    pub fn source(&self) -> Arc<dyn NameSource> {
+        self.source.read().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+    pub fn set_source(&self, s: Arc<dyn NameSource>) {
+        *self.source.write().unwrap_or_else(|e| e.into_inner()) = s;
+    }
+}
 
 pub struct AppState {
-    pub source: Arc<dyn NameSource>,
+    pub source: RwLock<Arc<dyn NameSource>>,
     pub paused: AtomicBool,
 }
 
@@ -18,7 +27,7 @@ pub fn search(
     sort: Option<String>,
     filter: Option<String>,
 ) -> SearchResult {
-    state.source.search(
+    state.source().search(
         &query,
         filter.as_deref().unwrap_or("all"),
         offset,
@@ -29,7 +38,7 @@ pub fn search(
 
 #[tauri::command]
 pub fn status(state: tauri::State<'_, AppState>) -> Vec<VolumeStatus> {
-    let mut v = state.source.status();
+    let mut v = state.source().status();
     if state.paused.load(Ordering::Relaxed) {
         for s in &mut v {
             s.state = "paused".into();
@@ -40,7 +49,7 @@ pub fn status(state: tauri::State<'_, AppState>) -> Vec<VolumeStatus> {
 
 #[tauri::command]
 pub fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Vec<Hit> {
-    state.source.recent(limit.min(500))
+    state.source().recent(limit.min(500))
 }
 
 #[tauri::command]

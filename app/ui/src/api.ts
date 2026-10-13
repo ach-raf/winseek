@@ -1,4 +1,4 @@
-import type { Backend } from "./types";
+import type { Backend, ServiceState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -32,6 +32,11 @@ function tauriBackend(t: TauriGlobal): Backend {
       `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${thumb ? 40 : 32}&t=${thumb ? 1 : 0}`,
     hide: () => t.window.getCurrentWindow().hide(),
     onShown: (cb) => t.event.listen("popup-shown", cb),
+    serviceState: () => inv<ServiceState>("service_state"),
+    installService: () => inv("install_service"),
+    startService: () => inv("start_service"),
+    accentPalette: () => inv("accent_palette"),
+    onSourceChanged: (cb) => t.event.listen("source-changed", cb),
   };
 }
 

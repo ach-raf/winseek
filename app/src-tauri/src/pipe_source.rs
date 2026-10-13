@@ -76,7 +76,7 @@ fn hit(h: winseek_ipc::Hit) -> Hit {
 }
 
 fn offline() -> Vec<VolumeStatus> {
-    vec![VolumeStatus { letter: "-".into(), files: 0, folders: 0, state: "offline".into() }]
+    vec![VolumeStatus { letter: "-".into(), files: 0, folders: 0, state: "offline".into(), done: None, total: None }]
 }
 
 impl NameSource for PipeSource {
@@ -105,6 +105,14 @@ impl NameSource for PipeSource {
                     letter: v.letter.to_string(),
                     files: v.files,
                     folders: v.folders,
+                    done: match v.state {
+                        VolumeState::Scanning { done, .. } => Some(done),
+                        _ => None,
+                    },
+                    total: match v.state {
+                        VolumeState::Scanning { total, .. } => Some(total),
+                        _ => None,
+                    },
                     state: match v.state {
                         VolumeState::Live => "live",
                         VolumeState::Scanning { .. } | VolumeState::Rescanning => "scanning",

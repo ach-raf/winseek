@@ -15,7 +15,11 @@ export interface VolumeStatus {
   files: number;
   folders: number;
   state: string;
+  /** Scan progress (entries seen / expected); null/absent when not scanning. */
+  done?: number | null;
+  total?: number | null;
 }
+export type ServiceState = "not_installed" | "stopped" | "starting" | "running" | "stopping" | "unknown";
 export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders";
 export type Sort = "rel" | "name" | "size" | "date";
 
@@ -38,4 +42,12 @@ export interface Backend {
   iconUrl(path: string, isDir: boolean, thumb: boolean): string | null;
   hide(): Promise<void>;
   onShown(cb: () => void): Promise<() => void>;
+  serviceState(): Promise<ServiceState>;
+  /** Elevated install (one UAC prompt); rejects with a user-readable string. */
+  installService(): Promise<void>;
+  startService(): Promise<void>;
+  /** Windows accent palette (8 x "#rrggbb", index 1 = Light2, 4 = Dark1) or null. */
+  accentPalette(): Promise<string[] | null>;
+  /** Fired when the app swaps from demo data to the real searchd source. */
+  onSourceChanged(cb: () => void): Promise<() => void>;
 }

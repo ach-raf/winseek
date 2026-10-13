@@ -29,6 +29,9 @@ pub struct VolumeStatus {
     pub folders: u64,
     /// "live" | "scanning" | "paused" | "offline" | "demo" (MockSource: searchd not running)
     pub state: String,
+    /// Scan progress (only while "scanning").
+    pub done: Option<u64>,
+    pub total: Option<u64>,
 }
 
 pub trait NameSource: Send + Sync {
@@ -179,8 +182,8 @@ impl NameSource for MockSource {
     fn status(&self) -> Vec<VolumeStatus> {
         let folders = self.entries.iter().filter(|e| e.is_dir).count() as u64;
         vec![
-            VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "demo".into() },
-            VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "demo".into() },
+            VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "demo".into(), done: None, total: None },
+            VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "demo".into(), done: None, total: None },
         ]
     }
 

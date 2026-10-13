@@ -1,5 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Filter, Hit, Sort, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
+import { FirstRun, type Summary } from "./FirstRun";
+import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize, kindOf, matchRanges, splitDir } from "./format";
 
@@ -138,6 +140,20 @@ export default function App({ backend }: { backend: Backend }) {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
+  // First run: panel shown while on demo data with the service missing/stopped. Typing hides it (clearing the
+  // box brings it back); "Not now" hides it for the session. After install/start it becomes a live counter that
+  // ends on the first keystroke once everything is live.
+  const [service, setService] = useState<ServiceState | null>(null);
+  const [dismissed, setDismissed] = useState(false);
+  const [setupBusy, setSetupBusy] = useState(false);
+  const [setupErr, setSetupErr] = useState<string | null>(null);
+  const [counting, setCounting] = useState(false);
+  const [summary, setSummary] = useState<Summary | null>(null);
+  const t0 = useRef<number | null>(null);
+  const sawScan = useRef(false);
+  const showPanelRef = useRef(false);
+  const summaryRef = useRef<Summary | null>(null);
+  const primaryRef = useRef<() => void>(() => {});
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -199,17 +215,59 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => { if (last >= first) ensurePages(first, last); }, [first, last, ensurePages]);
 
   // ---- status / window events ---------------------------------------------
+  const fast = counting && !summary; // 250 ms while the first scan is being watched
+  const refreshStatus = useCallback(() => {
+    backend.status().then((st) => {
+      setStatus(st);
+      if (st.length > 0 && st.every((v) => v.state === "demo")) backend.serviceState().then(setService).catch(() => {});
+    }).catch(() => {});
+  }, [backend]);
   useEffect(() => {
-    const refresh = () => backend.status().then(setStatus).catch(() => {});
-    refresh();
-    const t = window.setInterval(refresh, 5000);
+    refreshStatus();
+    const t = window.setInterval(refreshStatus, fast ? 250 : 1000);
     return () => window.clearInterval(t);
+  }, [refreshStatus, fast, epoch]);
+
+  const startCounting = useCallback(() => {
+    t0.current ??= performance.now();
+    sawScan.current = false;
+    setSummary(null);
+    setCounting(true);
+  }, []);
+
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    backend.onSourceChanged(() => {
+      if (showPanelRef.current) startCounting();
+      refreshStatus();
+      setEpoch((e) => e + 1);
+    }).then((u) => (off = u));
+    return () => off?.();
+  }, [backend, refreshStatus, startCounting]);
+
+  useEffect(() => {
+    if (!counting || summary || !status.length) return;
+    if (status.some((v) => v.state === "scanning")) { sawScan.current = true; t0.current ??= performance.now(); }
+    if (status.every((v) => v.state === "live")) {
+      const secs = sawScan.current && t0.current != null ? (performance.now() - t0.current) / 1000 : null;
+      setSummary({ files: status.reduce((a, v) => a + v.files + v.folders, 0), letters: status.map((v) => v.letter), secs });
+    }
+  }, [counting, summary, status]);
+
+  // accent colour follows Windows; re-read on load, popup show and light/dark switch
+  useEffect(() => {
+    const dark = window.matchMedia("(prefers-color-scheme: dark)");
+    const apply = () => backend.accentPalette().then((p) => applyAccent(p, dark.matches)).catch(() => {});
+    apply();
+    dark.addEventListener("change", apply);
+    return () => dark.removeEventListener("change", apply);
   }, [backend, epoch]);
 
   useEffect(() => {
     let off: (() => void) | undefined;
     backend.onShown(() => {
       setEpoch((e) => e + 1);
+      if (summaryRef.current) setCounting(false); // the "indexed N files" line is one-shot
       requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
     }).then((u) => (off = u));
     return () => off?.();
@@ -364,9 +422,15 @@ export default function App({ backend }: { backend: Backend }) {
         case "PageUp": e.preventDefault(); move(sel - page); break;
         case "Home": if (e.ctrlKey) { e.preventDefault(); move(0); } break;
         case "End": if (e.ctrlKey) { e.preventDefault(); move(data.total - 1); } break;
-        case "Enter": e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
+        case "Enter":
+          if (showPanelRef.current) {
+            if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
+            e.preventDefault(); primaryRef.current(); break;
+          }
+          e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
         case "Escape": e.preventDefault(); void backend.hide(); break;
         case "Tab": {
+          if (showPanelRef.current) break; // let focus move into the panel buttons
           e.preventDefault();
           const i = FILTERS.findIndex((f) => f.id === filter);
           setFilter(FILTERS[(i + (e.shiftKey ? FILTERS.length - 1 : 1)) % FILTERS.length].id);
@@ -414,11 +478,34 @@ export default function App({ backend }: { backend: Backend }) {
   // moving the selection / reloading the list cancels an inline rename
   useEffect(() => { setRenaming(false); }, [sel, epoch, query, filter, sort]);
 
+  // ---- first run -----------------------------------------------------------
+  const demo = status.length > 0 && status.every((v) => v.state === "demo");
+  const needsSetup = demo && (service === "not_installed" || service === "stopped") && !dismissed;
+  const showPanel = query.trim() === "" && (counting || needsSetup);
+  showPanelRef.current = needsSetup && query.trim() === "";
+  summaryRef.current = summary;
+  const runSetup = useCallback(async () => {
+    if (setupBusy) return;
+    setSetupBusy(true);
+    setSetupErr(null);
+    try {
+      await (service === "stopped" ? backend.startService() : backend.installService());
+      startCounting();
+    } catch (e) {
+      setSetupErr(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""));
+    } finally {
+      setSetupBusy(false);
+      refocus();
+    }
+  }, [backend, service, setupBusy, startCounting, refocus]);
+  primaryRef.current = runSetup;
+  useEffect(() => { if (query.trim() && counting && summary) setCounting(false); }, [query, counting, summary]);
+
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
   const state = status.find((v) => v.state !== "live")?.state ?? (status.length ? "live" : "connecting");
   const statusText =
-    state === "demo" ? "demo data — searchd not running"
+    state === "demo" ? `Demo data · ${service === "not_installed" ? "name service not installed" : service === "stopped" ? "name service stopped" : "searchd not running"}`
     : state === "offline" ? "searchd offline — reconnecting…"
     : totalFiles ? `${totalFiles.toLocaleString("en-US")} files · ${state}`
     : state === "scanning" ? "Indexing…"
@@ -491,9 +578,18 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
 
-      {heading && <div className="section">{heading}</div>}
+      {showPanel && (
+        <FirstRun
+          mode={counting ? "counter" : "setup"} service={service} busy={setupBusy} error={setupErr}
+          rows={status.filter((v) => v.state !== "demo")} summary={summary}
+          onPrimary={() => void runSetup()}
+          onDismiss={() => { setDismissed(true); setSetupErr(null); refocus(); }}
+        />
+      )}
 
-      <div className="list" ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
+      {!showPanel && heading && <div className="section">{heading}</div>}
+
+      <div className="list" hidden={showPanel} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
         <div className="spacer-v" style={{ height: data.total * ROW_H }}>{visible}</div>
         {loaded && data.total === 0 && (
           <div className="empty">
