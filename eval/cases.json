@@ -1,0 +1,298 @@
+[
+  {
+    "q": "a solid red image",
+    "expect": [
+      "img_0000.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "plain green background",
+    "expect": [
+      "img_0001.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "a completely blue picture",
+    "expect": [
+      "img_0002.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "yellow color field",
+    "expect": [
+      "img_0003.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "an orange image",
+    "expect": [
+      "img_0004.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "purple",
+    "expect": [
+      "img_0005.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "an all black image",
+    "expect": [
+      "img_0006.jpg"
+    ],
+    "tag": "color"
+  },
+  {
+    "q": "a red circle on a white background",
+    "expect": [
+      "img_0007.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a blue circle",
+    "expect": [
+      "img_0008.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a green circle",
+    "expect": [
+      "img_0009.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a yellow circle",
+    "expect": [
+      "img_0010.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a red square",
+    "expect": [
+      "img_0011.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a blue square",
+    "expect": [
+      "img_0012.jpg",
+      "img_0033.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a green square",
+    "expect": [
+      "img_0013.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "an orange square",
+    "expect": [
+      "img_0014.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a yellow triangle",
+    "expect": [
+      "img_0015.jpg",
+      "img_0034.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a purple triangle",
+    "expect": [
+      "img_0016.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a green triangle",
+    "expect": [
+      "img_0017.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "a red triangle",
+    "expect": [
+      "img_0018.jpg"
+    ],
+    "tag": "shape"
+  },
+  {
+    "q": "red and white horizontal stripes",
+    "expect": [
+      "img_0019.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "blue and yellow vertical stripes",
+    "expect": [
+      "img_0020.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "black and white vertical stripes",
+    "expect": [
+      "img_0021.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "green and white striped pattern",
+    "expect": [
+      "img_0022.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "a black and white checkerboard",
+    "expect": [
+      "img_0023.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "a red and yellow checkered pattern",
+    "expect": [
+      "img_0024.jpg"
+    ],
+    "tag": "pattern"
+  },
+  {
+    "q": "a gradient from red to yellow",
+    "expect": [
+      "img_0025.jpg"
+    ],
+    "tag": "gradient"
+  },
+  {
+    "q": "a gradient fading from blue to white",
+    "expect": [
+      "img_0026.jpg"
+    ],
+    "tag": "gradient"
+  },
+  {
+    "q": "a smooth gradient from black to white",
+    "expect": [
+      "img_0027.jpg"
+    ],
+    "tag": "gradient"
+  },
+  {
+    "q": "a gradient from green to blue",
+    "expect": [
+      "img_0028.jpg"
+    ],
+    "tag": "gradient"
+  },
+  {
+    "q": "a white page with lines of text",
+    "expect": [
+      "img_0029.jpg",
+      "img_0030.jpg",
+      "img_0031.jpg",
+      "img_0032.jpg"
+    ],
+    "tag": "doc"
+  },
+  {
+    "q": "a scanned document",
+    "expect": [
+      "img_0029.jpg",
+      "img_0030.jpg",
+      "img_0031.jpg",
+      "img_0032.jpg"
+    ],
+    "tag": "doc"
+  },
+  {
+    "q": "pancake recipe with flour and eggs",
+    "expect": [
+      "note_0035.txt"
+    ],
+    "tag": "text"
+  },
+  {
+    "q": "quarterly budget meeting notes",
+    "expect": [
+      "note_0036.txt"
+    ],
+    "tag": "text"
+  },
+  {
+    "q": "what to pack for a hike",
+    "expect": [
+      "note_0037.txt"
+    ],
+    "tag": "text"
+  },
+  {
+    "q": "consulting invoice with hourly rate",
+    "expect": [
+      "note_0038.txt"
+    ],
+    "tag": "text"
+  },
+  {
+    "q": "un cercle rouge sur fond blanc",
+    "expect": [
+      "img_0007.jpg"
+    ],
+    "tag": "xling"
+  },
+  {
+    "q": "rayures bleues et jaunes verticales",
+    "expect": [
+      "img_0020.jpg"
+    ],
+    "tag": "xling"
+  },
+  {
+    "q": "recette de crepes",
+    "expect": [
+      "note_0035.txt"
+    ],
+    "tag": "xling"
+  },
+  {
+    "q": "un triangulo amarillo",
+    "expect": [
+      "img_0015.jpg",
+      "img_0034.jpg"
+    ],
+    "tag": "xling"
+  },
+  {
+    "q": "grocery shopping list",
+    "expect": [
+      "note_0040.txt"
+    ],
+    "tag": "xling"
+  },
+  {
+    "q": "chocolate cake recipe",
+    "expect": [
+      "note_0039.txt"
+    ],
+    "tag": "xling"
+  }
+]

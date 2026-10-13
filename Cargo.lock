@@ -4648,6 +4648,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "winseek-eval"
+version = "0.1.0"
+dependencies = [
+ "image",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "winseek-llama",
+ "winseek-store",
+]
+
+[[package]]
 name = "winseek-index"
 version = "0.1.0"
 
@@ -4664,6 +4676,7 @@ name = "winseek-llama"
 version = "0.1.0"
 dependencies = [
  "base64 0.22.1",
+ "image",
  "serde",
  "serde_json",
  "sha2",

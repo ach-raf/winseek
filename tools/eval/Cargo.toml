@@ -1,0 +1,20 @@
+[package]
+name = "winseek-eval"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Tier 1 eval harness: llama-server -> store -> vector search recall/MRR"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+winseek-llama = { path = "../../crates/llama" }
+winseek-store = { path = "../../crates/store" }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+
+[dev-dependencies]
+tempfile = "3"
+
+[[bin]]
+name = "winseek-eval"
+path = "src/main.rs"

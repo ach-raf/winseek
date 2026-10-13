@@ -11,3 +11,4 @@ ureq = "2"
 sha2 = "0.10"
 zip = { version = "2", default-features = false, features = ["deflate"] }
 base64 = "0.22"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }

@@ -7,6 +7,7 @@ pub mod embed;
 pub mod fetch;
 pub mod install;
 pub mod manifest;
+pub mod prep;
 pub mod reaper;
 pub mod server;
 
