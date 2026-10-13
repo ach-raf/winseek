@@ -340,7 +340,7 @@ try {
     }
     Check 'long path really > 260 chars' ($script:LongLen -gt 260) "len=$($script:LongLen)"
     Check 'duplicates: 3 folders' ((Q-Count 'dupname_trap') -eq 3) "count=$(Q-Count 'dupname_trap')"
-    $o = Q-List 'hl_orig_trap'; $lk = Q-List 'hl_link_trap'
+    $o = @(Q-List 'hl_orig_trap'); $lk = @(Q-List 'hl_link_trap')
     Check 'hardlink: original name' ($o.Count -eq 1 -and $o[0] -ieq "${L}:\traps\hl1\hl_orig_trap.txt") "hits=$($o.Count)"
     Check 'hardlink: second name' ($lk.Count -eq 1 -and $lk[0] -ieq "${L}:\traps\hl2\hl_link_trap.txt") "hits=$($lk.Count)"
     Check 'ADS: main file once' ((Q-Count 'file_ads_trap') -eq 1) "count=$(Q-Count 'file_ads_trap')"
@@ -393,7 +393,7 @@ try {
     $live = Wait-Live 180
     Check 'searchd live after wrap' $live "state=$(Q-State)"
     $newLog = @(Get-Content -Path $SearchdLog -ErrorAction SilentlyContinue | Select-Object -Skip $logLinesBefore)
-    $rescanLine = $newLog | Where-Object { $_ -match "journal id changed; full scan|outside journal|USN journal reset; rescanning" } | Select-Object -First 1
+    $rescanLine = $newLog | Where-Object { $_ -match "journal id changed; full scan|outside journal|USN journal reset; rescanning|no usable snapshot; full scan" } | Select-Object -First 1
     Check 'log shows full rescan' ($null -ne $rescanLine) "$rescanLine"
     Check 'log shows scan completed' (@($newLog | Where-Object { $_ -match "${L}: scanned \d+ entries" }).Count -ge 1)
     Check 'wrap: downtime files found' ((Q-Count 'downtime_') -eq 50) "count=$(Q-Count 'downtime_') want 50"
