@@ -59,7 +59,7 @@ export function whyName(h: Hit, nameQ: string, chips: string[], score?: number):
 }
 
 /** Turn an FTS5 snippet (`... [match] ...`) into text with <mark>s. */
-function Snippet({ text }: { text: string }) {
+export function Snippet({ text }: { text: string }) {
   const parts = text.replace(/\s+/g, " ").trim().split(/(\[[^\]]*\])/);
   return <>{parts.map((p, i) => (p.startsWith("[") && p.endsWith("]") ? <mark key={i}>{p.slice(1, -1)}</mark> : p))}</>;
 }

@@ -1,0 +1,304 @@
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Backend, Hit, PreviewInfo } from "./types";
+import { FileIcon } from "./FileIcon";
+import { Snippet } from "./Semantic";
+import { formatDate, formatSize, splitDir } from "./format";
+import { clampView, fitScale, highlight, previewTerms, toggleActual, zoomAt, type View } from "./previewLogic";
+
+const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
+
+export interface PreviewProps {
+  backend: Backend;
+  hit: Hit;
+  /** Free-text part of the search; its words are highlighted in text files. */
+  query: string;
+  /** Text found inside the file by the semantic search (`[match]` marks). */
+  snippet?: string | null;
+  /** Seconds into a video / audio file to start at (a hit that carries a timestamp). */
+  start?: number;
+  onOpen: () => void;
+  onReveal: () => void;
+}
+
+/**
+ * Space preview. Loads `preview_info` for the hit; a newer hit supersedes an older one (the older answer is
+ * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
+ * dimmed, until the new one arrives so arrowing through results does not flash.
+ */
+export function Preview({ backend, hit, query, snippet, start, onOpen, onReveal }: PreviewProps) {
+  const [info, setInfo] = useState<PreviewInfo | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let live = true;
+    setLoading(true);
+    backend.previewInfo(hit.path).then(
+      (i) => { if (live) { setInfo(i); setErr(null); setLoading(false); } },
+      (e) => { if (live) { setInfo(null); setErr(errText(e)); setLoading(false); } },
+    );
+    return () => { live = false; };
+  }, [backend, hit.path]);
+
+  const shown = info && info.path === hit.path ? info : null;
+  const stale = loading && !!info;
+  const { head, tail } = splitDir(hit.path);
+
+  return (
+    <aside className="pv" aria-label={`Preview of ${hit.name}`}>
+      <header className="pv-head">
+        <FileIcon name={hit.name} isDir={hit.is_dir} src={backend.iconUrl(hit.path, hit.is_dir, false)} />
+        <div className="pv-title">
+          <div className="pv-name" title={hit.name}>{hit.name}</div>
+          <div className="pv-path" title={hit.path}><span className="head">{head}</span><span className="tail">{tail}</span></div>
+        </div>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onReveal} title="Show in Explorer (Ctrl+Enter)">Reveal</button>
+        <button className="btn primary pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onOpen} title="Open (Enter)">Open</button>
+      </header>
+      {snippet && (
+        <div className="pv-snip" title="Text found inside the file"><Snippet text={snippet} /></div>
+      )}
+      <div className={"pv-body" + (stale ? " stale" : "")}>
+        {err ? (
+          <div className="pv-msg" role="alert">{err}</div>
+        ) : info ? (
+          <Body key={info.path} info={info} query={query} start={start} />
+        ) : (
+          <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
+        )}
+      </div>
+      {shown && <Facts info={shown} />}
+    </aside>
+  );
+}
+
+function Facts({ info }: { info: PreviewInfo }) {
+  const parts: string[] = [];
+  const im = info.image;
+  if (im?.width && im.height) parts.push(`${im.width} × ${im.height}`);
+  if (info.size !== null) parts.push(formatSize(info.size));
+  if (info.mtime !== null) parts.push(`Modified ${formatDate(info.mtime)}`);
+  if (info.kind === "text" && info.text) parts.push(info.text.encoding);
+  const ex = im?.exif;
+  return (
+    <footer className="pv-facts">
+      <div>{parts.join(" · ")}</div>
+      {im && (
+        <div className="exif">
+          {ex ? (
+            <>
+              {ex.date && <span>{ex.date}</span>}
+              {ex.camera && <span>{ex.camera}</span>}
+              <span>GPS: {ex.gps ? "yes" : "no"}</span>
+            </>
+          ) : (
+            <span>No EXIF data</span>
+          )}
+        </div>
+      )}
+    </footer>
+  );
+}
+
+function Body({ info, query, start }: { info: PreviewInfo; query: string; start?: number }) {
+  switch (info.kind) {
+    case "image": return <ImageView info={info} />;
+    case "video": case "audio": return <MediaView info={info} start={start} />;
+    case "text": return <TextView info={info} query={query} />;
+    default: return <OtherView info={info} />;
+  }
+}
+
+// ---- images: fit, wheel zoom, drag pan, double-click 1:1 ------------------------------------------------------
+
+function ImageView({ info }: { info: PreviewInfo }) {
+  const meta = info.image;
+  const [useThumb, setUseThumb] = useState(!!meta?.thumb);
+  const [dead, setDead] = useState(false);
+  const src = useThumb ? info.thumb : info.src;
+  if (!src || dead) return <OtherView info={info} note="This image cannot be shown here." />;
+  return (
+    <ImageStage
+      key={src} src={src} name={info.name}
+      dims={!useThumb && meta?.width && meta.height ? { w: meta.width, h: meta.height } : null}
+      note={useThumb ? "Shell thumbnail" : null}
+      onError={() => { if (!useThumb && info.thumb) setUseThumb(true); else setDead(true); }}
+    />
+  );
+}
+
+function ImageStage({ src, name, dims, note, onError }: {
+  src: string; name: string; dims: { w: number; h: number } | null; note: string | null; onError: () => void;
+}) {
+  const stage = useRef<HTMLDivElement>(null);
+  const [box, setBox] = useState({ w: 0, h: 0 });
+  const [nat, setNat] = useState(dims);
+  const [view, setView] = useState<View>({ s: 1, tx: 0, ty: 0 });
+  const [fitted, setFitted] = useState(true);
+  const [dragging, setDragging] = useState(false);
+  const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
+
+  const fit = nat ? fitScale(box.w, box.h, nat.w, nat.h) : 1;
+  const cur: View = fitted ? { s: fit, tx: 0, ty: 0 } : view;
+  // The wheel listener is native (React's is passive and could not stop the list from scrolling).
+  const latest = useRef({ cur, fit, box, nat });
+  latest.current = { cur, fit, box, nat };
+
+  const apply = (v: View, f: number) => {
+    if (v.s <= f + 1e-6) { setFitted(true); setView({ s: f, tx: 0, ty: 0 }); } else { setFitted(false); setView(v); }
+  };
+
+  useLayoutEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const measure = () => setBox({ w: el.clientWidth, h: el.clientHeight });
+    const ro = new ResizeObserver(measure);
+    ro.observe(el);
+    measure();
+    return () => ro.disconnect();
+  }, []);
+
+  useEffect(() => {
+    const el = stage.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      e.preventDefault();
+      const { cur, fit, box, nat } = latest.current;
+      if (!nat) return;
+      const r = el.getBoundingClientRect();
+      const px = e.clientX - r.left - r.width / 2, py = e.clientY - r.top - r.height / 2;
+      const dy = e.deltaMode === 1 ? e.deltaY * 33 : e.deltaY;
+      apply(zoomAt(cur, Math.exp(-dy * 0.0015), px, py, fit, box.w, box.h, nat.w, nat.h), fit);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
+  const onDown = (e: React.PointerEvent) => {
+    if (e.button !== 0 || !nat) return;
+    e.preventDefault(); // keep focus in the search box
+    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
+    drag.current = { x: e.clientX, y: e.clientY, tx: cur.tx, ty: cur.ty };
+    setDragging(true);
+  };
+  const onMove = (e: React.PointerEvent) => {
+    const d = drag.current;
+    if (!d || !nat) return;
+    const { cur, fit, box } = latest.current;
+    if (cur.s <= fit + 1e-6) return; // nothing to pan while the whole image is visible
+    apply(clampView({ s: cur.s, tx: d.tx + e.clientX - d.x, ty: d.ty + e.clientY - d.y }, box.w, box.h, nat.w, nat.h), fit);
+  };
+  const onUp = () => { drag.current = null; setDragging(false); };
+  const onDouble = () => { if (nat) apply(toggleActual(cur, fit), fit); };
+
+  const style: React.CSSProperties = nat
+    ? {
+        width: nat.w, height: nat.h, marginLeft: -nat.w / 2, marginTop: -nat.h / 2,
+        transform: `translate(${cur.tx}px, ${cur.ty}px) scale(${cur.s})`,
+        imageRendering: cur.s >= 3 ? "pixelated" : "auto",
+      }
+    : { visibility: "hidden" };
+
+  return (
+    <div className={"pv-stage" + (dragging ? " dragging" : "") + (!fitted ? " zoomed" : "")} ref={stage}
+         onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onDoubleClick={onDouble}>
+      <img src={src} alt={name} draggable={false} style={style} decoding="async"
+           onLoad={(e) => {
+             const i = e.currentTarget;
+             setNat({ w: i.naturalWidth || 800, h: i.naturalHeight || 600 });
+           }}
+           onError={onError} />
+      <div className="pv-zoom" aria-hidden>{Math.round(cur.s * 100)}%{note ? ` · ${note}` : ""}</div>
+    </div>
+  );
+}
+
+// ---- video / audio ------------------------------------------------------------------------------------
+
+function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
+  const ref = useRef<HTMLMediaElement>(null);
+  const [failed, setFailed] = useState(false);
+
+  const url = info.src;
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !url) return;
+    if (el.getAttribute("src") !== url) el.src = url; // re-arm after StrictMode's simulated unmount
+    return () => {
+      // Unmounting (selection moved on) must stop the download as well as the sound.
+      el.pause();
+      el.removeAttribute("src");
+      el.load();
+    };
+  }, [url]);
+
+  if (!info.src || failed) return <OtherView info={info} note="This format cannot be played here. Use Open." />;
+  const common = {
+    src: info.src, controls: true, preload: "metadata" as const,
+    onError: () => setFailed(true),
+    onLoadedMetadata: (e: React.SyntheticEvent<HTMLMediaElement>) => {
+      if (start && start > 0) e.currentTarget.currentTime = Math.min(start, e.currentTarget.duration || start);
+    },
+  };
+  return info.kind === "video" ? (
+    <div className="pv-media"><video ref={ref as React.RefObject<HTMLVideoElement>} {...common} /></div>
+  ) : (
+    <div className="pv-media audio">
+      <div className="pv-bigicon"><FileIcon name={info.name} isDir={false} src={null} /></div>
+      <audio ref={ref as React.RefObject<HTMLAudioElement>} {...common} />
+    </div>
+  );
+}
+
+// ---- text / code --------------------------------------------------------------------------------------
+
+function TextView({ info, query }: { info: PreviewInfo; query: string }) {
+  const box = useRef<HTMLDivElement>(null);
+  const t = info.text;
+  const { segments, hits } = useMemo(() => highlight(t?.content ?? "", previewTerms(query)), [t, query]);
+
+  // Scroll to the first hit (a third of the way down, so some context above it stays visible).
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) return;
+    const m = el.querySelector("mark");
+    el.scrollTop = m ? Math.max(0, (m as HTMLElement).offsetTop - el.clientHeight / 3) : 0;
+  }, [segments]);
+
+  if (!t) return <OtherView info={info} />;
+  return (
+    <div className="pv-text" ref={box}>
+      {hits > 0 && <div className="pv-hits">{hits >= 2000 ? "2000+" : hits} match{hits === 1 ? "" : "es"}</div>}
+      <pre>{segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</pre>
+      {t.truncated && <div className="pv-trunc">Showing the first 256 KB</div>}
+    </div>
+  );
+}
+
+// ---- everything else: big icon / thumbnail + facts --------------------------------------------------------
+
+function OtherView({ info, note }: { info: PreviewInfo; note?: string }) {
+  const [broken, setBroken] = useState(false);
+  const rows: [string, string][] = [];
+  const type = info.kind === "folder" ? "Folder" : info.ext ? `${info.ext.toUpperCase()} file` : "File";
+  rows.push(["Type", type]);
+  if (info.size !== null) rows.push(["Size", formatSize(info.size)]);
+  if (info.mtime !== null) rows.push(["Modified", formatDate(info.mtime)]);
+  if (info.ctime !== null) rows.push(["Created", formatDate(info.ctime)]);
+  return (
+    <div className="pv-other">
+      <div className="pv-bigicon">
+        {info.thumb && !broken ? (
+          <img src={info.thumb} alt="" draggable={false} onError={() => setBroken(true)} />
+        ) : (
+          <FileIcon name={info.name} isDir={info.kind === "folder"} src={null} />
+        )}
+      </div>
+      <div className="pv-oname" title={info.name}>{info.name}</div>
+      {note && <div className="pv-note">{note}</div>}
+      <dl className="pv-dl">
+        {rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}
+      </dl>
+    </div>
+  );
+}

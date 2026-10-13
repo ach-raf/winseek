@@ -5,6 +5,7 @@ import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings } from "./Settings";
 import { Status } from "./Status";
+import { Preview } from "./Preview";
 import { SemRow, SemanticHint, baseName, dedupe, pathKey, semAccepts, whyName } from "./Semantic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
@@ -197,6 +198,11 @@ export default function App({ backend }: { backend: Backend }) {
   const [counting, setCounting] = useState(false);
   // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
   const [setupOpen, setSetupOpen] = useState(false);
+  // Space preview: `pvOpen` toggles the pane, `pv` is the (debounced) hit it shows. `navigated`: the user has moved
+  // through the list with the keyboard since the last keystroke in the box, so Space means "preview", not a space.
+  const [pvOpen, setPvOpen] = useState(false);
+  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null } | null>(null);
+  const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
   const [hintOff, setHintOff] = useState(false);
@@ -390,6 +396,25 @@ export default function App({ backend }: { backend: Backend }) {
     ? data.rows[sel]
     : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: semSel.size ?? null, mtime: semSel.mtime ?? null };
 
+  const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}` : "";
+  const currentRef = useRef(current);
+  currentRef.current = current;
+  const snippetRef = useRef(curSnippet);
+  snippetRef.current = curSnippet;
+  // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
+  const pvShown = useRef(false);
+  useEffect(() => {
+    if (!pvOpen) { pvShown.current = false; setPv(null); return; }
+    const c = currentRef.current;
+    if (!c) return;
+    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current }); };
+    if (!pvShown.current) { set(); return; }
+    const t = window.setTimeout(set, 120);
+    return () => window.clearTimeout(t);
+  }, [pvOpen, curKey]);
+  useEffect(() => { navigated.current = false; }, [query]);
+
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
     if (!h) return;
     try {
@@ -530,12 +555,20 @@ export default function App({ backend }: { backend: Backend }) {
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); return; }
       switch (e.key) {
-        case "ArrowDown": e.preventDefault(); move(sel + 1); break;
-        case "ArrowUp": e.preventDefault(); move(sel - 1); break;
-        case "PageDown": e.preventDefault(); move(sel + page); break;
-        case "PageUp": e.preventDefault(); move(sel - page); break;
-        case "Home": if (e.ctrlKey) { e.preventDefault(); move(0); } break;
-        case "End": if (e.ctrlKey) { e.preventDefault(); move(selCount - 1); } break;
+        case "ArrowDown": e.preventDefault(); navigated.current = true; move(sel + 1); break;
+        case "ArrowUp": e.preventDefault(); navigated.current = true; move(sel - 1); break;
+        case "PageDown": e.preventDefault(); navigated.current = true; move(sel + page); break;
+        case "PageUp": e.preventDefault(); navigated.current = true; move(sel - page); break;
+        case "Home": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(0); } break;
+        case "End": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(selCount - 1); } break;
+        case " ":
+          // Space closes the preview; it opens one when it cannot be a typed space (empty box, or after arrowing
+          // through the results). Ctrl+Space always toggles.
+          if (pvOpen) { e.preventDefault(); setPvOpen(false); }
+          else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
+            e.preventDefault(); setPvOpen(true);
+          }
+          break;
         case "Enter":
           if (setupOpenRef.current) {
             if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
@@ -548,7 +581,8 @@ export default function App({ backend }: { backend: Backend }) {
           e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
         case "Escape":
           e.preventDefault();
-          if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); refocus(); } else void backend.hide();
+          if (pvOpen) setPvOpen(false);
+          else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); refocus(); } else void backend.hide();
           break;
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
@@ -588,7 +622,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus]);
+  }, [move, sel, viewH, act, current, query, pvOpen, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -762,6 +796,8 @@ export default function App({ backend }: { backend: Backend }) {
         />
       ))}
 
+      <div className={"main" + (pvOpen && pv ? " split" : "")} hidden={showPanel}>
+      <div className="lcol">
       {!showPanel && heading && <div className="section">{heading}</div>}
 
       <div className="list" hidden={showPanel} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
@@ -793,6 +829,12 @@ export default function App({ backend }: { backend: Backend }) {
       {!showPanel && t1Off && !hintOff && query.trim() !== "" && (
         <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
       )}
+      </div>
+      {pvOpen && pv && (
+        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet}
+                 onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} />
+      )}
+      </div>
 
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>
@@ -806,11 +848,23 @@ export default function App({ backend }: { backend: Backend }) {
         )}
         <span className="spacer" />
         <span className="hints">
-          <span><kbd>↵</kbd> Open</span>
-          <span><kbd>Ctrl ↵</kbd> Reveal</span>
-          <span><kbd>Ctrl ⇧ C</kbd> Path</span>
-          <span><kbd>F2</kbd> Rename</span>
-          <span><kbd>Del</kbd> Recycle</span>
+          {pvOpen ? (
+            <>
+              <span><kbd>Space</kbd> Close</span>
+              <span><kbd>↵</kbd> Open</span>
+              <span><kbd>Ctrl ↵</kbd> Reveal</span>
+              <span><kbd>↑↓</kbd> Next</span>
+            </>
+          ) : (
+            <>
+              <span><kbd>Space</kbd> Preview</span>
+              <span><kbd>↵</kbd> Open</span>
+              <span><kbd>Ctrl ↵</kbd> Reveal</span>
+              <span><kbd>Ctrl ⇧ C</kbd> Path</span>
+              <span><kbd>F2</kbd> Rename</span>
+              <span><kbd>Del</kbd> Recycle</span>
+            </>
+          )}
         </span>
       </footer>
     </div>

@@ -131,6 +131,42 @@ export interface StatusPage {
   tier1: StatusTier1;
   models: StatusModels;
 }
+export type PreviewKind = "image" | "video" | "audio" | "text" | "folder" | "other";
+export interface PreviewExif {
+  /** "2024-05-03 14:22:10" */
+  date: string | null;
+  camera: string | null;
+  /** The file carries GPS coordinates (they are not shown). */
+  gps: boolean;
+}
+export interface PreviewImage {
+  width: number | null;
+  height: number | null;
+  /** Show the shell thumbnail (`PreviewInfo.thumb`) instead of the file bytes. */
+  thumb: boolean;
+  exif: PreviewExif | null;
+}
+export interface PreviewText {
+  content: string;
+  truncated: boolean;
+  encoding: string;
+}
+/** `preview_info` result. `src` / `thumb` are URLs filled in by the backend wrapper (null when unavailable). */
+export interface PreviewInfo {
+  kind: PreviewKind;
+  name: string;
+  path: string;
+  ext: string;
+  size: number | null;
+  mtime: number | null;
+  ctime: number | null;
+  image: PreviewImage | null;
+  text: PreviewText | null;
+  /** Streamable file URL (image / video / audio). */
+  src: string | null;
+  /** Large shell thumbnail / icon URL. */
+  thumb: string | null;
+}
 export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders" | "apps";
 export type Sort = "rel" | "name" | "size" | "date";
 
@@ -166,6 +202,8 @@ export interface Backend {
   tier1GetIgnore(): Promise<IgnoreList>;
   /** `null` resets to the defaults; an empty list is a valid choice. Returns what was saved. */
   tier1SetIgnore(list: string[] | null): Promise<IgnoreList>;
+  /** Never rejects with anything but a user-readable string ("File not found"). */
+  previewInfo(path: string): Promise<PreviewInfo>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;
   /** Everything the status page shows. Never rejects because searchd is down (tier0.source says so). */
   statusPage(): Promise<StatusPage>;

@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test src/filters.test.ts"
+    "test": "node --test src/filters.test.ts src/previewLogic.test.ts"
   },
   "dependencies": {
     "react": "^19.0.0",

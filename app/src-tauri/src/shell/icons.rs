@@ -74,7 +74,7 @@ fn response(png: Option<Arc<Vec<u8>>>) -> Response<Cow<'static, [u8]>> {
     .expect("static response")
 }
 
-fn percent_decode(s: &str) -> String {
+pub(crate) fn percent_decode(s: &str) -> String {
     let b = s.as_bytes();
     let mut out = Vec::with_capacity(b.len());
     let mut i = 0;
@@ -93,7 +93,7 @@ fn percent_decode(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
-fn query_param(q: &str, key: &str) -> Option<String> {
+pub(crate) fn query_param(q: &str, key: &str) -> Option<String> {
     q.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
         (k == key).then(|| percent_decode(v))
@@ -107,7 +107,7 @@ pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
     };
     let is_dir = query_param(q, "d").as_deref() == Some("1");
     let thumb = query_param(q, "t").as_deref() == Some("1");
-    let size = query_param(q, "s").and_then(|s| s.parse::<u32>().ok()).unwrap_or(32).clamp(16, 256);
+    let size = query_param(q, "s").and_then(|s| s.parse::<u32>().ok()).unwrap_or(32).clamp(16, 1024);
     let job = Job { path, is_dir, size, thumb, responder };
     if let Err(e) = pool().send(job) {
         e.0.responder.respond(response(None));
@@ -134,6 +134,9 @@ pub(super) fn render(path: &str, is_dir: bool, size: u32, thumb: bool) -> Option
     }
     let png = if per_path { path_icon_png(path, size, thumb) } else { generic_icon_png(&ext, is_dir, size) }?;
     let png = Arc::new(png);
+    if size > 256 {
+        return Some(png); // preview-sized renders are one-offs; keep the cache small
+    }
     let mut g = CACHE.lock().ok()?;
     let c = g.get_or_insert_with(HashMap::new);
     if c.len() >= CACHE_CAP {

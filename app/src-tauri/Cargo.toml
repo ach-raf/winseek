@@ -37,6 +37,7 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
+kamadak-exif = "0.6.1"
 
 [dev-dependencies]
 tempfile = "3"

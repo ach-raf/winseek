@@ -1,4 +1,4 @@
-import type { Backend, IgnoreList, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, IgnoreList, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -41,6 +41,15 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1Pause: (paused) => inv("tier1_pause", { paused }),
     tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
     tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),
+    previewInfo: async (path) => {
+      const i = await inv<PreviewInfo>("preview_info", { path });
+      const big = (isDir: boolean) => `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=512&t=1`;
+      return {
+        ...i,
+        src: i.kind === "image" || i.kind === "video" || i.kind === "audio" ? `http://wsfile.localhost/?p=${encodeURIComponent(path)}` : null,
+        thumb: i.kind === "text" ? null : big(i.kind === "folder"),
+      };
+    },
     semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
     statusPage: () => inv<StatusPage>("status_page"),
     rescanVolume: (letter) => inv("rescan_volume", { letter }),

@@ -4,6 +4,7 @@ mod commands;
 mod models;
 mod pipe_source;
 mod popup;
+mod preview;
 mod shell;
 mod service;
 mod source;
@@ -56,6 +57,7 @@ fn main() {
             commands::open_path,
             commands::reveal_path,
             commands::copy_path,
+            preview::preview_info,
             shell::copy_files,
             shell::recycle,
             shell::restore_recycled,
@@ -81,6 +83,9 @@ fn main() {
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
+        })
+        .register_asynchronous_uri_scheme_protocol("wsfile", |_ctx, req, responder| {
+            preview::serve(req, responder)
         })
         .on_window_event(|win, ev| {
             if win.label() == popup::LABEL {
