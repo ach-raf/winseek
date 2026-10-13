@@ -26,6 +26,45 @@ fn main() {
         println!("{:?}", call(Request::Rescan { id: 1, volume }));
         return;
     }
+    // Script modes (used by scripts/p1-gate.ps1): `--status`, `--count <q>`, `--list <q>`.
+    match query.as_str() {
+        "--status" => {
+            if let Response::StatusResult { volumes, .. } = call(Request::Status { id: 1 }) {
+                for v in volumes {
+                    println!("STATUS {} {} {} {:?}", v.letter, v.files, v.folders, v.state);
+                }
+            }
+            return;
+        }
+        "--count" | "--list" => {
+            let q = args.next().unwrap_or_default();
+            let mut offset = 0u32;
+            loop {
+                let lim = if query == "--count" { 1 } else { 10_000 };
+                match call(Request::Search { id: 2, query: q.clone(), offset, limit: lim, sort: Sort::NameAsc }) {
+                    Response::SearchResult { total: t, hits, .. } => {
+                        if query == "--count" {
+                            println!("COUNT {t}");
+                            return;
+                        }
+                        for h in &hits {
+                            println!("{}{}", h.path, if h.is_dir { "\\" } else { "" });
+                        }
+                        offset += hits.len() as u32;
+                        if hits.is_empty() || u64::from(offset) >= t {
+                            break;
+                        }
+                    }
+                    other => {
+                        eprintln!("unexpected: {other:?}");
+                        std::process::exit(2);
+                    }
+                }
+            }
+            return;
+        }
+        _ => {}
+    }
     if let Response::StatusResult { volumes, uptime_s, .. } = call(Request::Status { id: 1 }) {
         println!("uptime {uptime_s}s");
         for v in volumes {
