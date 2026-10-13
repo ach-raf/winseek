@@ -77,6 +77,14 @@ const doneCbs = new Set<(d: ModelsDone) => void>();
 let include = ["C:\\Users\\User\\Pictures", "C:\\Users\\User\\Documents", "C:\\Users\\User\\Desktop", "C:\\Users\\User\\Downloads"];
 let exclude: string[] = [];
 let userPaused = false;
+// A representative slice of winseek_store::DEFAULT_IGNORE.
+const IGNORE_DEFAULTS = [
+  "AppData", "$RECYCLE.BIN", "Thumbs.db", ".ssh", ".gnupg", "*.kdbx", ".git", ".hg", ".svn", ".idea", ".vs", ".vscode",
+  "node_modules", ".next", ".yarn", ".pnpm-store", "venv", ".venv", "__pycache__", "*.egg-info", "site-packages",
+  ".pytest_cache", ".mypy_cache", "target", ".cargo", ".gradle", ".m2", ".mvn", "build", "dist", "out", "bin", "obj",
+  "cmake-build-*", "bazel-*", "vendor", "Pods", "DerivedData", ".dart_tool", ".terraform",
+];
+let ignoreList: string[] | null = null;
 let indexed = 0;
 let indexTick = performance.now();
 
@@ -203,6 +211,14 @@ export const mockBackend: Backend = {
   async tier1Status() { return t1Status(); },
   async tier1SetScopes(inc, exc) { await sleep(30); include = [...inc]; exclude = [...exc]; },
   async tier1Pause(p) { userPaused = p; },
+  async tier1GetIgnore() { return { list: [...(ignoreList ?? IGNORE_DEFAULTS)], defaults: [...IGNORE_DEFAULTS] }; },
+  async tier1SetIgnore(list) {
+    await sleep(30);
+    const seen = new Set<string>();
+    ignoreList = list === null ? null
+      : list.map((s) => s.trim()).filter((s) => s && !seen.has(s.toLowerCase()) && !!seen.add(s.toLowerCase()));
+    return { list: [...(ignoreList ?? IGNORE_DEFAULTS)], defaults: [...IGNORE_DEFAULTS] };
+  },
   async semanticSearch(query, k) {
     const st = t1Status().state;
     if (!modelsInstalled || st === "unavailable") return { state: st === "unavailable" ? "unavailable" : "models_missing", hits: [] };

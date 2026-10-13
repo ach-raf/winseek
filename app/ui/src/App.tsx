@@ -2,6 +2,7 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
+import { Settings } from "./Settings";
 import { SemRow, SemanticHint, baseName, dedupe, pathKey } from "./Semantic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
@@ -154,6 +155,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [counting, setCounting] = useState(false);
   // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
   const [setupOpen, setSetupOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const t0 = useRef<number | null>(null);
@@ -180,7 +182,7 @@ export default function App({ backend }: { backend: Backend }) {
   const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
 
   // ---- search by meaning ---------------------------------------------------
-  const [t1, refreshT1] = useTier1(backend, setupOpen, epoch);
+  const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen, epoch);
   const models = useModels(backend, refreshT1);
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
   const sem = useSemantic(backend, query, !!t1 && !t1Off && !isRecent, filter, epoch);
@@ -462,6 +464,7 @@ export default function App({ backend }: { backend: Backend }) {
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
+      if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setSettingsOpen(true); refreshT1(); return; }
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); move(sel + 1); break;
         case "ArrowUp": e.preventDefault(); move(sel - 1); break;
@@ -481,7 +484,7 @@ export default function App({ backend }: { backend: Backend }) {
           e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
         case "Escape":
           e.preventDefault();
-          if (setupOpenRef.current) setSetupOpen(false); else void backend.hide();
+          if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
@@ -521,7 +524,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu]);
+  }, [move, sel, viewH, act, current, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -535,9 +538,10 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- first run -----------------------------------------------------------
   const demo = status.length > 0 && status.every((v) => v.state === "demo");
   const needsSetup = demo && (service === "not_installed" || service === "stopped") && !dismissed;
-  const showPanel = setupOpen || (query.trim() === "" && (counting || needsSetup));
-  showPanelRef.current = setupOpen || (needsSetup && query.trim() === "");
-  setupOpenRef.current = setupOpen;
+  const panelOpen = setupOpen || settingsOpen;
+  const showPanel = panelOpen || (query.trim() === "" && (counting || needsSetup));
+  showPanelRef.current = panelOpen || (needsSetup && query.trim() === "");
+  setupOpenRef.current = panelOpen;
   summaryRef.current = summary;
   const runSetup = useCallback(async () => {
     if (setupBusy) return;
@@ -555,13 +559,16 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend, service, setupBusy, startCounting, refocus]);
   primaryRef.current = runSetup;
   useEffect(() => { if (query.trim() && counting && summary) setCounting(false); }, [query, counting, summary]);
-  useEffect(() => { if (query.trim()) setSetupOpen(false); }, [query]); // typing leaves the setup panel (the download keeps going)
+  useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
   const openSetup = useCallback(() => {
+    setSettingsOpen(false);
     setSetupOpen(true);
     models.refreshPlan();
     refreshT1();
   }, [models, refreshT1]);
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
+  const openSettings = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
+  const closeSettings = useCallback(() => { setSettingsOpen(false); refocus(); }, [refocus]);
   const setFolders = useCallback((include: string[]) => {
     backend.tier1SetScopes(include, t1?.exclude ?? []).then(refreshT1).catch(fail);
   }, [backend, t1, refreshT1, fail]);
@@ -642,9 +649,17 @@ export default function App({ backend }: { backend: Backend }) {
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
+        <button className="gear" tabIndex={-1} title="Settings (Ctrl+,)" aria-label="Settings" onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <circle cx="12" cy="12" r="3" />
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.66 0-1.25.4-1.51 1z" />
+          </svg>
+        </button>
       </div>
 
-      {showPanel && (setupOpen ? (
+      {showPanel && (settingsOpen ? (
+        <Settings backend={backend} t1={t1} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onClose={closeSettings} onError={fail} />
+      ) : setupOpen ? (
         <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
       ) : (
         <FirstRun

@@ -305,3 +305,38 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 .idx-line .nums { color: var(--fg-2); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .idx .bar, .dl-prog .bar { grid-column: auto; }
 .idx-note { font-size: 12.5px; color: var(--warn); }
+
+/* ---- settings ---- */
+.gear {
+  display: inline-grid; place-items: center; width: 26px; height: 26px; margin-left: 2px; border-radius: 6px;
+  color: var(--fg-3);
+}
+.gear:hover { background: var(--hover); color: var(--fg-2); }
+.settings code { font: 12px/1 Consolas, "Cascadia Mono", monospace; padding: 1px 4px; border-radius: 3px; background: var(--chip); color: var(--fg); }
+.set-row { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.set-state { font-size: 13px; margin-top: 4px; }
+.ignored { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.ignored p { margin: 0; font-size: 12.5px; line-height: 1.4; }
+.ig-bar { display: flex; align-items: center; gap: 8px; }
+.ig-bar .nums { flex: 1; color: var(--fg-3); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ig-bar .btn { height: 26px; padding: 0 10px; font-size: 12px; }
+.ig-filter {
+  width: 160px; height: 26px; padding: 0 8px; font: inherit; font-size: 12.5px; color: var(--fg);
+  background: var(--chip); border: 1px solid transparent; border-radius: 5px; outline: 0; caret-color: var(--accent);
+}
+.ig-filter:focus { border-color: var(--accent); }
+.ig-list {
+  list-style: none; margin: 0; padding: 2px 0; display: flex; flex-wrap: wrap; gap: 4px;
+  max-height: 132px; overflow-y: auto; align-content: flex-start;
+}
+.ig-list li {
+  display: inline-flex; align-items: center; gap: 2px; height: 24px; padding: 0 2px 0 8px; border-radius: 12px;
+  background: var(--chip); font: 12px/1 Consolas, "Cascadia Mono", monospace; color: var(--fg-2); max-width: 100%;
+}
+.ig-list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ig-list li.custom { color: var(--fg); box-shadow: inset 0 0 0 1px var(--accent); }
+.ig-list li.none { background: none; font: 12.5px var(--font); color: var(--fg-3); padding: 0; }
+.ig-x { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 10px; color: var(--fg-3); flex: none; }
+.ig-x:hover { background: var(--hover); color: var(--fg); }
+.ig-x:focus-visible, .gear:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+.settings .folders ul { display: flex; flex-wrap: wrap; column-gap: 18px; }

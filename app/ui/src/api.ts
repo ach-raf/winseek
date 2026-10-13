@@ -1,4 +1,4 @@
-import type { Backend, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, Tier1Status } from "./types";
+import type { Backend, IgnoreList, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -39,6 +39,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1Status: () => inv<Tier1Status>("tier1_status"),
     tier1SetScopes: (include, exclude) => inv("tier1_set_scopes", { include, exclude }),
     tier1Pause: (paused) => inv("tier1_pause", { paused }),
+    tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
+    tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),
     semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
     modelsDownload: () => inv("models_download"),

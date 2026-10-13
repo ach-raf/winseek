@@ -26,7 +26,7 @@ function Bar({ value, label }: { value: number | null; label: string }) {
   );
 }
 
-function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (include: string[]) => void }) {
+export function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (include: string[]) => void }) {
   const [known, setKnown] = useState<string[]>([]); // every folder seen this session, so an unchecked one can be re-checked
   const [text, setText] = useState("");
   const include = t1?.include ?? [];

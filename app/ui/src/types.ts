@@ -45,6 +45,11 @@ export interface PlanItem {
   bytes: number | null;
   present: boolean;
 }
+/** Tier 1 ignore list: folder/file names skipped anywhere inside the indexed folders. */
+export interface IgnoreList {
+  list: string[];
+  defaults: string[];
+}
 export interface ModelsPlan {
   backend: "cuda12" | "vulkan" | "cpu";
   gpu: string | null;
@@ -97,6 +102,9 @@ export interface Backend {
   tier1SetScopes(include: string[], exclude: string[]): Promise<void>;
   /** User pause (wins over the automatic battery / full-screen pause). */
   tier1Pause(paused: boolean): Promise<void>;
+  tier1GetIgnore(): Promise<IgnoreList>;
+  /** `null` resets to the defaults; an empty list is a valid choice. Returns what was saved. */
+  tier1SetIgnore(list: string[] | null): Promise<IgnoreList>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;
   modelsPlan(): Promise<ModelsPlan>;
   /** Starts the background download; progress arrives via onModelsProgress / onModelsDone. */
