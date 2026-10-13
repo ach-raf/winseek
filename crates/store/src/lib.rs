@@ -392,6 +392,44 @@ impl Store {
         Ok(n)
     }
 
+    /// Re-point the file currently at `old_path` (case-insensitive, ASCII-folded) to
+    /// `new_path`. For USN rename events where the file can no longer be opened to read its
+    /// identity. Returns false if no row has that path.
+    pub fn rename_path(&mut self, old_path: &str, new_path: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .prepare_cached("UPDATE files SET path=?2 WHERE path = ?1 COLLATE NOCASE")?
+            .execute(params![norm_sep(old_path), norm_sep(new_path)])?;
+        Ok(n > 0)
+    }
+
+    /// Remove the file at `path` (case-insensitive). Returns false if there is none.
+    /// Content rows are kept until [`Store::gc`].
+    pub fn remove_path(&mut self, path: &str) -> Result<bool> {
+        let n = self
+            .conn
+            .prepare_cached("DELETE FROM files WHERE path = ?1 COLLATE NOCASE")?
+            .execute(params![norm_sep(path)])?;
+        Ok(n > 0)
+    }
+
+    /// Folder rename: every file at or below `old_prefix` (case-insensitive, `\` boundary)
+    /// moves to the same relative place under `new_prefix`. Returns the number of rows moved.
+    pub fn rename_under(&mut self, old_prefix: &str, new_prefix: &str) -> Result<usize> {
+        let old = norm_sep(old_prefix);
+        let old = old.trim_end_matches('\\');
+        let new = norm_sep(new_prefix);
+        let new = new.trim_end_matches('\\');
+        let esc = like_escape(old);
+        // substr() is 1-based and counts characters; ASCII case folding keeps lengths equal.
+        let n = self.conn.execute(
+            "UPDATE files SET path = ?3 || substr(path, ?4)
+             WHERE path LIKE ?1 ESCAPE '^' OR path LIKE ?2 ESCAPE '^'",
+            params![esc, format!("{esc}\\%"), new, old.chars().count() as i64 + 1],
+        )?;
+        Ok(n)
+    }
+
     /// Delete content/vectors/texts that no file references any more.
     pub fn gc(&mut self) -> Result<usize> {
         let tx = self.conn.transaction()?;
@@ -722,6 +760,10 @@ fn dot_le(q: &[f32], blob: &[u8]) -> f32 {
         .sum()
 }
 
+fn norm_sep(p: &str) -> String {
+    p.replace('/', "\\")
+}
+
 fn like_escape(s: &str) -> String {
     let mut o = String::with_capacity(s.len());
     for c in s.chars() {
@@ -918,6 +960,45 @@ mod tests {
         add(&mut s, 5, r"C:\100%\q.jpg", 1);
         add(&mut s, 6, r"C:\100x\q.jpg", 1);
         assert_eq!(s.remove_under(r"C:\100%").unwrap(), 1);
+    }
+
+    #[test]
+    fn rename_and_remove_by_path() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        add(&mut s, 1, r"C:\Pics\a.jpg", 1);
+        add(&mut s, 2, r"C:\Pics\b.jpg", 1);
+        assert!(s.rename_path(r"c:\pics\A.JPG", r"C:\Pics\sub\a.jpg").unwrap());
+        assert!(!s.rename_path(r"C:\nope.jpg", r"C:\x.jpg").unwrap());
+        let p: Vec<_> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        assert!(p.contains(&r"C:\Pics\sub\a.jpg".to_string()));
+        assert!(s.remove_path(r"C:/PICS/b.jpg").unwrap());
+        assert!(!s.remove_path(r"C:\Pics\b.jpg").unwrap());
+        assert_eq!(s.stats().unwrap().files, 1);
+    }
+
+    #[test]
+    fn rename_under_boundary_and_case() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        add(&mut s, 1, r"C:\Pics\a.jpg", 3);
+        add(&mut s, 2, r"C:\Pics\deep\b.jpg", 2);
+        add(&mut s, 3, r"C:\Pics2\c.jpg", 1);
+        add(&mut s, 4, r"C:\other\d.jpg", 0);
+        assert_eq!(s.rename_under(r"c:\pics\", r"D:\Moved\Pics").unwrap(), 2);
+        let mut p: Vec<_> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        p.sort();
+        assert_eq!(
+            p,
+            [
+                r"C:\Pics2\c.jpg",
+                r"C:\other\d.jpg",
+                r"D:\Moved\Pics\a.jpg",
+                r"D:\Moved\Pics\deep\b.jpg"
+            ]
+        );
+        // LIKE metacharacters in the prefix are literal
+        add(&mut s, 5, r"C:\100%_x\e.jpg", 0);
+        add(&mut s, 6, r"C:\100Zax\f.jpg", 0);
+        assert_eq!(s.rename_under(r"C:\100%_x", r"C:\y").unwrap(), 1);
     }
 
     #[test]

@@ -13,12 +13,18 @@ png = "0.17"
 serde = { workspace = true }
 serde_json = { workspace = true }
 winseek-ipc = { path = "../../crates/ipc" }
+winseek-store = { path = "../../crates/store" }
+winseek-llama = { path = "../../crates/llama" }
+sha2 = "0.10"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
     "Win32_System_DataExchange",
+    "Win32_System_IO",
     "Win32_System_Memory",
     "Win32_System_Ole",
     "Win32_System_Registry",
@@ -30,6 +36,9 @@ windows = { version = "0.62", features = [
     "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }

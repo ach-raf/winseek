@@ -6,6 +6,7 @@ mod popup;
 mod shell;
 mod service;
 mod source;
+mod tier1;
 mod watcher;
 
 use commands::AppState;
@@ -61,7 +62,11 @@ fn main() {
             service::service_state,
             service::install_service,
             service::start_service,
-            service::accent_palette
+            service::accent_palette,
+            tier1::tier1_status,
+            tier1::tier1_set_scopes,
+            tier1::tier1_pause,
+            tier1::semantic_search
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
@@ -80,6 +85,7 @@ fn main() {
             }
         })
         .setup(move |app| {
+            app.manage(tier1::init());
             if let Some(w) = popup::window(app.handle()) {
                 popup::apply_backdrop(&w);
             }
@@ -98,10 +104,13 @@ fn main() {
                 .on_menu_event(move |app, ev| match ev.id().as_ref() {
                     "show" => popup::show(app),
                     "pause" => {
-                        // Stub: flips a flag that status() reports; real impl will message searchd.
+                        // Flips the flag status() reports and pauses the Tier 1 worker.
                         let st = app.state::<AppState>();
                         let now = !st.paused.load(Ordering::Relaxed);
                         st.paused.store(now, Ordering::Relaxed);
+                        if let Ok(t) = app.state::<tier1::Handle>().get() {
+                            t.set_paused(now);
+                        }
                         let _ = pause.set_text(if now { "Resume indexing" } else { "Pause indexing" });
                     }
                     "quit" => app.exit(0),

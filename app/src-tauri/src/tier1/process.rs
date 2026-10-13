@@ -1,0 +1,464 @@
+//! The processing pass: pending files -> hash -> (link | decode, resize, JPEG, embed) -> store.
+
+use std::collections::HashMap;
+use std::io::Cursor;
+use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+
+use image::imageops::FilterType;
+use image::{DynamicImage, GenericImageView, RgbImage};
+use sha2::{Digest, Sha256};
+use winseek_store::{ChunkVec, PendingFile, Store, VecKind};
+
+use super::embedder::{EmbedError, Embedder};
+
+pub const BATCH: usize = 16;
+pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
+pub const LONG_SIDE: u32 = 768;
+pub const JPEG_QUALITY: u8 = 90;
+/// A file whose batches keep failing as part of an all-failed batch is marked failed after this many strikes.
+pub const MAX_STRIKES: u32 = 3;
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum Pass {
+    /// Nothing pending.
+    Idle,
+    /// Handled this many files.
+    Progress(usize),
+    Paused,
+    ModelsMissing,
+    /// Embedding failed for the whole batch (server down?); caller should back off.
+    EmbedFailed(String),
+}
+
+/// Downscale (never upscale) so the long side is at most [`LONG_SIDE`], keeping aspect.
+pub fn canonicalise(img: DynamicImage) -> DynamicImage {
+    let (w, h) = img.dimensions();
+    if w.max(h) <= LONG_SIDE {
+        img
+    } else {
+        img.resize(LONG_SIDE, LONG_SIDE, FilterType::Lanczos3)
+    }
+}
+
+/// Flatten to RGB8; transparency is composited over white.
+fn to_rgb_on_white(img: &DynamicImage) -> RgbImage {
+    if !img.color().has_alpha() {
+        return img.to_rgb8();
+    }
+    let rgba = img.to_rgba8();
+    let mut out = RgbImage::new(rgba.width(), rgba.height());
+    for (x, y, p) in rgba.enumerate_pixels() {
+        let a = u32::from(p[3]);
+        let mix = |c: u8| ((u32::from(c) * a + 255 * (255 - a) + 127) / 255) as u8;
+        out.put_pixel(x, y, image::Rgb([mix(p[0]), mix(p[1]), mix(p[2])]));
+    }
+    out
+}
+
+/// Decode `bytes`, canonicalise to <= 768 px long side and re-encode as JPEG q90.
+pub fn prepare_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let img = image::load_from_memory(bytes).map_err(|e| format!("decode: {e}"))?;
+    let img = canonicalise(img);
+    let rgb = to_rgb_on_white(&img);
+    let mut out = Vec::new();
+    image::codecs::jpeg::JpegEncoder::new_with_quality(Cursor::new(&mut out), JPEG_QUALITY)
+        .encode_image(&rgb)
+        .map_err(|e| format!("encode: {e}"))?;
+    Ok(out)
+}
+
+pub fn sha256_hex(bytes: &[u8]) -> String {
+    Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Per-process state of the pass loop.
+#[derive(Default)]
+pub struct Processor {
+    strikes: HashMap<i64, u32>,
+}
+
+struct Prepared {
+    file: PendingFile,
+    hash: String,
+    /// Index into the batch's unique JPEG list.
+    slot: usize,
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+impl Processor {
+    /// One pass over up to [`BATCH`] pending files.
+    pub fn run_pass(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, paused: &AtomicBool) -> Result<Pass, String> {
+        if paused.load(Ordering::Relaxed) {
+            return Ok(Pass::Paused);
+        }
+        let pending = lock(store).next_pending(BATCH).map_err(|e| e.to_string())?;
+        if pending.is_empty() {
+            return Ok(Pass::Idle);
+        }
+        let mut handled = 0usize;
+        let mut prepared: Vec<Prepared> = Vec::new();
+        let mut jpegs: Vec<Vec<u8>> = Vec::new();
+        let mut by_hash: HashMap<String, usize> = HashMap::new();
+
+        for f in pending {
+            if f.size > MAX_FILE_BYTES {
+                lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
+                handled += 1;
+                continue;
+            }
+            let bytes = match std::fs::read(Path::new(&f.path)) {
+                Ok(b) => b,
+                Err(e) => {
+                    lock(store).fail(f.id, &format!("read: {e}")).map_err(|e| e.to_string())?;
+                    handled += 1;
+                    continue;
+                }
+            };
+            if bytes.len() as u64 > MAX_FILE_BYTES {
+                lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
+                handled += 1;
+                continue;
+            }
+            let hash = sha256_hex(&bytes);
+            let known = lock(store).has_content(&hash).map_err(|e| e.to_string())?;
+            if known {
+                lock(store).complete(f.id, &hash, &[], &[]).map_err(|e| e.to_string())?;
+                handled += 1;
+                continue;
+            }
+            if let Some(&slot) = by_hash.get(&hash) {
+                prepared.push(Prepared { file: f, hash, slot });
+                continue;
+            }
+            match prepare_jpeg(&bytes) {
+                Ok(j) => {
+                    by_hash.insert(hash.clone(), jpegs.len());
+                    prepared.push(Prepared { file: f, hash, slot: jpegs.len() });
+                    jpegs.push(j);
+                }
+                Err(msg) => {
+                    lock(store).fail(f.id, &msg).map_err(|e| e.to_string())?;
+                    handled += 1;
+                }
+            }
+        }
+
+        if prepared.is_empty() {
+            return Ok(Pass::Progress(handled));
+        }
+        if paused.load(Ordering::Relaxed) {
+            return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::Paused });
+        }
+
+        let vectors = match self.embed_all(embedder, &jpegs) {
+            Ok(v) => v,
+            Err(Failure::ModelsMissing) => return Ok(Pass::ModelsMissing),
+            Err(Failure::Systemic(msg)) => {
+                lock(embedder).reset();
+                for p in &prepared {
+                    let strikes = self.strikes.entry(p.file.id.0).or_insert(0);
+                    *strikes += 1;
+                    if *strikes >= MAX_STRIKES {
+                        lock(store).fail(p.file.id, &format!("embed: {msg}")).map_err(|e| e.to_string())?;
+                        self.strikes.remove(&p.file.id.0);
+                        handled += 1;
+                    }
+                }
+                return if handled > 0 { Ok(Pass::Progress(handled)) } else { Ok(Pass::EmbedFailed(msg)) };
+            }
+        };
+
+        for p in prepared {
+            self.strikes.remove(&p.file.id.0);
+            match &vectors[p.slot] {
+                Ok(vec) => {
+                    let chunk = ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec.clone() };
+                    // A duplicate in the same batch finds the content already stored and just links.
+                    lock(store).complete(p.file.id, &p.hash, &[chunk], &[]).map_err(|e| e.to_string())?;
+                }
+                Err(msg) => lock(store).fail(p.file.id, &format!("embed: {msg}")).map_err(|e| e.to_string())?,
+            }
+            handled += 1;
+        }
+        Ok(Pass::Progress(handled))
+    }
+
+    /// Embed the batch; on a batch error retry one by one so a single poison image cannot
+    /// block the queue. All-failed means the backend is probably down (systemic).
+    fn embed_all(&self, embedder: &Mutex<Box<dyn Embedder + Send>>, jpegs: &[Vec<u8>]) -> Result<Vec<Result<Vec<f32>, String>>, Failure> {
+        let mut e = lock(embedder);
+        match e.embed_images(jpegs) {
+            Ok(v) if v.len() == jpegs.len() => return Ok(v.into_iter().map(Ok).collect()),
+            Ok(v) => {
+                return Err(Failure::Systemic(format!("expected {} vectors, got {}", jpegs.len(), v.len())));
+            }
+            Err(EmbedError::ModelsMissing) => return Err(Failure::ModelsMissing),
+            Err(EmbedError::Other(msg)) if jpegs.len() == 1 => return Err(Failure::Systemic(msg)),
+            Err(EmbedError::Other(_)) => {}
+        }
+        let mut out = Vec::with_capacity(jpegs.len());
+        let mut last_err = String::new();
+        for j in jpegs {
+            match e.embed_images(std::slice::from_ref(j)) {
+                Ok(mut v) if v.len() == 1 => out.push(Ok(v.remove(0))),
+                Ok(_) => {
+                    last_err = "wrong vector count".into();
+                    out.push(Err(last_err.clone()));
+                }
+                Err(EmbedError::ModelsMissing) => return Err(Failure::ModelsMissing),
+                Err(EmbedError::Other(msg)) => {
+                    last_err = msg.clone();
+                    out.push(Err(msg));
+                }
+            }
+        }
+        if out.iter().all(Result::is_err) {
+            return Err(Failure::Systemic(last_err));
+        }
+        Ok(out)
+    }
+}
+
+enum Failure {
+    ModelsMissing,
+    /// The whole batch failed (backend down / bad reply).
+    Systemic(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::Arc;
+    use winseek_store::{FileId, FileKey, IndexMeta};
+
+    use crate::tier1::embedder::{index_meta, DIMS};
+
+    /// Deterministic fake: vector derived from the JPEG bytes; optionally fails on marker bytes.
+    struct Fake {
+        calls: Arc<AtomicUsize>,
+        images: Arc<AtomicUsize>,
+        fail_all: bool,
+        missing: bool,
+    }
+
+    impl Fake {
+        fn new() -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+            let calls = Arc::new(AtomicUsize::new(0));
+            let images = Arc::new(AtomicUsize::new(0));
+            (Fake { calls: calls.clone(), images: images.clone(), fail_all: false, missing: false }, calls, images)
+        }
+    }
+
+    fn vec_of(j: &[u8]) -> Vec<f32> {
+        let mut v = vec![0f32; DIMS];
+        v[(j.iter().map(|&b| usize::from(b)).sum::<usize>()) % DIMS] = 1.0;
+        v
+    }
+
+    impl Embedder for Fake {
+        fn embed_images(&mut self, jpegs: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.missing {
+                return Err(EmbedError::ModelsMissing);
+            }
+            if self.fail_all {
+                return Err(EmbedError::Other("boom".into()));
+            }
+            self.images.fetch_add(jpegs.len(), Ordering::SeqCst);
+            Ok(jpegs.iter().map(|j| vec_of(j)).collect())
+        }
+        fn embed_query(&mut self, _q: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    fn png(w: u32, h: u32, seed: u8) -> Vec<u8> {
+        let img = RgbImage::from_fn(w, h, |x, y| image::Rgb([seed, (x % 251) as u8, (y % 251) as u8]));
+        let mut out = Vec::new();
+        DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    fn jpeg(w: u32, h: u32) -> Vec<u8> {
+        let img = RgbImage::from_fn(w, h, |x, y| image::Rgb([(x % 255) as u8, (y % 255) as u8, 7]));
+        let mut out = Vec::new();
+        DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), image::ImageFormat::Jpeg).unwrap();
+        out
+    }
+
+    fn setup() -> (Mutex<Store>, tempfile::TempDir) {
+        let store = Store::open_in_memory(&index_meta("test")).unwrap();
+        (Mutex::new(store), tempfile::tempdir().unwrap())
+    }
+
+    fn add(store: &Mutex<Store>, dir: &Path, name: &str, bytes: &[u8], n: u64) -> FileId {
+        let p = dir.join(name);
+        fs::write(&p, bytes).unwrap();
+        let key = FileKey { vol_guid: "{v}".into(), frn: n };
+        store.lock().unwrap().upsert_file(&key, &p.to_string_lossy(), bytes.len() as u64, n as i64, "image").unwrap()
+    }
+
+    fn emb(f: Fake) -> Mutex<Box<dyn Embedder + Send>> {
+        Mutex::new(Box::new(f))
+    }
+
+    #[test]
+    fn identical_bytes_embed_once() {
+        let (store, dir) = setup();
+        let (fake, _calls, images) = Fake::new();
+        let e = emb(fake);
+        let same = png(40, 30, 1);
+        add(&store, dir.path(), "a.png", &same, 1);
+        add(&store, dir.path(), "b.png", &same, 2);
+        add(&store, dir.path(), "c.jpg", &jpeg(50, 50), 3);
+        let mut p = Processor::default();
+        let r = p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap();
+        assert_eq!(r, Pass::Progress(3));
+        assert_eq!(images.load(Ordering::SeqCst), 2, "duplicate content must be embedded once");
+        let s = store.lock().unwrap().stats().unwrap();
+        assert_eq!((s.done, s.pending, s.vectors), (3, 0, 2));
+
+        // a later duplicate (next pass) links without calling the embedder at all
+        add(&store, dir.path(), "d.png", &same, 4);
+        let before = images.load(Ordering::SeqCst);
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(images.load(Ordering::SeqCst), before);
+        assert_eq!(store.lock().unwrap().stats().unwrap().done, 4);
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Idle);
+    }
+
+    #[test]
+    fn decode_failure_marks_failed_and_oversize_skipped() {
+        let (store, dir) = setup();
+        let (fake, _c, images) = Fake::new();
+        let e = emb(fake);
+        add(&store, dir.path(), "bad.png", b"this is not a png", 1);
+        add(&store, dir.path(), "ok.png", &png(10, 10, 2), 2);
+        // oversize: recorded size above the cap (file content irrelevant, must not even be read)
+        let p = dir.path().join("huge.jpg");
+        fs::write(&p, b"x").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 3 }, &p.to_string_lossy(), MAX_FILE_BYTES + 1, 3, "image")
+            .unwrap();
+        // missing file on disk
+        store
+            .lock()
+            .unwrap()
+            .upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 4 }, &dir.path().join("nope.jpg").to_string_lossy(), 5, 4, "image")
+            .unwrap();
+        let mut pr = Processor::default();
+        assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(4));
+        let s = store.lock().unwrap().stats().unwrap();
+        assert_eq!((s.done, s.failed, s.skipped, s.pending), (1, 2, 1, 0));
+        assert_eq!(images.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn pause_flag_stops_work_and_models_missing_is_reported() {
+        let (store, dir) = setup();
+        let (mut fake, calls, _i) = Fake::new();
+        add(&store, dir.path(), "a.png", &png(8, 8, 1), 1);
+        let mut pr = Processor::default();
+        let paused = AtomicBool::new(true);
+        let e = emb(Fake { calls: calls.clone(), images: Arc::new(AtomicUsize::new(0)), fail_all: false, missing: false });
+        assert_eq!(pr.run_pass(&store, &e, &paused).unwrap(), Pass::Paused);
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1);
+
+        fake.missing = true;
+        let e = emb(fake);
+        assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::ModelsMissing);
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1, "file stays queued");
+    }
+
+    #[test]
+    fn systemic_embed_failure_retries_then_fails_after_strikes() {
+        let (store, dir) = setup();
+        let (mut fake, _c, _i) = Fake::new();
+        fake.fail_all = true;
+        let e = emb(fake);
+        add(&store, dir.path(), "a.png", &png(8, 8, 1), 1);
+        let mut pr = Processor::default();
+        for _ in 0..MAX_STRIKES - 1 {
+            assert!(matches!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::EmbedFailed(_)));
+            assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1);
+        }
+        assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(store.lock().unwrap().stats().unwrap().failed, 1);
+    }
+
+    /// Fails any batch (or single image) containing a marker JPEG; everything else works.
+    struct Poison(Vec<u8>);
+    impl Embedder for Poison {
+        fn embed_images(&mut self, jpegs: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            if jpegs.contains(&self.0) {
+                return Err(EmbedError::Other("bad image".into()));
+            }
+            Ok(jpegs.iter().map(|j| vec_of(j)).collect())
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    #[test]
+    fn poison_image_isolated_by_single_retry() {
+        let (store, dir) = setup();
+        let bad = png(12, 12, 9);
+        let bad_jpeg = prepare_jpeg(&bad).unwrap();
+        add(&store, dir.path(), "bad.png", &bad, 1);
+        add(&store, dir.path(), "good1.png", &png(12, 12, 1), 2);
+        add(&store, dir.path(), "good2.png", &png(12, 12, 2), 3);
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(Poison(bad_jpeg)));
+        let mut pr = Processor::default();
+        assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(3));
+        let s = store.lock().unwrap().stats().unwrap();
+        assert_eq!((s.done, s.failed), (2, 1));
+    }
+
+    #[test]
+    fn resize_keeps_aspect_and_caps_long_side() {
+        let wide = canonicalise(DynamicImage::ImageRgb8(RgbImage::new(3000, 1500)));
+        assert_eq!(wide.dimensions(), (768, 384));
+        let tall = canonicalise(DynamicImage::ImageRgb8(RgbImage::new(1000, 4000)));
+        assert_eq!(tall.dimensions(), (192, 768));
+        let small = canonicalise(DynamicImage::ImageRgb8(RgbImage::new(300, 200)));
+        assert_eq!(small.dimensions(), (300, 200), "never upscale");
+        let exact = canonicalise(DynamicImage::ImageRgb8(RgbImage::new(768, 500)));
+        assert_eq!(exact.dimensions(), (768, 500));
+    }
+
+    #[test]
+    fn prepared_jpeg_is_jpeg_within_budget() {
+        let out = prepare_jpeg(&png(2000, 1000, 5)).unwrap();
+        assert_eq!(&out[..3], &[0xff, 0xd8, 0xff]);
+        let back = image::load_from_memory(&out).unwrap();
+        assert_eq!(back.dimensions(), (768, 384));
+        // alpha PNG is flattened onto white
+        let rgba = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0]));
+        let mut b = Vec::new();
+        DynamicImage::ImageRgba8(rgba).write_to(&mut Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
+        let flat = image::load_from_memory(&prepare_jpeg(&b).unwrap()).unwrap().to_rgb8();
+        assert!(flat.get_pixel(1, 1).0.iter().all(|&c| c > 240));
+    }
+
+    #[test]
+    fn sha256_known_vector() {
+        assert_eq!(sha256_hex(b"abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
+    }
+}

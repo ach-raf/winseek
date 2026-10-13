@@ -178,14 +178,26 @@ pub(super) fn path_icon_png(path: &str, size: u32, thumb: bool) -> Option<Vec<u8
     let f: IShellItemImageFactory = item.cast().ok()?;
     let sz = SIZE { cx: size as i32, cy: size as i32 };
     // SAFETY: GetImage returns an owned HBITMAP that BitmapGuard deletes.
-    let hbm = unsafe {
+    let get = || unsafe {
         if thumb {
             f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|_| f.GetImage(sz, SIIGBF_RESIZETOFIT))
         } else {
             f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_ICONONLY)
         }
+    };
+    // The shell extracts icons asynchronously and answers E_PENDING until the image is ready.
+    const E_PENDING: windows::core::HRESULT = windows::core::HRESULT(0x8000000Au32 as i32);
+    let mut res = get();
+    for _ in 0..25 {
+        match &res {
+            Err(e) if e.code() == E_PENDING => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+                res = get();
+            }
+            _ => break,
+        }
     }
-    .ok()?;
+    let hbm = res.ok()?;
     let _g = BitmapGuard(hbm);
     let (w, h, mut px) = bitmap_bgra(hbm)?;
     let mut any = false;
