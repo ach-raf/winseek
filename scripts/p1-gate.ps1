@@ -147,9 +147,12 @@ function New-TestVolume {
         $disk = Mount-VHD -Path $VhdxPath -Passthru | Get-Disk
         $script:Mounted = $true
         $disk | Initialize-Disk -PartitionStyle GPT -PassThru | Out-Null
-        $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize -AssignDriveLetter
+        # Format before assigning a letter, else Explorer pops "You need to format the disk".
+        $part = New-Partition -DiskNumber $disk.Number -UseMaximumSize
         Format-Volume -Partition $part -FileSystem NTFS -NewFileSystemLabel 'p1gate' -Confirm:$false | Out-Null
-        $script:L = ($part | Get-Partition).DriveLetter.ToString()
+        $letter = Free-Letter
+        $part | Set-Partition -NewDriveLetter $letter
+        $script:L = $letter
     } else {
         Log 'New-VHD unavailable; creating VHDX with diskpart'
         $script:UsedDiskpart = $true

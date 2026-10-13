@@ -9,7 +9,6 @@ use winseek_ipc::{read_message, write_message, Request, Response, Sort, PIPE_NAM
 fn main() {
     let mut args = std::env::args().skip(1);
     let query = args.next().unwrap_or_else(|| "readme".into());
-    let limit: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(10);
     let mut c = match connect(PIPE_NAME, Duration::from_secs(2)) {
         Ok(c) => c,
         Err(e) => {
@@ -65,6 +64,8 @@ fn main() {
         }
         _ => {}
     }
+    // Only the plain `<query> [limit]` form takes a limit; script modes above consume their own args.
+    let limit: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(10);
     if let Response::StatusResult { volumes, uptime_s, .. } = call(Request::Status { id: 1 }) {
         println!("uptime {uptime_s}s");
         for v in volumes {
