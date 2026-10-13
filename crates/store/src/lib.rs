@@ -624,6 +624,14 @@ impl Store {
         Ok(n)
     }
 
+    /// Remove every file row of `kind` (e.g. source code when the opt-in is switched off) and
+    /// collect the content nothing references any more. Returns the number of files removed.
+    pub fn remove_kind(&mut self, kind: &str) -> Result<usize> {
+        let n = self.conn.execute("DELETE FROM files WHERE kind = ?1", [kind])?;
+        self.gc()?;
+        Ok(n)
+    }
+
     /// Delete content/vectors/texts that no file references any more.
     pub fn gc(&mut self) -> Result<usize> {
         let tx = self.conn.transaction()?;
@@ -722,6 +730,15 @@ impl Store {
 
     pub fn skip(&mut self, file_id: FileId, reason: &str) -> Result<()> {
         self.set_state(file_id, STATE_SKIPPED, reason)
+    }
+
+    /// The reason / message recorded for a skipped or failed file at `path` (case-insensitive).
+    pub fn file_error(&self, path: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn
+            .query_row("SELECT error FROM files WHERE path = ?1 COLLATE NOCASE", [norm_sep(path)], |r| r.get(0))
+            .optional()?;
+        Ok(v.flatten())
     }
 
     fn set_state(&mut self, id: FileId, state: i64, msg: &str) -> Result<()> {
@@ -918,12 +935,13 @@ impl Store {
         Ok(rows)
     }
 
-    /// Byte-identical files (same content hash, any kind), biggest saving first.
+    /// Byte-identical image files (same content hash), biggest saving first. Documents and
+    /// source files are not offered for clean-up.
     pub fn dup_groups(&self) -> Result<Vec<DupGroup>> {
         let mut st = self.conn.prepare_cached(
             "SELECT id, path, size, mtime, content_hash FROM files
-             WHERE state = 1 AND content_hash IN (
-                 SELECT content_hash FROM files WHERE state = 1 AND content_hash IS NOT NULL
+             WHERE state = 1 AND kind = 'image' AND content_hash IN (
+                 SELECT content_hash FROM files WHERE state = 1 AND kind = 'image' AND content_hash IS NOT NULL
                  GROUP BY content_hash HAVING COUNT(*) > 1)
              ORDER BY content_hash, mtime DESC, id DESC",
         )?;
@@ -989,6 +1007,15 @@ impl Store {
             }
         }
         Ok(())
+    }
+
+    /// Opt-in: also index source-code text (setting `index_code`, default off).
+    pub fn get_index_code(&self) -> Result<bool> {
+        Ok(self.get_setting("index_code")?.as_deref() == Some("1"))
+    }
+
+    pub fn set_index_code(&mut self, on: bool) -> Result<()> {
+        self.set_setting("index_code", on.then_some("1"))
     }
 
     pub fn get_scopes(&self) -> Result<Scopes> {
@@ -1599,5 +1626,36 @@ mod tests {
         assert!(cluster_near(&v, 0.99).is_empty());
         assert_eq!(cluster_near(&v, 0.5), vec![vec![0, 1, 2, 3]]);
         assert!(cluster_near(&[], 0.9).is_empty());
+    }
+
+    #[test]
+    fn index_code_flag_and_remove_kind() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert!(!s.get_index_code().unwrap());
+        s.set_index_code(true).unwrap();
+        assert!(s.get_index_code().unwrap());
+        s.set_index_code(false).unwrap();
+        assert!(!s.get_index_code().unwrap());
+
+        let a = s.upsert_file(&key(1), r"C:\p\a.rs", 10, 1, "code").unwrap();
+        let b = s.upsert_file(&key(2), r"C:\p\b.jpg", 10, 1, "image").unwrap();
+        s.complete(a, "hc", &[], &[(0, "fn main".into())]).unwrap();
+        s.complete(b, "hi", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        assert_eq!(s.remove_kind("code").unwrap(), 1);
+        assert_eq!(s.stats().unwrap().files, 1);
+        assert!(!s.has_content("hc").unwrap(), "orphaned content collected");
+        assert!(s.has_content("hi").unwrap());
+    }
+
+    #[test]
+    fn dup_groups_only_offer_images() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        for (n, p, k) in [(1, r"C:\a.txt", "doc"), (2, r"C:\b.txt", "doc"), (3, r"C:\c.jpg", "image"), (4, r"C:\d.jpg", "image")] {
+            let id = s.upsert_file(&key(n), p, 10, 1, k).unwrap();
+            s.complete(id, if k == "doc" { "hd" } else { "hj" }, &[], &[]).unwrap();
+        }
+        let g = s.dup_groups().unwrap();
+        assert_eq!(g.len(), 1);
+        assert_eq!(g[0].hash, "hj");
     }
 }

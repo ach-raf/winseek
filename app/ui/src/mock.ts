@@ -105,6 +105,7 @@ const IGNORE_DEFAULTS = [
   "cmake-build-*", "bazel-*", "vendor", "Pods", "DerivedData", ".dart_tool", ".terraform",
 ];
 let ignoreList: string[] | null = null;
+let indexCode = false;
 let indexed = 0;
 let indexTick = performance.now();
 
@@ -447,6 +448,8 @@ export const mockBackend: Backend = {
       : list.map((s) => s.trim()).filter((s) => s && !seen.has(s.toLowerCase()) && !!seen.add(s.toLowerCase()));
     return { list: [...(ignoreList ?? IGNORE_DEFAULTS)], defaults: [...IGNORE_DEFAULTS] };
   },
+  async tier1GetIndexCode() { return indexCode; },
+  async tier1SetIndexCode(on) { await sleep(30); indexCode = on; return indexCode; },
   previewInfo: mockPreview,
   async semanticSearch(query, k) {
     const st = t1Status().state;

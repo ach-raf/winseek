@@ -3,11 +3,15 @@
 //! Threads (all below-normal priority):
 //! - crawler: walks the include roots at start and whenever the scopes change;
 //! - change feed: searchd's USN-derived events for those roots, reconnecting with backoff;
-//! - processor: pending files -> hash -> decode/resize -> embed -> store.
+//! - processor: pending files -> hash -> decode/resize -> embed -> store (images), or
+//!   extract text -> chunk -> FTS + text vectors (Office / text documents, opt-in source code).
 
+pub mod chunk;
 pub mod crawler;
 pub mod embedder;
+pub mod extract;
 pub mod feed;
+pub mod gitignore;
 pub mod identity;
 pub mod library;
 pub mod ocr;
@@ -63,6 +67,8 @@ pub struct Tier1 {
 pub struct Snapshot {
     pub scopes: Scopes,
     pub ignore: Arc<Ignore>,
+    /// Opt-in: also index source-code text (setting `index_code`).
+    pub index_code: bool,
     pub gen: u64,
 }
 
@@ -167,6 +173,7 @@ impl Tier1 {
     /// Build from parts (tests inject a fake embedder and an in-memory store).
     pub fn new(store: Store, embedder: Box<dyn Embedder + Send>, scopes: Scopes) -> Arc<Tier1> {
         let ignore = Arc::new(Ignore::new(&store.get_ignore().unwrap_or_else(|_| default_ignore())));
+        let index_code = store.get_index_code().unwrap_or(false);
         Arc::new(Tier1 {
             store: Mutex::new(store),
             embedder: Mutex::new(embedder),
@@ -175,7 +182,7 @@ impl Tier1 {
             auto_pause: AtomicU8::new(0),
             wake: (Mutex::new(false), Condvar::new()),
             state: AtomicU8::new(ST_IDLE),
-            snap: RwLock::new(Snapshot { scopes, ignore, gen: 1 }),
+            snap: RwLock::new(Snapshot { scopes, ignore, index_code, gen: 1 }),
             gen: AtomicU64::new(1),
             last_error: Mutex::new(None),
             throughput: Mutex::new(progress::Throughput::default()),
@@ -237,6 +244,27 @@ impl Tier1 {
         snap.ignore = Arc::new(Ignore::new(&saved));
         snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(IgnoreDto { list: saved, defaults: default_ignore() })
+    }
+
+    /// Whether source code is indexed too.
+    pub fn index_code(&self) -> bool {
+        self.snapshot().index_code
+    }
+
+    /// Switch the source-code scope. Turning it off forgets the already indexed code files; either
+    /// way the crawler re-runs.
+    pub fn set_index_code(&self, on: bool) -> Result<bool, String> {
+        {
+            let mut store = lock(&self.store);
+            store.set_index_code(on).map_err(|e| e.to_string())?;
+            if !on {
+                store.remove_kind(crawler::KIND_CODE).map_err(|e| e.to_string())?;
+            }
+        }
+        let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
+        snap.index_code = on;
+        snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(on)
     }
 
     /// The user's pause (tray / `tier1_pause`). It wins over every automatic reason.
@@ -426,7 +454,7 @@ fn crawler_loop(t: Arc<Tier1>) {
     loop {
         let snap = t.snapshot();
         if snap.gen != done_gen {
-            crawler::crawl(&t.store, &snap.scopes, &snap.ignore, &|| t.snapshot().gen != snap.gen);
+            crawler::crawl(&t.store, &snap.scopes, &snap.ignore, snap.index_code, &|| t.snapshot().gen != snap.gen);
             // An aborted crawl (scopes changed mid-way) is redone on the next iteration.
             done_gen = snap.gen;
         }
@@ -484,6 +512,17 @@ pub fn tier1_get_ignore(h: tauri::State<'_, Handle>) -> Result<IgnoreDto, String
 #[tauri::command]
 pub fn tier1_set_ignore(h: tauri::State<'_, Handle>, list: Option<Vec<String>>) -> Result<IgnoreDto, String> {
     h.get()?.set_ignore(list)
+}
+
+#[tauri::command]
+pub fn tier1_get_index_code(h: tauri::State<'_, Handle>) -> Result<bool, String> {
+    Ok(h.get()?.index_code())
+}
+
+/// Opt in / out of indexing source-code text. Returns the saved value.
+#[tauri::command]
+pub fn tier1_set_index_code(h: tauri::State<'_, Handle>, on: bool) -> Result<bool, String> {
+    h.get()?.set_index_code(on)
 }
 
 #[tauri::command]
@@ -633,6 +672,28 @@ mod tests {
     }
 
     #[test]
+    fn index_code_opt_in_persists_and_off_forgets_code_files() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        assert!(!t.index_code());
+        let g0 = t.snapshot().gen;
+        assert_eq!(t.set_index_code(true), Ok(true));
+        assert!(t.index_code() && t.snapshot().index_code);
+        assert!(t.snapshot().gen > g0, "the crawler re-runs");
+        assert!(lock(&t.store).get_index_code().unwrap());
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, r"C:\Pics\a.rs", 1, 1, "code").unwrap();
+            s.complete(id, "hc", &[], &[(0, "fn main".into())]).unwrap();
+        }
+        add_done(&t, 2, r"C:\Pics\cat.jpg", 1);
+        assert_eq!(t.set_index_code(false), Ok(false));
+        let s = lock(&t.store);
+        assert!(!s.get_index_code().unwrap());
+        assert_eq!(s.stats().unwrap().files, 1, "only the image row is left");
+        assert!(s.search_text("main", 5).unwrap().is_empty());
+    }
+
+    #[test]
     fn rebuild_swaps_the_store_and_restarts_the_crawl() {
         let t = tier(Box::new(Q), &[r"C:\Pics"]);
         add_done(&t, 1, r"C:\Pics\cat.jpg", 1);
@@ -684,7 +745,7 @@ mod tests {
         img.save(dir.path().join("a.png")).unwrap();
         let t = tier(Box::new(Q), &[&dir.path().to_string_lossy()]);
         let snap = t.snapshot();
-        assert_eq!(crawler::crawl(&t.store, &snap.scopes, &snap.ignore, &|| false).upserted, 1);
+        assert_eq!(crawler::crawl(&t.store, &snap.scopes, &snap.ignore, snap.index_code, &|| false).upserted, 1);
         let mut p = Processor::default();
         assert_eq!(p.run_pass(&t.store, &t.embedder, &t.paused).unwrap(), Pass::Progress(1));
         assert_eq!(lock(&t.store).stats().unwrap().done, 1);

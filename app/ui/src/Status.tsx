@@ -107,7 +107,7 @@ function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: ()
             <Row k="Embedded">{s ? fmt(s.done) : "—"}</Row>
             <Row k="Queue" title="Files waiting to be embedded">{s ? fmt(t1.queue) : "—"}</Row>
             <Row k="Failed">{s ? fmt(s.failed) : "—"}</Row>
-            <Row k="Skipped" title="Not images, too large, or ignored">{s ? fmt(s.skipped) : "—"}</Row>
+            <Row k="Skipped" title="Unsupported or legacy format, too large, no text, or ignored">{s ? fmt(s.skipped) : "—"}</Row>
             <Row k="Files in scope">{s ? fmt(s.files) : "—"}</Row>
             <Row k="Speed" title="Files per second over the last minute">{t1.rate != null ? formatRate(t1.rate) : "—"}</Row>
             <Row k="Screenshot text recognition" title="Reads text in screenshots with Windows OCR">

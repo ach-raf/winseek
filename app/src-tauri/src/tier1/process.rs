@@ -1,4 +1,5 @@
 //! The processing pass: pending files -> hash -> (link | decode, resize, JPEG, embed) -> store.
+//! Document / code files take the text route instead: extract -> chunk -> FTS rows + text vectors.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -9,7 +10,10 @@ use sha2::{Digest, Sha256};
 use winseek_llama::prep::prepare_jpeg;
 use winseek_store::{ChunkVec, PendingFile, Store, VecKind};
 
+use super::chunk::{self, Chunk};
+use super::crawler::KIND_IMAGE;
 use super::embedder::{EmbedError, Embedder};
+use super::extract::{self, ExtractError};
 use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
 
 pub const BATCH: usize = 16;
@@ -55,6 +59,8 @@ pub const SETTING_OCR_UNAVAILABLE: &str = "ocr_unavailable";
 const OCR_EMBED_CHARS: usize = 3000;
 /// Chunk index of the OCR text vector / FTS row (the image vector is chunk 0).
 const OCR_CHUNK: u32 = 1;
+/// Chunks sent to the embedder per request (1500 characters each).
+const TEXT_EMBED_BATCH: usize = 8;
 
 struct Prepared {
     file: PendingFile,
@@ -109,6 +115,11 @@ impl Processor {
         let mut ocr_ran = false;
 
         for f in pending {
+            if f.kind != KIND_IMAGE {
+                self.process_text(store, embedder, &f)?;
+                handled += 1;
+                continue;
+            }
             if f.size > MAX_FILE_BYTES {
                 lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
                 handled += 1;
@@ -207,6 +218,61 @@ impl Processor {
             handled += 1;
         }
         Ok(Pass::Progress(handled))
+    }
+
+    /// The text route for one document / code file: read, hash (content dedup as for images),
+    /// extract, chunk, embed the chunks. FTS gets every chunk; if embedding fails the file is
+    /// still stored with text only.
+    fn process_text(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, f: &PendingFile) -> Result<(), String> {
+        let db = |e: winseek_store::Error| e.to_string();
+        if f.size > extract::MAX_FILE_BYTES {
+            return lock(store).skip(f.id, "too_large").map_err(db);
+        }
+        let bytes = match std::fs::read(Path::new(&f.path)) {
+            Ok(b) => b,
+            Err(e) => return lock(store).fail(f.id, &format!("read: {e}")).map_err(db),
+        };
+        if bytes.len() as u64 > extract::MAX_FILE_BYTES {
+            return lock(store).skip(f.id, "too_large").map_err(db);
+        }
+        let hash = sha256_hex(&bytes);
+        if lock(store).has_content(&hash).map_err(db)? {
+            return lock(store).complete(f.id, &hash, &[], &[]).map_err(db);
+        }
+        let doc = match extract::extract_file(&f.path, &bytes) {
+            Ok(d) => d,
+            Err(ExtractError::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
+            Err(ExtractError::Failed(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+        };
+        drop(bytes);
+        let chunks = chunk::chunk(&doc);
+        if chunks.is_empty() {
+            return lock(store).skip(f.id, "no_text").map_err(db);
+        }
+        let vecs = Self::embed_chunks(embedder, &chunks);
+        let texts: Vec<(u32, String)> = chunks.iter().enumerate().map(|(i, c)| (i as u32, c.text.clone())).collect();
+        let vectors: Vec<ChunkVec> = vecs
+            .into_iter()
+            .zip(&chunks)
+            .enumerate()
+            .map(|(i, (vec, c))| ChunkVec { chunk: i as u32, kind: VecKind::Text, locator: Some(c.locator.clone()), vec })
+            .collect();
+        lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db)
+    }
+
+    /// One text vector per chunk, or none at all when embedding is unavailable / fails part-way
+    /// (all-or-nothing keeps a file's vectors consistent).
+    fn embed_chunks(embedder: &Mutex<Box<dyn Embedder + Send>>, chunks: &[Chunk]) -> Vec<Vec<f32>> {
+        let mut out = Vec::with_capacity(chunks.len());
+        let mut e = lock(embedder);
+        for group in chunks.chunks(TEXT_EMBED_BATCH) {
+            let docs: Vec<String> = group.iter().map(|c| c.text.clone()).collect();
+            match e.embed_documents(&docs) {
+                Ok(v) if v.len() == group.len() => out.extend(v),
+                _ => return Vec::new(),
+            }
+        }
+        out
     }
 
     /// Best-effort text embeddings of the OCR output (FTS still gets the text if this fails).
@@ -574,6 +640,171 @@ mod tests {
         let s = store.lock().unwrap();
         assert_eq!(s.search_text("hello", 5).unwrap().len(), 1);
         assert_eq!(s.stats().unwrap().vectors, 1, "image vector only");
+    }
+
+    /// Text-only embedder that records the batches it was asked to embed.
+    struct DocsOnly {
+        batches: Arc<Mutex<Vec<usize>>>,
+        fail: bool,
+    }
+    impl Embedder for DocsOnly {
+        fn embed_images(&mut self, _: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Err(EmbedError::Other("no images".into()))
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            if self.fail {
+                return Err(EmbedError::Other("down".into()));
+            }
+            self.batches.lock().unwrap().push(t.len());
+            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    fn add_kind(store: &Mutex<Store>, dir: &Path, name: &str, bytes: &[u8], n: u64, kind: &str) -> FileId {
+        let p = dir.join(name);
+        fs::write(&p, bytes).unwrap();
+        let key = FileKey { vol_guid: "{v}".into(), frn: n };
+        store.lock().unwrap().upsert_file(&key, &p.to_string_lossy(), bytes.len() as u64, n as i64, kind).unwrap()
+    }
+
+    type DocsRig = (Mutex<Box<dyn Embedder + Send>>, Arc<Mutex<Vec<usize>>>);
+
+    fn docs_embedder(fail: bool) -> DocsRig {
+        let batches = Arc::new(Mutex::new(Vec::new()));
+        (Mutex::new(Box::new(DocsOnly { batches: batches.clone(), fail })), batches)
+    }
+
+    #[test]
+    fn office_documents_become_fts_chunks_and_text_vectors() {
+        use crate::tier1::extract::tests::{docx, pptx, xlsx};
+        let (store, dir) = setup();
+        let (e, batches) = docs_embedder(false);
+        add_kind(&store, dir.path(), "report.docx", &docx(), 1, "doc");
+        add_kind(&store, dir.path(), "budget.xlsx", &xlsx(), 2, "doc");
+        add_kind(&store, dir.path(), "deck.pptx", &pptx(), 3, "doc");
+        add_kind(&store, dir.path(), "notes.md", b"# Plan\nship the thing\n", 4, "doc");
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(4));
+        assert_eq!(*batches.lock().unwrap(), [1, 1, 1, 1], "one short chunk per file, embedded as documents");
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.done, st.failed, st.skipped, st.pending, st.vectors), (4, 0, 0, 0, 4));
+
+        let hit = |q: &str| s.search_text(&winseek_store::fts_escape(q), 10).unwrap();
+        assert!(hit("quarterly")[0].path.ends_with("report.docx"));
+        assert!(hit("electricity")[0].path.ends_with("budget.xlsx"));
+        assert!(hit("agenda")[0].path.ends_with("deck.pptx"));
+        assert!(hit("thing")[0].path.ends_with("notes.md"));
+        assert!(hit("PHONETIC").is_empty());
+
+        // vectors are text vectors with a locator
+        let v = s.search_vectors(&vec_of(b"doc"), 10, Some(VecKind::Text)).unwrap();
+        assert_eq!(v.len(), 4);
+        let sheet = v.iter().find(|h| h.path.ends_with("budget.xlsx")).unwrap();
+        let loc: serde_json::Value = serde_json::from_str(sheet.locator.as_deref().unwrap()).unwrap();
+        assert_eq!(loc["sheet"], "Budget");
+        assert!(loc["chars"][1].as_u64().unwrap() > 0);
+        let slides = v.iter().find(|h| h.path.ends_with("deck.pptx")).unwrap();
+        assert!(slides.locator.as_deref().unwrap().contains("\"slide\":1"));
+    }
+
+    #[test]
+    fn long_text_is_chunked_batched_and_capped() {
+        let (store, dir) = setup();
+        let (e, batches) = docs_embedder(false);
+        let long = "lorem ipsum dolor sit amet. ".repeat(20_000); // 560 KB
+        add_kind(&store, dir.path(), "long.txt", long.as_bytes(), 1, "doc");
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        assert_eq!(s.stats().unwrap().vectors, super::super::chunk::MAX_CHUNKS as u64);
+        let b = batches.lock().unwrap();
+        assert_eq!(b.iter().sum::<usize>(), super::super::chunk::MAX_CHUNKS);
+        assert!(b.iter().all(|&n| n <= TEXT_EMBED_BATCH));
+        assert_eq!(s.search_text("lorem", 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn embed_failure_keeps_fts_only() {
+        let (store, dir) = setup();
+        let (e, _b) = docs_embedder(true);
+        add_kind(&store, dir.path(), "a.txt", b"findable words here", 1, "doc");
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        assert_eq!((s.stats().unwrap().done, s.stats().unwrap().vectors), (1, 0));
+        assert_eq!(s.search_text("findable", 5).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn skips_and_failures_have_reasons() {
+        let (store, dir) = setup();
+        let (e, batches) = docs_embedder(false);
+        add_kind(&store, dir.path(), "old.doc", b"\xD0\xCF\x11\xE0", 1, "doc");
+        add_kind(&store, dir.path(), "blob.txt", b"\x00\x01\x02\x03binary", 2, "doc");
+        add_kind(&store, dir.path(), "empty.txt", b"   \n", 3, "doc");
+        add_kind(&store, dir.path(), "broken.docx", b"PK not really", 4, "doc");
+        // recorded size above the limit: must not even be read
+        let big = dir.path().join("big.txt");
+        fs::write(&big, b"x").unwrap();
+        store
+            .lock()
+            .unwrap()
+            .upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 5 }, &big.to_string_lossy(), extract::MAX_FILE_BYTES + 1, 5, "doc")
+            .unwrap();
+        store
+            .lock()
+            .unwrap()
+            .upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 6 }, &dir.path().join("missing.txt").to_string_lossy(), 3, 6, "doc")
+            .unwrap();
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(6));
+        assert!(batches.lock().unwrap().is_empty());
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.done, st.failed, st.skipped, st.pending), (0, 2, 4, 0));
+        let reason = |n: &str| s.file_error(&dir.path().join(n).to_string_lossy()).unwrap().unwrap();
+        assert_eq!(reason("old.doc"), "legacy_office");
+        assert_eq!(reason("blob.txt"), "binary");
+        assert_eq!(reason("empty.txt"), "no_text");
+        assert_eq!(reason("big.txt"), "too_large");
+        assert!(reason("broken.docx").starts_with("zip"));
+        assert!(reason("missing.txt").starts_with("read"));
+    }
+
+    #[test]
+    fn identical_documents_are_extracted_once() {
+        let (store, dir) = setup();
+        let (e, batches) = docs_embedder(false);
+        add_kind(&store, dir.path(), "a.txt", b"same words", 1, "doc");
+        add_kind(&store, dir.path(), "b.txt", b"same words", 2, "doc");
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(2));
+        assert_eq!(batches.lock().unwrap().len(), 1);
+        let s = store.lock().unwrap();
+        assert_eq!(s.stats().unwrap().done, 2);
+        assert_eq!(s.search_text("same", 5).unwrap().len(), 2, "both paths hit the one stored text");
+    }
+
+    #[test]
+    fn images_and_documents_mix_in_one_pass() {
+        let (store, dir) = setup();
+        let (fake, _c, images) = Fake::new();
+        let e = emb(fake);
+        add(&store, dir.path(), "a.png", &png(8, 8, 1), 1);
+        add_kind(&store, dir.path(), "n.txt", b"hello docs", 2, "doc");
+        let mut p = Processor::default();
+        assert_eq!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(2));
+        assert_eq!(images.load(Ordering::SeqCst), 1);
+        let s = store.lock().unwrap();
+        assert_eq!((s.stats().unwrap().done, s.stats().unwrap().vectors), (2, 1), "doc has FTS only: Fake has no document embedding");
+        assert_eq!(s.search_text("hello", 5).unwrap().len(), 1);
     }
 
     #[test]

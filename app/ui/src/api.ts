@@ -41,6 +41,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1Pause: (paused) => inv("tier1_pause", { paused }),
     tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
     tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),
+    tier1GetIndexCode: () => inv<boolean>("tier1_get_index_code"),
+    tier1SetIndexCode: (on) => inv<boolean>("tier1_set_index_code", { on }),
     previewInfo: async (path) => {
       const i = await inv<PreviewInfo>("preview_info", { path });
       const big = (isDir: boolean) => `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=512&t=1`;

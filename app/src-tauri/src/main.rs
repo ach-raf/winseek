@@ -10,6 +10,7 @@ mod shell;
 mod service;
 mod source;
 mod status;
+mod textdec;
 mod tier1;
 mod watcher;
 
@@ -75,6 +76,8 @@ fn main() {
             tier1::tier1_pause,
             tier1::tier1_get_ignore,
             tier1::tier1_set_ignore,
+            tier1::tier1_get_index_code,
+            tier1::tier1_set_index_code,
             tier1::semantic_search,
             tier1::library::library_images,
             tier1::library::library_collections,

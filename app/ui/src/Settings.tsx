@@ -74,6 +74,27 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
   );
 }
 
+function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => { backend.tier1GetIndexCode().then(setOn).catch(onError); }, [backend, onError]);
+  const change = (v: boolean) => {
+    setOn(v);
+    backend.tier1SetIndexCode(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
+  };
+  return (
+    <div className="set-row">
+      <div>
+        <div className="fl-title">Source code</div>
+        <label className="set-state">
+          <input type="checkbox" checked={!!on} disabled={on === null} onChange={(e) => change(e.target.checked)} aria-label="Index source code" />
+          {" "}Index source code
+        </label>
+        <p className="muted">Searches the text of code files in your folders by content. Files ignored by a <code>.gitignore</code> are left out. Turning it off removes them from the index.</p>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
   backend: Backend; t1: Tier1Status | null;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
@@ -110,6 +131,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
       </div>
 
       <Folders t1={t1} onChange={onFolders} />
+      <CodeToggle backend={backend} onError={onError} />
       <IgnoredNames backend={backend} onError={onError} />
 
       <div className="actions">

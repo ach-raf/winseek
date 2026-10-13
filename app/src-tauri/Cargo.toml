@@ -45,6 +45,10 @@ windows = { version = "0.62", features = [
     "Storage_Streams",
 ] }
 kamadak-exif = "0.6.1"
+# Tier 1 office text extraction (OOXML / ODF are zip + XML)
+zip = { version = "2", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+quick-xml = "0.42"
 
 [dev-dependencies]
 tempfile = "3"

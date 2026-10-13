@@ -241,6 +241,10 @@ export interface Backend {
   tier1GetIgnore(): Promise<IgnoreList>;
   /** `null` resets to the defaults; an empty list is a valid choice. Returns what was saved. */
   tier1SetIgnore(list: string[] | null): Promise<IgnoreList>;
+  /** Opt-in: also index source-code text (honours .gitignore). Default off. */
+  tier1GetIndexCode(): Promise<boolean>;
+  /** Returns the saved value. Turning it off forgets already indexed code files. */
+  tier1SetIndexCode(on: boolean): Promise<boolean>;
   /** Never rejects with anything but a user-readable string ("File not found"). */
   previewInfo(path: string): Promise<PreviewInfo>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;

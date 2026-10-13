@@ -13,7 +13,8 @@ use winseek_ipc::pipe::connect;
 use winseek_ipc::{read_message, write_message, ChangeKind, Request, Response, PIPE_NAME};
 use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
-use super::crawler::{crawl, is_supported_image, skip_attrs, KIND_IMAGE};
+use super::crawler::{crawl, kind_of, skip_attrs, KIND_CODE, KIND_IMAGE};
+use super::gitignore;
 use super::identity::{file_info, FileInfo, ATTR_DIRECTORY};
 use super::Tier1;
 
@@ -33,12 +34,13 @@ pub enum StoreOp {
 pub fn map_change(
     scopes: &Scopes,
     ignore: &Ignore,
+    index_code: bool,
     kind: ChangeKind,
     path: &str,
     old_path: Option<&str>,
     is_dir: bool,
 ) -> Vec<StoreOp> {
-    let wanted = |p: &str| is_supported_image(p) && in_scope_with(scopes, ignore, p);
+    let wanted = |p: &str| kind_of(p, index_code).is_some() && in_scope_with(scopes, ignore, p);
     match kind {
         ChangeKind::Created | ChangeKind::Modified => {
             if !is_dir && wanted(path) {
@@ -56,7 +58,7 @@ pub fn map_change(
             }
         }
         ChangeKind::Renamed => match old_path {
-            None => map_change(scopes, ignore, ChangeKind::Created, path, None, is_dir),
+            None => map_change(scopes, ignore, index_code, ChangeKind::Created, path, None, is_dir),
             Some(old) if is_dir => {
                 if in_scope_with(scopes, ignore, path) {
                     vec![StoreOp::RenameUnder { old: old.into(), new: path.into() }]
@@ -75,6 +77,20 @@ pub fn map_change(
     }
 }
 
+/// Drop the ops that would index a source file its `.gitignore` chain ignores. `ignored` answers
+/// for one path (injectable; the real one reads the `.gitignore` files from disk). A rename whose
+/// target is ignored becomes a removal of the old row.
+pub fn drop_gitignored(ops: Vec<StoreOp>, ignored: &dyn Fn(&str) -> bool) -> Vec<StoreOp> {
+    let is_ignored_code = |p: &str| kind_of(p, true) == Some(KIND_CODE) && ignored(p);
+    ops.into_iter()
+        .filter_map(|op| match op {
+            StoreOp::Upsert { path } if is_ignored_code(&path) => None,
+            StoreOp::RenamePath { old, new } if is_ignored_code(&new) => Some(StoreOp::RemovePath { path: old }),
+            op => Some(op),
+        })
+        .collect()
+}
+
 /// Perform `ops` against `store`. `probe` reads file identity (injectable for tests).
 /// `recrawl` is called for a folder moved into scope from somewhere we had no rows for.
 /// Returns the number of ops that changed something.
@@ -87,7 +103,7 @@ pub fn apply_ops(
     let mut changed = 0;
     let upsert = |store: &mut Store, path: &str| -> bool {
         match probe(path) {
-            Ok(i) => store.upsert_file(&i.key, path, i.size, i.mtime_ms, KIND_IMAGE).is_ok(),
+            Ok(i) => store.upsert_file(&i.key, path, i.size, i.mtime_ms, kind_of(path, true).unwrap_or(KIND_IMAGE)).is_ok(),
             Err(_) => false, // gone again before we got to it; its Deleted event follows
         }
     };
@@ -166,7 +182,7 @@ pub fn run(t: Arc<Tier1>) {
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Ok(Response::Change { kind, path, old_path, is_dir })) => {
-                    let ops = map_change(scopes, &snap.ignore, kind, &path, old_path.as_deref(), is_dir);
+                    let ops = map_change(scopes, &snap.ignore, snap.index_code, kind, &path, old_path.as_deref(), is_dir);
                     if !ops.is_empty() {
                         t.apply_ops(&ops);
                     }
@@ -188,8 +204,14 @@ pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
     let recrawl = |dir: &str| {
         let sub = Scopes { include: vec![dir.to_string()], exclude: snap.scopes.exclude.clone() };
         // The moved-in folder must itself be inside the real scopes (map_change checked that).
-        crawl(&t.store, &sub, &snap.ignore, &|| false);
+        crawl(&t.store, &sub, &snap.ignore, snap.index_code, &|| false);
     };
+    let ops = if snap.index_code {
+        drop_gitignored(ops.to_vec(), &|p| gitignore::is_ignored(&snap.scopes.include, p))
+    } else {
+        ops.to_vec()
+    };
+    let ops = &ops[..];
     let mut store = t.store.lock().unwrap_or_else(|e| e.into_inner());
     // Recrawl locks the store itself; run the store ops first, then the deferred crawls.
     let mut deferred: Vec<String> = Vec::new();
@@ -219,7 +241,7 @@ mod tests {
     }
 
     fn map(kind: ChangeKind, path: &str, old: Option<&str>, dir: bool) -> Vec<StoreOp> {
-        map_change(&scopes(), &Ignore::defaults(), kind, path, old, dir)
+        map_change(&scopes(), &Ignore::defaults(), false, kind, path, old, dir)
     }
 
     #[test]
@@ -228,11 +250,44 @@ mod tests {
         assert_eq!(map(ChangeKind::Created, r"C:\Pics\a.JPG", None, false), up);
         assert_eq!(map(ChangeKind::Modified, r"C:\Pics\a.JPG", None, false), up);
         // unsupported, out of scope, excluded, directory
-        assert!(map(ChangeKind::Created, r"C:\Pics\a.txt", None, false).is_empty());
+        assert!(map(ChangeKind::Created, r"C:\Pics\a.exe", None, false).is_empty());
         assert!(map(ChangeKind::Created, r"C:\Other\a.jpg", None, false).is_empty());
         assert!(map(ChangeKind::Created, r"C:\Pics\private\a.jpg", None, false).is_empty());
         assert!(map(ChangeKind::Created, r"C:\Pics\sub", None, true).is_empty());
         assert!(map(ChangeKind::Modified, r"C:\Pics\node_modules\a.jpg", None, false).is_empty());
+    }
+
+    #[test]
+    fn documents_always_and_code_only_with_the_opt_in() {
+        let m = |idx: bool, p: &str| map_change(&scopes(), &Ignore::defaults(), idx, ChangeKind::Created, p, None, false);
+        assert_eq!(m(false, r"C:\Pics\n.docx"), vec![StoreOp::Upsert { path: r"C:\Pics\n.docx".into() }]);
+        assert!(m(false, r"C:\Pics\lib.rs").is_empty());
+        assert_eq!(m(true, r"C:\Pics\lib.rs"), vec![StoreOp::Upsert { path: r"C:\Pics\lib.rs".into() }]);
+        assert!(m(true, r"C:\Pics\private\lib.rs").is_empty());
+        // opt-in off: a renamed code file drops out
+        let r = map_change(&scopes(), &Ignore::defaults(), false, ChangeKind::Renamed, r"C:\Pics\b.rs", Some(r"C:\Pics\a.rs"), false);
+        assert_eq!(r, vec![StoreOp::RemovePath { path: r"C:\Pics\a.rs".into() }]);
+    }
+
+    #[test]
+    fn gitignored_code_is_dropped_but_documents_and_removals_are_not() {
+        let ops = vec![
+            StoreOp::Upsert { path: r"C:\Pics\gen\a.rs".into() },
+            StoreOp::Upsert { path: r"C:\Pics\gen\a.docx".into() },
+            StoreOp::Upsert { path: r"C:\Pics\ok.rs".into() },
+            StoreOp::RenamePath { old: r"C:\Pics\x.rs".into(), new: r"C:\Pics\gen\x.rs".into() },
+            StoreOp::RemovePath { path: r"C:\Pics\gen\gone.rs".into() },
+        ];
+        let out = drop_gitignored(ops, &|p| p.contains("gen"));
+        assert_eq!(
+            out,
+            vec![
+                StoreOp::Upsert { path: r"C:\Pics\gen\a.docx".into() },
+                StoreOp::Upsert { path: r"C:\Pics\ok.rs".into() },
+                StoreOp::RemovePath { path: r"C:\Pics\x.rs".into() },
+                StoreOp::RemovePath { path: r"C:\Pics\gen\gone.rs".into() },
+            ]
+        );
     }
 
     #[test]
