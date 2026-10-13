@@ -6,7 +6,7 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use crate::backend::Backend;
-use crate::fetch::{fetch, Progress};
+use crate::fetch::{fetch_with, rewrite_hf, FetchOptions, Progress};
 use crate::manifest::Manifest;
 use crate::{Error, Result};
 
@@ -66,6 +66,18 @@ pub fn install_llama(
     backend: Backend,
     progress: &mut dyn FnMut(&str, Progress),
 ) -> Result<PathBuf> {
+    install_llama_with(root, manifest, backend, &FetchOptions::default(), progress)
+}
+
+/// [`install_llama`] with explicit fetch options (retry policy, cancel flag). A cancelled
+/// download returns [`Error::Cancelled`] and keeps its `.part` file for resume.
+pub fn install_llama_with(
+    root: &Path,
+    manifest: &Manifest,
+    backend: Backend,
+    opts: &FetchOptions,
+    progress: &mut dyn FnMut(&str, Progress),
+) -> Result<PathBuf> {
     let build = &manifest.llama.build;
     let dir = install_dir(root, build, backend);
     if let Some(exe) = find_server_exe(&dir) {
@@ -83,7 +95,11 @@ pub fn install_llama(
     for (url, sha) in zips {
         let name = url.rsplit('/').next().unwrap_or("asset.zip");
         let dest = dl.join(name);
-        fetch(url, &dest, sha, &mut |p| progress(name, p))?;
+        let ep = std::env::var("WINSEEK_HF_ENDPOINT").ok();
+        fetch_with(&[rewrite_hf(url, ep.as_deref())], &dest, sha, opts, &mut |p| progress(name, p))?;
+        if opts.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
         extract_zip(&dest, &tmp)?;
     }
     if find_server_exe(&tmp).is_none() {

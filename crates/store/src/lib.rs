@@ -5,7 +5,7 @@
 //! so a rename costs nothing and identical content at two paths shares its vectors.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::path::Path;
 
@@ -19,8 +19,58 @@ const STATE_DONE: i64 = 1;
 const STATE_FAILED: i64 = 2;
 const STATE_SKIPPED: i64 = 3;
 
-/// Path segments that are never indexed, regardless of user scopes.
-pub const DEFAULT_EXCLUDED_SEGMENTS: &[&str] = &["appdata", "node_modules", ".git"];
+/// Default ignore list: folder/file *names* (one path segment each, case-insensitive,
+/// `*` and `?` wildcards) never indexed inside any scope. The user edits it in Settings;
+/// it is stored under the `ignore` settings key, and unset means this list.
+pub const DEFAULT_IGNORE: &[&str] = &[
+    // Windows / system / trash
+    "AppData", "$RECYCLE.BIN", "System Volume Information", "$WinREAgent", "Config.Msi",
+    "Thumbs.db", "desktop.ini", "__MACOSX", ".DS_Store", ".Trash", ".Trash-*", ".Spotlight-V100",
+    ".fseventsd", ".cache",
+    // secrets & credentials (privacy)
+    ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".kube", ".docker", ".pki",
+    "*.kdbx", "*.kdb", "*.agilekeychain", "*.opvault", "*.1pux",
+    // version control
+    ".git", ".hg", ".svn", ".bzr", "_darcs", ".jj", ".pijul", ".fossil", "CVS",
+    // editors / IDEs
+    ".idea", ".vs", ".vscode", ".fleet", ".history", ".metadata", ".settings", ".sts4-cache",
+    ".ccls-cache", ".clangd", ".cache-loader",
+    // JavaScript / TypeScript / web
+    "node_modules", "bower_components", "jspm_packages", "web_modules", ".npm", ".yarn",
+    ".pnpm-store", ".pnp", ".next", ".nuxt", ".output", ".svelte-kit", ".astro", ".angular",
+    ".parcel-cache", ".turbo", ".vercel", ".netlify", ".docusaurus", ".expo", ".vite",
+    ".webpack", ".serverless", ".wrangler", ".nx", ".rush", "storybook-static", ".nyc_output",
+    "coverage", ".eslintcache", ".stylelintcache", ".sass-cache", ".deno", "elm-stuff",
+    // Python
+    "venv", ".venv", "virtualenv", ".virtualenv", "env.bak", "venv.bak", "__pycache__",
+    "__pypackages__", "site-packages", "dist-packages", ".tox", ".nox", ".pytest_cache",
+    ".mypy_cache", ".ruff_cache", ".pyre", ".pytype", ".hypothesis", ".ipynb_checkpoints",
+    ".eggs", "*.egg-info", ".pixi", ".conda", "conda-meta", "htmlcov", ".pdm-build",
+    // Rust
+    "target", ".cargo", ".rustup",
+    // Java / Kotlin / Scala / Clojure (JVM)
+    ".gradle", ".m2", ".mvn", ".kotlin", ".bloop", ".metals", ".bsp", ".scala-build",
+    ".cpcache", ".clj-kondo", ".lsp", ".shadow-cljs",
+    // build outputs (generic, any language)
+    "build", "builds", "dist", "out", "bin", "obj", "_build", ".build", "cmake-build-*",
+    "CMakeFiles", "bazel-*", ".cxx", ".externalNativeBuild", "zig-cache", ".zig-cache",
+    "zig-out", ".stack-work", "dist-newstyle", "_opam", ".elixir_ls", "deps",
+    // .NET / C / C++
+    "packages", "TestResults", "ipch", ".nuget",
+    // Go / PHP / Ruby
+    "vendor", ".bundle",
+    // mobile / Apple / Dart
+    "Pods", "DerivedData", "Carthage", ".swiftpm", ".dart_tool", ".pub-cache", ".fvm",
+    // game engines
+    ".godot", ".import",
+    // infra / misc tooling
+    ".terraform", ".terragrunt-cache", ".direnv", ".devenv", ".vagrant", ".Rproj.user",
+];
+
+/// The default ignore list as owned strings (what Settings shows on "Reset to defaults").
+pub fn default_ignore() -> Vec<String> {
+    DEFAULT_IGNORE.iter().map(|s| s.to_string()).collect()
+}
 
 // ---------------------------------------------------------------- errors
 
@@ -178,7 +228,7 @@ pub struct Stats {
 }
 
 /// Folder scopes. A path is in scope if it is under an `include` prefix, not under an
-/// `exclude` prefix, and has no default-excluded segment. An empty `include` list
+/// `exclude` prefix, and has no ignored name below its root. An empty `include` list
 /// means nothing is in scope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scopes {
@@ -209,17 +259,97 @@ fn under(prefix_norm: &str, path_norm: &str) -> bool {
     }
 }
 
-pub fn in_scope(scopes: &Scopes, path: &str) -> bool {
-    let p = norm_path(path);
-    if p.split('\\')
-        .any(|seg| DEFAULT_EXCLUDED_SEGMENTS.contains(&seg))
-    {
-        return false;
+/// Glob over one segment: `*` = any run, `?` = one char (inputs already lowercased).
+fn glob_match(pat: &[char], s: &[char]) -> bool {
+    let (mut p, mut i, mut star, mut mark) = (0, 0, None, 0);
+    while i < s.len() {
+        if p < pat.len() && (pat[p] == '?' || pat[p] == s[i]) {
+            p += 1;
+            i += 1;
+        } else if p < pat.len() && pat[p] == '*' {
+            star = Some(p);
+            mark = i;
+            p += 1;
+        } else if let Some(sp) = star {
+            p = sp + 1;
+            mark += 1;
+            i = mark;
+        } else {
+            return false;
+        }
     }
+    pat[p..].iter().all(|&c| c == '*')
+}
+
+/// Compiled ignore list: exact names in a set, wildcard patterns scanned.
+#[derive(Debug, Clone, Default)]
+pub struct Ignore {
+    exact: HashSet<String>,
+    globs: Vec<Vec<char>>,
+}
+
+impl Ignore {
+    pub fn new<S: AsRef<str>>(patterns: &[S]) -> Ignore {
+        let mut ig = Ignore::default();
+        for p in patterns {
+            let p = p.as_ref().trim().trim_matches(['\\', '/']).to_lowercase();
+            if p.is_empty() {
+                continue;
+            }
+            if p.contains(['*', '?']) {
+                ig.globs.push(p.chars().collect());
+            } else {
+                ig.exact.insert(p);
+            }
+        }
+        ig
+    }
+
+    pub fn defaults() -> Ignore {
+        Ignore::new(DEFAULT_IGNORE)
+    }
+
+    fn matches_seg(&self, seg: &str) -> bool {
+        if self.exact.contains(seg) {
+            return true;
+        }
+        if self.globs.is_empty() {
+            return false;
+        }
+        let c: Vec<char> = seg.chars().collect();
+        self.globs.iter().any(|g| glob_match(g, &c))
+    }
+
+    /// Any segment of `path_norm` *below* `root_norm` matches. The root's own segments are
+    /// exempt, so explicitly including `D:\build\photos` still indexes it.
+    fn hits(&self, root_norm: &str, path_norm: &str) -> bool {
+        path_norm
+            .get(root_norm.len()..)
+            .unwrap_or("")
+            .split('\\')
+            .any(|seg| !seg.is_empty() && self.matches_seg(seg))
+    }
+}
+
+/// [`in_scope_with`] using [`DEFAULT_IGNORE`].
+pub fn in_scope(scopes: &Scopes, path: &str) -> bool {
+    thread_local! {
+        static DEFAULTS: Ignore = Ignore::defaults();
+    }
+    DEFAULTS.with(|ig| in_scope_with(scopes, ig, path))
+}
+
+/// In scope: under an `include` root, not under an `exclude` prefix, and no path segment
+/// below that root matches `ignore`.
+pub fn in_scope_with(scopes: &Scopes, ignore: &Ignore, path: &str) -> bool {
+    let p = norm_path(path);
     if scopes.exclude.iter().any(|e| under(&norm_path(e), &p)) {
         return false;
     }
-    scopes.include.iter().any(|i| under(&norm_path(i), &p))
+    scopes.include.iter().any(|i| {
+        let r = norm_path(i);
+        under(&r, &p) && !ignore.hits(&r, &p)
+    })
 }
 
 /// Quote user text so FTS5 treats every whitespace-separated token as a literal term.
@@ -724,6 +854,39 @@ impl Store {
         )?;
         Ok(())
     }
+
+    /// The user's ignore list, or [`DEFAULT_IGNORE`] when never saved.
+    pub fn get_ignore(&self) -> Result<Vec<String>> {
+        let v: Option<String> = self
+            .conn
+            .query_row("SELECT value FROM settings WHERE key = 'ignore'", [], |r| r.get(0))
+            .optional()?;
+        match v {
+            Some(s) => Ok(serde_json::from_str(&s)?),
+            None => Ok(default_ignore()),
+        }
+    }
+
+    /// Save the ignore list (trimmed, blanks and duplicates dropped, order kept);
+    /// `None` forgets it so the defaults apply again.
+    pub fn set_ignore(&mut self, list: Option<&[String]>) -> Result<()> {
+        let Some(list) = list else {
+            self.conn.execute("DELETE FROM settings WHERE key = 'ignore'", [])?;
+            return Ok(());
+        };
+        let mut seen = HashSet::new();
+        let clean: Vec<&str> = list
+            .iter()
+            .map(|s| s.trim())
+            .filter(|s| !s.is_empty() && seen.insert(s.to_lowercase()))
+            .collect();
+        self.conn.execute(
+            "INSERT INTO settings(key, value) VALUES ('ignore', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            [serde_json::to_string(&clean)?],
+        )?;
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------- internals
@@ -1094,6 +1257,66 @@ mod tests {
         };
         assert!(in_scope(&root, r"C:\anything\x"));
         assert!(!in_scope(&root, r"D:\x"));
+    }
+
+    #[test]
+    fn default_ignore_covers_dev_junk() {
+        let sc = Scopes { include: vec![r"C:\u\Documents".into()], exclude: vec![] };
+        for junk in [
+            r"proj\node_modules\x.png",
+            r"proj\.venv\Lib\x.png",
+            r"proj\venv\x.png",
+            r"proj\__pycache__\x.png",
+            r"proj\pkg.egg-info\x.png",
+            r"crate\target\debug\x.png",
+            r"app\build\x.png",
+            r"app\.gradle\x.png",
+            r"java\.m2\repository\x.png",
+            r"net\bin\Debug\x.png",
+            r"net\obj\x.png",
+            r"c\cmake-build-debug\x.png",
+            r"b\bazel-out\x.png",
+            r"go\vendor\x.png",
+            r"ios\Pods\x.png",
+            r"web\.next\x.png",
+            r"Vault.KDBX",
+            r"a\.git\x.png",
+            r"a\Thumbs.db",
+        ] {
+            assert!(!in_scope(&sc, &format!(r"C:\u\Documents\{junk}")), "{junk}");
+        }
+        assert!(in_scope(&sc, r"C:\u\Documents\Targets 2025\x.png"), "whole names only");
+        assert!(in_scope(&sc, r"C:\u\Documents\builder\x.png"));
+        // the include root's own segments are exempt
+        let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![] };
+        assert!(in_scope(&root, r"D:\build\photos\x.jpg"));
+        assert!(!in_scope(&root, r"D:\build\photos\out\x.jpg"));
+    }
+
+    #[test]
+    fn custom_ignore_and_globs() {
+        let sc = Scopes { include: vec![r"C:\p".into()], exclude: vec![] };
+        let ig = Ignore::new(&["Raw*", "?tmp", " /Secret\\ ", ""]);
+        assert!(!in_scope_with(&sc, &ig, r"C:\p\RAWs\x.jpg"));
+        assert!(!in_scope_with(&sc, &ig, r"C:\p\xtmp\x.jpg"));
+        assert!(in_scope_with(&sc, &ig, r"C:\p\tmp\x.jpg"), "? needs one char");
+        assert!(!in_scope_with(&sc, &ig, r"C:\p\secret\x.jpg"));
+        assert!(in_scope_with(&sc, &ig, r"C:\p\node_modules\x.jpg"), "custom list replaces defaults");
+        assert!(in_scope_with(&sc, &Ignore::new::<&str>(&[]), r"C:\p\.git\x"));
+        assert!(glob_match(&"a*b*c".chars().collect::<Vec<_>>(), &"axxbyyc".chars().collect::<Vec<_>>()));
+        assert!(!glob_match(&"a*b".chars().collect::<Vec<_>>(), &"axxbc".chars().collect::<Vec<_>>()));
+    }
+
+    #[test]
+    fn ignore_persists() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert_eq!(s.get_ignore().unwrap(), default_ignore());
+        s.set_ignore(Some(&[" build ".into(), "".into(), "Build".into(), "x*".into()])).unwrap();
+        assert_eq!(s.get_ignore().unwrap(), vec!["build".to_string(), "x*".into()]);
+        s.set_ignore(Some(&[])).unwrap();
+        assert!(s.get_ignore().unwrap().is_empty(), "an empty list is a real choice");
+        s.set_ignore(None).unwrap();
+        assert_eq!(s.get_ignore().unwrap(), default_ignore());
     }
 
     #[test]

@@ -1,7 +1,7 @@
 //! Change feed: subscribe to searchd's USN-derived events for the include roots and turn them
 //! into store operations.
 //!
-//! [`map_change`] is pure (event + scopes -> [`StoreOp`]s); [`apply_ops`] performs them.
+//! [`map_change`] is pure (event + scopes + ignore list -> [`StoreOp`]s); [`apply_ops`] performs them.
 
 use std::io;
 use std::path::Path;
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use winseek_ipc::pipe::connect;
 use winseek_ipc::{read_message, write_message, ChangeKind, Request, Response, PIPE_NAME};
-use winseek_store::{in_scope, Scopes, Store};
+use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
 use super::crawler::{crawl, is_supported_image, skip_attrs, KIND_IMAGE};
 use super::identity::{file_info, FileInfo, ATTR_DIRECTORY};
@@ -32,12 +32,13 @@ pub enum StoreOp {
 /// Pure mapping from one searchd change event to store operations.
 pub fn map_change(
     scopes: &Scopes,
+    ignore: &Ignore,
     kind: ChangeKind,
     path: &str,
     old_path: Option<&str>,
     is_dir: bool,
 ) -> Vec<StoreOp> {
-    let wanted = |p: &str| is_supported_image(p) && in_scope(scopes, p);
+    let wanted = |p: &str| is_supported_image(p) && in_scope_with(scopes, ignore, p);
     match kind {
         ChangeKind::Created | ChangeKind::Modified => {
             if !is_dir && wanted(path) {
@@ -55,9 +56,9 @@ pub fn map_change(
             }
         }
         ChangeKind::Renamed => match old_path {
-            None => map_change(scopes, ChangeKind::Created, path, None, is_dir),
+            None => map_change(scopes, ignore, ChangeKind::Created, path, None, is_dir),
             Some(old) if is_dir => {
-                if in_scope(scopes, path) {
+                if in_scope_with(scopes, ignore, path) {
                     vec![StoreOp::RenameUnder { old: old.into(), new: path.into() }]
                 } else {
                     vec![StoreOp::RemoveUnder { path: old.into() }]
@@ -128,7 +129,8 @@ pub fn run(t: Arc<Tier1>) {
     super::lower_thread_priority();
     let mut backoff = BACKOFF_START;
     loop {
-        let (scopes, gen) = t.scopes_snapshot();
+        let snap = t.snapshot();
+        let (scopes, gen) = (&snap.scopes, snap.gen);
         if scopes.include.is_empty() {
             std::thread::sleep(Duration::from_secs(2));
             continue;
@@ -164,7 +166,7 @@ pub fn run(t: Arc<Tier1>) {
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Ok(Response::Change { kind, path, old_path, is_dir })) => {
-                    let ops = map_change(&scopes, kind, &path, old_path.as_deref(), is_dir);
+                    let ops = map_change(scopes, &snap.ignore, kind, &path, old_path.as_deref(), is_dir);
                     if !ops.is_empty() {
                         t.apply_ops(&ops);
                     }
@@ -173,7 +175,7 @@ pub fn run(t: Arc<Tier1>) {
                 Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => break, // pipe closed: reconnect
                 Err(RecvTimeoutError::Timeout) => {}
             }
-            if t.scopes_snapshot().1 != gen {
+            if t.snapshot().gen != gen {
                 break; // resubscribe with the new roots
             }
         }
@@ -182,11 +184,11 @@ pub fn run(t: Arc<Tier1>) {
 
 /// Real-world probe + recrawl wiring used by [`Tier1::apply_ops`].
 pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
-    let scopes = t.scopes_snapshot().0;
+    let snap = t.snapshot();
     let recrawl = |dir: &str| {
-        let sub = Scopes { include: vec![dir.to_string()], exclude: scopes.exclude.clone() };
+        let sub = Scopes { include: vec![dir.to_string()], exclude: snap.scopes.exclude.clone() };
         // The moved-in folder must itself be inside the real scopes (map_change checked that).
-        crawl(&t.store, &sub, &|| false);
+        crawl(&t.store, &sub, &snap.ignore, &|| false);
     };
     let mut store = t.store.lock().unwrap_or_else(|e| e.into_inner());
     // Recrawl locks the store itself; run the store ops first, then the deferred crawls.
@@ -217,7 +219,7 @@ mod tests {
     }
 
     fn map(kind: ChangeKind, path: &str, old: Option<&str>, dir: bool) -> Vec<StoreOp> {
-        map_change(&scopes(), kind, path, old, dir)
+        map_change(&scopes(), &Ignore::defaults(), kind, path, old, dir)
     }
 
     #[test]

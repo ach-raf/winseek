@@ -9,19 +9,21 @@ pub mod crawler;
 pub mod embedder;
 pub mod feed;
 pub mod identity;
+pub mod policy;
 pub mod process;
 pub mod scopes;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
 use winseek_llama::Manifest;
-use winseek_store::{in_scope, Scopes, Stats, Store};
+use winseek_store::{default_ignore, in_scope_with, Ignore, Scopes, Stats, Store};
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder};
+use policy::PauseReason;
 use process::{Pass, Processor};
 
 const ST_MODELS_MISSING: u8 = 0;
@@ -36,11 +38,37 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(30);
 pub struct Tier1 {
     pub store: Mutex<Store>,
     embedder: Mutex<Box<dyn Embedder + Send>>,
+    /// Effective pause flag read by the processor: user pause or an automatic reason.
     paused: AtomicBool,
+    user_paused: AtomicBool,
+    /// 0 = none, else a [`PauseReason`] code (battery / fullscreen) from the policy poller.
+    auto_pause: AtomicU8,
+    /// Set by [`Tier1::kick`]; wakes the worker's models-missing / idle sleeps.
+    wake: (Mutex<bool>, Condvar),
     state: AtomicU8,
-    scopes: RwLock<(Scopes, u64)>,
+    snap: RwLock<Snapshot>,
     gen: AtomicU64,
     last_error: Mutex<Option<String>>,
+}
+
+/// Scopes + compiled ignore list + generation, read together so a walk never mixes versions.
+#[derive(Clone)]
+pub struct Snapshot {
+    pub scopes: Scopes,
+    pub ignore: Arc<Ignore>,
+    pub gen: u64,
+}
+
+impl Snapshot {
+    pub fn in_scope(&self, path: &str) -> bool {
+        in_scope_with(&self.scopes, &self.ignore, path)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct IgnoreDto {
+    pub list: Vec<String>,
+    pub defaults: Vec<String>,
 }
 
 /// Tauri managed state: the worker, or why it could not start.
@@ -78,6 +106,8 @@ pub struct StatusDto {
     pub include: Vec<String>,
     pub exclude: Vec<String>,
     pub error: Option<String>,
+    /// Why indexing is paused: "user" | "battery" | "fullscreen" | null.
+    pub paused_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -112,12 +142,16 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 impl Tier1 {
     /// Build from parts (tests inject a fake embedder and an in-memory store).
     pub fn new(store: Store, embedder: Box<dyn Embedder + Send>, scopes: Scopes) -> Arc<Tier1> {
+        let ignore = Arc::new(Ignore::new(&store.get_ignore().unwrap_or_else(|_| default_ignore())));
         Arc::new(Tier1 {
             store: Mutex::new(store),
             embedder: Mutex::new(embedder),
             paused: AtomicBool::new(false),
+            user_paused: AtomicBool::new(false),
+            auto_pause: AtomicU8::new(0),
+            wake: (Mutex::new(false), Condvar::new()),
             state: AtomicU8::new(ST_IDLE),
-            scopes: RwLock::new((scopes, 1)),
+            snap: RwLock::new(Snapshot { scopes, ignore, gen: 1 }),
             gen: AtomicU64::new(1),
             last_error: Mutex::new(None),
         })
@@ -144,8 +178,8 @@ impl Tier1 {
         Ok(t)
     }
 
-    pub fn scopes_snapshot(&self) -> (Scopes, u64) {
-        self.scopes.read().unwrap_or_else(|e| e.into_inner()).clone()
+    pub fn snapshot(&self) -> Snapshot {
+        self.snap.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
 
     pub fn apply_ops(&self, ops: &[feed::StoreOp]) -> usize {
@@ -155,13 +189,63 @@ impl Tier1 {
     pub fn set_scopes(&self, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
         let s = Scopes { include, exclude };
         lock(&self.store).set_scopes(&s).map_err(|e| e.to_string())?;
-        let g = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
-        *self.scopes.write().unwrap_or_else(|e| e.into_inner()) = (s, g);
+        let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
+        snap.scopes = s;
+        snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         Ok(())
     }
 
+    /// The current ignore list plus the built-in defaults (for "Reset to defaults" diffing).
+    pub fn get_ignore(&self) -> Result<IgnoreDto, String> {
+        let list = lock(&self.store).get_ignore().map_err(|e| e.to_string())?;
+        Ok(IgnoreDto { list, defaults: default_ignore() })
+    }
+
+    /// Save the ignore list (`None` = back to defaults) and make the crawler re-run.
+    pub fn set_ignore(&self, list: Option<Vec<String>>) -> Result<IgnoreDto, String> {
+        let mut store = lock(&self.store);
+        store.set_ignore(list.as_deref()).map_err(|e| e.to_string())?;
+        let saved = store.get_ignore().map_err(|e| e.to_string())?;
+        drop(store);
+        let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
+        snap.ignore = Arc::new(Ignore::new(&saved));
+        snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
+        Ok(IgnoreDto { list: saved, defaults: default_ignore() })
+    }
+
+    /// The user's pause (tray / `tier1_pause`). It wins over every automatic reason.
     pub fn set_paused(&self, p: bool) {
-        self.paused.store(p, Ordering::SeqCst);
+        self.user_paused.store(p, Ordering::SeqCst);
+        self.recompute_pause();
+    }
+
+    /// Automatic pause from the policy poller (`None` resumes, unless the user paused).
+    pub fn set_auto_pause(&self, r: Option<PauseReason>) {
+        self.auto_pause.store(r.map_or(0, PauseReason::code), Ordering::SeqCst);
+        self.recompute_pause();
+    }
+
+    fn recompute_pause(&self) {
+        self.paused.store(self.paused_reason().is_some(), Ordering::SeqCst);
+    }
+
+    pub fn paused_reason(&self) -> Option<PauseReason> {
+        policy::combine(self.user_paused.load(Ordering::SeqCst), PauseReason::from_code(self.auto_pause.load(Ordering::SeqCst)))
+    }
+
+    /// Wake the worker now (e.g. after the models finished downloading).
+    pub fn kick(&self) {
+        *lock(&self.wake.0) = true;
+        self.wake.1.notify_all();
+    }
+
+    /// Sleep up to `d`, returning early on [`kick`](Self::kick).
+    fn nap(&self, d: Duration) {
+        let mut kicked = lock(&self.wake.0);
+        if !*kicked {
+            kicked = self.wake.1.wait_timeout_while(kicked, d, |k| !*k).unwrap_or_else(|e| e.into_inner()).0;
+        }
+        *kicked = false;
     }
 
     pub fn state_str(&self) -> &'static str {
@@ -176,13 +260,14 @@ impl Tier1 {
     }
 
     pub fn status(&self) -> StatusDto {
-        let (scopes, _) = self.scopes_snapshot();
+        let scopes = self.snapshot().scopes;
         StatusDto {
             state: self.state_str().into(),
             stats: lock(&self.store).stats().ok().map(Into::into),
             include: scopes.include,
             exclude: scopes.exclude,
             error: lock(&self.last_error).clone(),
+            paused_reason: self.paused_reason().map(PauseReason::as_str),
         }
     }
 
@@ -205,11 +290,11 @@ impl Tier1 {
             }
         };
         // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
-        let (scopes, _) = self.scopes_snapshot();
+        let snap = self.snapshot();
         let raw = lock(&self.store).search_vectors(&vec, k * 4, None).map_err(|e| e.to_string())?;
         let hits = raw
             .into_iter()
-            .filter(|h| in_scope(&scopes, &h.path))
+            .filter(|h| snap.in_scope(&h.path))
             .take(k)
             .map(|h| SemanticHit { path: h.path, score: h.score })
             .collect();
@@ -228,7 +313,7 @@ fn worker_loop(t: Arc<Tier1>) {
             if !e.models_present() {
                 drop(e);
                 t.state.store(ST_MODELS_MISSING, Ordering::Relaxed);
-                std::thread::sleep(MODELS_POLL);
+                t.nap(MODELS_POLL);
                 continue;
             }
         }
@@ -240,11 +325,11 @@ fn worker_loop(t: Arc<Tier1>) {
             }
             Ok(Pass::Idle) | Ok(Pass::Paused) => {
                 t.state.store(ST_IDLE, Ordering::Relaxed);
-                std::thread::sleep(IDLE_POLL);
+                t.nap(IDLE_POLL);
             }
             Ok(Pass::ModelsMissing) => {
                 t.state.store(ST_MODELS_MISSING, Ordering::Relaxed);
-                std::thread::sleep(MODELS_POLL);
+                t.nap(MODELS_POLL);
             }
             Ok(Pass::EmbedFailed(msg)) => {
                 *lock(&t.last_error) = Some(msg);
@@ -262,11 +347,11 @@ fn crawler_loop(t: Arc<Tier1>) {
     lower_thread_priority();
     let mut done_gen = 0;
     loop {
-        let (scopes, gen) = t.scopes_snapshot();
-        if gen != done_gen {
-            crawler::crawl(&t.store, &scopes, &|| t.scopes_snapshot().1 != gen);
+        let snap = t.snapshot();
+        if snap.gen != done_gen {
+            crawler::crawl(&t.store, &snap.scopes, &snap.ignore, &|| t.snapshot().gen != snap.gen);
             // An aborted crawl (scopes changed mid-way) is redone on the next iteration.
-            done_gen = gen;
+            done_gen = snap.gen;
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -281,6 +366,7 @@ pub fn start(t: &Arc<Tier1>) {
     spawn("tier1-crawler", crawler_loop);
     spawn("tier1-feed", feed::run);
     spawn("tier1-worker", worker_loop);
+    policy::spawn(t.clone()); // pause on battery / full-screen, resume by itself
 }
 
 /// Open the default worker and start it. The returned handle is registered as Tauri state.
@@ -303,13 +389,24 @@ pub fn init() -> Handle {
 pub fn tier1_status(h: tauri::State<'_, Handle>) -> StatusDto {
     match h.get() {
         Ok(t) => t.status(),
-        Err(e) => StatusDto { state: "unavailable".into(), stats: None, include: vec![], exclude: vec![], error: Some(e) },
+        Err(e) => StatusDto { state: "unavailable".into(), stats: None, include: vec![], exclude: vec![], error: Some(e), paused_reason: None },
     }
 }
 
 #[tauri::command]
 pub fn tier1_set_scopes(h: tauri::State<'_, Handle>, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
     h.get()?.set_scopes(include, exclude)
+}
+
+#[tauri::command]
+pub fn tier1_get_ignore(h: tauri::State<'_, Handle>) -> Result<IgnoreDto, String> {
+    h.get()?.get_ignore()
+}
+
+/// `None` resets to the built-in defaults. Returns the saved list.
+#[tauri::command]
+pub fn tier1_set_ignore(h: tauri::State<'_, Handle>, list: Option<Vec<String>>) -> Result<IgnoreDto, String> {
+    h.get()?.set_ignore(list)
 }
 
 #[tauri::command]
@@ -414,12 +511,47 @@ mod tests {
         t.set_paused(false);
         t.state.store(ST_INDEXING, Ordering::Relaxed);
         assert_eq!(t.status().state, "indexing");
-        let g0 = t.scopes_snapshot().1;
+        let g0 = t.snapshot().gen;
         t.set_scopes(vec![r"D:\x".into()], vec![r"D:\x\y".into()]).unwrap();
         let st = t.status();
         assert_eq!((st.include, st.exclude), (vec![r"D:\x".to_string()], vec![r"D:\x\y".to_string()]));
-        assert!(t.scopes_snapshot().1 > g0);
+        assert!(t.snapshot().gen > g0);
         assert_eq!(lock(&t.store).get_scopes().unwrap().include, vec![r"D:\x".to_string()]);
+    }
+
+    #[test]
+    fn user_pause_wins_and_auto_pause_resumes() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        t.set_auto_pause(Some(PauseReason::Battery));
+        assert_eq!((t.status().state.as_str(), t.status().paused_reason), ("paused", Some("battery")));
+        assert!(t.paused.load(Ordering::Relaxed));
+        t.set_paused(true);
+        assert_eq!(t.status().paused_reason, Some("user"));
+        t.set_auto_pause(None); // user pause stays
+        assert!(t.paused.load(Ordering::Relaxed));
+        assert_eq!(t.status().paused_reason, Some("user"));
+        t.set_paused(false);
+        assert!(!t.paused.load(Ordering::Relaxed));
+        assert_eq!((t.status().state.as_str(), t.status().paused_reason), ("idle", None));
+    }
+
+    #[test]
+    fn kick_wakes_nap_early() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        let t2 = t.clone();
+        let h = std::thread::spawn(move || {
+            let t0 = std::time::Instant::now();
+            t2.nap(Duration::from_secs(30));
+            t0.elapsed()
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        t.kick();
+        assert!(h.join().unwrap() < Duration::from_secs(5));
+        // a kick before the nap is not lost
+        t.kick();
+        let t0 = std::time::Instant::now();
+        t.nap(Duration::from_secs(30));
+        assert!(t0.elapsed() < Duration::from_secs(5));
     }
 
     #[test]
@@ -428,8 +560,8 @@ mod tests {
         let img = image::RgbImage::from_pixel(20, 10, image::Rgb([1, 2, 3]));
         img.save(dir.path().join("a.png")).unwrap();
         let t = tier(Box::new(Q), &[&dir.path().to_string_lossy()]);
-        let (scopes, _) = t.scopes_snapshot();
-        assert_eq!(crawler::crawl(&t.store, &scopes, &|| false).upserted, 1);
+        let snap = t.snapshot();
+        assert_eq!(crawler::crawl(&t.store, &snap.scopes, &snap.ignore, &|| false).upserted, 1);
         let mut p = Processor::default();
         assert_eq!(p.run_pass(&t.store, &t.embedder, &t.paused).unwrap(), Pass::Progress(1));
         assert_eq!(lock(&t.store).stats().unwrap().done, 1);

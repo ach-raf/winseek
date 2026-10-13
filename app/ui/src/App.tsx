@@ -1,6 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
 import { FirstRun, type Summary } from "./FirstRun";
+import { Setup } from "./Setup";
+import { SemRow, SemanticHint, baseName, dedupe, pathKey } from "./Semantic";
+import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize, kindOf, matchRanges, splitDir } from "./format";
@@ -79,9 +82,10 @@ function RenameInput({ initial, isDir, onCommit, onCancel }: {
 }
 
 const Row = memo(function Row({
-  hit, query, selected, top, icon, thumb, renaming, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
+  hit, query, selected, top, icon, thumb, renaming, both, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
 }: {
   hit: Hit | undefined; query: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
+  both: boolean; // also found by meaning
   onPick: () => void; onHover: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
   onRenameCommit: (name: string) => void; onRenameCancel: () => void;
 }) {
@@ -111,7 +115,7 @@ const Row = memo(function Row({
         <div className="name">
           {renaming
             ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={onRenameCommit} onCancel={onRenameCancel} />
-            : <Highlight text={hit.name} query={query} />}
+            : <><Highlight text={hit.name} query={query} />{both && <span className="chip-both">name + meaning</span>}</>}
         </div>
         <div className="path"><span className="head">{head}</span><span className="tail">{tail}</span></div>
       </div>
@@ -148,12 +152,18 @@ export default function App({ backend }: { backend: Backend }) {
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupErr, setSetupErr] = useState<string | null>(null);
   const [counting, setCounting] = useState(false);
+  // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
+  const [setupOpen, setSetupOpen] = useState(false);
+  const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const t0 = useRef<number | null>(null);
   const sawScan = useRef(false);
   const showPanelRef = useRef(false);
   const summaryRef = useRef<Summary | null>(null);
   const primaryRef = useRef<() => void>(() => {});
+  const setupOpenRef = useRef(false);
+  const setupPrimaryRef = useRef<() => void>(() => {});
+  const semRef = useRef<HTMLDivElement>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -168,6 +178,20 @@ export default function App({ backend }: { backend: Backend }) {
   const suppressClick = useRef(false);
 
   const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
+
+  // ---- search by meaning ---------------------------------------------------
+  const [t1, refreshT1] = useTier1(backend, setupOpen, epoch);
+  const models = useModels(backend, refreshT1);
+  const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
+  const sem = useSemantic(backend, query, !!t1 && !t1Off && !isRecent, filter, epoch);
+  const semKeys = useMemo(() => new Set(sem.hits.map((h) => pathKey(h.path))), [sem.hits]);
+  // A file found by both stays where it is in the name results (they never move); only the others are listed here.
+  // Dedupe looks at the first 400 name rows, the ones a user can plausibly be looking at.
+  const semRows = useMemo(
+    () => dedupe(sem.hits, data.rows.slice(0, 400).flatMap((h) => (h ? [h.path] : []))),
+    [sem.hits, data.rows],
+  );
+  const selCount = data.total + semRows.length;
 
   // ---- data loading --------------------------------------------------------
   useEffect(() => {
@@ -295,7 +319,10 @@ export default function App({ backend }: { backend: Backend }) {
   }, [flash]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
 
-  const current = data.rows[sel];
+  const semSel = sel >= data.total ? semRows[sel - data.total] : undefined;
+  const current: Hit | undefined = sel < data.total
+    ? data.rows[sel]
+    : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: null, mtime: null };
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
     if (!h) return;
@@ -392,18 +419,33 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend, fail]);
 
   const move = useCallback((to: number) => {
-    const n = Math.max(0, Math.min(data.total - 1, to));
+    const n = Math.max(0, Math.min(selCount - 1, to));
     setSel(n);
     const el = listRef.current;
-    if (!el) return;
+    if (!el || n >= data.total) return; // semantic rows scroll into view in an effect
     const top = n * ROW_H, bottom = top + ROW_H;
     if (top < el.scrollTop) el.scrollTop = top;
     else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
-  }, [data.total]);
+  }, [data.total, selCount]);
+
+  useEffect(() => {
+    if (sel >= data.total) semRef.current?.querySelector('[data-sel="1"]')?.scrollIntoView({ block: "nearest" });
+    setSel((s) => (s >= selCount ? Math.max(0, selCount - 1) : s));
+  }, [sel, data.total, selCount]);
+
+  const openSemMenu = useCallback(async (path: string, x: number, y: number) => {
+    try {
+      const r = await backend.showContextMenu(path, x, y);
+      if (r === "invoked") { await backend.hide(); return; }
+      if (r === "deleted") { flash("Moved to Recycle Bin"); setEpoch((e) => e + 1); }
+    } catch (e) { fail(e); }
+    refocus();
+  }, [backend, flash, fail, refocus]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (renaming) return;
+      if ((e.target as HTMLElement | null)?.closest?.(".setup")) return; // the setup panel's own inputs / buttons
       const inp = inputRef.current;
       const inInput = !!inp && document.activeElement === inp;
       const hasSelection = inInput && inp!.selectionStart !== inp!.selectionEnd;
@@ -411,6 +453,11 @@ export default function App({ backend }: { backend: Backend }) {
       const menuAtSelection = () => {
         const el = listRef.current;
         if (!el || !current) return;
+        if (sel >= data.total) {
+          const sr = semRef.current?.querySelector('[data-sel="1"]')?.getBoundingClientRect();
+          if (sr) void openSemMenu(current.path, sr.left + 120, sr.top + sr.height / 2);
+          return;
+        }
         const r = el.getBoundingClientRect();
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
@@ -421,14 +468,21 @@ export default function App({ backend }: { backend: Backend }) {
         case "PageDown": e.preventDefault(); move(sel + page); break;
         case "PageUp": e.preventDefault(); move(sel - page); break;
         case "Home": if (e.ctrlKey) { e.preventDefault(); move(0); } break;
-        case "End": if (e.ctrlKey) { e.preventDefault(); move(data.total - 1); } break;
+        case "End": if (e.ctrlKey) { e.preventDefault(); move(selCount - 1); } break;
         case "Enter":
+          if (setupOpenRef.current) {
+            if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
+            e.preventDefault(); setupPrimaryRef.current(); break;
+          }
           if (showPanelRef.current) {
             if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
             e.preventDefault(); primaryRef.current(); break;
           }
           e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
-        case "Escape": e.preventDefault(); void backend.hide(); break;
+        case "Escape":
+          e.preventDefault();
+          if (setupOpenRef.current) setSetupOpen(false); else void backend.hide();
+          break;
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
           e.preventDefault();
@@ -445,10 +499,10 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         case "F2":
           e.preventDefault();
-          if (current) setRenaming(true);
+          if (current && sel < data.total) setRenaming(true);
           break;
         case "Delete":
-          if (atEnd && current) { e.preventDefault(); void doRecycle(sel); }
+          if (atEnd && current && sel < data.total) { e.preventDefault(); void doRecycle(sel); }
           break;
         case "z": case "Z":
           if (e.ctrlKey && !e.shiftKey && undoRef.current && (!inInput || inp!.value === "" || inp!.value === undoQuery.current)) {
@@ -467,7 +521,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, filter, data.total, backend, renaming, flash, fail, doRecycle, doUndo, openMenu]);
+  }, [move, sel, viewH, act, current, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -481,8 +535,9 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- first run -----------------------------------------------------------
   const demo = status.length > 0 && status.every((v) => v.state === "demo");
   const needsSetup = demo && (service === "not_installed" || service === "stopped") && !dismissed;
-  const showPanel = query.trim() === "" && (counting || needsSetup);
-  showPanelRef.current = needsSetup && query.trim() === "";
+  const showPanel = setupOpen || (query.trim() === "" && (counting || needsSetup));
+  showPanelRef.current = setupOpen || (needsSetup && query.trim() === "");
+  setupOpenRef.current = setupOpen;
   summaryRef.current = summary;
   const runSetup = useCallback(async () => {
     if (setupBusy) return;
@@ -500,6 +555,17 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend, service, setupBusy, startCounting, refocus]);
   primaryRef.current = runSetup;
   useEffect(() => { if (query.trim() && counting && summary) setCounting(false); }, [query, counting, summary]);
+  useEffect(() => { if (query.trim()) setSetupOpen(false); }, [query]); // typing leaves the setup panel (the download keeps going)
+  const openSetup = useCallback(() => {
+    setSetupOpen(true);
+    models.refreshPlan();
+    refreshT1();
+  }, [models, refreshT1]);
+  const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
+  const setFolders = useCallback((include: string[]) => {
+    backend.tier1SetScopes(include, t1?.exclude ?? []).then(refreshT1).catch(fail);
+  }, [backend, t1, refreshT1, fail]);
+  const pauseIndexing = useCallback((p: boolean) => { backend.tier1Pause(p).then(refreshT1).catch(fail); }, [backend, refreshT1, fail]);
 
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
@@ -524,7 +590,7 @@ export default function App({ backend }: { backend: Backend }) {
       out.push(
         <Row key={i} hit={h} query={query} selected={i === sel} top={i * ROW_H}
              icon={h ? backend.iconUrl(h.path, h.is_dir, thumbKind) : null} thumb={thumbKind}
-             renaming={renaming && i === sel}
+             renaming={renaming && i === sel} both={!!h && semKeys.has(pathKey(h.path))}
              onPick={() => {
                if (suppressClick.current) { suppressClick.current = false; return; }
                setSel(i); void act("open", h);
@@ -537,7 +603,7 @@ export default function App({ backend }: { backend: Backend }) {
       );
     }
     return out;
-  }, [first, last, data.rows, query, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
+  }, [first, last, data.rows, query, sel, act, backend, renaming, semKeys, onRowDown, openMenu, doRename, refocus]);
 
   return (
     <div className="shell">
@@ -578,14 +644,17 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
 
-      {showPanel && (
+      {showPanel && (setupOpen ? (
+        <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
+      ) : (
         <FirstRun
           mode={counting ? "counter" : "setup"} service={service} busy={setupBusy} error={setupErr}
           rows={status.filter((v) => v.state !== "demo")} summary={summary}
           onPrimary={() => void runSetup()}
           onDismiss={() => { setDismissed(true); setSetupErr(null); refocus(); }}
+          onSemantic={t1?.state === "models_missing" ? openSetup : undefined}
         />
-      )}
+      ))}
 
       {!showPanel && heading && <div className="section">{heading}</div>}
 
@@ -594,11 +663,30 @@ export default function App({ backend }: { backend: Backend }) {
         {loaded && data.total === 0 && (
           <div className="empty">
             <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
-            <strong>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</strong>
+            <strong>No {semRows.length ? "name matches" : "results"}{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</strong>
             <span>Check the spelling, or try a different filter.</span>
           </div>
         )}
       </div>
+
+      {!showPanel && semRows.length > 0 && (
+        <div className="sem" ref={semRef}>
+          <div className="section">By meaning</div>
+          <div className="sem-rows" role="listbox" aria-label="Results by meaning">
+            {semRows.map((h, i) => (
+              <SemRow key={h.path} hit={h} query={sem.query} selected={data.total + i === sel}
+                      icon={backend.iconUrl(h.path, false, true)} thumb
+                      onPick={() => { setSel(data.total + i); void act("open", { name: baseName(h.path), path: h.path, is_dir: false, size: null, mtime: null }); }}
+                      onHover={() => setSel((s) => (s === data.total + i ? s : data.total + i))}
+                      onMenu={(e) => { e.preventDefault(); setSel(data.total + i); void openSemMenu(h.path, e.clientX, e.clientY); }} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {!showPanel && t1Off && !hintOff && query.trim() !== "" && (
+        <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
+      )}
 
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>

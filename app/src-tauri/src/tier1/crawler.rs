@@ -1,12 +1,12 @@
 //! Initial / re-scope crawl: walk the include roots and queue supported image files.
 //!
 //! Skips reparse points (junctions, symlinks, OneDrive placeholders - reading those could
-//! trigger a cloud download), hidden+system entries and anything `in_scope` rejects.
+//! trigger a cloud download), hidden+system entries and anything `in_scope_with` rejects.
 
 use std::path::Path;
 use std::sync::Mutex;
 
-use winseek_store::{in_scope, Scopes, Store};
+use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
 use super::identity::{file_info, ATTR_DIRECTORY, ATTR_HIDDEN, ATTR_REPARSE_POINT, ATTR_SYSTEM};
 
@@ -35,7 +35,7 @@ pub struct CrawlStats {
 }
 
 /// Walk every include root. `stop` is polled per entry (return true to abort).
-pub fn crawl(store: &Mutex<Store>, scopes: &Scopes, stop: &dyn Fn() -> bool) -> CrawlStats {
+pub fn crawl(store: &Mutex<Store>, scopes: &Scopes, ignore: &Ignore, stop: &dyn Fn() -> bool) -> CrawlStats {
     let mut st = CrawlStats::default();
     let mut stack: Vec<std::path::PathBuf> = scopes.include.iter().map(|r| r.trim_end_matches(['\\', '/']).into()).collect();
     // `C:` alone means the drive's current directory; keep the trailing slash for drive roots.
@@ -69,12 +69,12 @@ pub fn crawl(store: &Mutex<Store>, scopes: &Scopes, stop: &dyn Fn() -> bool) -> 
             }
             let ps = path.to_string_lossy();
             if attrs & ATTR_DIRECTORY != 0 {
-                if in_scope(scopes, &ps) {
+                if in_scope_with(scopes, ignore, &ps) {
                     stack.push(path);
                 }
                 continue;
             }
-            if !is_supported_image(&ps) || !in_scope(scopes, &ps) {
+            if !is_supported_image(&ps) || !in_scope_with(scopes, ignore, &ps) {
                 continue;
             }
             st.files_seen += 1;
@@ -149,12 +149,12 @@ mod tests {
             exclude: vec![r.join("skip").to_string_lossy().into_owned()],
         };
         let s = store();
-        let st = crawl(&s, &scopes, &|| false);
+        let st = crawl(&s, &scopes, &Ignore::defaults(), &|| false);
         assert_eq!(st.upserted, 3, "{st:?}");
         let got: Vec<String> = paths(&s).into_iter().map(|p| p.strip_prefix(&*r.to_string_lossy()).unwrap().to_string()).collect();
         assert_eq!(got, [r"\a.jpg", r"\sub\c.PNG", r"\sub\deep\d.gif"]);
         // re-crawl is idempotent
-        crawl(&s, &scopes, &|| false);
+        crawl(&s, &scopes, &Ignore::defaults(), &|| false);
         assert_eq!(s.lock().unwrap().stats().unwrap().files, 3);
     }
 
@@ -164,6 +164,6 @@ mod tests {
         fs::write(d.path().join("a.jpg"), b"x").unwrap();
         let scopes = Scopes { include: vec![d.path().to_string_lossy().into_owned()], exclude: vec![] };
         let s = store();
-        assert_eq!(crawl(&s, &scopes, &|| true).upserted, 0);
+        assert_eq!(crawl(&s, &scopes, &Ignore::defaults(), &|| true).upserted, 0);
     }
 }

@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod commands;
+mod models;
 mod pipe_source;
 mod popup;
 mod shell;
@@ -42,6 +43,7 @@ fn main() {
                 })
                 .build(),
         )
+        .manage(models::Models::default())
         .manage(AppState {
             source: RwLock::new(pick_source()),
             paused: AtomicBool::new(false),
@@ -66,7 +68,12 @@ fn main() {
             tier1::tier1_status,
             tier1::tier1_set_scopes,
             tier1::tier1_pause,
-            tier1::semantic_search
+            tier1::tier1_get_ignore,
+            tier1::tier1_set_ignore,
+            tier1::semantic_search,
+            models::models_plan,
+            models::models_download,
+            models::models_cancel
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
@@ -86,6 +93,9 @@ fn main() {
         })
         .setup(move |app| {
             app.manage(tier1::init());
+            if let Ok(t) = app.state::<tier1::Handle>().get() {
+                tier1::policy::spawn(t); // pause on battery / full-screen, resume by itself
+            }
             if let Some(w) = popup::window(app.handle()) {
                 popup::apply_backdrop(&w);
             }

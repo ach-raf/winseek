@@ -3,6 +3,8 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use sha2::{Digest, Sha256};
@@ -64,6 +66,9 @@ pub struct FetchOptions {
     pub backoff_cap: Duration,
     /// First backoff step (doubles each attempt: 1, 2, 4, 8, 16 s ...). Tests shrink it.
     pub backoff_base: Duration,
+    /// Set from another thread to abort: checked per chunk and between attempts. `.part` is kept
+    /// for a later resume and [`Error::Cancelled`] is returned.
+    pub cancel: Option<Arc<AtomicBool>>,
 }
 
 impl Default for FetchOptions {
@@ -74,6 +79,7 @@ impl Default for FetchOptions {
             max_attempts: 8,
             backoff_cap: Duration::from_secs(30),
             backoff_base: Duration::from_secs(1),
+            cancel: None,
         }
     }
 }
@@ -82,6 +88,22 @@ impl FetchOptions {
     fn backoff(&self, attempt: u32) -> Duration {
         let mult = 1u32.checked_shl(attempt).unwrap_or(u32::MAX);
         self.backoff_base.saturating_mul(mult).min(self.backoff_cap)
+    }
+
+    pub fn is_cancelled(&self) -> bool {
+        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
+    }
+
+    /// Sleep `d`, waking early (in 100 ms steps) when cancelled.
+    fn nap(&self, d: Duration) {
+        let end = Instant::now() + d;
+        while !self.is_cancelled() {
+            let left = end.saturating_duration_since(Instant::now());
+            if left.is_zero() {
+                break;
+            }
+            std::thread::sleep(left.min(Duration::from_millis(100)));
+        }
     }
 }
 
@@ -139,7 +161,10 @@ pub fn fetch_with(
     let mut last_err = Error::Http("no attempts made".into());
     for attempt in 0..attempts {
         if attempt > 0 {
-            std::thread::sleep(opts.backoff(attempt - 1));
+            opts.nap(opts.backoff(attempt - 1));
+        }
+        if opts.is_cancelled() {
+            return Err(Error::Cancelled);
         }
         let url = &urls[attempt as usize % urls.len()];
         match download_into(url, &part, opts, progress_cb) {
@@ -154,6 +179,7 @@ pub fn fetch_with(
                     last_err = e;
                 }
             },
+            Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => last_err = e,
         }
     }
@@ -225,6 +251,10 @@ fn download_into(
             break;
         }
         file.write_all(&buf[..n])?;
+        if opts.is_cancelled() {
+            file.flush()?;
+            return Err(Error::Cancelled);
+        }
         offset += n as u64;
         win_bytes += n as u64;
         progress_cb(Progress { downloaded: offset, total });
@@ -390,6 +420,32 @@ mod tests {
         assert!(!dest.exists() && !part_path(&dest).exists());
         // each attempt restarted from scratch (no Range), since .part was deleted
         assert_eq!(*seen.lock().unwrap(), vec![None, None]);
+    }
+
+    #[test]
+    fn cancel_mid_download_keeps_part_and_resume_completes() {
+        let b = body();
+        let (url, _) = serve(b.clone(), 2, true);
+        let d = temp_dir("cancel");
+        let dest = d.join("f.bin");
+        let flag = Arc::new(AtomicBool::new(false));
+        let opts = FetchOptions { cancel: Some(flag.clone()), ..fast_opts() };
+        let f2 = flag.clone();
+        let err = fetch_with(std::slice::from_ref(&url), &dest, &sha256_hex(&b), &opts, &mut |p| {
+            if p.downloaded > 0 {
+                f2.store(true, Ordering::Relaxed);
+            }
+        })
+        .unwrap_err();
+        assert!(matches!(err, Error::Cancelled), "{err}");
+        assert!(!dest.exists());
+        let kept = fs::metadata(part_path(&dest)).unwrap().len();
+        assert!(kept > 0 && kept <= b.len() as u64);
+        // a cancelled flag stops before any request
+        assert!(matches!(fetch_with(std::slice::from_ref(&url), &dest, &sha256_hex(&b), &opts, &mut |_| {}), Err(Error::Cancelled)));
+        flag.store(false, Ordering::Relaxed);
+        fetch_with(&[url], &dest, &sha256_hex(&b), &opts, &mut |_| {}).unwrap();
+        assert_eq!(fs::read(&dest).unwrap(), b);
     }
 
     #[test]

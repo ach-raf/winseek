@@ -20,6 +20,51 @@ export interface VolumeStatus {
   total?: number | null;
 }
 export type ServiceState = "not_installed" | "stopped" | "starting" | "running" | "stopping" | "unknown";
+export type Tier1State = "models_missing" | "idle" | "indexing" | "paused" | "unavailable";
+export type PausedReason = "user" | "battery" | "fullscreen";
+export interface Tier1Status {
+  state: Tier1State;
+  stats: { files: number; pending: number; done: number; failed: number; skipped: number; vectors: number } | null;
+  include: string[];
+  exclude: string[];
+  error: string | null;
+  paused_reason: PausedReason | null;
+}
+export interface SemanticHit {
+  path: string;
+  /** Cosine similarity of the file's embedding to the query. */
+  score: number;
+}
+export interface SemanticResult {
+  state: string;
+  hits: SemanticHit[];
+}
+export interface PlanItem {
+  name: string;
+  /** null: the manifest has no size for this item (llama.cpp zips). */
+  bytes: number | null;
+  present: boolean;
+}
+export interface ModelsPlan {
+  backend: "cuda12" | "vulkan" | "cpu";
+  gpu: string | null;
+  driver: string | null;
+  items: PlanItem[];
+  total_bytes_missing: number;
+  size_unknown: boolean;
+  downloading: boolean;
+}
+export interface ModelsProgress {
+  item: string;
+  downloaded: number;
+  total: number | null;
+  overall_downloaded: number;
+  overall_total: number;
+}
+export interface ModelsDone {
+  ok: boolean;
+  error: string | null;
+}
 export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders";
 export type Sort = "rel" | "name" | "size" | "date";
 
@@ -48,6 +93,18 @@ export interface Backend {
   startService(): Promise<void>;
   /** Windows accent palette (8 x "#rrggbb", index 1 = Light2, 4 = Dark1) or null. */
   accentPalette(): Promise<string[] | null>;
+  tier1Status(): Promise<Tier1Status>;
+  tier1SetScopes(include: string[], exclude: string[]): Promise<void>;
+  /** User pause (wins over the automatic battery / full-screen pause). */
+  tier1Pause(paused: boolean): Promise<void>;
+  semanticSearch(query: string, k: number): Promise<SemanticResult>;
+  modelsPlan(): Promise<ModelsPlan>;
+  /** Starts the background download; progress arrives via onModelsProgress / onModelsDone. */
+  modelsDownload(): Promise<void>;
+  /** Aborts but keeps partial files; a later modelsDownload resumes. */
+  modelsCancel(): Promise<void>;
+  onModelsProgress(cb: (p: ModelsProgress) => void): Promise<() => void>;
+  onModelsDone(cb: (d: ModelsDone) => void): Promise<() => void>;
   /** Fired when the app swaps from demo data to the real searchd source. */
   onSourceChanged(cb: () => void): Promise<() => void>;
 }

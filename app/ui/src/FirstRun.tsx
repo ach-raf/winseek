@@ -41,7 +41,7 @@ function useCountUp(target: number): number {
   return Math.round(shown);
 }
 
-function Counter({ rows, summary }: { rows: VolumeStatus[]; summary: Summary | null }) {
+function Counter({ rows, summary, onSemantic }: { rows: VolumeStatus[]; summary: Summary | null; onSemantic?: () => void }) {
   const total = rows.reduce((a, v) => a + (v.state === "scanning" && v.done != null ? v.done : v.files + v.folders), 0);
   const shown = useCountUp(summary ? summary.files : total);
   return (
@@ -74,13 +74,21 @@ function Counter({ rows, summary }: { rows: VolumeStatus[]; summary: Summary | n
           {summary.secs != null && <> in {summary.secs < 1 ? "<1" : Math.round(summary.secs)} s</>} · Start typing
         </p>
       )}
+      {summary && onSemantic && (
+        <div className="actions">
+          <span className="muted">Want search by meaning?</span>
+          <button className="btn quiet" onClick={onSemantic}>Set up</button>
+        </div>
+      )}
     </>
   );
 }
 
-export function FirstRun({ mode, service, busy, error, rows, summary, onPrimary, onDismiss }: {
+export function FirstRun({ mode, service, busy, error, rows, summary, onPrimary, onDismiss, onSemantic }: {
   mode: "setup" | "counter"; service: ServiceState | null; busy: boolean; error: string | null;
   rows: VolumeStatus[]; summary: Summary | null; onPrimary: () => void; onDismiss: () => void;
+  /** Offered after the counter finishes while search by meaning is not set up. */
+  onSemantic?: () => void;
 }) {
   const stopped = service === "stopped";
   return (
@@ -92,7 +100,7 @@ export function FirstRun({ mode, service, busy, error, rows, summary, onPrimary,
         if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (!busy) onDismiss(); }
       }}
     >
-      {mode === "counter" ? <Counter rows={rows} summary={summary} /> : (
+      {mode === "counter" ? <Counter rows={rows} summary={summary} onSemantic={onSemantic} /> : (
         <>
           <h2>{stopped ? "Name service is stopped" : "Search every file by name, instantly"}</h2>
           <p>

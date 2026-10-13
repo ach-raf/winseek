@@ -72,6 +72,11 @@ pub fn model_paths(manifest: &Manifest, models_dir: &Path) -> Option<(PathBuf, P
     Some((file(ModelRole::Model)?, file(ModelRole::Mmproj)?))
 }
 
+/// Where model files live: `<root>\models` (root = `%LOCALAPPDATA%\winseek`).
+pub fn models_dir(root: &Path) -> PathBuf {
+    root.join("models")
+}
+
 struct Running {
     // Field order: the client is dropped before the server process is killed.
     client: EmbedClient,
@@ -93,7 +98,7 @@ impl LlamaEmbedder {
     }
 
     fn models_dir(&self) -> PathBuf {
-        self.root.join("models")
+        models_dir(&self.root)
     }
 
     fn files_present(&self) -> bool {

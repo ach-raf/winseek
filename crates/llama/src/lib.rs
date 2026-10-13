@@ -35,6 +35,8 @@ pub enum Error {
     Stalled(String),
     /// Embedding request/response problem (bad dims, malformed reply).
     Embed(String),
+    /// Aborted by the caller (a download's cancel flag); partial files are kept.
+    Cancelled,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -55,6 +57,7 @@ impl fmt::Display for Error {
             Error::NotFound(e) => write!(f, "not found: {e}"),
             Error::Stalled(e) => write!(f, "stalled: {e}"),
             Error::Embed(e) => write!(f, "embed: {e}"),
+            Error::Cancelled => write!(f, "cancelled"),
         }
     }
 }

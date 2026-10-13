@@ -1,6 +1,6 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
-import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ServiceState, Sort, Tier1Status, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -52,6 +52,80 @@ const bin: { e: E; at: number }[] = [];
 const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? null : e.size, mtime: Math.floor(e.mtime) });
 const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+// ---- search-by-meaning simulation ----
+// query: ?models=1 (models already installed, indexing runs), ?dlfail=1 (first download attempt fails at ~60%),
+// ?unavailable=1 (Tier 1 store failed to open), ?battery=1 / ?fullscreen=1 (indexing auto-paused),
+// ?gpu=vulkan|cpu (default: NVIDIA / CUDA)
+const T1_FILES = 3880;
+const T1_RATE = 120; // files per second once indexing runs
+const gpuParam = params.get("gpu");
+const MOCK_BACKEND: ModelsPlan["backend"] = gpuParam === "cpu" ? "cpu" : gpuParam === "vulkan" ? "vulkan" : "cuda12";
+const MOCK_ITEMS: { name: string; bytes: number | null; real: number }[] = [
+  { name: `llama.cpp b11588 (${MOCK_BACKEND === "cuda12" ? "CUDA 12" : MOCK_BACKEND === "vulkan" ? "Vulkan" : "CPU"})`, bytes: null, real: MOCK_BACKEND === "cuda12" ? 210e6 : 40e6 },
+  ...(MOCK_BACKEND === "cuda12" ? [{ name: "CUDA runtime libraries", bytes: null, real: 370e6 }] : []),
+  { name: "EmbeddingGemma-2 model", bytes: 309855456, real: 309855456 },
+  { name: "EmbeddingGemma-2 vision projector", bytes: 554821024, real: 554821024 },
+];
+let modelsInstalled = params.get("models") === "1";
+let dlRunning = false;
+let dlCancel = false;
+let dlFailOnce = params.get("dlfail") === "1";
+const dlDone: Record<string, number> = {}; // bytes kept per item (partial files survive cancel / failure)
+const progressCbs = new Set<(p: ModelsProgress) => void>();
+const doneCbs = new Set<(d: ModelsDone) => void>();
+let include = ["C:\\Users\\User\\Pictures", "C:\\Users\\User\\Documents", "C:\\Users\\User\\Desktop", "C:\\Users\\User\\Downloads"];
+let exclude: string[] = [];
+let userPaused = false;
+let indexed = 0;
+let indexTick = performance.now();
+
+const itemHave = (i: { name: string; real: number }) => (dlDone[i.name] ?? 0) >= i.real;
+
+async function runDownload() {
+  dlRunning = true;
+  dlCancel = false;
+  const all = MOCK_ITEMS.reduce((a, i) => a + i.real, 0);
+  const fail = (error: string) => { dlRunning = false; doneCbs.forEach((f) => f({ ok: false, error })); };
+  for (const item of MOCK_ITEMS) {
+    while ((dlDone[item.name] ?? 0) < item.real) {
+      await sleep(100);
+      if (dlCancel) return fail("cancelled");
+      dlDone[item.name] = Math.min(item.real, (dlDone[item.name] ?? 0) + 30e6);
+      const got = MOCK_ITEMS.reduce((a, i) => a + (dlDone[i.name] ?? 0), 0);
+      progressCbs.forEach((f) => f({ item: item.name, downloaded: dlDone[item.name], total: item.real, overall_downloaded: got, overall_total: all }));
+      if (dlFailOnce && got / all > 0.6) { dlFailOnce = false; return fail("stalled: no data for 20s at 612345678 bytes"); }
+    }
+  }
+  modelsInstalled = true;
+  indexTick = performance.now();
+  dlRunning = false;
+  doneCbs.forEach((f) => f({ ok: true, error: null }));
+}
+
+function t1Status(): Tier1Status {
+  if (params.get("unavailable") === "1") {
+    return { state: "unavailable", stats: null, include: [], exclude: [], error: "open store: database is locked", paused_reason: null };
+  }
+  const reason: PausedReason | null = userPaused ? "user" : params.get("battery") === "1" ? "battery" : params.get("fullscreen") === "1" ? "fullscreen" : null;
+  const now = performance.now();
+  if (modelsInstalled && !reason) indexed = Math.min(T1_FILES, indexed + ((now - indexTick) / 1000) * T1_RATE);
+  indexTick = now;
+  const done = Math.floor(indexed);
+  const state = !modelsInstalled ? "models_missing" : reason ? "paused" : done < T1_FILES ? "indexing" : "idle";
+  return {
+    state,
+    stats: { files: T1_FILES, pending: T1_FILES - done, done, failed: modelsInstalled && done > 100 ? 3 : 0, skipped: 0, vectors: done },
+    include: [...include], exclude: [...exclude], error: null, paused_reason: reason,
+  };
+}
+
+const hash01 = (s: string) => {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) { h ^= s.charCodeAt(i); h = Math.imul(h, 16777619); }
+  return ((h >>> 0) % 10000) / 10000;
+};
+const inScope = (path: string) => include.some((r) => path.toLowerCase().startsWith(r.toLowerCase() + "\\"));
 
 export const mockBackend: Backend = {
   async search({ query, offset, limit, sort, filter }) {
@@ -126,5 +200,43 @@ export const mockBackend: Backend = {
       ? ["#d6c6f5", "#b9a0ee", "#9a78e2", "#7b52d3", "#6038b8", "#4a2a93", "#351d6b", "#201040"]
       : null;
   },
+  async tier1Status() { return t1Status(); },
+  async tier1SetScopes(inc, exc) { await sleep(30); include = [...inc]; exclude = [...exc]; },
+  async tier1Pause(p) { userPaused = p; },
+  async semanticSearch(query, k) {
+    const st = t1Status().state;
+    if (!modelsInstalled || st === "unavailable") return { state: st === "unavailable" ? "unavailable" : "models_missing", hits: [] };
+    await sleep(60 + Math.random() * 60);
+    const q = query.toLowerCase().trim();
+    const terms = q.split(/\s+/).filter(Boolean);
+    if (!q) return { state: st, hits: [] };
+    // Fake "image embeddings": stable pseudo-scores per (query, file); files whose name also matches a term
+    // rank high, so the "name + meaning" chip and the dedupe are visible in the preview.
+    const hits = DB.filter((e) => e.kind === 1 && inScope(e.path))
+      .map((e) => ({ path: e.path, score: 0.1 + 0.22 * hash01(q + "|" + e.path) + (terms.some((t) => e.lower.includes(t)) ? 0.2 : 0) }))
+      .sort((a, b) => b.score - a.score)
+      .slice(0, Math.max(1, Math.min(k, 200)));
+    return { state: st, hits };
+  },
+  async modelsPlan(): Promise<ModelsPlan> {
+    await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
+    const items = MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: modelsInstalled || itemHave(i) }));
+    return {
+      backend: MOCK_BACKEND,
+      gpu: MOCK_BACKEND === "cuda12" ? "NVIDIA GeForce RTX 4070" : MOCK_BACKEND === "vulkan" ? "AMD Radeon RX 6600" : null,
+      driver: MOCK_BACKEND === "cuda12" ? "560.94" : null,
+      items,
+      total_bytes_missing: items.filter((i) => !i.present).reduce((a, i) => a + (i.bytes ?? 0), 0),
+      size_unknown: items.some((i) => !i.present && i.bytes == null),
+      downloading: dlRunning,
+    };
+  },
+  async modelsDownload() {
+    if (dlRunning) throw new Error("A download is already running");
+    void runDownload();
+  },
+  async modelsCancel() { dlCancel = true; },
+  async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
+  async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
 };
