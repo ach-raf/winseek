@@ -15,6 +15,7 @@ pub mod gitignore;
 pub mod identity;
 pub mod library;
 pub mod ocr;
+pub mod pdf;
 pub mod policy;
 pub mod process;
 pub mod progress;
@@ -103,11 +104,21 @@ pub struct StatsDto {
     pub failed: u64,
     pub skipped: u64,
     pub vectors: u64,
+    /// Text is searchable but the vectors wait for the models ("text searchable, waiting for models").
+    pub text_only: u64,
 }
 
 impl From<Stats> for StatsDto {
     fn from(s: Stats) -> Self {
-        StatsDto { files: s.files, pending: s.pending, done: s.done, failed: s.failed, skipped: s.skipped, vectors: s.vectors }
+        StatsDto {
+            files: s.files,
+            pending: s.pending,
+            done: s.done,
+            failed: s.failed,
+            skipped: s.skipped,
+            vectors: s.vectors,
+            text_only: s.text_only,
+        }
     }
 }
 
@@ -133,6 +144,16 @@ pub struct SemanticHit {
     pub mtime: Option<i64>,
     /// Extracted text (OCR / PDF / text file) around the query words, matches wrapped in `[ ]`.
     pub snippet: Option<String>,
+    /// PDF page (1-based) the hit is on, from the chunk locator.
+    pub page: Option<u32>,
+    /// "meaning" (vector hit) or "text" (found in the extracted text only, e.g. before the models are installed).
+    pub source: &'static str,
+}
+
+/// The `page` of a chunk locator (`{"page":3,"chars":[0,90]}`).
+pub fn locator_page(locator: Option<&str>) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
+    u32::try_from(v.get("page")?.as_u64()?).ok().filter(|p| *p > 0)
 }
 
 /// Size + mtime for the UI's date / size chips.
@@ -372,11 +393,15 @@ impl Tier1 {
         let vec = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
-                return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] });
+                drop(e);
+                return Ok(self.text_only_search(q, k));
             }
             match e.embed_query(q) {
                 Ok(v) => v,
-                Err(EmbedError::ModelsMissing) => return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] }),
+                Err(EmbedError::ModelsMissing) => {
+                    drop(e);
+                    return Ok(self.text_only_search(q, k));
+                }
                 Err(EmbedError::Other(m)) => return Err(m),
             }
         };
@@ -389,6 +414,8 @@ impl Tier1 {
             let texts = store.search_text(&fts_escape(q), k * 4).unwrap_or_default();
             (raw, texts)
         };
+        let text_pages: std::collections::HashMap<String, u32> =
+            texts.iter().filter_map(|t| Some((t.path.to_lowercase(), locator_page(t.locator.as_deref())?))).collect();
         let snippets: std::collections::HashMap<String, String> =
             texts.into_iter().map(|t| (t.path.to_lowercase(), t.snippet)).collect();
         let hits = raw
@@ -398,30 +425,89 @@ impl Tier1 {
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
                 let snippet = snippets.get(&h.path.to_lowercase()).filter(|s| s.contains('[')).cloned();
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet }
+                let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&h.path.to_lowercase()).copied());
+                SemanticHit { path: h.path, score: h.score, size, mtime, snippet, page, source: "meaning" }
             })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
     }
+
+    /// No models yet: the query words found in extracted text (documents, PDFs, screenshot OCR), best
+    /// match first, labelled `source: "text"`. State stays `models_missing` so the UI can offer setup.
+    pub fn text_only_search(&self, q: &str, k: usize) -> SemanticResult {
+        let snap = self.snapshot();
+        let raw = lock(&self.store).search_text(&fts_escape(q), k * 4).unwrap_or_default();
+        let hits = raw
+            .into_iter()
+            .filter(|h| snap.in_scope(&h.path))
+            .take(k)
+            .map(|h| {
+                let (size, mtime) = stat(&h.path);
+                SemanticHit {
+                    page: locator_page(h.locator.as_deref()),
+                    path: h.path,
+                    score: 0.0,
+                    size,
+                    mtime,
+                    snippet: Some(h.snippet).filter(|s| s.contains('[')),
+                    source: "text",
+                }
+            })
+            .collect();
+        SemanticResult { state: "models_missing".into(), hits }
+    }
 }
 
 /// The processing loop. Runs forever.
+///
+/// With models: files that were stored text-only are embedded first (no re-extraction), then the
+/// queue is processed as usual. Without models the state stays `models_missing`, but text-bearing
+/// files (documents, enabled code, PDFs, screenshot OCR) are still extracted into FTS.
 fn worker_loop(t: Arc<Tier1>) {
     lower_thread_priority();
-    let mut proc = Processor::default();
+    let requester = {
+        let t = t.clone();
+        Box::new(move || crate::models::request_pdfium({
+            let t = t.clone();
+            move |ok| {
+                if ok {
+                    t.kick();
+                }
+            }
+        })) as Box<dyn Fn() + Send>
+    };
+    let mut proc = Processor::default().with_pdf_requester(requester);
     loop {
-        {
+        let have_models = {
             let mut e = lock(&t.embedder);
             e.tick_idle();
-            if !e.models_present() {
-                drop(e);
-                t.state.store(ST_MODELS_MISSING, Ordering::Relaxed);
-                t.nap(MODELS_POLL);
-                continue;
-            }
-        }
+            e.models_present()
+        };
         let started = std::time::Instant::now();
-        let r = proc.run_pass(&t.store, &t.embedder, &t.paused);
+        let r = if have_models {
+            match proc.run_upgrade_pass(&t.store, &t.embedder, &t.paused) {
+                Ok(Pass::Idle) => proc.run_pass(&t.store, &t.embedder, &t.paused),
+                other => other,
+            }
+        } else {
+            t.state.store(ST_MODELS_MISSING, Ordering::Relaxed);
+            match proc.run_fts_pass(&t.store, &t.paused) {
+                Ok(Pass::Progress(n)) => {
+                    lock(&t.throughput).record(started, std::time::Instant::now(), n);
+                    *lock(&t.last_error) = None;
+                    continue;
+                }
+                Ok(_) => {
+                    t.nap(IDLE_POLL);
+                    continue;
+                }
+                Err(msg) => {
+                    *lock(&t.last_error) = Some(msg);
+                    std::thread::sleep(ERROR_BACKOFF);
+                    continue;
+                }
+            }
+        };
         match r {
             Ok(Pass::Progress(n)) => {
                 lock(&t.throughput).record(started, std::time::Instant::now(), n);
@@ -636,6 +722,57 @@ mod tests {
         let r = t.semantic_search("cat", 5).unwrap();
         assert_eq!(r.state, "models_missing");
         assert!(r.hits.is_empty());
+    }
+
+    #[test]
+    fn locator_page_parses_only_positive_pages() {
+        assert_eq!(locator_page(Some(r#"{"page":3,"chars":[0,9]}"#)), Some(3));
+        assert_eq!(locator_page(Some(r#"{"page":0}"#)), None);
+        assert_eq!(locator_page(Some(r#"{"slide":2}"#)), None);
+        assert_eq!(locator_page(Some("not json")), None);
+        assert_eq!(locator_page(None), None);
+    }
+
+    #[test]
+    fn no_models_still_returns_text_hits_labelled_text() {
+        let t = tier(Box::new(Missing), &[r"C:\Docs"]);
+        {
+            let mut s = lock(&t.store);
+            let pend = |c, l: &str| winseek_store::PendingVec { chunk: c, kind: VecKind::Text, locator: Some(l.into()) };
+            let a = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, r"C:\Docs\report.pdf", 1, 1, "pdf").unwrap();
+            s.complete_text_only(
+                a,
+                "ha",
+                &[pend(0, r#"{"page":1,"chars":[0,20]}"#), pend(1, r#"{"page":7,"chars":[0,30]}"#)],
+                &[(0, "cover page".into()), (1, "the quarterly invoice total".into())],
+            )
+            .unwrap();
+            let b = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 2 }, r"C:\Elsewhere\x.pdf", 1, 1, "pdf").unwrap();
+            s.complete_text_only(b, "hb", &[pend(0, "{}")], &[(0, "invoice outside the scope".into())]).unwrap();
+        }
+        let r = t.semantic_search("invoice", 5).unwrap();
+        assert_eq!(r.state, "models_missing");
+        assert_eq!(r.hits.len(), 1, "out-of-scope file dropped");
+        let h = &r.hits[0];
+        assert_eq!((h.path.as_str(), h.source, h.page), (r"C:\Docs\report.pdf", "text", Some(7)));
+        assert!(h.snippet.as_deref().unwrap().contains("[invoice]"));
+        assert!(t.semantic_search("zebra", 5).unwrap().hits.is_empty());
+        // status counts them as text-only (waiting for models)
+        let st = t.status().stats.unwrap();
+        assert_eq!((st.text_only, st.done), (2, 0));
+    }
+
+    #[test]
+    fn meaning_hits_carry_the_pdf_page() {
+        let t = tier(Box::new(Q), &[r"C:\Docs"]);
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, r"C:\Docs\scan.pdf", 1, 1, "pdf").unwrap();
+            let v = [ChunkVec { chunk: 4, kind: VecKind::Image, locator: Some(r#"{"page":5}"#.into()), vec: unit(1) }];
+            s.complete(id, "h1", &v, &[]).unwrap();
+        }
+        let r = t.semantic_search("cat", 5).unwrap();
+        assert_eq!((r.hits[0].page, r.hits[0].source), (Some(5), "meaning"));
     }
 
     #[test]

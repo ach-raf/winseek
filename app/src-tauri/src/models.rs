@@ -1,5 +1,6 @@
 //! First-run download of everything Tier 1 needs: the llama.cpp build for the detected GPU
-//! backend plus the default EmbeddingGemma-2 model and mmproj (PLAN "llama.cpp distribution").
+//! backend plus the default EmbeddingGemma-2 model and mmproj (PLAN "llama.cpp distribution"),
+//! and the pinned pdfium DLL for PDF files (also fetched on its own the first time a PDF is queued).
 //!
 //! `models_plan` shows sizes up front; `models_download` runs in a background thread and emits
 //! `models-progress` / `models-done` events; `models_cancel` aborts but keeps `.part` files, so
@@ -12,13 +13,13 @@ use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
-use winseek_llama::install::{install_llama_with, resolve_exe};
+use winseek_llama::install::{install_llama_with, install_pdfium_with, resolve_exe};
 use winseek_llama::manifest::ModelFile;
 use winseek_llama::{
     detect_backend, fetch_with, Backend, Detected, Error as LlamaError, FetchOptions, Manifest, ModelProfile, ModelRole, Progress,
 };
 
-use crate::tier1::{self, embedder};
+use crate::tier1::{self, embedder, pdf};
 
 /// Progress events are throttled to about 10 per second.
 pub const EMIT_EVERY: Duration = Duration::from_millis(100);
@@ -65,6 +66,8 @@ enum Source {
     /// A zip of the llama.cpp build; `file` is the zip's file name (what install reports progress under).
     Llama { file: String },
     Model(ModelFile),
+    /// The pinned pdfium `.tgz` (name = the tgz's file name).
+    Pdfium { file: String },
 }
 
 struct Job {
@@ -110,6 +113,15 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
             });
         }
     }
+    let pd = &manifest.pdfium;
+    out.push(Job {
+        item: PlanItem {
+            name: format!("PDF engine (pdfium {})", pd.build),
+            bytes: Some(pd.size),
+            present: pdf::locate_dll_in(std::env::var_os(pdf::ENV_PDFIUM).as_deref(), Some(root), manifest).is_some(),
+        },
+        source: Source::Pdfium { file: zip_name(&pd.url) },
+    });
     out
 }
 
@@ -248,7 +260,54 @@ pub fn run_download(
         let ev = locked(&tracker).finish(&name);
         send(ev, true);
     }
+    for j in &jobs {
+        let Source::Pdfium { file } = &j.source else { continue };
+        if j.item.present {
+            continue;
+        }
+        let name = j.item.name.clone();
+        install_pdfium_with(root, manifest, opts, &mut |f, p| {
+            if f == file {
+                let ev = locked(&tracker).update(&name, p);
+                send(ev, false);
+            }
+        })
+        .map_err(err)?;
+        let ev = locked(&tracker).finish(&name);
+        send(ev, true);
+    }
     Ok(())
+}
+
+// ---------------------------------------------------------------- pdfium on demand
+
+static PDFIUM_RUNNING: AtomicBool = AtomicBool::new(false);
+static PDFIUM_FAILED_AT: Mutex<Option<Instant>> = Mutex::new(None);
+/// After a failed automatic download wait this long before trying again (offline machines).
+const PDFIUM_RETRY: Duration = Duration::from_secs(600);
+
+/// Download the pinned pdfium in the background (the first time a PDF is queued). At most one
+/// download runs at a time and a failure is not retried for [`PDFIUM_RETRY`]. `done(ok)` runs on the
+/// download thread.
+pub fn request_pdfium(done: impl FnOnce(bool) + Send + 'static) {
+    if locked(&PDFIUM_FAILED_AT).is_some_and(|t| t.elapsed() < PDFIUM_RETRY) {
+        return;
+    }
+    if PDFIUM_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("pdfium-download".into()).spawn(move || {
+        let ok = match tier1::data_root() {
+            Some(root) => install_pdfium_with(&root, &Manifest::embedded(), &FetchOptions::default(), &mut |_, _| {}).is_ok(),
+            None => false,
+        };
+        *locked(&PDFIUM_FAILED_AT) = (!ok).then(Instant::now);
+        PDFIUM_RUNNING.store(false, Ordering::SeqCst);
+        done(ok);
+    });
+    if spawned.is_err() {
+        PDFIUM_RUNNING.store(false, Ordering::SeqCst);
+    }
 }
 
 // ---------------------------------------------------------------- Tauri state + commands
@@ -329,7 +388,7 @@ mod tests {
     use std::io::{BufRead, BufReader, Write};
     use std::net::TcpListener;
     use winseek_llama::install::{find_server_exe, install_dir};
-    use winseek_llama::manifest::{Asset, LlamaManifest, ModelEntry};
+    use winseek_llama::manifest::{Asset, LlamaManifest, ModelEntry, PdfiumManifest};
     use winseek_llama::sha256_hex;
 
     fn det(b: Backend) -> Detected {
@@ -344,13 +403,13 @@ mod tests {
         let names: Vec<_> = p.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names[0], format!("llama.cpp {} (CUDA 12)", man.llama.build));
         assert_eq!(names[1], "CUDA runtime libraries");
-        assert_eq!(&names[2..], ["EmbeddingGemma-2 model", "EmbeddingGemma-2 vision projector"]);
+        assert_eq!(&names[2..], ["EmbeddingGemma-2 model", "EmbeddingGemma-2 vision projector", "PDF engine (pdfium 7881)"]);
         assert!(p.items.iter().all(|i| !i.present));
-        assert_eq!(p.total_bytes_missing, 265_217_350 + 391_443_627 + 309_855_456 + 554_821_024);
+        assert_eq!(p.total_bytes_missing, 265_217_350 + 391_443_627 + 309_855_456 + 554_821_024 + 3_733_154);
         assert!(!p.size_unknown && !p.downloading);
         assert_eq!(p.backend, Backend::Cuda12);
         let cpu = build_plan(d.path(), &man, &det(Backend::Cpu), true);
-        assert_eq!(cpu.items.len(), 3);
+        assert_eq!(cpu.items.len(), 4);
         assert!(cpu.downloading);
         assert_eq!(serde_json::to_value(&cpu).unwrap()["backend"], "cpu");
     }
@@ -369,8 +428,8 @@ mod tests {
         assert!(find_server_exe(&dir).is_some());
         let p = build_plan(d.path(), &man, &det(Backend::Vulkan), false);
         let present: Vec<_> = p.items.iter().map(|i| i.present).collect();
-        assert_eq!(present, [true, true, false]);
-        assert_eq!(p.total_bytes_missing, 554_821_024);
+        assert_eq!(present, [true, true, false, false]);
+        assert_eq!(p.total_bytes_missing, 554_821_024 + 3_733_154);
         assert!(!p.size_unknown);
     }
 
@@ -434,6 +493,19 @@ mod tests {
         base
     }
 
+    /// A tiny pdfium-binaries style archive: the DLL under `bin/`, plus a neighbour that must be ignored.
+    fn pdfium_tgz() -> Vec<u8> {
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
+        for (n, c) in [("LICENSE", &b"lic"[..]), ("bin/pdfium.dll", &b"fake-dll"[..])] {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(c.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, n, c).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap()
+    }
+
     fn test_manifest(base: &str, a: &[u8], b: &[u8]) -> Manifest {
         let file = |role, name: &str, body: &[u8]| ModelFile {
             role,
@@ -442,8 +514,16 @@ mod tests {
             size: body.len() as u64,
             mirrors: vec![],
         };
+        let tgz = pdfium_tgz();
         Manifest {
             llama: LlamaManifest { build: "b1".into(), assets: Vec::<Asset>::new() },
+            pdfium: PdfiumManifest {
+                build: "7881".into(),
+                url: format!("{base}/pdfium.tgz"),
+                sha256: sha256_hex(&tgz),
+                size: tgz.len() as u64,
+                member: "bin/pdfium.dll".into(),
+            },
             models: vec![ModelEntry {
                 id: embedder::MODEL_ID.into(),
                 profile: ModelProfile::Default,
@@ -459,7 +539,7 @@ mod tests {
     #[test]
     fn downloads_models_from_loopback_with_progress() {
         let (a, b) = (vec![7u8; 600_000], vec![9u8; 300_000]);
-        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone())], 2);
+        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz())], 3);
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
@@ -468,7 +548,12 @@ mod tests {
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
         let last = evs.last().unwrap();
-        assert_eq!((last.overall_downloaded, last.overall_total), (900_000, 900_000));
+        let tgz_len = pdfium_tgz().len() as u64;
+        assert_eq!((last.overall_downloaded, last.overall_total), (900_000 + tgz_len, 900_000 + tgz_len));
+        // the DLL was unpacked to the versioned location, without its archive neighbours
+        assert_eq!(std::fs::read(winseek_llama::install::pdfium_path(d.path(), &man.pdfium)).unwrap(), b"fake-dll");
+        assert!(!d.path().join("pdfium").join("7881").join("LICENSE").exists());
+        assert!(evs.iter().any(|e| e.item == "PDF engine (pdfium 7881)"));
         assert!(evs.windows(2).all(|w| w[0].overall_downloaded <= w[1].overall_downloaded));
         assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model") && evs.iter().any(|e| e.item.ends_with("projector")));
         // already present -> nothing to do (no server left to answer)
@@ -480,7 +565,7 @@ mod tests {
     #[test]
     fn cancel_keeps_part_and_resumes() {
         let (a, b) = (vec![7u8; 900_000], vec![9u8; 10]);
-        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone())], 3);
+        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz())], 4);
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let flag = Arc::new(AtomicBool::new(false));

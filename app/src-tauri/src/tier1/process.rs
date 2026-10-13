@@ -1,20 +1,28 @@
 //! The processing pass: pending files -> hash -> (link | decode, resize, JPEG, embed) -> store.
-//! Document / code files take the text route instead: extract -> chunk -> FTS rows + text vectors.
+//! Document / code / PDF files take the text route instead: extract -> chunk -> FTS rows + text
+//! vectors (PDF pages without a text layer are rendered, OCR-ed and embedded as images too).
+//!
+//! Without models the worker runs [`Processor::run_fts_pass`]: text-bearing files still get
+//! extracted into FTS and are stored as `text_only` with the vectors they owe; once the models
+//! arrive [`Processor::run_upgrade_pass`] embeds them from the stored text, without re-extraction.
 
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
+use pdfium_render::prelude::Pdfium;
 use sha2::{Digest, Sha256};
 use winseek_llama::prep::prepare_jpeg;
-use winseek_store::{ChunkVec, PendingFile, Store, VecKind};
+use winseek_store::{ChunkVec, PendingFile, PendingVec, Store, TextOnlyFile, VecKind};
 
 use super::chunk::{self, Chunk};
-use super::crawler::KIND_IMAGE;
+use super::crawler::{KIND_IMAGE, KIND_PDF};
 use super::embedder::{EmbedError, Embedder};
 use super::extract::{self, ExtractError};
 use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
+use super::pdf::{self, PdfError};
 
 pub const BATCH: usize = 16;
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -45,6 +53,17 @@ pub struct Processor {
     screenshots_dir: Option<String>,
     /// Last value written to the `ocr_unavailable` setting.
     ocr_flag: Option<bool>,
+    /// Binds / returns the process-wide pdfium (tests inject a stub).
+    pdf_runtime: fn() -> Result<&'static Pdfium, PdfError>,
+    /// Asked (from the worker thread, must not block) to fetch pdfium when PDFs are queued without it.
+    pdf_requester: Option<Box<dyn Fn() + Send>>,
+    /// pdfium is on disk but would not load: leave PDFs alone until then.
+    pdf_block_until: Option<Instant>,
+    /// FTS-only mode: images are scanned for screenshots in id order from here.
+    img_cursor: i64,
+    cursor_wrapped: Instant,
+    /// Upgrade attempts that failed to embed, per file id.
+    upgrade_strikes: HashMap<i64, u32>,
 }
 
 impl Default for Processor {
@@ -61,6 +80,21 @@ const OCR_EMBED_CHARS: usize = 3000;
 const OCR_CHUNK: u32 = 1;
 /// Chunks sent to the embedder per request (1500 characters each).
 const TEXT_EMBED_BATCH: usize = 8;
+/// Page images sent to the embedder per request.
+const IMAGE_EMBED_BATCH: usize = 8;
+/// Text chunks kept per PDF page / per PDF.
+const PDF_PAGE_CHUNKS: usize = 8;
+const PDF_MAX_CHUNKS: usize = 400;
+/// How long PDFs are left alone after pdfium failed to load.
+const PDF_RETRY: Duration = Duration::from_secs(60);
+/// Text-only files upgraded per pass.
+const UPGRADE_BATCH: usize = 4;
+/// Images looked at per FTS-only pass when searching for screenshots.
+const SCAN_BATCH: usize = 24;
+/// The screenshot scan starts over (picks up modified files) after this long.
+const SCAN_WRAP: Duration = Duration::from_secs(3600);
+/// Upgrade attempts that may fail to embed before the file is finished without vectors.
+const UPGRADE_STRIKES: u32 = MAX_STRIKES;
 
 struct Prepared {
     file: PendingFile,
@@ -75,7 +109,52 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Processor {
     pub fn with_ocr(ocr: Box<dyn Ocr>, screenshots_dir: Option<String>) -> Self {
-        Processor { strikes: HashMap::new(), ocr, screenshots_dir, ocr_flag: None }
+        Processor {
+            strikes: HashMap::new(),
+            ocr,
+            screenshots_dir,
+            ocr_flag: None,
+            pdf_runtime: pdf::runtime,
+            pdf_requester: None,
+            pdf_block_until: None,
+            img_cursor: 0,
+            cursor_wrapped: Instant::now(),
+            upgrade_strikes: HashMap::new(),
+        }
+    }
+
+    /// Callback that starts the pdfium download when PDFs are queued but the DLL is missing.
+    pub fn with_pdf_requester(mut self, f: Box<dyn Fn() + Send>) -> Self {
+        self.pdf_requester = Some(f);
+        self
+    }
+
+    /// Can PDFs be processed now? When not, and PDFs are waiting, the requester is asked for pdfium.
+    fn pdf_ready(&mut self, store: &Mutex<Store>) -> bool {
+        if self.pdf_block_until.is_some_and(|t| Instant::now() < t) {
+            return false;
+        }
+        if (self.pdf_runtime)().is_ok() {
+            return true;
+        }
+        if pdf::locate_dll().is_some() {
+            // on disk but unloadable (corrupt / wrong architecture): do not hammer it
+            self.pdf_block_until = Some(Instant::now() + PDF_RETRY);
+        } else if lock(store).has_pending_kind(KIND_PDF).unwrap_or(false) {
+            if let Some(r) = &self.pdf_requester {
+                r();
+            }
+        }
+        false
+    }
+
+    /// Kinds to leave queued for now.
+    fn excluded_kinds(&mut self, store: &Mutex<Store>) -> Vec<&'static str> {
+        if self.pdf_ready(store) {
+            vec![]
+        } else {
+            vec![KIND_PDF]
+        }
     }
 
     /// OCR `bytes` when the file looks like a screenshot. `Ok(None)` = not a screenshot or no
@@ -101,7 +180,8 @@ impl Processor {
         if paused.load(Ordering::Relaxed) {
             return Ok(Pass::Paused);
         }
-        let pending = lock(store).next_pending(BATCH).map_err(|e| e.to_string())?;
+        let skip = self.excluded_kinds(store);
+        let pending = lock(store).next_pending_where(BATCH, &[], &skip, 0).map_err(|e| e.to_string())?;
         if pending.is_empty() {
             return Ok(Pass::Idle);
         }
@@ -116,7 +196,7 @@ impl Processor {
 
         for f in pending {
             if f.kind != KIND_IMAGE {
-                self.process_text(store, embedder, &f)?;
+                self.process_text(store, Some(embedder), &f)?;
                 handled += 1;
                 continue;
             }
@@ -220,59 +300,296 @@ impl Processor {
         Ok(Pass::Progress(handled))
     }
 
-    /// The text route for one document / code file: read, hash (content dedup as for images),
-    /// extract, chunk, embed the chunks. FTS gets every chunk; if embedding fails the file is
-    /// still stored with text only.
-    fn process_text(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, f: &PendingFile) -> Result<(), String> {
+    /// The text route for one document / code / PDF file: read, hash (content dedup as for images),
+    /// extract, chunk, embed. FTS gets every chunk. Without an embedder (`None`, FTS-only mode) or when
+    /// the models turn out to be missing the file is stored `text_only` with the vectors it owes; if
+    /// embedding fails for another reason it is stored with text only.
+    fn process_text(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: Option<&Mutex<Box<dyn Embedder + Send>>>,
+        f: &PendingFile,
+    ) -> Result<(), String> {
         let db = |e: winseek_store::Error| e.to_string();
-        if f.size > extract::MAX_FILE_BYTES {
+        let limit = if f.kind == KIND_PDF { pdf::MAX_FILE_BYTES } else { extract::MAX_FILE_BYTES };
+        if f.size > limit {
             return lock(store).skip(f.id, "too_large").map_err(db);
         }
         let bytes = match std::fs::read(Path::new(&f.path)) {
             Ok(b) => b,
             Err(e) => return lock(store).fail(f.id, &format!("read: {e}")).map_err(db),
         };
-        if bytes.len() as u64 > extract::MAX_FILE_BYTES {
+        if bytes.len() as u64 > limit {
             return lock(store).skip(f.id, "too_large").map_err(db);
         }
         let hash = sha256_hex(&bytes);
         if lock(store).has_content(&hash).map_err(db)? {
             return lock(store).complete(f.id, &hash, &[], &[]).map_err(db);
         }
-        let doc = match extract::extract_file(&f.path, &bytes) {
-            Ok(d) => d,
-            Err(ExtractError::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
-            Err(ExtractError::Failed(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+        let items = if f.kind == KIND_PDF {
+            match self.extract_pdf(store, &bytes) {
+                Ok(items) => items,
+                Err(Stop::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
+                Err(Stop::Fail(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+                Err(Stop::Defer) => {
+                    self.pdf_block_until = Some(Instant::now() + PDF_RETRY);
+                    return Ok(()); // stays queued
+                }
+            }
+        } else {
+            let doc = match extract::extract_file(&f.path, &bytes) {
+                Ok(d) => d,
+                Err(ExtractError::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
+                Err(ExtractError::Failed(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+            };
+            text_items(chunk::chunk(&doc), 0)
         };
         drop(bytes);
-        let chunks = chunk::chunk(&doc);
-        if chunks.is_empty() {
+        if items.is_empty() {
             return lock(store).skip(f.id, "no_text").map_err(db);
         }
-        let vecs = Self::embed_chunks(embedder, &chunks);
-        let texts: Vec<(u32, String)> = chunks.iter().enumerate().map(|(i, c)| (i as u32, c.text.clone())).collect();
-        let vectors: Vec<ChunkVec> = vecs
-            .into_iter()
-            .zip(&chunks)
-            .enumerate()
-            .map(|(i, (vec, c))| ChunkVec { chunk: i as u32, kind: VecKind::Text, locator: Some(c.locator.clone()), vec })
-            .collect();
-        lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db)
+        let texts = item_texts(&items);
+        let Some(embedder) = embedder else {
+            return lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db);
+        };
+        match embed_items(embedder, &items) {
+            Ok(vectors) => lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db),
+            Err(EmbedError::ModelsMissing) => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
+            Err(EmbedError::Other(_)) => lock(store).complete(f.id, &hash, &[], &texts).map_err(db),
+        }
     }
 
-    /// One text vector per chunk, or none at all when embedding is unavailable / fails part-way
-    /// (all-or-nothing keeps a file's vectors consistent).
-    fn embed_chunks(embedder: &Mutex<Box<dyn Embedder + Send>>, chunks: &[Chunk]) -> Vec<Vec<f32>> {
-        let mut out = Vec::with_capacity(chunks.len());
-        let mut e = lock(embedder);
-        for group in chunks.chunks(TEXT_EMBED_BATCH) {
-            let docs: Vec<String> = group.iter().map(|c| c.text.clone()).collect();
-            match e.embed_documents(&docs) {
-                Ok(v) if v.len() == group.len() => out.extend(v),
-                _ => return Vec::new(),
+    /// Text chunks per page; scanned pages are OCR-ed and also kept as page images. Chunk numbers
+    /// are unique across texts and images (a scanned page's image comes before its OCR text).
+    fn extract_pdf(&mut self, store: &Mutex<Store>, bytes: &[u8]) -> Result<Vec<Item>, Stop> {
+        let rt = (self.pdf_runtime)().map_err(|_| Stop::Defer)?;
+        let read = match pdf::read_pdf(rt, bytes, true) {
+            Ok(r) => r,
+            Err(PdfError::Encrypted) => return Err(Stop::Skip("encrypted")),
+            Err(PdfError::Failed(m)) => return Err(Stop::Fail(m)),
+            Err(PdfError::Unavailable(_)) => return Err(Stop::Defer),
+        };
+        let mut items: Vec<Item> = Vec::new();
+        let mut next = 0u32;
+        let mut text_chunks = 0usize;
+        let (mut ocr_unavailable, mut ocr_ran) = (false, false);
+        for page in read.pages {
+            let mut page_texts: Vec<Chunk> = chunk::chunk_page(&page.text, page.page, PDF_PAGE_CHUNKS);
+            let mut image: Option<Vec<u8>> = None;
+            if let Some(jpeg) = &page.jpeg {
+                match self.ocr.recognize(jpeg) {
+                    Ok(t) => {
+                        ocr_ran = true;
+                        if !t.is_empty() {
+                            page_texts.extend(chunk::chunk_page(&t.text, page.page, PDF_PAGE_CHUNKS));
+                        }
+                    }
+                    Err(OcrError::Unavailable) => ocr_unavailable = true,
+                    Err(OcrError::Failed(_)) => {}
+                }
+                image = prepare_jpeg(jpeg).ok();
+            }
+            if let Some(j) = image {
+                items.push(Item::Image { chunk: next, jpeg: j, locator: page_image_locator(page.page) });
+                next += 1;
+            }
+            for c in page_texts {
+                if text_chunks >= PDF_MAX_CHUNKS {
+                    break;
+                }
+                items.push(Item::Text { chunk: next, text: c.text, locator: c.locator });
+                next += 1;
+                text_chunks += 1;
             }
         }
-        out
+        self.record_ocr_flag(store, ocr_unavailable, ocr_ran);
+        Ok(items)
+    }
+
+    // ------------------------------------------------------------ FTS-only mode (no models yet)
+
+    /// One pass without models: text-bearing files (documents, enabled code, PDFs, screenshots) are
+    /// extracted into FTS and stored `text_only`; plain images wait for the models.
+    pub fn run_fts_pass(&mut self, store: &Mutex<Store>, paused: &AtomicBool) -> Result<Pass, String> {
+        if paused.load(Ordering::Relaxed) {
+            return Ok(Pass::Paused);
+        }
+        let mut skip = self.excluded_kinds(store);
+        skip.push(KIND_IMAGE);
+        let pending = lock(store).next_pending_where(BATCH, &[], &skip, 0).map_err(|e| e.to_string())?;
+        let mut handled = 0usize;
+        for f in pending {
+            self.process_text(store, None, &f)?;
+            handled += 1;
+            if paused.load(Ordering::Relaxed) {
+                return Ok(Pass::Progress(handled));
+            }
+        }
+        // Screenshots: look at the next few queued images by id; the rest wait for the image model.
+        let imgs = lock(store).next_pending_where(SCAN_BATCH, &[KIND_IMAGE], &[], self.img_cursor).map_err(|e| e.to_string())?;
+        let scanned = imgs.len();
+        let (mut ocr_unavailable, mut ocr_ran) = (false, false);
+        for f in imgs {
+            self.img_cursor = f.id.0;
+            if self.fts_screenshot(store, &f, &mut ocr_unavailable, &mut ocr_ran)? {
+                handled += 1;
+            }
+            if paused.load(Ordering::Relaxed) {
+                break;
+            }
+        }
+        self.record_ocr_flag(store, ocr_unavailable, ocr_ran);
+        if scanned == 0 && self.img_cursor > 0 && self.cursor_wrapped.elapsed() > SCAN_WRAP {
+            self.img_cursor = 0; // pick up files that were modified since the last scan
+            self.cursor_wrapped = Instant::now();
+        }
+        Ok(if handled > 0 || scanned > 0 { Pass::Progress(handled) } else { Pass::Idle })
+    }
+
+    /// OCR one queued image if it looks like a screenshot and keep the text (`true` = stored).
+    fn fts_screenshot(&mut self, store: &Mutex<Store>, f: &PendingFile, unavailable: &mut bool, ran: &mut bool) -> Result<bool, String> {
+        let db = |e: winseek_store::Error| e.to_string();
+        if f.size > MAX_FILE_BYTES {
+            return Ok(false);
+        }
+        // Name / folder rules first; a PNG may still match by its pixel size (read from the header).
+        if !ocr::is_screenshot(&f.path, None, self.screenshots_dir.as_deref()) {
+            if !f.path.to_ascii_lowercase().ends_with(".png") {
+                return Ok(false);
+            }
+            let mut head = vec![0u8; 4096];
+            let n = std::fs::File::open(&f.path).and_then(|mut h| std::io::Read::read(&mut h, &mut head)).unwrap_or(0);
+            head.truncate(n);
+            if !ocr::is_screenshot(&f.path, ocr::image_dimensions(&head), self.screenshots_dir.as_deref()) {
+                return Ok(false);
+            }
+        }
+        let Ok(bytes) = std::fs::read(Path::new(&f.path)) else { return Ok(false) };
+        if bytes.len() as u64 > MAX_FILE_BYTES {
+            return Ok(false);
+        }
+        let hash = sha256_hex(&bytes);
+        if lock(store).has_content(&hash).map_err(db)? {
+            lock(store).complete(f.id, &hash, &[], &[]).map_err(db)?;
+            return Ok(true);
+        }
+        let text = match self.ocr.recognize(&bytes) {
+            Ok(t) if !t.is_empty() => {
+                *ran = true;
+                t
+            }
+            Ok(_) => {
+                *ran = true;
+                return Ok(false);
+            }
+            Err(OcrError::Unavailable) => {
+                *unavailable = true;
+                return Ok(false);
+            }
+            Err(OcrError::Failed(_)) => return Ok(false),
+        };
+        let loc = text.locator_json();
+        let pending = [
+            PendingVec { chunk: 0, kind: VecKind::Image, locator: Some(loc.clone()) },
+            PendingVec { chunk: OCR_CHUNK, kind: VecKind::Text, locator: Some(loc) },
+        ];
+        lock(store).complete_text_only(f.id, &hash, &pending, &[(OCR_CHUNK, text.text)]).map_err(db)?;
+        Ok(true)
+    }
+
+    // ------------------------------------------------------------ upgrade: text_only -> done
+
+    /// Embed files that were stored `text_only`, from their stored text (and page images re-rendered
+    /// from the unchanged file), without extracting again.
+    pub fn run_upgrade_pass(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: &Mutex<Box<dyn Embedder + Send>>,
+        paused: &AtomicBool,
+    ) -> Result<Pass, String> {
+        if paused.load(Ordering::Relaxed) {
+            return Ok(Pass::Paused);
+        }
+        let db = |e: winseek_store::Error| e.to_string();
+        let files = lock(store).next_text_only(UPGRADE_BATCH).map_err(db)?;
+        if files.is_empty() {
+            return Ok(Pass::Idle);
+        }
+        let mut handled = 0usize;
+        for f in files {
+            let (pend, texts) = {
+                let s = lock(store);
+                (s.pending_vecs(&f.hash).map_err(db)?, s.texts_of(&f.hash).map_err(db)?)
+            };
+            let mut items: Vec<Item> = Vec::new();
+            let mut images: Vec<&PendingVec> = Vec::new();
+            for p in &pend {
+                match p.kind {
+                    VecKind::Text => {
+                        if let Some((_, body)) = texts.iter().find(|(c, _)| *c == p.chunk) {
+                            items.push(Item::Text { chunk: p.chunk, text: body.clone(), locator: p.locator.clone().unwrap_or_default() });
+                        }
+                    }
+                    VecKind::Image | VecKind::Page => images.push(p),
+                }
+            }
+            if !images.is_empty() {
+                items.extend(self.rebuild_images(&f, &images));
+            }
+            match embed_items(embedder, &items) {
+                Ok(vectors) => {
+                    lock(store).finish_vectors(&f.hash, &vectors).map_err(db)?;
+                    self.upgrade_strikes.remove(&f.id.0);
+                    handled += 1;
+                }
+                Err(EmbedError::ModelsMissing) => return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::ModelsMissing }),
+                Err(EmbedError::Other(msg)) => {
+                    let n = self.upgrade_strikes.entry(f.id.0).or_insert(0);
+                    *n += 1;
+                    if *n >= UPGRADE_STRIKES {
+                        self.upgrade_strikes.remove(&f.id.0);
+                        lock(store).finish_vectors(&f.hash, &[]).map_err(db)?; // text stays searchable
+                        handled += 1;
+                    } else {
+                        lock(embedder).reset();
+                        return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::EmbedFailed(msg) });
+                    }
+                }
+            }
+        }
+        Ok(Pass::Progress(handled))
+    }
+
+    /// Image vectors a text-only file still owes: PDF pages are re-rendered, an image file is re-read
+    /// (both only if the file is unchanged). Anything that cannot be rebuilt is dropped.
+    fn rebuild_images(&mut self, f: &TextOnlyFile, wanted: &[&PendingVec]) -> Vec<Item> {
+        let Ok(bytes) = std::fs::read(Path::new(&f.path)) else { return vec![] };
+        if sha256_hex(&bytes) != f.hash {
+            return vec![];
+        }
+        let locator_of = |p: &PendingVec| p.locator.clone().unwrap_or_default();
+        if f.kind == KIND_PDF {
+            let Ok(rt) = (self.pdf_runtime)() else { return vec![] };
+            let page_of = |p: &PendingVec| {
+                p.locator.as_deref().and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok()).and_then(|v| v["page"].as_u64())
+            };
+            let pages: Vec<u32> = wanted.iter().filter_map(|p| page_of(p)).map(|n| n as u32).collect();
+            let Ok(rendered) = pdf::render_pages(rt, &bytes, &pages) else { return vec![] };
+            wanted
+                .iter()
+                .filter_map(|p| {
+                    let n = page_of(p)? as u32;
+                    let (_, jpeg) = rendered.iter().find(|(pn, _)| *pn == n)?;
+                    Some(Item::Image { chunk: p.chunk, jpeg: prepare_jpeg(jpeg).ok()?, locator: locator_of(p) })
+                })
+                .collect()
+        } else {
+            wanted
+                .first()
+                .and_then(|p| Some(Item::Image { chunk: p.chunk, jpeg: prepare_jpeg(&bytes).ok()?, locator: locator_of(p) }))
+                .into_iter()
+                .collect()
+        }
     }
 
     /// Best-effort text embeddings of the OCR output (FTS still gets the text if this fails).
@@ -341,6 +658,114 @@ impl Processor {
         }
         Ok(out)
     }
+}
+
+/// One thing a text-route file owes the index: the vector of a text chunk, or of a page image.
+#[derive(Debug, Clone)]
+enum Item {
+    Text { chunk: u32, text: String, locator: String },
+    Image { chunk: u32, jpeg: Vec<u8>, locator: String },
+}
+
+/// Why a PDF produced no items.
+enum Stop {
+    Skip(&'static str),
+    Fail(String),
+    /// pdfium is not usable right now; the file stays queued.
+    Defer,
+}
+
+fn page_image_locator(page: u32) -> String {
+    serde_json::json!({ "page": page }).to_string()
+}
+
+/// Document chunks as text items numbered from `first`.
+fn text_items(chunks: Vec<Chunk>, first: u32) -> Vec<Item> {
+    chunks
+        .into_iter()
+        .enumerate()
+        .map(|(i, c)| Item::Text { chunk: first + i as u32, text: c.text, locator: c.locator })
+        .collect()
+}
+
+/// The FTS rows of a file: its text chunks.
+fn item_texts(items: &[Item]) -> Vec<(u32, String)> {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text { chunk, text, .. } => Some((*chunk, text.clone())),
+            Item::Image { .. } => None,
+        })
+        .collect()
+}
+
+/// The vectors a text-only file owes.
+fn item_pending(items: &[Item]) -> Vec<PendingVec> {
+    items
+        .iter()
+        .map(|i| match i {
+            Item::Text { chunk, locator, .. } => PendingVec { chunk: *chunk, kind: VecKind::Text, locator: Some(locator.clone()) },
+            Item::Image { chunk, locator, .. } => PendingVec { chunk: *chunk, kind: VecKind::Image, locator: Some(locator.clone()) },
+        })
+        .collect()
+}
+
+/// Vectors for all items. Text is all-or-nothing (a failure is returned and the caller decides);
+/// a page image that cannot be embedded is left out so one poison page does not block the file.
+fn embed_items(embedder: &Mutex<Box<dyn Embedder + Send>>, items: &[Item]) -> Result<Vec<ChunkVec>, EmbedError> {
+    let mut out: Vec<ChunkVec> = Vec::with_capacity(items.len());
+    let texts: Vec<(&u32, &String, &String)> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Text { chunk, text, locator } => Some((chunk, text, locator)),
+            Item::Image { .. } => None,
+        })
+        .collect();
+    let images: Vec<(&u32, &Vec<u8>, &String)> = items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Image { chunk, jpeg, locator } => Some((chunk, jpeg, locator)),
+            Item::Text { .. } => None,
+        })
+        .collect();
+    let mut e = lock(embedder);
+    for group in texts.chunks(TEXT_EMBED_BATCH) {
+        let docs: Vec<String> = group.iter().map(|g| g.1.clone()).collect();
+        let v = e.embed_documents(&docs)?;
+        if v.len() != group.len() {
+            return Err(EmbedError::Other("wrong vector count".into()));
+        }
+        for (g, vec) in group.iter().zip(v) {
+            out.push(ChunkVec { chunk: *g.0, kind: VecKind::Text, locator: Some(g.2.clone()), vec });
+        }
+    }
+    let mut failed = 0usize;
+    for group in images.chunks(IMAGE_EMBED_BATCH) {
+        let jpegs: Vec<Vec<u8>> = group.iter().map(|g| g.1.clone()).collect();
+        match e.embed_images(&jpegs) {
+            Ok(v) if v.len() == group.len() => {
+                for (g, vec) in group.iter().zip(v) {
+                    out.push(ChunkVec { chunk: *g.0, kind: VecKind::Image, locator: Some(g.2.clone()), vec });
+                }
+                continue;
+            }
+            Err(EmbedError::ModelsMissing) => return Err(EmbedError::ModelsMissing),
+            _ => {}
+        }
+        // one by one: isolate a poison page
+        for g in group {
+            match e.embed_images(std::slice::from_ref(g.1)) {
+                Ok(mut v) if v.len() == 1 => out.push(ChunkVec { chunk: *g.0, kind: VecKind::Image, locator: Some(g.2.clone()), vec: v.remove(0) }),
+                Err(EmbedError::ModelsMissing) => return Err(EmbedError::ModelsMissing),
+                _ => failed += 1,
+            }
+        }
+    }
+    if failed > 0 && failed == images.len() && texts.is_empty() {
+        return Err(EmbedError::Other("could not embed any page image".into()));
+    }
+    out.sort_by_key(|c| c.chunk);
+    Ok(out)
 }
 
 enum Failure {
@@ -805,6 +1230,300 @@ mod tests {
         let s = store.lock().unwrap();
         assert_eq!((s.stats().unwrap().done, s.stats().unwrap().vectors), (2, 1), "doc has FTS only: Fake has no document embedding");
         assert_eq!(s.search_text("hello", 5).unwrap().len(), 1);
+    }
+
+
+    // ------------------------------------------------------------ PDF + FTS-only mode
+
+    use crate::tier1::pdf::testutil::{make_pdf, pdfium};
+
+    fn test_runtime() -> Result<&'static Pdfium, PdfError> {
+        pdfium().ok_or_else(|| PdfError::Unavailable("pdfium not available in this environment".into()))
+    }
+
+    fn no_pdfium() -> Result<&'static Pdfium, PdfError> {
+        Err(PdfError::Unavailable("not installed".into()))
+    }
+
+    fn fake_ocr(text: Option<&'static str>) -> (Box<dyn Ocr>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (Box::new(FakeOcr { text, calls: calls.clone() }), calls)
+    }
+
+    /// Document-capable embedder that reports "models missing" for everything until `ready` is set.
+    struct Switch {
+        ready: Arc<AtomicBool>,
+        fail_docs: bool,
+    }
+    impl Embedder for Switch {
+        fn embed_images(&mut self, j: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            if !self.ready.load(Ordering::SeqCst) {
+                return Err(EmbedError::ModelsMissing);
+            }
+            Ok(j.iter().map(|_| vec_of(b"img")).collect())
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            if !self.ready.load(Ordering::SeqCst) {
+                return Err(EmbedError::ModelsMissing);
+            }
+            if self.fail_docs {
+                return Err(EmbedError::Other("server down".into()));
+            }
+            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    fn doc_embedder() -> Mutex<Box<dyn Embedder + Send>> {
+        Mutex::new(Box::new(DocEmbedder))
+    }
+
+    #[test]
+    fn pdf_text_pages_and_scanned_pages_are_indexed() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        let bytes = make_pdf(rt, &[Some("Quarterly invoice 4711 total due"), None, Some("Gardening tools chapter")]);
+        add_kind(&store, dir.path(), "scan.pdf", &bytes, 1, "pdf");
+        let (ocr, calls) = fake_ocr(Some("Scanned receipt coffee"));
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only the page without a text layer is OCR-ed");
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.done, st.failed, st.skipped, st.text_only), (1, 0, 0, 0));
+        assert_eq!(st.vectors, 4, "3 text chunks (2 text pages + OCR) and 1 page image");
+        let page_of = |q: &str| {
+            let h = s.search_text(&winseek_store::fts_escape(q), 5).unwrap();
+            assert_eq!(h.len(), 1, "{q}");
+            let v: serde_json::Value = serde_json::from_str(h[0].locator.as_deref().unwrap()).unwrap();
+            assert!(v["chars"][1].as_u64().unwrap() > 0);
+            v["page"].as_u64().unwrap()
+        };
+        assert_eq!(page_of("invoice"), 1);
+        assert_eq!(page_of("coffee"), 2, "OCR text of the scanned page is searchable");
+        assert_eq!(page_of("gardening"), 3);
+        let img = s.search_vectors(&vec_of(b"img"), 5, Some(VecKind::Image)).unwrap();
+        assert_eq!(img.len(), 1);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(img[0].locator.as_deref().unwrap()).unwrap(), serde_json::json!({"page": 2}));
+        let txt = s.search_vectors(&vec_of(b"doc"), 5, Some(VecKind::Text)).unwrap();
+        assert_eq!(txt.len(), 1, "one hit per file");
+        assert!(txt[0].locator.as_deref().unwrap().contains("\"page\""));
+        assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap(), None);
+    }
+
+    #[test]
+    fn pdf_without_text_and_without_ocr_keeps_the_page_image() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "blank.pdf", &make_pdf(rt, &[None]), 1, "pdf");
+        let (ocr, _) = fake_ocr(None); // no OCR language installed
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        assert_eq!((s.stats().unwrap().done, s.stats().unwrap().vectors), (1, 1));
+        assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap().as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn pdf_failures_and_limits() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "broken.pdf", b"%PDF-1.4 this is not a real file", 1, "pdf");
+        // recorded size above the PDF limit: skipped without reading
+        let big = dir.path().join("big.pdf");
+        fs::write(&big, make_pdf(rt, &[Some("hi there friend")])).unwrap();
+        store
+            .lock()
+            .unwrap()
+            .upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 2 }, &big.to_string_lossy(), pdf::MAX_FILE_BYTES + 1, 2, "pdf")
+            .unwrap();
+        let (ocr, _) = fake_ocr(Some("x"));
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(2));
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.failed, st.skipped, st.done), (1, 1, 0));
+        assert_eq!(s.file_error(&big.to_string_lossy()).unwrap().as_deref(), Some("too_large"));
+        assert!(s.file_error(&dir.path().join("broken.pdf").to_string_lossy()).unwrap().unwrap().starts_with("pdf"));
+    }
+
+    #[test]
+    fn pdfs_wait_for_pdfium_and_ask_for_it_while_other_files_go_on() {
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "a.pdf", b"%PDF-1.4", 1, "pdf");
+        add_kind(&store, dir.path(), "n.txt", b"plain words", 2, "doc");
+        let asked = Arc::new(AtomicUsize::new(0));
+        let a2 = asked.clone();
+        let (ocr, _) = fake_ocr(None);
+        let mut p = Processor::with_ocr(ocr, None).with_pdf_requester(Box::new(move || {
+            a2.fetch_add(1, Ordering::SeqCst);
+        }));
+        p.pdf_runtime = no_pdfium;
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert!(asked.load(Ordering::SeqCst) >= 1);
+        let st = store.lock().unwrap().stats().unwrap();
+        assert_eq!((st.pending, st.done), (1, 1));
+        let before = asked.load(Ordering::SeqCst);
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Idle);
+        assert!(asked.load(Ordering::SeqCst) > before, "still queued -> still asking (the downloader rate-limits itself)");
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1);
+        // no PDFs queued -> nobody is asked
+        store.lock().unwrap().remove_path(&dir.path().join("a.pdf").to_string_lossy()).unwrap();
+        let n = asked.load(Ordering::SeqCst);
+        p.run_fts_pass(&store, &AtomicBool::new(false)).unwrap();
+        assert_eq!(asked.load(Ordering::SeqCst), n);
+    }
+
+    #[test]
+    fn fts_only_pass_indexes_text_then_upgrade_adds_vectors_without_reextraction() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        let pdf_bytes = make_pdf(rt, &[Some("Quarterly invoice 4711 total due"), None]);
+        add_kind(&store, dir.path(), "report.pdf", &pdf_bytes, 1, "pdf");
+        add_kind(&store, dir.path(), "notes.txt", b"meeting notes about budgets", 2, "doc");
+        let shot = png(8, 8, 5);
+        add(&store, dir.path(), "Screenshot 1.png", &shot, 3);
+        add(&store, dir.path(), "holiday.png", &png(8, 8, 6), 4); // plain image: waits for the image model
+        let (ocr, ocr_calls) = fake_ocr(Some("Invoice coffee screenshot"));
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        let paused = AtomicBool::new(false);
+
+        // ---- no models: everything text-bearing becomes searchable, nothing is embedded
+        let mut handled = 0;
+        for _ in 0..5 {
+            match p.run_fts_pass(&store, &paused).unwrap() {
+                Pass::Progress(n) => handled += n,
+                Pass::Idle => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(handled, 3);
+        let ocr_before = ocr_calls.load(Ordering::SeqCst);
+        assert_eq!(ocr_before, 2, "one scanned PDF page + one screenshot (the plain photo is not read)");
+        {
+            let s = store.lock().unwrap();
+            let st = s.stats().unwrap();
+            assert_eq!((st.text_only, st.pending, st.done, st.vectors), (3, 1, 0, 0));
+            let hit = |q: &str| s.search_text(&winseek_store::fts_escape(q), 10).unwrap();
+            assert_eq!(hit("budgets").len(), 1);
+            assert_eq!(hit("invoice").len(), 2, "pdf page text and the screenshot's OCR");
+            let pdf_hit = hit("quarterly");
+            assert!(pdf_hit[0].locator.as_deref().unwrap().contains("\"page\":1"));
+            assert!(s.search_vectors(&vec_of(b"doc"), 5, None).unwrap().is_empty(), "no vectors yet");
+        }
+        // an idle FTS pass does not rescan the images it already looked at
+        assert_eq!(p.run_fts_pass(&store, &paused).unwrap(), Pass::Idle);
+        assert_eq!(ocr_calls.load(Ordering::SeqCst), ocr_before);
+
+        // ---- models arrive: the text file may even be gone, its stored text is what gets embedded
+        fs::remove_file(dir.path().join("notes.txt")).unwrap();
+        let e = doc_embedder();
+        let mut up = 0;
+        loop {
+            match p.run_upgrade_pass(&store, &e, &paused).unwrap() {
+                Pass::Progress(n) => up += n,
+                Pass::Idle => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        assert_eq!(up, 3);
+        assert_eq!(ocr_calls.load(Ordering::SeqCst), ocr_before, "no second extraction / OCR");
+        {
+            let s = store.lock().unwrap();
+            let st = s.stats().unwrap();
+            assert_eq!((st.text_only, st.pending, st.done), (0, 1, 3));
+            // pdf: 1 text page + 1 OCR chunk + 1 rebuilt page image; notes: 1; screenshot: image + OCR text
+            assert_eq!(st.vectors, 3 + 1 + 2);
+            let img = s.search_vectors(&vec_of(b"img"), 10, Some(VecKind::Image)).unwrap();
+            assert_eq!(img.len(), 2);
+            let pdf_img = img.iter().find(|h| h.path.ends_with("report.pdf")).unwrap();
+            assert_eq!(serde_json::from_str::<serde_json::Value>(pdf_img.locator.as_deref().unwrap()).unwrap(), serde_json::json!({"page": 2}));
+            let shot_img = img.iter().find(|h| h.path.ends_with("Screenshot 1.png")).unwrap();
+            assert!(shot_img.locator.as_deref().unwrap().contains("\"ocr\""), "bbox locator survives the round trip");
+            assert_eq!(s.search_text(&winseek_store::fts_escape("invoice"), 10).unwrap().len(), 2, "FTS unchanged");
+        }
+        assert_eq!(p.run_upgrade_pass(&store, &e, &paused).unwrap(), Pass::Idle);
+        // the plain image is picked up by the normal pass
+        let (fake, _c, images) = Fake::new();
+        assert_eq!(p.run_pass(&store, &emb(fake), &paused).unwrap(), Pass::Progress(1));
+        assert_eq!(images.load(Ordering::SeqCst), 1);
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 0);
+    }
+
+    #[test]
+    fn models_missing_mid_pass_falls_back_to_text_only_and_a_changed_image_loses_only_its_image_vector() {
+        let (store, dir) = setup();
+        let ready = Arc::new(AtomicBool::new(false));
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(Switch { ready: ready.clone(), fail_docs: false }));
+        add_kind(&store, dir.path(), "a.txt", b"findable alpha words", 1, "doc");
+        let (ocr, _) = fake_ocr(Some("shot words"));
+        let mut p = Processor::with_ocr(ocr, None);
+        let paused = AtomicBool::new(false);
+        // the full pass finds the models gone: the text file is kept text-only
+        assert_eq!(p.run_pass(&store, &e, &paused).unwrap(), Pass::Progress(1));
+        assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 1);
+        // while they are missing the upgrade pass reports it and keeps the file text-only
+        assert_eq!(p.run_upgrade_pass(&store, &e, &paused).unwrap(), Pass::ModelsMissing);
+        assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 1);
+        // a screenshot stored in FTS-only mode, then modified before the models arrive
+        add(&store, dir.path(), "Screenshot 9.png", &png(8, 8, 1), 2);
+        assert_eq!(p.run_fts_pass(&store, &paused).unwrap(), Pass::Progress(1));
+        fs::write(dir.path().join("Screenshot 9.png"), png(8, 8, 2)).unwrap();
+        ready.store(true, Ordering::SeqCst);
+        loop {
+            match p.run_upgrade_pass(&store, &e, &paused).unwrap() {
+                Pass::Progress(_) => {}
+                Pass::Idle => break,
+                other => panic!("{other:?}"),
+            }
+        }
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.text_only, st.done), (0, 2));
+        assert_eq!(s.search_vectors(&vec_of(b"img"), 5, Some(VecKind::Image)).unwrap().len(), 0, "stale image not embedded");
+        assert_eq!(st.vectors, 2, "text vectors for both files");
+    }
+
+    #[test]
+    fn upgrade_embed_failures_retry_then_finish_without_vectors() {
+        let (store, dir) = setup();
+        let ready = Arc::new(AtomicBool::new(true));
+        add_kind(&store, dir.path(), "a.txt", b"same words", 1, "doc");
+        add_kind(&store, dir.path(), "b.txt", b"same words", 2, "doc"); // identical content: one embedding, two files
+        let mut p = Processor::default();
+        assert_eq!(p.run_fts_pass(&store, &AtomicBool::new(false)).unwrap(), Pass::Progress(2));
+        assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 2);
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(Switch { ready, fail_docs: true }));
+        let paused = AtomicBool::new(false);
+        for _ in 0..UPGRADE_STRIKES - 1 {
+            assert!(matches!(p.run_upgrade_pass(&store, &e, &paused).unwrap(), Pass::EmbedFailed(_)));
+            assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 2);
+        }
+        assert_eq!(p.run_upgrade_pass(&store, &e, &paused).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.text_only, st.done, st.vectors), (0, 2, 0));
+        assert_eq!(s.search_text("same", 5).unwrap().len(), 2, "still found by text");
+    }
+
+    #[test]
+    fn pause_stops_fts_and_upgrade_passes() {
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "a.txt", b"hello there", 1, "doc");
+        let mut p = Processor::default();
+        let paused = AtomicBool::new(true);
+        assert_eq!(p.run_fts_pass(&store, &paused).unwrap(), Pass::Paused);
+        assert_eq!(p.run_upgrade_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Paused);
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1);
     }
 
     #[test]

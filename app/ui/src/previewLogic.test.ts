@@ -1,6 +1,27 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampView, fitScale, highlight, previewTerms, toggleActual, zoomAt } from "./previewLogic.ts";
+import { clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, toggleActual, zoomAt } from "./previewLogic.ts";
+
+test("clampPage keeps a PDF page inside the document", () => {
+  assert.equal(clampPage(3, 10), 3);
+  assert.equal(clampPage(0, 10), 1);
+  assert.equal(clampPage(-4, 10), 1);
+  assert.equal(clampPage(11, 10), 10);
+  assert.equal(clampPage(2.9, 10), 2);
+  assert.equal(clampPage(5, null), 5);
+  assert.equal(clampPage(0, null), 1);
+  assert.equal(clampPage(Number.NaN, 7), 1);
+  assert.equal(clampPage(9, 0), 9, "an unknown (zero) count does not lock the page to 1");
+});
+
+test("pdfRenderWidth rounds up to 100 px and stays within 400..1600", () => {
+  assert.equal(pdfRenderWidth(560, 1), 600);
+  assert.equal(pdfRenderWidth(560, 1.5), 900);
+  assert.equal(pdfRenderWidth(100, 1), 400);
+  assert.equal(pdfRenderWidth(0, 1), 400);
+  assert.equal(pdfRenderWidth(2000, 2), 1600);
+  assert.equal(pdfRenderWidth(500, 0.5), 500, "dpr below 1 is treated as 1");
+});
 
 test("previewTerms drops operators, negations, wildcards", () => {
   assert.deepEqual(previewTerms('invoice "due date" !draft ext:pdf *.log Invoice a'), ["invoice", "due", "date", ".log"]);

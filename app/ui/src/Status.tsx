@@ -78,7 +78,8 @@ function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<string>; onR
 
 function stateLine(t: StatusTier1): string {
   return t.state === "unavailable" ? "Unavailable"
-    : t.state === "models_missing" ? "Not set up. The model files are not downloaded yet."
+    : t.state === "models_missing"
+      ? "Not set up. The model files are not downloaded yet." + (t.stats?.text_only ? " Text inside files is already searchable." : "")
     : t.paused_reason ? pausedText(t.paused_reason)
     : t.state === "indexing" ? "Indexing in the background"
     : t.queue > 0 ? "Waiting for work" : "All caught up";
@@ -106,6 +107,9 @@ function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: ()
           <dl className="st-grid">
             <Row k="Embedded">{s ? fmt(s.done) : "—"}</Row>
             <Row k="Queue" title="Files waiting to be embedded">{s ? fmt(t1.queue) : "—"}</Row>
+            <Row k="Text searchable, waiting for models" title="Their text is already searchable; the meaning vectors are added once the models are installed">
+              {s ? fmt(s.text_only) : "—"}
+            </Row>
             <Row k="Failed">{s ? fmt(s.failed) : "—"}</Row>
             <Row k="Skipped" title="Unsupported or legacy format, too large, no text, or ignored">{s ? fmt(s.skipped) : "—"}</Row>
             <Row k="Files in scope">{s ? fmt(s.files) : "—"}</Row>
@@ -147,6 +151,12 @@ function Models({ m }: { m: StatusModels }) {
         <Row k="llama.cpp">
           {m.llama_build} · {backendName(m)}{m.gpu ? ` · ${m.gpu}` : ""}
           {!m.llama_present && <span className="st-miss"> · not installed</span>}
+        </Row>
+        <Row k="PDF engine" title="pdfium reads PDF text and draws the pages for scans and the preview">
+          pdfium {m.pdfium.build}
+          {m.pdfium.present
+            ? ` · ${m.pdfium.source === "override" ? "dev override" : "installed"}${m.pdfium.bytes != null ? ` (${formatSize(m.pdfium.bytes)})` : ""}`
+            : <span className="st-miss"> · not installed (downloads when a PDF is found, {formatSize(m.pdfium.expected_bytes)})</span>}
         </Row>
         <Row k="Embedder">{m.model_id} · {m.profile} profile · {m.quant}</Row>
         <Row k="Server">

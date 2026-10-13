@@ -3,7 +3,7 @@ import type { Backend, Hit, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
-import { clampView, fitScale, highlight, previewTerms, toggleActual, zoomAt, type View } from "./previewLogic";
+import { clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, toggleActual, zoomAt, type View } from "./previewLogic";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
@@ -16,6 +16,8 @@ export interface PreviewProps {
   snippet?: string | null;
   /** Seconds into a video / audio file to start at (a hit that carries a timestamp). */
   start?: number;
+  /** PDF page (1-based) to open on: the page the search hit is on. */
+  page?: number | null;
   onOpen: () => void;
   onReveal: () => void;
 }
@@ -25,7 +27,7 @@ export interface PreviewProps {
  * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
  * dimmed, until the new one arrives so arrowing through results does not flash.
  */
-export function Preview({ backend, hit, query, snippet, start, onOpen, onReveal }: PreviewProps) {
+export function Preview({ backend, hit, query, snippet, start, page, onOpen, onReveal }: PreviewProps) {
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,7 +64,7 @@ export function Preview({ backend, hit, query, snippet, start, onOpen, onReveal 
         {err ? (
           <div className="pv-msg" role="alert">{err}</div>
         ) : info ? (
-          <Body key={info.path} info={info} query={query} start={start} />
+          <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null} />
         ) : (
           <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
         )}
@@ -100,8 +102,9 @@ function Facts({ info }: { info: PreviewInfo }) {
   );
 }
 
-function Body({ info, query, start }: { info: PreviewInfo; query: string; start?: number }) {
+function Body({ backend, info, query, start, page }: { backend: Backend; info: PreviewInfo; query: string; start?: number; page: number | null }) {
   switch (info.kind) {
+    case "pdf": return <PdfView backend={backend} info={info} page={page} />;
     case "image": return <ImageView info={info} />;
     case "video": case "audio": return <MediaView info={info} start={start} />;
     case "text": return <TextView info={info} query={query} />;
@@ -209,6 +212,65 @@ function ImageStage({ src, name, dims, note, onError }: {
            }}
            onError={onError} />
       <div className="pv-zoom" aria-hidden>{Math.round(cur.s * 100)}%{note ? ` · ${note}` : ""}</div>
+    </div>
+  );
+}
+
+// ---- PDF: the page rendered by pdfium, prev / next ---------------------------------------------------------
+
+function PdfView({ backend, info, page }: { backend: Backend; info: PreviewInfo; page: number | null }) {
+  const pages = info.pdf?.pages ?? null;
+  const [n, setN] = useState(() => clampPage(page ?? 1, pages));
+  const [url, setUrl] = useState<string | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const box = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let live = true;
+    let made: string | null = null;
+    setLoading(true);
+    const width = pdfRenderWidth(box.current?.clientWidth ?? 600, window.devicePixelRatio || 1);
+    backend.previewPdfPage(info.path, n, width).then(
+      (b) => {
+        if (!live) return;
+        made = URL.createObjectURL(b);
+        setUrl(made); setErr(null); setLoading(false);
+      },
+      (e) => { if (live) { setErr(errText(e)); setLoading(false); } },
+    );
+    return () => { live = false; };
+  }, [backend, info.path, n]);
+
+  // The object URL of a page is released when the next one has replaced it (or the view goes away).
+  const prev = useRef<string | null>(null);
+  useEffect(() => {
+    if (prev.current && prev.current !== url) URL.revokeObjectURL(prev.current);
+    prev.current = url;
+  }, [url]);
+  useEffect(() => () => { if (prev.current) URL.revokeObjectURL(prev.current); }, []);
+
+  if (!info.pdf?.engine) return <OtherView info={info} note="The PDF reader is still being downloaded. Use Open for now." />;
+  if (pages === null) return <OtherView info={info} note="This PDF cannot be previewed (password protected or damaged). Use Open." />;
+
+  const go = (d: number) => setN((cur) => clampPage(cur + d, pages));
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
+  return (
+    <div className="pv-pdf">
+      <div className="pv-pdfbar">
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n <= 1} onClick={() => go(-1)} aria-label="Previous page" title="Previous page">‹</button>
+        <span className="pv-pageno" aria-live="polite">Page {n} of {pages}</span>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n >= pages} onClick={() => go(1)} aria-label="Next page" title="Next page">›</button>
+      </div>
+      <div className={"pv-pdfpage" + (loading ? " stale" : "")} ref={box}>
+        {err ? (
+          <div className="pv-msg" role="alert">{err}</div>
+        ) : url ? (
+          <ImageStage key={url} src={url} name={`${info.name}, page ${n}`} dims={null} note={null} onError={() => setErr("This page cannot be shown.")} />
+        ) : (
+          <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
+        )}
+      </div>
     </div>
   );
 }

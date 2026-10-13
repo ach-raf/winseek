@@ -201,7 +201,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Space preview: `pvOpen` toggles the pane, `pv` is the (debounced) hit it shows. `navigated`: the user has moved
   // through the list with the keyboard since the last keystroke in the box, so Space means "preview", not a space.
   const [pvOpen, setPvOpen] = useState(false);
-  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null } | null>(null);
+  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -248,7 +248,9 @@ export default function App({ backend }: { backend: Backend }) {
   const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen, epoch);
   const models = useModels(backend, refreshT1);
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
-  const sem = useSemantic(backend, parsed.text, !!t1 && !t1Off && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext);
+  // Text found inside files (documents, PDFs, screenshot OCR) is searchable before the models exist, so the
+  // meaning search runs whenever Tier 1 is up; without models it answers with text hits only.
+  const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext);
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed)), [sem.hits, parsed]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
@@ -398,18 +400,21 @@ export default function App({ backend }: { backend: Backend }) {
     : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: semSel.size ?? null, mtime: semSel.mtime ?? null };
 
   const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
-  const curKey = current ? `${current.path}|${curSnippet ?? ""}` : "";
+  const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}` : "";
   const currentRef = useRef(current);
   currentRef.current = current;
   const snippetRef = useRef(curSnippet);
   snippetRef.current = curSnippet;
+  const pageRef = useRef(curPage);
+  pageRef.current = curPage;
   // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
   const pvShown = useRef(false);
   useEffect(() => {
     if (!pvOpen) { pvShown.current = false; setPv(null); return; }
     const c = currentRef.current;
     if (!c) return;
-    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current }); };
+    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
@@ -833,7 +838,7 @@ export default function App({ backend }: { backend: Backend }) {
       )}
       </div>
       {pvOpen && pv && (
-        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet}
+        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page}
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} />
       )}
       </div>

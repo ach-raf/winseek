@@ -53,6 +53,11 @@ function tauriBackend(t: TauriGlobal): Backend {
       };
     },
     semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
+    previewPdfPage: async (path, page, width) => {
+      // The command answers with raw bytes (an ArrayBuffer), not a JSON number array.
+      const bytes = await inv<ArrayBuffer | number[]>("preview_pdf_page", { path, page, width });
+      return new Blob([bytes instanceof ArrayBuffer ? bytes : new Uint8Array(bytes)], { type: "image/png" });
+    },
     statusPage: () => inv<StatusPage>("status_page"),
     rescanVolume: (letter) => inv("rescan_volume", { letter }),
     tier1Rebuild: () => inv("tier1_rebuild"),

@@ -24,7 +24,11 @@ export type Tier1State = "models_missing" | "idle" | "indexing" | "paused" | "un
 export type PausedReason = "user" | "battery" | "fullscreen";
 export interface Tier1Status {
   state: Tier1State;
-  stats: { files: number; pending: number; done: number; failed: number; skipped: number; vectors: number } | null;
+  stats: {
+    files: number; pending: number; done: number; failed: number; skipped: number; vectors: number;
+    /** Text is searchable but the vectors wait for the models ("text searchable, waiting for models"). */
+    text_only: number;
+  } | null;
   include: string[];
   exclude: string[];
   error: string | null;
@@ -39,6 +43,10 @@ export interface SemanticHit {
   mtime?: number | null;
   /** Extracted text (OCR / PDF / text file) around the query words, with matches wrapped in [ ]. */
   snippet?: string | null;
+  /** PDF page (1-based) the hit is on. */
+  page?: number | null;
+  /** "text": found in the extracted text only (e.g. before the models are installed); default "meaning". */
+  source?: "meaning" | "text";
 }
 export interface SemanticResult {
   state: string;
@@ -117,6 +125,15 @@ export interface StatusModelFile {
   /** On-disk size; null when the file is missing. */
   bytes: number | null;
 }
+/** The pinned pdfium runtime that reads PDFs. */
+export interface StatusPdfium {
+  build: string;
+  present: boolean;
+  source: "installed" | "override" | "missing";
+  expected_bytes: number;
+  /** On-disk size of the DLL; null when missing. */
+  bytes: number | null;
+}
 export interface StatusModels {
   llama_build: string;
   backend: "cuda12" | "vulkan" | "cpu";
@@ -126,6 +143,7 @@ export interface StatusModels {
   profile: string;
   quant: string;
   files: StatusModelFile[];
+  pdfium: StatusPdfium;
   server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
 }
 export interface StatusPage {
@@ -133,7 +151,7 @@ export interface StatusPage {
   tier1: StatusTier1;
   models: StatusModels;
 }
-export type PreviewKind = "image" | "video" | "audio" | "text" | "folder" | "other";
+export type PreviewKind = "image" | "video" | "audio" | "text" | "pdf" | "folder" | "other";
 export interface PreviewExif {
   /** "2024-05-03 14:22:10" */
   date: string | null;
@@ -153,6 +171,12 @@ export interface PreviewText {
   truncated: boolean;
   encoding: string;
 }
+export interface PreviewPdf {
+  /** Page count; null when the engine is missing or the file cannot be opened (encrypted, corrupt). */
+  pages: number | null;
+  /** pdfium is installed (false while it is still being downloaded). */
+  engine: boolean;
+}
 /** `preview_info` result. `src` / `thumb` are URLs filled in by the backend wrapper (null when unavailable). */
 export interface PreviewInfo {
   kind: PreviewKind;
@@ -164,6 +188,7 @@ export interface PreviewInfo {
   ctime: number | null;
   image: PreviewImage | null;
   text: PreviewText | null;
+  pdf?: PreviewPdf | null;
   /** Streamable file URL (image / video / audio). */
   src: string | null;
   /** Large shell thumbnail / icon URL. */
@@ -248,6 +273,8 @@ export interface Backend {
   /** Never rejects with anything but a user-readable string ("File not found"). */
   previewInfo(path: string): Promise<PreviewInfo>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;
+  /** One PDF page (1-based) rendered about `width` px wide; PNG (or SVG in the mock) as a Blob. */
+  previewPdfPage(path: string, page: number, width: number): Promise<Blob>;
   /** Everything the status page shows. Never rejects because searchd is down (tier0.source says so). */
   statusPage(): Promise<StatusPage>;
   /** Ask searchd to rebuild one volume's name index. */

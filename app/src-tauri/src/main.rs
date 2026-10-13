@@ -61,6 +61,7 @@ fn main() {
             commands::reveal_path,
             commands::copy_path,
             preview::preview_info,
+            preview::preview_pdf_page,
             shell::copy_files,
             shell::recycle,
             shell::restore_recycled,

@@ -15,6 +15,8 @@ use super::identity::{file_info, ATTR_DIRECTORY, ATTR_HIDDEN, ATTR_REPARSE_POINT
 pub const KIND_IMAGE: &str = "image";
 /// Office / OpenDocument / plain text / RTF (and legacy Office, which is recorded as skipped).
 pub const KIND_DOC: &str = "doc";
+/// PDF documents (pdfium text layer, scans rendered + OCR-ed).
+pub const KIND_PDF: &str = "pdf";
 /// Source code; only crawled when the `index_code` setting is on.
 pub const KIND_CODE: &str = "code";
 const IMAGE_EXTS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp", "gif"];
@@ -47,10 +49,12 @@ fn is_generated(path: &str) -> bool {
     name.contains(".min.") || name.ends_with(".map") || name.ends_with("-lock.json") || name == "package-lock.json"
 }
 
-/// Which Tier 1 reader a path belongs to: `image`, `doc`, or `code` (only when `index_code`).
+/// Which Tier 1 reader a path belongs to: `image`, `pdf`, `doc`, or `code` (only when `index_code`).
 pub fn kind_of(path: &str, index_code: bool) -> Option<&'static str> {
     if is_supported_image(path) {
         Some(KIND_IMAGE)
+    } else if ext_in(path, &["pdf"]) {
+        Some(KIND_PDF)
     } else if ext_in(path, DOC_EXTS) {
         Some(KIND_DOC)
     } else if index_code && ext_in(path, CODE_EXTS) && !is_generated(path) {
@@ -209,6 +213,8 @@ mod tests {
         for doc in ["a.docx", "a.XLSX", "a.pptx", "a.odt", "a.txt", "a.md", "a.csv", "a.log", "a.rtf", "a.doc", "a.xls", "a.ppt"] {
             assert_eq!(kind_of(doc, false), Some(KIND_DOC), "{doc}");
         }
+        assert_eq!(kind_of("Invoice.PDF", false), Some(KIND_PDF));
+        assert_eq!(kind_of("a.pdf", true), Some(KIND_PDF));
         for code in ["a.rs", "a.PY", "a.tsx", "a.json", "b.c"] {
             assert_eq!(kind_of(code, false), None, "{code} needs the opt-in");
             assert_eq!(kind_of(code, true), Some(KIND_CODE), "{code}");

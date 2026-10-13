@@ -1,7 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, PreviewInfo, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, PreviewInfo, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -79,6 +79,7 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ?gpu=vulkan|cpu (default: NVIDIA / CUDA)
 const T1_FILES = 3880;
 const T1_RATE = 120; // files per second once indexing runs
+const TEXT_ONLY = 412; // documents + PDFs already searchable by text while the models are missing
 const gpuParam = params.get("gpu");
 const MOCK_BACKEND: ModelsPlan["backend"] = gpuParam === "cpu" ? "cpu" : gpuParam === "vulkan" ? "vulkan" : "cuda12";
 const MOCK_ITEMS: { name: string; bytes: number | null; real: number }[] = [
@@ -86,6 +87,7 @@ const MOCK_ITEMS: { name: string; bytes: number | null; real: number }[] = [
   ...(MOCK_BACKEND === "cuda12" ? [{ name: "CUDA runtime libraries", bytes: null, real: 370e6 }] : []),
   { name: "EmbeddingGemma-2 model", bytes: 309855456, real: 309855456 },
   { name: "EmbeddingGemma-2 vision projector", bytes: 554821024, real: 554821024 },
+  { name: "PDF engine (pdfium 7881)", bytes: 3733154, real: 3733154 },
 ];
 let modelsInstalled = params.get("models") === "1";
 let dlRunning = false;
@@ -110,6 +112,8 @@ let indexed = 0;
 let indexTick = performance.now();
 
 const itemHave = (i: { name: string; real: number }) => (dlDone[i.name] ?? 0) >= i.real;
+// ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there.
+const pdfiumHave = () => params.get("pdfium") !== "0" || modelsInstalled || itemHave(MOCK_ITEMS[MOCK_ITEMS.length - 1]);
 
 async function runDownload() {
   dlRunning = true;
@@ -144,7 +148,11 @@ function t1Status(): Tier1Status {
   const state = !modelsInstalled ? "models_missing" : reason ? "paused" : done < T1_FILES ? "indexing" : "idle";
   return {
     state,
-    stats: { files: T1_FILES, pending: T1_FILES - done, done, failed: modelsInstalled && done > 100 ? 3 : 0, skipped: 0, vectors: done },
+    // Before the models exist the documents / PDFs are still read: their text is searchable ("text only").
+    stats: {
+      files: T1_FILES, pending: T1_FILES - done - (modelsInstalled ? 0 : TEXT_ONLY), done, failed: modelsInstalled && done > 100 ? 3 : 0,
+      skipped: 0, vectors: done, text_only: modelsInstalled ? 0 : TEXT_ONLY,
+    },
     include: [...include], exclude: [...exclude], error: null, paused_reason: reason,
   };
 }
@@ -192,9 +200,9 @@ function mockStatusPage(): StatusPage {
   }
   const first = rateSamples[0];
   const rate = indexing && s && first && now - first.t >= 1000 ? Math.max(0, (s.done - first.done) / ((now - first.t) / 1000)) || null : null;
-  const queue = s?.pending ?? 0;
+  const queue = s ? s.pending + s.text_only : 0;
   const failed = s?.failed ?? 0;
-  const denom = s ? s.done + s.pending + failed : 0;
+  const denom = s ? s.done + s.pending + s.text_only + failed : 0;
   const idleFor = lastEmbedAt === null ? Infinity : (now - lastEmbedAt) / 1000;
   const running = modelsInstalled && t1.state !== "unavailable" && idleFor < IDLE_UNLOAD_S;
   const bytes = (expected: number, name: string) => (modelsInstalled || (dlDone[name] ?? 0) >= expected ? expected : null);
@@ -231,6 +239,9 @@ function mockStatusPage(): StatusPage {
         { name: "embeddinggemma-2-Q8_0.gguf", role: "model", expected_bytes: 309855456, bytes: bytes(309855456, "EmbeddingGemma-2 model") },
         { name: "mmproj-embeddinggemma-2-Q8_0.gguf", role: "mmproj", expected_bytes: 554821024, bytes: bytes(554821024, "EmbeddingGemma-2 vision projector") },
       ],
+      pdfium: pdfiumHave()
+        ? { build: "7881", present: true, source: "installed", expected_bytes: 3733154, bytes: 8_104_960 }
+        : { build: "7881", present: false, source: "missing", expected_bytes: 3733154, bytes: null },
       server: {
         running,
         port: running ? SERVER_PORT : null,
@@ -254,6 +265,26 @@ const PV_IMG = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic"];
 const PV_VIDEO = ["mp4", "mkv", "mov", "avi", "webm"];
 const PV_AUDIO = ["mp3", "flac", "wav", "m4a", "ogg"];
 const PV_TEXT = ["txt", "md", "log", "json", "rs", "py", "ts", "toml", "csv"];
+const PV_PAGES = (path: string) => 3 + Math.floor(hash01(path + "pages") * 14); // 3..16 pages
+// Words per page that the mock "text layer" contains, so a semantic / text hit can name the page it is on.
+const PDF_LINES = [
+  "Invoice no. 2025-0142 total due 240.00 EUR",
+  "Meeting notes: budget review and next steps",
+  "Receipt Paris cafe 12.50 EUR thank you",
+  "Quarterly report: revenue grew and costs fell",
+];
+const pdfPage = (path: string, line: number) => 1 + Math.floor(hash01(path + "|" + line) * (PV_PAGES(path) - 1));
+
+function svgPdfPage(name: string, page: number, pages: number, width: number): string {
+  const w = 595, h = 842;
+  const lines = PDF_LINES.map((t, i) => `<text x="56" y="${150 + i * 34}" font-family="Segoe UI, sans-serif" font-size="15" fill="#333">${pdfPage(name, i) === page ? "&#9733; " : ""}${t}</text>`).join("");
+  const bars = Array.from({ length: 14 }, (_, i) => `<rect x="56" y="${320 + i * 28}" width="${300 + Math.floor(hash01(name + page + i) * 180)}" height="8" rx="4" fill="#d9dce3"/>`).join("");
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${Math.round(width * h / w)}" viewBox="0 0 ${w} ${h}">` +
+    `<rect width="${w}" height="${h}" fill="#fff"/><rect x="28" y="28" width="${w - 56}" height="${h - 56}" fill="none" stroke="#e5e7ee"/>` +
+    `<text x="56" y="86" font-family="Segoe UI, sans-serif" font-size="26" font-weight="700" fill="#1d2433">${name.replace(/[<>&]/g, "")}</text>` +
+    `<text x="56" y="112" font-family="Segoe UI, sans-serif" font-size="13" fill="#7b8190">Page ${page} of ${pages}</text>${lines}${bars}</svg>`;
+  return svg;
+}
 const pvExt = (n: string) => n.slice(n.lastIndexOf(".") + 1).toLowerCase();
 
 function svgImage(name: string, w: number, h: number): string {
@@ -355,6 +386,10 @@ async function mockPreview(path: string): Promise<PreviewInfo> {
   }
   if (PV_VIDEO.includes(ext)) return { ...base, kind: "video", src: await sampleVideo() };
   if (PV_AUDIO.includes(ext)) return { ...base, kind: "audio", src: wavUrl() };
+  if (ext === "pdf") {
+    const engine = pdfiumHave();
+    return { ...base, kind: "pdf", pdf: { pages: engine && !/locked|secret/i.test(e.name) ? PV_PAGES(path) : null, engine } };
+  }
   if (PV_TEXT.includes(ext)) return { ...base, kind: "text", text: { content: sampleText(e.name, ext), truncated: false, encoding: "UTF-8" } };
   return base;
 }
@@ -453,7 +488,27 @@ export const mockBackend: Backend = {
   previewInfo: mockPreview,
   async semanticSearch(query, k) {
     const st = t1Status().state;
-    if (!modelsInstalled || st === "unavailable") return { state: st === "unavailable" ? "unavailable" : "models_missing", hits: [] };
+    if (st === "unavailable") return { state: "unavailable", hits: [] };
+    const textHits = (): SemanticHit[] => {
+      // The words found in the "text layer" of PDFs (and OCR text), with the page they are on.
+      const words = query.toLowerCase().split(/\s+/).map((t) => t.replace(/[^a-z0-9]/g, "")).filter((t) => t.length > 1);
+      if (!words.length) return [];
+      const re = new RegExp(`(${words.join("|")})`, "gi");
+      const out: SemanticHit[] = [];
+      for (const e of DB) {
+        if (e.dir || pvExt(e.name) !== "pdf" || !inScope(e.path)) continue;
+        for (let i = 0; i < PDF_LINES.length; i++) {
+          if (!words.some((w) => PDF_LINES[i].toLowerCase().includes(w)) || hash01(e.path + "|has|" + i) > 0.5) continue;
+          out.push({ path: e.path, score: 0, size: e.size, mtime: Math.floor(e.mtime), snippet: PDF_LINES[i].replace(re, "[$1]"), page: pdfPage(e.path, i), source: "text" });
+          break;
+        }
+      }
+      return out;
+    };
+    if (!modelsInstalled) {
+      await sleep(30);
+      return { state: "models_missing", hits: textHits().slice(0, Math.max(1, Math.min(k, 200))) };
+    }
     await sleep(60 + Math.random() * 60);
     const q = query.toLowerCase().trim();
     const terms = q.split(/\s+/).filter(Boolean);
@@ -462,8 +517,8 @@ export const mockBackend: Backend = {
     // rank high, so the "name + meaning" chip and the dedupe are visible in the preview.
     // Every third hit also carries OCR-style text, like a screenshot or scanned page would.
     const OCR = ["Invoice no. 2025-0142 total due 240.00 EUR", "Meeting notes: budget review and next steps", "Receipt Paris cafe 12.50 EUR thank you"];
-    const hits = DB.filter((e) => e.kind === 1 && inScope(e.path))
-      .map((e) => {
+    const hits: SemanticHit[] = DB.filter((e) => e.kind === 1 && inScope(e.path))
+      .map((e): SemanticHit => {
         const h = hash01(q + "|" + e.path);
         const text = hash01(e.path) < 0.34 ? OCR[Math.floor(hash01(e.path + "t") * OCR.length)] : null;
         const snippet = text && terms.length ? text.replace(new RegExp(`(${terms.map((t) => t.replace(/[^a-z0-9]/g, "")).filter(Boolean).join("|") || "$^"})`, "gi"), "[$1]") : null;
@@ -472,9 +527,18 @@ export const mockBackend: Backend = {
           size: e.size, mtime: Math.floor(e.mtime), snippet: snippet && snippet.includes("[") ? snippet : null,
         };
       })
+      .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(1, Math.min(k, 200)));
     return { state: st, hits };
+  },
+  async previewPdfPage(path, page, width) {
+    await sleep(60 + Math.random() * 80);
+    const e = DB.find((x) => x.path === path);
+    if (!e) throw new Error("File not found");
+    const pages = PV_PAGES(path);
+    if (page < 1 || page > pages) throw new Error(`page ${page} of ${pages}`);
+    return new Blob([svgPdfPage(e.name, page, pages, width)], { type: "image/svg+xml" });
   },
   async statusPage() { await sleep(20); return mockStatusPage(); },
   async rescanVolume(letter) {

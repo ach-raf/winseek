@@ -10,6 +10,8 @@ pub const DEFAULT_MANIFEST_JSON: &str = include_str!("../manifest.json");
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Manifest {
     pub llama: LlamaManifest,
+    /// Pinned pdfium runtime (PDF text extraction + page rendering).
+    pub pdfium: PdfiumManifest,
     pub models: Vec<ModelEntry>,
 }
 
@@ -18,6 +20,25 @@ pub struct LlamaManifest {
     /// e.g. "b11279"
     pub build: String,
     pub assets: Vec<Asset>,
+}
+
+/// A pinned pdfium-binaries `.tgz` and the one member (the DLL) taken out of it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PdfiumManifest {
+    /// pdfium-binaries chromium build, e.g. "7881".
+    pub build: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    /// Path of the DLL inside the archive, e.g. "bin/pdfium.dll".
+    pub member: String,
+}
+
+impl PdfiumManifest {
+    /// File name of the extracted DLL.
+    pub fn dll_name(&self) -> &str {
+        self.member.rsplit('/').next().unwrap_or(&self.member)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -145,11 +166,24 @@ mod tests {
     }
 
     #[test]
+    fn pdfium_entry_is_pinned() {
+        let p = Manifest::embedded().pdfium;
+        assert_eq!(p.build, "7881");
+        assert_eq!(
+            p.url,
+            "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-win-x64.tgz"
+        );
+        assert_eq!(p.sha256, "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08");
+        assert!(!is_unpinned(&p.sha256));
+        assert_eq!((p.size, p.member.as_str(), p.dll_name()), (3_733_154, "bin/pdfium.dll", "pdfium.dll"));
+    }
+
+    #[test]
     fn parse_minimal_and_reject_bad() {
-        let j = r#"{"llama":{"build":"b1","assets":[{"backend":"cpu","url":"u","sha256":"s"}]},"models":[]}"#;
+        let j = r#"{"llama":{"build":"b1","assets":[{"backend":"cpu","url":"u","sha256":"s"}]},"pdfium":{"build":"1","url":"u","sha256":"s","size":1,"member":"bin/pdfium.dll"},"models":[]}"#;
         let m = Manifest::parse(j).unwrap();
         assert!(m.asset(Backend::Cpu).unwrap().extra.is_empty());
-        assert!(Manifest::parse(r#"{"llama":{"build":"b1","assets":[{"backend":"tpu","url":"u","sha256":"s"}]},"models":[]}"#).is_err());
+        assert!(Manifest::parse(r#"{"llama":{"build":"b1","assets":[{"backend":"tpu","url":"u","sha256":"s"}]},"pdfium":{"build":"1","url":"u","sha256":"s","size":1,"member":"m"},"models":[]}"#).is_err());
         assert!(Manifest::parse("{").is_err());
     }
 

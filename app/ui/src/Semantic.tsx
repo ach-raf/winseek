@@ -81,10 +81,17 @@ export const SemRow = memo(function SemRow({ hit, query, selected, icon, thumb, 
         <div className="path"><span className="head">{head}</span><span className="tail">{tail}</span></div>
         {hit.snippet && <div className="snippet" title="Text found inside the file"><Snippet text={hit.snippet} /></div>}
       </div>
-      <div className="side why" title={`Similarity score ${hit.score.toFixed(3)}`}>
-        <span className="why-text">{image ? "looks like " : "matches "}{q(query)}</span>
-        <span className="why-score">meaning {"\u00b7"} {hit.score.toFixed(2)}</span>
-      </div>
+      {hit.source === "text" ? (
+        <div className="side why" title="The words were found in the text of the file. Search by meaning is not set up yet.">
+          <span className="why-text">contains {q(query)}</span>
+          <span className="why-score">text{hit.page ? ` \u00b7 page ${hit.page}` : ""}</span>
+        </div>
+      ) : (
+        <div className="side why" title={`Similarity score ${hit.score.toFixed(3)}`}>
+          <span className="why-text">{image ? "looks like " : "matches "}{q(query)}</span>
+          <span className="why-score">meaning {"\u00b7"} {hit.score.toFixed(2)}{hit.page ? ` \u00b7 page ${hit.page}` : ""}</span>
+        </div>
+      )}
     </div>
   );
 });

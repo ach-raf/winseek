@@ -12,12 +12,14 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 2;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
 const STATE_FAILED: i64 = 2;
 const STATE_SKIPPED: i64 = 3;
+/// Text is extracted and in FTS, but the vectors still wait for the models ("pending vectors").
+const STATE_TEXT_ONLY: i64 = 4;
 
 /// Default ignore list: folder/file *names* (one path segment each, case-insensitive,
 /// `*` and `?` wildcards) never indexed inside any scope. The user edits it in Settings;
@@ -177,6 +179,17 @@ impl VecKind {
     }
 }
 
+impl VecKind {
+    pub fn parse(s: &str) -> Option<VecKind> {
+        match s {
+            "image" => Some(VecKind::Image),
+            "text" => Some(VecKind::Text),
+            "page" => Some(VecKind::Page),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct PendingFile {
     pub id: FileId,
@@ -185,6 +198,24 @@ pub struct PendingFile {
     pub size: u64,
     pub mtime: i64,
     pub kind: String,
+}
+
+/// A vector that still has to be computed for a text-only file: the chunk's text lives in the
+/// `texts` table, an image chunk is re-rendered from the file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingVec {
+    pub chunk: u32,
+    pub kind: VecKind,
+    pub locator: Option<String>,
+}
+
+/// A file in the "text searchable, waiting for models" state.
+#[derive(Debug, Clone)]
+pub struct TextOnlyFile {
+    pub id: FileId,
+    pub path: String,
+    pub kind: String,
+    pub hash: String,
 }
 
 #[derive(Debug, Clone)]
@@ -213,6 +244,9 @@ pub struct TextHit {
     pub path: String,
     pub chunk: u32,
     pub snippet: String,
+    /// Locator JSON of the chunk (page, character range, ...), from its vector or, while the vector
+    /// is still pending, from the pending row.
+    pub locator: Option<String>,
     /// Raw `bm25()` value; lower (more negative) is better.
     pub rank: f64,
 }
@@ -225,6 +259,8 @@ pub struct Stats {
     pub failed: u64,
     pub skipped: u64,
     pub vectors: u64,
+    /// Text is searchable (FTS) but vectors are still pending (waiting for models).
+    pub text_only: u64,
 }
 
 /// A finished image file, as the library window lists it.
@@ -454,6 +490,7 @@ impl Store {
              DELETE FROM vectors;
              DELETE FROM texts;
              DELETE FROM content;
+             DELETE FROM pending_vecs;
              DELETE FROM index_meta;
              UPDATE files SET content_hash = NULL, state = 0, error = NULL;
              COMMIT;",
@@ -638,6 +675,7 @@ impl Store {
         let orphan = "hash NOT IN (SELECT content_hash FROM files WHERE content_hash IS NOT NULL)";
         tx.execute(&format!("DELETE FROM vectors WHERE {orphan}"), [])?;
         tx.execute(&format!("DELETE FROM texts WHERE {orphan}"), [])?;
+        tx.execute(&format!("DELETE FROM pending_vecs WHERE {orphan}"), [])?;
         let n = tx.execute(&format!("DELETE FROM content WHERE {orphan}"), [])?;
         tx.commit()?;
         Ok(n)
@@ -662,6 +700,44 @@ impl Store {
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Pending files (state 0) filtered by kind and id: only kinds in `only` (all when empty), never
+    /// kinds in `exclude`, ids greater than `after_id`; newest first, or by id when `after_id > 0`
+    /// (a cursor walk). Kinds are internal constants, not user input.
+    pub fn next_pending_where(
+        &self,
+        limit: usize,
+        only: &[&str],
+        exclude: &[&str],
+        after_id: i64,
+    ) -> Result<Vec<PendingFile>> {
+        let list = |k: &[&str]| k.iter().map(|x| format!("'{}'", x.replace('\'', ""))).collect::<Vec<_>>().join(",");
+        let mut sql = String::from("SELECT id, vol_guid, frn, path, size, mtime, kind FROM files WHERE state = 0 AND id > ?2");
+        if !only.is_empty() {
+            sql.push_str(&format!(" AND kind IN ({})", list(only)));
+        }
+        if !exclude.is_empty() {
+            sql.push_str(&format!(" AND kind NOT IN ({})", list(exclude)));
+        }
+        sql.push_str(if after_id > 0 { " ORDER BY id LIMIT ?1" } else { " ORDER BY mtime DESC, id LIMIT ?1" });
+        let mut st = self.conn.prepare_cached(&sql)?;
+        let rows = st.query_map(params![limit as i64, after_id], |r| {
+            Ok(PendingFile {
+                id: FileId(r.get(0)?),
+                key: FileKey { vol_guid: r.get(1)?, frn: r.get::<_, i64>(2)? as u64 },
+                path: r.get(3)?,
+                size: r.get::<_, i64>(4)? as u64,
+                mtime: r.get(5)?,
+                kind: r.get(6)?,
+            })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Is any file of `kind` waiting to be processed?
+    pub fn has_pending_kind(&self, kind: &str) -> Result<bool> {
+        Ok(self.conn.prepare_cached("SELECT 1 FROM files WHERE state = 0 AND kind = ?1 LIMIT 1")?.exists([kind])?)
     }
 
     // ------------------------------------------------------------ content
@@ -714,12 +790,120 @@ impl Store {
                 }
             }
         }
+        // Identical content that is still waiting for vectors keeps its twin text-only too.
+        let waiting = tx
+            .prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?
+            .exists([hash])?;
+        let state = if waiting { STATE_TEXT_ONLY } else { STATE_DONE };
         let n = tx
-            .prepare_cached("UPDATE files SET content_hash=?2, state=1, error=NULL WHERE id=?1")?
-            .execute(params![file_id.0, hash])?;
+            .prepare_cached("UPDATE files SET content_hash=?2, state=?3, error=NULL WHERE id=?1")?
+            .execute(params![file_id.0, hash, state])?;
         if n == 0 {
             return Err(Error::NoSuchFile(file_id));
         }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// FTS-only completion (no models yet): store the chunk texts and remember which vectors are
+    /// still owed (`pending`). The file becomes searchable by text (`text_only` state) and
+    /// [`Store::finish_vectors`] later turns it into a normal done file without re-extraction.
+    /// If the hash is already known the file is just linked (state follows the content's).
+    pub fn complete_text_only(
+        &mut self,
+        file_id: FileId,
+        hash: &str,
+        pending: &[PendingVec],
+        texts: &[(u32, String)],
+    ) -> Result<()> {
+        if pending.is_empty() {
+            return self.complete(file_id, hash, &[], texts);
+        }
+        let tx = self.conn.transaction()?;
+        let known = tx.prepare_cached("SELECT 1 FROM content WHERE hash = ?1")?.exists([hash])?;
+        if !known {
+            tx.execute("INSERT INTO content(hash) VALUES (?1)", [hash])?;
+            {
+                let mut ins_t = tx.prepare_cached("INSERT INTO texts(hash, chunk, body) VALUES (?1,?2,?3)")?;
+                for (chunk, body) in texts {
+                    ins_t.execute(params![hash, chunk, body])?;
+                }
+                let mut ins_p = tx.prepare_cached(
+                    "INSERT INTO pending_vecs(hash, chunk, kind, locator) VALUES (?1,?2,?3,?4)",
+                )?;
+                for p in pending {
+                    ins_p.execute(params![hash, p.chunk, p.kind.as_str(), p.locator])?;
+                }
+            }
+        }
+        let waiting = tx.prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?.exists([hash])?;
+        let state = if waiting { STATE_TEXT_ONLY } else { STATE_DONE };
+        let n = tx
+            .prepare_cached("UPDATE files SET content_hash=?2, state=?3, error=NULL WHERE id=?1")?
+            .execute(params![file_id.0, hash, state])?;
+        if n == 0 {
+            return Err(Error::NoSuchFile(file_id));
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Up to `limit` text-only files (newest first), one per content hash.
+    pub fn next_text_only(&self, limit: usize) -> Result<Vec<TextOnlyFile>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT id, path, kind, content_hash FROM files
+             WHERE state = 4 AND content_hash IS NOT NULL
+             GROUP BY content_hash ORDER BY MAX(mtime) DESC, id LIMIT ?1",
+        )?;
+        let rows = st.query_map([limit as i64], |r| {
+            Ok(TextOnlyFile { id: FileId(r.get(0)?), path: r.get(1)?, kind: r.get(2)?, hash: r.get(3)? })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The vectors still owed for `hash`, in chunk order.
+    pub fn pending_vecs(&self, hash: &str) -> Result<Vec<PendingVec>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT chunk, kind, locator FROM pending_vecs WHERE hash = ?1 ORDER BY chunk")?;
+        let rows = st.query_map([hash], |r| {
+            let kind: String = r.get(1)?;
+            Ok(PendingVec { chunk: r.get(0)?, kind: VecKind::parse(&kind).unwrap_or(VecKind::Text), locator: r.get(2)? })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The stored chunk texts of `hash`, in chunk order.
+    pub fn texts_of(&self, hash: &str) -> Result<Vec<(u32, String)>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT chunk, body FROM texts WHERE hash = ?1 ORDER BY CAST(chunk AS INTEGER)")?;
+        let rows = st.query_map([hash], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Store the owed vectors for `hash` and move every text-only file with that content to done.
+    pub fn finish_vectors(&mut self, hash: &str, vectors: &[ChunkVec]) -> Result<()> {
+        for v in vectors {
+            if v.vec.len() != self.dims {
+                return Err(Error::BadVector { expected: self.dims, got: v.vec.len() });
+            }
+        }
+        let tx = self.conn.transaction()?;
+        {
+            let mut ins = tx.prepare_cached(
+                "INSERT OR REPLACE INTO vectors(hash, chunk, kind, locator, vec) VALUES (?1,?2,?3,?4,?5)",
+            )?;
+            for v in vectors {
+                let mut blob = Vec::with_capacity(v.vec.len() * 4);
+                for x in &v.vec {
+                    blob.extend_from_slice(&x.to_le_bytes());
+                }
+                ins.execute(params![hash, v.chunk, v.kind.as_str(), v.locator, blob])?;
+            }
+        }
+        tx.execute("DELETE FROM pending_vecs WHERE hash = ?1", [hash])?;
+        tx.execute("UPDATE files SET state = 1 WHERE content_hash = ?1 AND state = 4", [hash])?;
         tx.commit()?;
         Ok(())
     }
@@ -869,8 +1053,10 @@ impl Store {
         }
         let mut st = self.conn.prepare_cached(
             "SELECT files.id, files.path, texts.chunk,
-                    snippet(texts, 2, '[', ']', '…', 12), bm25(texts)
-             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state = 1
+                    snippet(texts, 2, '[', ']', '…', 12), bm25(texts),
+                    COALESCE((SELECT v.locator FROM vectors v WHERE v.hash = texts.hash AND v.chunk = texts.chunk),
+                             (SELECT p.locator FROM pending_vecs p WHERE p.hash = texts.hash AND p.chunk = texts.chunk))
+             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4)
              WHERE texts MATCH ?1
              ORDER BY bm25(texts) LIMIT ?2",
         )?;
@@ -881,6 +1067,7 @@ impl Store {
                 chunk: r.get(2)?,
                 snippet: r.get(3)?,
                 rank: r.get(4)?,
+                locator: r.get(5)?,
             })
         })?;
         let mut seen = std::collections::HashSet::new();
@@ -909,6 +1096,7 @@ impl Store {
             failed: by_state(STATE_FAILED)?,
             skipped: by_state(STATE_SKIPPED)?,
             vectors: count("SELECT COUNT(*) FROM vectors")?,
+            text_only: by_state(STATE_TEXT_ONLY)?,
         })
     }
 
@@ -1158,6 +1346,17 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if v < 2 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS pending_vecs(
+                 hash TEXT NOT NULL, chunk INTEGER NOT NULL,
+                 kind TEXT NOT NULL, locator TEXT,
+                 PRIMARY KEY(hash, chunk));
+             PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -1227,6 +1426,117 @@ mod tests {
         assert_eq!(s.get_scopes().unwrap().include.len(), 1);
         drop(s);
         assert!(Store::open(&p, &m2).is_ok());
+    }
+
+    #[test]
+    fn text_only_then_vectors_without_reextraction() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:.pdf", 1);
+        let b = add(&mut s, 2, r"C:\copy.pdf", 2);
+        let pend = [
+            PendingVec { chunk: 0, kind: VecKind::Text, locator: Some("{\"page\":1}".into()) },
+            PendingVec { chunk: 1, kind: VecKind::Image, locator: Some("{\"page\":2}".into()) },
+        ];
+        s.complete_text_only(a, "h", &pend, &[(0, "quarterly invoice".into())]).unwrap();
+        // same content at another path: linked, and also waiting
+        s.complete_text_only(b, "h", &pend, &[(0, "quarterly invoice".into())]).unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.text_only, st.done, st.pending, st.vectors), (2, 0, 0, 0));
+        // searchable by text immediately, but not by vector
+        assert_eq!(s.search_text(&fts_escape("invoice"), 5).unwrap().len(), 2);
+        assert!(s.search_vectors(&[1., 0., 0., 0.], 5, None).unwrap().is_empty());
+        // the queue offers one entry per content, with everything needed to finish it
+        let q = s.next_text_only(10).unwrap();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].hash, "h");
+        assert_eq!(s.pending_vecs("h").unwrap(), pend);
+        assert_eq!(s.texts_of("h").unwrap(), vec![(0, "quarterly invoice".to_string())]);
+        // models arrive: vectors are stored, both files become done, FTS unchanged
+        let vecs = [
+            ChunkVec { chunk: 0, kind: VecKind::Text, locator: pend[0].locator.clone(), vec: vec![1., 0., 0., 0.] },
+            ChunkVec { chunk: 1, kind: VecKind::Image, locator: pend[1].locator.clone(), vec: vec![0., 1., 0., 0.] },
+        ];
+        s.finish_vectors("h", &vecs).unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.text_only, st.done, st.vectors), (0, 2, 2));
+        assert!(s.next_text_only(10).unwrap().is_empty());
+        assert!(s.pending_vecs("h").unwrap().is_empty());
+        assert_eq!(s.search_vectors(&[0., 1., 0., 0.], 5, None).unwrap().len(), 2);
+        assert_eq!(s.search_text(&fts_escape("invoice"), 5).unwrap().len(), 2);
+        // a later copy of the finished content is simply done
+        let c = add(&mut s, 3, r"C:\c.pdf", 3);
+        s.complete_text_only(c, "h", &pend, &[]).unwrap();
+        assert_eq!(s.stats().unwrap().done, 3);
+    }
+
+    #[test]
+    fn pending_filters_and_text_locator() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        s.upsert_file(&key(1), "a.png", 1, 5, "image").unwrap();
+        s.upsert_file(&key(2), "b.pdf", 1, 4, "pdf").unwrap();
+        s.upsert_file(&key(3), "c.docx", 1, 3, "doc").unwrap();
+        s.upsert_file(&key(4), "d.png", 1, 2, "image").unwrap();
+        let kinds = |v: Vec<PendingFile>| v.into_iter().map(|f| f.path).collect::<Vec<_>>();
+        assert_eq!(kinds(s.next_pending_where(10, &[], &["image"], 0).unwrap()), ["b.pdf", "c.docx"]);
+        assert_eq!(kinds(s.next_pending_where(10, &[], &["image", "pdf"], 0).unwrap()), ["c.docx"]);
+        assert_eq!(kinds(s.next_pending_where(10, &["pdf"], &[], 0).unwrap()), ["b.pdf"]);
+        // cursor walk over images by id
+        let first = s.next_pending_where(1, &["image"], &[], 0).unwrap();
+        assert_eq!(first[0].path, "a.png");
+        let next = s.next_pending_where(5, &["image"], &[], first[0].id.0).unwrap();
+        assert_eq!(kinds(next), ["d.png"]);
+        assert!(s.has_pending_kind("pdf").unwrap() && !s.has_pending_kind("code").unwrap());
+        // text hits carry the chunk locator, from the pending row first and from the vector later
+        let f = s.upsert_file(&key(2), "b.pdf", 1, 4, "pdf").unwrap();
+        let pend = [PendingVec { chunk: 3, kind: VecKind::Text, locator: Some("{\"page\":7}".into()) }];
+        s.complete_text_only(f, "hp", &pend, &[(3, "needle in haystack".into())]).unwrap();
+        let h = s.search_text(&fts_escape("needle"), 5).unwrap();
+        assert_eq!(h[0].locator.as_deref(), Some("{\"page\":7}"));
+        let v = ChunkVec { chunk: 3, kind: VecKind::Text, locator: pend[0].locator.clone(), vec: vec![1., 0., 0., 0.] };
+        s.finish_vectors("hp", &[v]).unwrap();
+        assert_eq!(s.search_text(&fts_escape("needle"), 5).unwrap()[0].locator.as_deref(), Some("{\"page\":7}"));
+    }
+
+    #[test]
+    fn text_only_edge_cases() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:.pdf", 1);
+        // nothing owed -> a normal done file
+        s.complete_text_only(a, "h0", &[], &[(0, "plain".into())]).unwrap();
+        assert_eq!((s.stats().unwrap().done, s.stats().unwrap().text_only), (1, 0));
+        // modifying a text-only file sends it back to pending and gc forgets its pending rows
+        let b = add(&mut s, 2, r"C:.pdf", 1);
+        let pend = [PendingVec { chunk: 0, kind: VecKind::Text, locator: None }];
+        s.complete_text_only(b, "h1", &pend, &[(0, "words".into())]).unwrap();
+        assert_eq!(s.stats().unwrap().text_only, 1);
+        s.upsert_file(&key(2), r"C:.pdf", 11, 5, "doc").unwrap();
+        let st = s.stats().unwrap();
+        assert_eq!((st.text_only, st.pending), (0, 1));
+        s.gc().unwrap();
+        assert!(s.pending_vecs("h1").unwrap().is_empty() && s.texts_of("h1").unwrap().is_empty());
+        // reset (rebuild) drops pending rows too
+        s.complete_text_only(b, "h2", &pend, &[(0, "again".into())]).unwrap();
+        assert_eq!(s.stats().unwrap().text_only, 1);
+        s.remove(&key(2)).unwrap();
+        s.gc().unwrap();
+        assert!(s.pending_vecs("h2").unwrap().is_empty());
+        // wrong dimension is rejected
+        let bad = ChunkVec { chunk: 0, kind: VecKind::Text, locator: None, vec: vec![1.0] };
+        assert!(matches!(s.finish_vectors("h2", &[bad]), Err(Error::BadVector { .. })));
+    }
+
+    #[test]
+    fn schema_v1_database_is_migrated() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("old.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+            migrate(&conn).unwrap();
+            conn.execute_batch("DROP TABLE pending_vecs; PRAGMA user_version = 1;").unwrap();
+        }
+        let s = Store::open(&p, &meta()).unwrap();
+        assert!(s.pending_vecs("x").unwrap().is_empty());
     }
 
     #[test]
@@ -1542,7 +1852,8 @@ mod tests {
                 done: 1,
                 failed: 1,
                 skipped: 0,
-                vectors: 2
+                vectors: 2,
+                text_only: 0
             }
         );
     }

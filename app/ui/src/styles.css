@@ -429,6 +429,12 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
   position: absolute; right: 8px; bottom: 8px; padding: 2px 7px; border-radius: 10px; pointer-events: none;
   background: color-mix(in srgb, var(--bg-solid) 80%, transparent); color: var(--fg-2); font: 600 11px/1.5 var(--font);
 }
+.pv-pdf { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.pv-pdfbar { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 4px 8px; background: var(--bg-solid); font-size: 12px; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.pv-pdfbar .pv-btn { width: 30px; padding: 0; font-size: 16px; line-height: 1; }
+.pv-pdfbar .pv-btn:disabled { opacity: 0.35; }
+.pv-pdfpage { position: relative; flex: 1; min-height: 0; transition: opacity 120ms; }
+.pv-pdfpage.stale { opacity: 0.55; }
 .pv-media { position: absolute; inset: 0; display: grid; place-items: center; background: #000; }
 .pv-media video { width: 100%; height: 100%; object-fit: contain; }
 .pv-media.audio { background: transparent; align-content: center; gap: 18px; padding: 0 16px; }

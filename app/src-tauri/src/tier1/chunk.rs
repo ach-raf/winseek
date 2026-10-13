@@ -110,6 +110,26 @@ pub fn chunk_with(doc: &Extracted, target: usize, overlap: usize, max_chunks: us
         .collect()
 }
 
+/// Locator of a chunk of one PDF page: `{"page": N, "chars": [start, end]}` (offsets into that
+/// page's text).
+pub fn page_locator(page: u32, start: usize, end: usize) -> String {
+    json!({"page": page, "chars": [start, end]}).to_string()
+}
+
+/// Chunk the text of one PDF page (1-based `page`); at most `max_chunks` chunks.
+pub fn chunk_page(text: &str, page: u32, max_chunks: usize) -> Vec<Chunk> {
+    let chars: Vec<char> = text.chars().collect();
+    chunk_chars(&chars, TARGET_CHARS, OVERLAP_CHARS, max_chunks)
+        .into_iter()
+        .map(|(s, e)| Chunk {
+            text: chars[s..e].iter().collect::<String>().trim().to_owned(),
+            start: s,
+            end: e,
+            locator: page_locator(page, s, e),
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -215,5 +235,23 @@ mod tests {
         let cs = chunk_with(&d, 120, 20, 64);
         assert!(cs[0].locator.contains(r#""slide":1"#));
         assert!(cs.last().unwrap().locator.contains(r#""slide":2"#));
+    }
+
+    #[test]
+    fn page_chunks_carry_page_and_page_relative_offsets() {
+        let short = chunk_page("hello page", 4, 8);
+        assert_eq!(short.len(), 1);
+        assert_eq!(serde_json::from_str::<Value>(&short[0].locator).unwrap(), json!({"page": 4, "chars": [0, 10]}));
+        let long = "word ".repeat(1000);
+        let cs = chunk_page(&long, 12, 8);
+        assert!(cs.len() > 2 && cs.len() <= 8);
+        for c in &cs {
+            let v: Value = serde_json::from_str(&c.locator).unwrap();
+            assert_eq!(v["page"], 12);
+            assert_eq!(v["chars"], json!([c.start, c.end]));
+        }
+        assert!(chunk_page("  
+ ", 1, 8).is_empty());
+        assert_eq!(chunk_page(&long, 1, 3).len(), 3, "per-page cap");
     }
 }

@@ -12,6 +12,19 @@ export function previewTerms(query: string): string[] {
   return out;
 }
 
+/** Keep a PDF page number inside 1..pages (unknown count: at least 1). */
+export function clampPage(page: number, pages: number | null): number {
+  const p = Number.isFinite(page) ? Math.floor(page) : 1;
+  const max = pages != null && pages > 0 ? pages : Number.MAX_SAFE_INTEGER;
+  return Math.min(Math.max(1, p), max);
+}
+
+/** Pixel width to ask pdfium for: the pane width at device resolution, rounded up to 100 px (cache friendly), 400..1600. */
+export function pdfRenderWidth(boxWidth: number, dpr: number): number {
+  const raw = Math.max(0, boxWidth) * Math.max(1, dpr);
+  return Math.min(1600, Math.max(400, Math.ceil(raw / 100) * 100));
+}
+
 export interface Segment {
   text: string;
   hit: boolean;

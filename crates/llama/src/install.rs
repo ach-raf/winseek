@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::Backend;
 use crate::fetch::{fetch_with, rewrite_hf, FetchOptions, Progress};
-use crate::manifest::Manifest;
+use crate::manifest::{Manifest, PdfiumManifest};
 use crate::{Error, Result};
 
 pub fn install_dir(root: &Path, build: &str, backend: Backend) -> PathBuf {
@@ -111,6 +111,64 @@ pub fn install_llama_with(
     find_server_exe(&dir).ok_or_else(|| Error::NotFound("llama-server after install".into()))
 }
 
+// ---------------------------------------------------------------- pdfium
+
+/// `<root>/pdfium/<build>/<dll>`.
+pub fn pdfium_path(root: &Path, p: &PdfiumManifest) -> PathBuf {
+    root.join("pdfium").join(&p.build).join(p.dll_name())
+}
+
+/// Pull one member (`bin/pdfium.dll`) out of a `.tgz` into `dest`, via a temp file so a crash never
+/// leaves a truncated DLL. Only the exact member path is read; nothing else is written.
+pub fn extract_tgz_member(tgz: &Path, member: &str, dest: &Path) -> Result<()> {
+    let gz = flate2::read::GzDecoder::new(File::open(tgz)?);
+    let mut ar = tar::Archive::new(gz);
+    let want = member.trim_start_matches("./");
+    for entry in ar.entries().map_err(|e| Error::Zip(format!("tgz: {e}")))? {
+        let mut entry = entry.map_err(|e| Error::Zip(format!("tgz: {e}")))?;
+        let name = entry.path().map_err(|e| Error::Zip(format!("tgz: {e}")))?.to_string_lossy().replace('\\', "/");
+        if name.trim_start_matches("./") != want {
+            continue;
+        }
+        if let Some(p) = dest.parent() {
+            fs::create_dir_all(p)?;
+        }
+        let tmp = dest.with_extension("tmp");
+        let res = File::create(&tmp).and_then(|mut f| io::copy(&mut entry, &mut f).map(|_| ()));
+        if let Err(e) = res {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let _ = fs::remove_file(dest);
+        fs::rename(&tmp, dest)?;
+        return Ok(());
+    }
+    Err(Error::NotFound(format!("{member} in {}", tgz.display())))
+}
+
+/// Download (resumable, sha256-verified) and unpack the pinned pdfium DLL. Idempotent: returns the
+/// existing path when already installed.
+pub fn install_pdfium_with(
+    root: &Path,
+    manifest: &Manifest,
+    opts: &FetchOptions,
+    progress: &mut dyn FnMut(&str, Progress),
+) -> Result<PathBuf> {
+    let p = &manifest.pdfium;
+    let dll = pdfium_path(root, p);
+    if dll.is_file() {
+        return Ok(dll);
+    }
+    let name = p.url.rsplit('/').next().unwrap_or("pdfium.tgz");
+    let dest = root.join("downloads").join(format!("pdfium-{}-{name}", p.build));
+    fetch_with(std::slice::from_ref(&p.url), &dest, &p.sha256, opts, &mut |pr| progress(name, pr))?;
+    if opts.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    extract_tgz_member(&dest, &p.member, &dll)?;
+    Ok(dll)
+}
+
 /// Installed build names (`bNNNN`) for `backend`, newest first.
 pub fn installed_builds(root: &Path, backend: Backend) -> Vec<String> {
     let mut v: Vec<(u64, String)> = fs::read_dir(root.join("llama"))
@@ -187,6 +245,43 @@ mod tests {
         extract_zip(&z, &out).unwrap();
         assert!(out.join("sub").join("ggml.dll").is_file());
         assert_eq!(find_server_exe(&out).unwrap(), out.join("llama-server.exe"));
+    }
+
+    fn make_tgz(path: &Path, files: &[(&str, &[u8])]) {
+        let gz = flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
+        let mut b = tar::Builder::new(gz);
+        for (n, c) in files {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(c.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            b.append_data(&mut h, n, *c).unwrap();
+        }
+        b.into_inner().unwrap().finish().unwrap();
+    }
+
+    #[test]
+    fn tgz_member_extraction() {
+        let d = tmp("tgz");
+        let t = d.join("p.tgz");
+        make_tgz(&t, &[("LICENSE", b"lic"), ("bin/pdfium.dll", b"MZ-dll"), ("lib/pdfium.dll.lib", b"nope")]);
+        let out = d.join("x").join("pdfium").join("7881").join("pdfium.dll");
+        extract_tgz_member(&t, "bin/pdfium.dll", &out).unwrap();
+        assert_eq!(fs::read(&out).unwrap(), b"MZ-dll");
+        assert!(!out.with_extension("tmp").exists());
+        // overwrite is fine, a missing member is an error and writes nothing
+        extract_tgz_member(&t, "bin/pdfium.dll", &out).unwrap();
+        let other = d.join("other.dll");
+        assert!(matches!(extract_tgz_member(&t, "bin/missing.dll", &other), Err(Error::NotFound(_))));
+        assert!(!other.exists());
+        assert!(extract_tgz_member(&d.join("nope.tgz"), "bin/pdfium.dll", &other).is_err());
+    }
+
+    #[test]
+    fn pdfium_path_is_versioned() {
+        let m = Manifest::embedded();
+        let p = pdfium_path(Path::new("R"), &m.pdfium);
+        assert_eq!(p, Path::new("R").join("pdfium").join("7881").join("pdfium.dll"));
     }
 
     #[test]

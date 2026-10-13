@@ -89,7 +89,7 @@ export function useSemantic(backend: Backend, query: string, enabled: boolean, f
   const [state, setState] = useState<SemanticState>({ query: "", hits: [] });
   const seq = useRef(0);
   const q = query.trim();
-  const active = enabled && q.length >= 2 && (filter === "all" || filter === "images");
+  const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs");
   useEffect(() => {
     const my = ++seq.current;
     if (!active) {

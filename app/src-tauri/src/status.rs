@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
-use winseek_llama::install::resolve_exe;
+use winseek_llama::install::{pdfium_path, resolve_exe};
 use winseek_llama::manifest::ModelRole;
 use winseek_llama::{Detected, Manifest, ModelProfile};
 use winseek_store::Store;
@@ -21,6 +21,7 @@ use crate::models::Models;
 use crate::service;
 use crate::source::{NameSource, Tier0Detail, VolumeDetail};
 use crate::tier1::embedder::{self, RuntimeInfo};
+use crate::tier1::pdf;
 use crate::tier1::progress::{coverage, eta_secs};
 use crate::tier1::{self, StatsDto, Tier1};
 
@@ -69,6 +70,18 @@ pub struct ModelFileDto {
     pub bytes: Option<u64>,
 }
 
+/// The pinned pdfium runtime (PDF text + page images).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct PdfiumDto {
+    pub build: String,
+    pub present: bool,
+    /// "installed" | "override" (WINSEEK_PDFIUM) | "missing"
+    pub source: &'static str,
+    pub expected_bytes: u64,
+    /// Size of the DLL's archive is what the manifest pins; this is the DLL on disk (null when missing).
+    pub bytes: Option<u64>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ServerDto {
     pub running: bool,
@@ -90,6 +103,7 @@ pub struct ModelsPageDto {
     pub profile: &'static str,
     pub quant: &'static str,
     pub files: Vec<ModelFileDto>,
+    pub pdfium: PdfiumDto,
     pub server: ServerDto,
 }
 
@@ -155,7 +169,11 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
         };
     };
     let st = t.status();
-    let (cov, queue) = st.stats.as_ref().map_or((None, 0), |s| (coverage(s.done, s.pending, s.failed), s.pending));
+    // Text-only files (searchable, vectors owed) are still waiting to be embedded.
+    let (cov, queue) = st.stats.as_ref().map_or((None, 0), |s| {
+        let waiting = s.pending + s.text_only;
+        (coverage(s.done, waiting, s.failed), waiting)
+    });
     // Throughput only means something while the worker is actually embedding.
     let rate = if st.state == "indexing" { t.rate() } else { None };
     Tier1PageDto {
@@ -197,6 +215,24 @@ fn model_files(manifest: &Manifest, dir: &Path) -> Vec<ModelFileDto> {
         .collect()
 }
 
+/// Where pdfium is: the pinned install, the dev override, or nowhere.
+fn pdfium_section(root: Option<&Path>, manifest: &Manifest, env: Option<&std::ffi::OsStr>) -> PdfiumDto {
+    let installed = root.map(|r| pdfium_path(r, &manifest.pdfium)).filter(|p| p.is_file());
+    let found = pdf::locate_dll_in(env, root, manifest);
+    let source = match (&found, &installed) {
+        (None, _) => "missing",
+        (Some(f), Some(i)) if f == i => "installed",
+        _ => "override",
+    };
+    PdfiumDto {
+        build: manifest.pdfium.build.clone(),
+        present: found.is_some(),
+        source,
+        expected_bytes: manifest.pdfium.size,
+        bytes: found.and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()),
+    }
+}
+
 fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: RuntimeInfo) -> ModelsPageDto {
     ModelsPageDto {
         llama_build: manifest.llama.build.clone(),
@@ -207,6 +243,7 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
         profile: "default",
         quant: embedder::QUANT,
         files: root.map(|r| model_files(manifest, &embedder::models_dir(r))).unwrap_or_default(),
+        pdfium: pdfium_section(root, manifest, std::env::var_os(pdf::ENV_PDFIUM).as_deref()),
         server: ServerDto {
             running: rt.running,
             port: rt.port,
@@ -344,6 +381,57 @@ mod tests {
     }
 
     #[test]
+    fn pdfium_section_reports_install_override_or_missing() {
+        let man = Manifest::embedded();
+        let dir = tempfile::tempdir().unwrap();
+        let none = pdfium_section(Some(dir.path()), &man, None);
+        assert_eq!((none.present, none.source, none.bytes), (false, "missing", None));
+        assert_eq!((none.build.as_str(), none.expected_bytes), ("7881", 3_733_154));
+        let dll = pdfium_path(dir.path(), &man.pdfium);
+        std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
+        std::fs::write(&dll, b"12345").unwrap();
+        let inst = pdfium_section(Some(dir.path()), &man, None);
+        assert_eq!((inst.present, inst.source, inst.bytes), (true, "installed", Some(5)));
+        let dev = dir.path().join("dev.dll");
+        std::fs::write(&dev, b"123").unwrap();
+        let ov = pdfium_section(Some(dir.path()), &man, Some(dev.as_os_str()));
+        assert_eq!((ov.present, ov.source, ov.bytes), (true, "override", Some(3)));
+        assert_eq!(pdfium_section(None, &man, None).source, "missing");
+    }
+
+    #[test]
+    fn queue_counts_text_only_files_as_waiting() {
+        let mut s = Store::open_in_memory(&embedder::index_meta("test")).unwrap();
+        let key = |n| winseek_store::FileKey { vol_guid: "{v}".into(), frn: n };
+        let id = s.upsert_file(&key(1), r"C:.pdf", 1, 1, "pdf").unwrap();
+        let pend = [winseek_store::PendingVec { chunk: 0, kind: winseek_store::VecKind::Text, locator: None }];
+        s.complete_text_only(id, "h", &pend, &[(0, "words".into())]).unwrap();
+        s.upsert_file(&key(2), r"C:.pdf", 1, 1, "pdf").unwrap();
+        let t = Tier1::new(s, Box::new(NoModels), winseek_store::Scopes::default());
+        let page = tier1_section(Some(&t), None);
+        let st = page.stats.unwrap();
+        assert_eq!((st.pending, st.text_only, st.done), (1, 1, 0));
+        assert_eq!(page.queue, 2);
+        assert_eq!(page.coverage, Some(0.0));
+    }
+
+    struct NoModels;
+    impl tier1::embedder::Embedder for NoModels {
+        fn embed_images(&mut self, _: &[Vec<u8>]) -> tier1::embedder::Result<Vec<Vec<f32>>> {
+            Err(tier1::embedder::EmbedError::ModelsMissing)
+        }
+        fn embed_query(&mut self, _: &str) -> tier1::embedder::Result<Vec<f32>> {
+            Err(tier1::embedder::EmbedError::ModelsMissing)
+        }
+        fn meta(&self) -> winseek_store::IndexMeta {
+            embedder::index_meta("test")
+        }
+        fn models_present(&self) -> bool {
+            false
+        }
+    }
+
+    #[test]
     fn ocr_unavailable_follows_the_store_setting() {
         let mut s = Store::open_in_memory(&embedder::index_meta("test")).unwrap();
         assert!(!ocr_unavailable(&s));
@@ -391,6 +479,7 @@ mod tests {
         assert_eq!(v["tier1"]["ocr_unavailable"], false);
         assert!(v["tier1"]["coverage"].is_null() && v["tier1"]["eta_s"].is_null());
         assert_eq!(v["models"]["backend"], "vulkan");
+        assert_eq!(v["models"]["pdfium"]["build"], "7881");
         assert_eq!(v["models"]["server"]["running"], false);
         assert_eq!(v["models"]["server"]["idle_unload_s"], 120);
     }

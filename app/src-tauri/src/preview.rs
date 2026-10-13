@@ -7,6 +7,7 @@
 
 use crate::shell::icons::query_param;
 use crate::textdec::decode_text;
+use crate::tier1::pdf;
 use serde::Serialize;
 use std::borrow::Cow;
 use std::fs::File;
@@ -32,6 +33,8 @@ pub enum Kind {
     Video,
     Audio,
     Text,
+    /// Shown page by page through pdfium (`preview_pdf_page`).
+    Pdf,
     Folder,
     Other,
 }
@@ -63,6 +66,8 @@ pub fn classify(ext: &str) -> Kind {
         Kind::Audio
     } else if TEXT.contains(&e) {
         Kind::Text
+    } else if e == "pdf" {
+        Kind::Pdf
     } else {
         Kind::Other
     }
@@ -115,6 +120,14 @@ pub struct ImageInfo {
     pub exif: Option<ExifInfo>,
 }
 
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize)]
+pub struct PdfPreview {
+    /// Page count; null when the engine is missing or the file cannot be opened (encrypted, corrupt).
+    pub pages: Option<u32>,
+    /// pdfium is installed and loaded; false while it is still being downloaded.
+    pub engine: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct TextInfo {
     pub content: String,
@@ -135,6 +148,7 @@ pub struct PreviewInfo {
     pub ctime: Option<i64>,
     pub image: Option<ImageInfo>,
     pub text: Option<TextInfo>,
+    pub pdf: Option<PdfPreview>,
 }
 
 fn unix_ms(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {
@@ -218,8 +232,14 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
     let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_owned());
     let mut kind = if md.is_dir() { Kind::Folder } else { classify(&ext) };
     let size = (!md.is_dir()).then_some(md.len());
-    let (mut image, mut text) = (None, None);
+    let (mut image, mut text, mut pdf_info) = (None, None, None);
     match kind {
+        Kind::Pdf => {
+            pdf_info = Some(match pdf::runtime() {
+                Ok(rt) => PdfPreview { pages: pdf::page_count(rt, p), engine: true },
+                Err(_) => PdfPreview::default(),
+            })
+        }
         Kind::Image => image = Some(image_info(p, &ext, md.len())),
         Kind::Text => {
             text = read_text(p, md.len());
@@ -239,7 +259,97 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
         ctime: unix_ms(md.created()),
         image,
         text,
+        pdf: pdf_info,
     })
+}
+
+// ---- PDF pages --------------------------------------------------------------
+
+/// Narrowest / widest page image the preview may ask for.
+pub const PDF_WIDTH_MIN: u32 = 200;
+pub const PDF_WIDTH_MAX: u32 = 2000;
+const PAGE_CACHE_ENTRIES: usize = 12;
+const PAGE_CACHE_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PageKey {
+    path: String,
+    size: u64,
+    mtime: Option<i64>,
+    page: u32,
+    width: u32,
+}
+
+/// Small LRU of rendered page PNGs (flipping back and forth through pages must not re-render).
+#[derive(Default)]
+struct PageCache {
+    items: std::collections::VecDeque<(PageKey, std::sync::Arc<Vec<u8>>)>,
+    bytes: usize,
+}
+
+impl PageCache {
+    const fn new() -> Self {
+        PageCache { items: std::collections::VecDeque::new(), bytes: 0 }
+    }
+
+    fn get(&mut self, k: &PageKey) -> Option<std::sync::Arc<Vec<u8>>> {
+        let i = self.items.iter().position(|(key, _)| key == k)?;
+        let e = self.items.remove(i)?;
+        let v = e.1.clone();
+        self.items.push_front(e);
+        Some(v)
+    }
+
+    fn put(&mut self, k: PageKey, v: std::sync::Arc<Vec<u8>>) {
+        self.bytes += v.len();
+        self.items.push_front((k, v));
+        while self.items.len() > PAGE_CACHE_ENTRIES || (self.bytes > PAGE_CACHE_BYTES && self.items.len() > 1) {
+            if let Some((_, old)) = self.items.pop_back() {
+                self.bytes -= old.len();
+            }
+        }
+    }
+}
+
+static PAGE_CACHE: std::sync::Mutex<PageCache> = std::sync::Mutex::new(PageCache::new());
+
+/// `path` page `page` (1-based) as a PNG about `width` px wide, cached.
+pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    pdf_page_png_with(&PAGE_CACHE, path, page, width, |p, n, w| {
+        let rt = pdf::runtime().map_err(|e| e.to_string())?;
+        pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
+    })
+}
+
+fn pdf_page_png_with(
+    cache: &std::sync::Mutex<PageCache>,
+    path: &str,
+    page: u32,
+    width: u32,
+    render: impl FnOnce(&str, u32, u32) -> Result<Vec<u8>, String>,
+) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    if ext_of(path) != "pdf" {
+        return Err("Not a PDF file".into());
+    }
+    let md = std::fs::metadata(path).map_err(|e| match e.kind() {
+        std::io::ErrorKind::NotFound => "File not found".to_string(),
+        _ => format!("Cannot read file: {e}"),
+    })?;
+    let width = width.clamp(PDF_WIDTH_MIN, PDF_WIDTH_MAX);
+    let key = PageKey { path: path.to_lowercase(), size: md.len(), mtime: unix_ms(md.modified()), page, width };
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(hit);
+    }
+    let png = std::sync::Arc::new(render(path, page, width)?);
+    cache.lock().unwrap_or_else(|e| e.into_inner()).put(key, png.clone());
+    Ok(png)
+}
+
+/// One PDF page as PNG bytes (raw `ArrayBuffer` on the JS side). Runs on a worker thread.
+#[tauri::command]
+pub async fn preview_pdf_page(path: String, page: u32, width: u32) -> Result<tauri::ipc::Response, String> {
+    let png = tauri::async_runtime::spawn_blocking(move || pdf_page_png(&path, page, width)).await.map_err(|e| e.to_string())??;
+    Ok(tauri::ipc::Response::new(png.as_ref().clone()))
 }
 
 /// Runs on a worker thread (never the main thread, so a slow disk or a huge file cannot freeze the popup).
@@ -355,7 +465,8 @@ mod tests {
         assert_eq!(classify("mkv"), Kind::Video);
         assert_eq!(classify("flac"), Kind::Audio);
         assert_eq!(classify("rs"), Kind::Text);
-        assert_eq!(classify("pdf"), Kind::Other);
+        assert_eq!(classify("pdf"), Kind::Pdf);
+        assert_eq!(classify("docx"), Kind::Other);
         assert_eq!(classify(""), Kind::Other);
         assert_eq!(ext_of(r"C:\a\B.JPG"), "jpg");
     }
@@ -454,6 +565,92 @@ mod tests {
         let d = read_info(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(d.kind, Kind::Folder);
         assert_eq!(d.size, None);
+    }
+
+    #[test]
+    fn pdf_pages_are_cached_clamped_and_validated() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let dir = tempfile::tempdir().unwrap();
+        let f = dir.path().join("a.PDF");
+        std::fs::write(&f, b"%PDF-fake").unwrap();
+        let p = f.to_str().unwrap();
+        let cache = std::sync::Mutex::new(PageCache::new());
+        let calls = AtomicUsize::new(0);
+        let seen = std::sync::Mutex::new(Vec::new());
+        let render = |_: &str, n: u32, w: u32| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            seen.lock().unwrap().push((n, w));
+            Ok(vec![n as u8; 10])
+        };
+        let a = pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        assert_eq!(a.as_ref(), &vec![2u8; 10]);
+        // same page + width: served from the cache, no render
+        pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // other page / other width render again; widths are clamped to the allowed range
+        pdf_page_png_with(&cache, p, 3, 600, render).unwrap();
+        pdf_page_png_with(&cache, p, 3, 5, render).unwrap();
+        pdf_page_png_with(&cache, p, 3, 99_999, render).unwrap();
+        assert_eq!(*seen.lock().unwrap(), [(2, 600), (3, 600), (3, PDF_WIDTH_MIN), (3, PDF_WIDTH_MAX)]);
+        // a changed file is a different cache entry
+        std::fs::write(&f, b"%PDF-fake-but-longer").unwrap();
+        pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 5);
+        // errors are passed on and not cached
+        let err = pdf_page_png_with(&cache, p, 9, 600, |_, _, _| Err("page 9 of 2".into()));
+        assert_eq!(err.unwrap_err(), "page 9 of 2");
+        // validation: only PDFs, only files that exist
+        let txt = dir.path().join("a.txt");
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(pdf_page_png_with(&cache, txt.to_str().unwrap(), 1, 600, render).unwrap_err(), "Not a PDF file");
+        let missing = dir.path().join("none.pdf");
+        assert_eq!(pdf_page_png_with(&cache, missing.to_str().unwrap(), 1, 600, render).unwrap_err(), "File not found");
+    }
+
+    #[test]
+    fn page_cache_evicts_oldest_beyond_its_limits() {
+        let mut c = PageCache::new();
+        let key = |n: u32| PageKey { path: "a".into(), size: 1, mtime: None, page: n, width: 600 };
+        for n in 0..(PAGE_CACHE_ENTRIES as u32 + 3) {
+            c.put(key(n), std::sync::Arc::new(vec![0u8; 10]));
+        }
+        assert_eq!(c.items.len(), PAGE_CACHE_ENTRIES);
+        assert!(c.get(&key(0)).is_none() && c.get(&key(PAGE_CACHE_ENTRIES as u32 + 2)).is_some());
+        // a recently used entry survives
+        let mut c = PageCache::new();
+        c.put(key(1), std::sync::Arc::new(vec![0u8; 10]));
+        for n in 2..=(PAGE_CACHE_ENTRIES as u32) {
+            c.put(key(n), std::sync::Arc::new(vec![0u8; 10]));
+        }
+        assert!(c.get(&key(1)).is_some());
+        c.put(key(99), std::sync::Arc::new(vec![0u8; 10]));
+        assert!(c.get(&key(1)).is_some() && c.get(&key(2)).is_none());
+        // the byte budget evicts too (but always keeps the newest entry)
+        let mut c = PageCache::new();
+        c.put(key(1), std::sync::Arc::new(vec![0u8; PAGE_CACHE_BYTES]));
+        c.put(key(2), std::sync::Arc::new(vec![0u8; PAGE_CACHE_BYTES]));
+        assert_eq!(c.items.len(), 1);
+        assert!(c.get(&key(2)).is_some());
+    }
+
+    #[test]
+    fn real_pdf_page_renders_through_pdfium_and_info_counts_pages() {
+        use crate::tier1::pdf::testutil::{make_pdf, pdfium};
+        let Some(p) = pdfium() else { return };
+        let dir = crate::tier1::test_tmp();
+        let f = dir.path().join("two.pdf");
+        std::fs::write(&f, make_pdf(p, &[Some("first page"), Some("second page")])).unwrap();
+        let cache = std::sync::Mutex::new(PageCache::new());
+        let png = pdf_page_png_with(&cache, f.to_str().unwrap(), 1, 300, |path, n, w| {
+            crate::tier1::pdf::render_page_png(p, Path::new(path), n, w).map_err(|e| e.to_string())
+        })
+        .unwrap();
+        assert_eq!(&png[..8], &[0x89, b'P', b'N', b'G', 0x0d, 0x0a, 0x1a, 0x0a]);
+        assert_eq!(image::load_from_memory(&png).unwrap().width(), 300);
+        // preview_info: kind pdf + page count via the process-wide runtime
+        let info = read_info(f.to_str().unwrap()).unwrap();
+        assert_eq!(info.kind, Kind::Pdf);
+        assert_eq!(info.pdf, Some(PdfPreview { pages: Some(2), engine: true }));
     }
 
     #[test]

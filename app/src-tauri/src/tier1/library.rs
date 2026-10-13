@@ -192,7 +192,7 @@ impl Tier1 {
             .take(cap)
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet: None }
+                SemanticHit { path: h.path, score: h.score, size, mtime, snippet: None, page: None, source: "meaning" }
             })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
