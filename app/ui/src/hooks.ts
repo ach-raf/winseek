@@ -78,13 +78,14 @@ export interface SemanticState {
 
 const DEBOUNCE_MS = 150;
 const SEM_K = 24;
+const SEM_K_FILTERED = 80; // chips thin the hits out afterwards, so ask for more
 
 /**
  * Semantic hits for the query, ~150 ms after typing stops. The previous hits stay on screen
  * until the new ones arrive (no flicker / reshuffle); disabling or clearing the query drops them.
  * `reload` re-runs the search for the same query (popup re-shown, file deleted).
  */
-export function useSemantic(backend: Backend, query: string, enabled: boolean, filter: Filter, reload: number): SemanticState {
+export function useSemantic(backend: Backend, query: string, enabled: boolean, filter: Filter, reload: number, filtered = false): SemanticState {
   const [state, setState] = useState<SemanticState>({ query: "", hits: [] });
   const seq = useRef(0);
   const q = query.trim();
@@ -96,11 +97,11 @@ export function useSemantic(backend: Backend, query: string, enabled: boolean, f
       return;
     }
     const t = window.setTimeout(() => {
-      backend.semanticSearch(q, SEM_K).then((r) => {
+      backend.semanticSearch(q, filtered ? SEM_K_FILTERED : SEM_K).then((r) => {
         if (my === seq.current) setState({ query: q, hits: r.hits });
       }).catch(() => { if (my === seq.current) setState({ query: q, hits: [] }); });
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(t);
-  }, [backend, q, active, reload]);
+  }, [backend, q, active, reload, filtered]);
   return state;
 }

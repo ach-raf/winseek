@@ -58,6 +58,7 @@ fn filter_clause(filter: &str) -> &'static str {
         "docs" => "ext:pdf;doc;docx;xls;xlsx;ppt;pptx;txt;md;rtf;odt;csv",
         "video" => "ext:mp4;mkv;mov;avi;webm;wmv;m4v",
         "audio" => "ext:mp3;flac;wav;m4a;ogg;aac;wma",
+        "apps" => "ext:exe;msi;msix;appx",
         "folders" => "folder:",
         _ => "",
     }

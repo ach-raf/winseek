@@ -34,6 +34,11 @@ export interface SemanticHit {
   path: string;
   /** Cosine similarity of the file's embedding to the query. */
   score: number;
+  /** On-disk size / modified time (unix ms), when the file could be stat-ed. */
+  size?: number | null;
+  mtime?: number | null;
+  /** Extracted text (OCR / PDF / text file) around the query words, with matches wrapped in [ ]. */
+  snippet?: string | null;
 }
 export interface SemanticResult {
   state: string;
@@ -126,7 +131,7 @@ export interface StatusPage {
   tier1: StatusTier1;
   models: StatusModels;
 }
-export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders";
+export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders" | "apps";
 export type Sort = "rel" | "name" | "size" | "date";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";

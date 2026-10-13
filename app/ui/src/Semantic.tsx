@@ -1,7 +1,8 @@
 import { memo } from "react";
-import type { SemanticHit } from "./types";
+import type { Hit, SemanticHit } from "./types";
+import { matchesRanges, type KindId, type Parsed } from "./filters";
 import { FileIcon } from "./FileIcon";
-import { kindOf, splitDir } from "./format";
+import { kindOf, splitDir, type Kind } from "./format";
 
 export const SEM_ROWS = 8;
 
@@ -16,9 +17,51 @@ export function dedupe(hits: SemanticHit[], shown: Iterable<string>): SemanticHi
   return hits.filter((h) => !seen.has(key(h.path))).slice(0, SEM_ROWS);
 }
 
-/** Subtle "why it matched" text: image hits are matched visually, so say what they look like. */
-export function why(path: string, query: string): string {
-  return kindOf(baseName(path), false) === "image" ? `looks like: ${query}` : `matches: ${query}`;
+const KIND_OF: Record<KindId, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null };
+
+/** Do the parsed chips let this meaning hit through? Date / size only count when the hit carries them. */
+export function semAccepts(h: SemanticHit, p: Parsed): boolean {
+  const name = baseName(h.path);
+  if (p.kind && KIND_OF[p.kind] !== kindOf(name, false)) return false;
+  if (p.ext && !name.toLowerCase().endsWith("." + p.ext) && !(p.ext === "jpg" && name.toLowerCase().endsWith(".jpeg"))) return false;
+  const probe = { is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null };
+  const known = { date: probe.mtime === null ? null : p.date, size: probe.size === null ? null : p.size };
+  return matchesRanges(known, probe);
+}
+
+const q = (s: string) => `\u201c${s}\u201d`;
+
+/**
+ * "Why it matched" for a name hit: which of the typed words are in the name, which only in the folder path,
+ * the extension filter, or (filters only) the chips that selected it. `score` = also found by meaning.
+ */
+export function whyName(h: Hit, nameQ: string, chips: string[], score?: number): string {
+  const lowerName = h.name.toLowerCase();
+  const inName: string[] = [], inPath: string[] = [], other: string[] = [];
+  let ext = "";
+  for (const t of nameQ.split(/\s+/).filter(Boolean)) {
+    if (t.startsWith("!")) continue;
+    if (t.startsWith("ext:")) { ext = t.slice(4).split(/[;,]/).map((e) => "." + e).join(" "); continue; }
+    const c = t.replace(/^"|"$/g, "");
+    if (!c || c.includes(":")) continue;
+    if (/[*?]/.test(c)) other.push(`pattern ${c}`);
+    else if (lowerName.includes(c.toLowerCase())) inName.push(c);
+    else inPath.push(c);
+  }
+  const parts: string[] = [];
+  if (inName.length) parts.push(`name ${inName.map(q).join(" ")}`);
+  if (inPath.length) parts.push(`path ${inPath.map(q).join(" ")}`);
+  parts.push(...other);
+  if (ext) parts.push(`type ${ext}`);
+  if (!parts.length) parts.push(chips.length ? chips.join(" \u00b7 ") : "name");
+  if (score !== undefined) parts.push(`meaning ${score.toFixed(2)}`);
+  return parts.join(" \u00b7 ");
+}
+
+/** Turn an FTS5 snippet (`... [match] ...`) into text with <mark>s. */
+function Snippet({ text }: { text: string }) {
+  const parts = text.replace(/\s+/g, " ").trim().split(/(\[[^\]]*\])/);
+  return <>{parts.map((p, i) => (p.startsWith("[") && p.endsWith("]") ? <mark key={i}>{p.slice(1, -1)}</mark> : p))}</>;
 }
 
 export const SemRow = memo(function SemRow({ hit, query, selected, icon, thumb, onPick, onHover, onMenu }: {
@@ -27,6 +70,7 @@ export const SemRow = memo(function SemRow({ hit, query, selected, icon, thumb, 
 }) {
   const name = baseName(hit.path);
   const { head, tail } = splitDir(hit.path);
+  const image = kindOf(name, false) === "image";
   return (
     <div className={"row flow" + (selected ? " selected" : "")} role="option" aria-selected={selected}
          data-sel={selected ? "1" : undefined} title={hit.path}
@@ -35,10 +79,11 @@ export const SemRow = memo(function SemRow({ hit, query, selected, icon, thumb, 
       <div className="meta">
         <div className="name">{name}</div>
         <div className="path"><span className="head">{head}</span><span className="tail">{tail}</span></div>
+        {hit.snippet && <div className="snippet" title="Text found inside the file"><Snippet text={hit.snippet} /></div>}
       </div>
       <div className="side why" title={`Similarity score ${hit.score.toFixed(3)}`}>
-        <span className="why-text">{why(hit.path, query)}</span>
-        <span className="why-score">score {hit.score.toFixed(2)}</span>
+        <span className="why-text">{image ? "looks like " : "matches "}{q(query)}</span>
+        <span className="why-score">meaning {"\u00b7"} {hit.score.toFixed(2)}</span>
       </div>
     </div>
   );

@@ -1,10 +1,11 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
+import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings } from "./Settings";
 import { Status } from "./Status";
-import { SemRow, SemanticHint, baseName, dedupe, pathKey } from "./Semantic";
+import { SemRow, SemanticHint, baseName, dedupe, pathKey, semAccepts, whyName } from "./Semantic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
@@ -83,10 +84,43 @@ function RenameInput({ initial, isDir, onCommit, onCancel }: {
   );
 }
 
+const SCAN_PAGE = 2000;
+const SCAN_MAX = 30000;
+
+/**
+ * Date / size filters are not part of the Tier 0 query language yet, so they are applied here: pull name
+ * results in pages (newest first for a date filter, biggest first for a size filter, so the scan can stop as
+ * soon as it is past the range) and keep what fits. The result is fully loaded; no paging afterwards.
+ */
+async function scanRanges(
+  backend: Backend, query: string, filter: Filter, sort: Sort, p: Parsed, cancelled: () => boolean,
+): Promise<{ rows: Hit[]; partial: boolean; ms: number }> {
+  const t0 = performance.now();
+  const byDate = !!p.date && (sort === "rel" || sort === "date");
+  const bySize = !byDate && !!p.size && (sort === "rel" || sort === "size");
+  const srvSort: Sort = byDate ? "date" : bySize ? "size" : sort;
+  const rows: Hit[] = [];
+  let offset = 0, partial = false;
+  for (;;) {
+    const r = await backend.search({ query, offset, limit: SCAN_PAGE, sort: srvSort, filter });
+    if (cancelled()) break;
+    let stop = false;
+    for (const h of r.hits) {
+      if (byDate && (h.mtime ?? 0) < p.date!.from) { stop = true; break; }
+      if (bySize && p.size!.min !== null && h.size !== null && h.size < p.size!.min) { stop = true; break; }
+      if (matchesRanges(p, h)) rows.push(h);
+    }
+    offset += r.hits.length;
+    if (stop || r.hits.length === 0 || offset >= r.total) break;
+    if (offset >= SCAN_MAX) { partial = true; break; }
+  }
+  return { rows, partial, ms: performance.now() - t0 };
+}
+
 const Row = memo(function Row({
-  hit, query, selected, top, icon, thumb, renaming, both, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
+  hit, query, why, selected, top, icon, thumb, renaming, both, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
 }: {
-  hit: Hit | undefined; query: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
+  hit: Hit | undefined; query: string; why: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
   both: boolean; // also found by meaning
   onPick: () => void; onHover: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
   onRenameCommit: (name: string) => void; onRenameCancel: () => void;
@@ -119,7 +153,10 @@ const Row = memo(function Row({
             ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={onRenameCommit} onCancel={onRenameCancel} />
             : <><Highlight text={hit.name} query={query} />{both && <span className="chip-both">name + meaning</span>}</>}
         </div>
-        <div className="path"><span className="head">{head}</span><span className="tail">{tail}</span></div>
+        <div className="path">
+          <span className="head">{head}</span><span className="tail">{tail}</span>
+          {why && <span className="why-line" title="Why it matched">{why}</span>}
+        </div>
       </div>
       <div className="side">
         <span className="size">{hit.is_dir ? "Folder" : formatSize(hit.size)}</span>
@@ -131,14 +168,18 @@ const Row = memo(function Row({
 
 type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] };
 
-interface Data { total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean }
+interface Data {
+  total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean;
+  /** Every row is loaded (a date / size filter was applied here); `partial` = the scan hit its cap. */
+  full: boolean; partial: boolean;
+}
 
 export default function App({ backend }: { backend: Backend }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>("rel");
   const [sel, setSel] = useState(0);
-  const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true });
+  const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false });
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<VolumeStatus[]>([]);
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
@@ -183,17 +224,33 @@ export default function App({ backend }: { backend: Backend }) {
 
   const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
 
+  // ---- natural filters -----------------------------------------------------
+  // "photos from last summer" -> chips + free text. A removed chip's key goes into `off`; its words then count as text.
+  const [off, setOff] = useState<ReadonlySet<string>>(new Set());
+  const parsed = useMemo(() => parseQuery(query, { off }), [query, off]);
+  useEffect(() => { if (!query.trim()) setOff((o) => (o.size ? new Set() : o)); }, [query]);
+  const nameQ = nameQuery(parsed);
+  const effFilter: Filter = parsed.kind ?? filter;
+  const rangeKey = JSON.stringify([parsed.date, parsed.size]);
+  const chipLabels = useMemo(() => parsed.chips.map((c) => c.label), [parsed]);
+  const dropChip = useCallback((key: string) => {
+    setOff((o) => new Set(o).add(key));
+    inputRef.current?.focus();
+  }, []);
+
   // ---- search by meaning ---------------------------------------------------
   const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen, epoch);
   const models = useModels(backend, refreshT1);
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
-  const sem = useSemantic(backend, query, !!t1 && !t1Off && !isRecent, filter, epoch);
-  const semKeys = useMemo(() => new Set(sem.hits.map((h) => pathKey(h.path))), [sem.hits]);
+  const sem = useSemantic(backend, parsed.text, !!t1 && !t1Off && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext);
+  // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
+  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed)), [sem.hits, parsed]);
+  const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
   // A file found by both stays where it is in the name results (they never move); only the others are listed here.
   // Dedupe looks at the first 400 name rows, the ones a user can plausibly be looking at.
   const semRows = useMemo(
-    () => dedupe(sem.hits, data.rows.slice(0, 400).flatMap((h) => (h ? [h.path] : []))),
-    [sem.hits, data.rows],
+    () => dedupe(semHits, data.rows.slice(0, 400).flatMap((h) => (h ? [h.path] : []))),
+    [semHits, data.rows],
   );
   const selCount = data.total + semRows.length;
 
@@ -206,29 +263,34 @@ export default function App({ backend }: { backend: Backend }) {
         const hits = await backend.recent(40);
         if (my !== seq.current) return;
         rowsRef.current = hits;
-        setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true });
+        setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false });
+      } else if (hasRanges(parsed)) {
+        const r = await scanRanges(backend, nameQ, effFilter, sort, parsed, () => my !== seq.current);
+        if (my !== seq.current) return;
+        rowsRef.current = r.rows;
+        setData({ total: r.rows.length, rows: r.rows, elapsedMs: r.ms, recent: false, full: true, partial: r.partial });
       } else {
-        const r = await backend.search({ query, offset: 0, limit: PAGE, sort, filter });
+        const r = await backend.search({ query: nameQ, offset: 0, limit: PAGE, sort, filter: effFilter });
         if (my !== seq.current) return;
         const rows: (Hit | undefined)[] = new Array(r.total).fill(undefined);
         r.hits.forEach((h, i) => (rows[i] = h));
         rowsRef.current = rows;
-        setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false });
+        setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false, full: false, partial: false });
       }
       setLoaded(true);
       setSel(0);
       setScrollTop(0);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, query, filter, sort, isRecent, epoch]);
+  }, [backend, nameQ, effFilter, rangeKey, sort, isRecent, epoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensurePages = useCallback((first: number, last: number) => {
-    if (data.recent) return;
+    if (data.recent || data.full) return;
     const my = seq.current;
     for (let p = Math.floor(first / PAGE); p <= Math.floor(last / PAGE); p++) {
       if (rowsRef.current[p * PAGE] || inflight.current.has(p) || p * PAGE >= data.total) continue;
       inflight.current.add(p);
-      backend.search({ query, offset: p * PAGE, limit: PAGE, sort, filter }).then((r) => {
+      backend.search({ query: nameQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
         if (my !== seq.current) return;
         const rows = rowsRef.current.slice();
         r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
@@ -236,7 +298,7 @@ export default function App({ backend }: { backend: Backend }) {
         setData((d) => ({ ...d, rows }));
       }).catch(console.error);
     }
-  }, [backend, data.recent, data.total, query, sort, filter]);
+  }, [backend, data.recent, data.full, data.total, nameQ, sort, effFilter]);
 
   const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const last = Math.min(data.total - 1, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
@@ -326,7 +388,7 @@ export default function App({ backend }: { backend: Backend }) {
   const semSel = sel >= data.total ? semRows[sel - data.total] : undefined;
   const current: Hit | undefined = sel < data.total
     ? data.rows[sel]
-    : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: null, mtime: null };
+    : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: semSel.size ?? null, mtime: semSel.mtime ?? null };
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
     if (!h) return;
@@ -604,9 +666,9 @@ export default function App({ backend }: { backend: Backend }) {
       const h = data.rows[i];
       const thumbKind = h ? ["image", "video"].includes(kindOf(h.name, h.is_dir)) : false;
       out.push(
-        <Row key={i} hit={h} query={query} selected={i === sel} top={i * ROW_H}
+        <Row key={i} hit={h} query={parsed.text} why={h && !data.recent ? whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score) : ""} selected={i === sel} top={i * ROW_H}
              icon={h ? backend.iconUrl(h.path, h.is_dir, thumbKind) : null} thumb={thumbKind}
-             renaming={renaming && i === sel} both={!!h && semKeys.has(pathKey(h.path))}
+             renaming={renaming && i === sel} both={!!h && semMap.has(pathKey(h.path))}
              onPick={() => {
                if (suppressClick.current) { suppressClick.current = false; return; }
                setSel(i); void act("open", h);
@@ -619,7 +681,7 @@ export default function App({ backend }: { backend: Backend }) {
       );
     }
     return out;
-  }, [first, last, data.rows, query, sel, act, backend, renaming, semKeys, onRowDown, openMenu, doRename, refocus]);
+  }, [first, last, data.rows, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
 
   return (
     <div className="shell">
@@ -645,10 +707,28 @@ export default function App({ backend }: { backend: Backend }) {
         <kbd className="hotkey">Alt Space</kbd>
       </header>
 
+      {parsed.chips.length > 0 && (
+        <div className="fchips" aria-label="Filters understood from your search">
+          {parsed.chips.map((c) => (
+            <span key={c.key} className={"fchip " + c.type}>
+              <span className="lbl">{c.label}</span>
+              <button tabIndex={-1} aria-label={`Remove filter ${c.label}`} title="Remove this filter (its words are searched as text)"
+                      onMouseDown={(e) => e.preventDefault()} onClick={() => dropChip(c.key)}>
+                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+
       <div className="chips" role="tablist">
         {FILTERS.map((f) => (
-          <button key={f.id} role="tab" aria-selected={filter === f.id} className={"chip" + (filter === f.id ? " on" : "")}
-                  tabIndex={-1} onClick={() => { setFilter(f.id); inputRef.current?.focus(); }}>
+          <button key={f.id} role="tab" aria-selected={effFilter === f.id} className={"chip" + (effFilter === f.id ? " on" : "")}
+                  tabIndex={-1} onClick={() => {
+                    const k = parsed.chips.find((c) => c.type === "kind");
+                    if (k) dropChip(k.key); // a tab click overrides the kind found in the text
+                    setFilter(f.id); inputRef.current?.focus();
+                  }}>
             {f.label}
           </button>
         ))}
@@ -702,7 +782,7 @@ export default function App({ backend }: { backend: Backend }) {
             {semRows.map((h, i) => (
               <SemRow key={h.path} hit={h} query={sem.query} selected={data.total + i === sel}
                       icon={backend.iconUrl(h.path, false, true)} thumb
-                      onPick={() => { setSel(data.total + i); void act("open", { name: baseName(h.path), path: h.path, is_dir: false, size: null, mtime: null }); }}
+                      onPick={() => { setSel(data.total + i); void act("open", { name: baseName(h.path), path: h.path, is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null }); }}
                       onHover={() => setSel((s) => (s === data.total + i ? s : data.total + i))}
                       onMenu={(e) => { e.preventDefault(); setSel(data.total + i); void openSemMenu(h.path, e.clientX, e.clientY); }} />
             ))}
@@ -722,7 +802,7 @@ export default function App({ backend }: { backend: Backend }) {
             {toast.undo && <> · <button className="undo" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => void doUndo()}>Undo</button></>}
           </span>
         ) : (
-          !data.recent && loaded && <span className="count">{data.total.toLocaleString("en-US")} result{data.total === 1 ? "" : "s"}{data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}</span>
+          !data.recent && loaded && <span className="count">{data.total.toLocaleString("en-US")}{data.partial ? "+" : ""} result{data.total === 1 && !data.partial ? "" : "s"}{data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}</span>
         )}
         <span className="spacer" />
         <span className="hints">

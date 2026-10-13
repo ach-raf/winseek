@@ -170,6 +170,7 @@ fn matches_filter(e: &Entry, filter: &str) -> bool {
         "video" => e.kind == 3,
         "audio" => e.kind == 4,
         "folders" => e.is_dir,
+        "apps" => e.lower.ends_with(".exe") || e.lower.ends_with(".msi"),
         _ => true,
     }
 }
@@ -177,10 +178,20 @@ fn matches_filter(e: &Entry, filter: &str) -> bool {
 impl NameSource for MockSource {
     fn search(&self, query: &str, filter: &str, offset: usize, limit: usize, sort: &str) -> SearchResult {
         let t = Instant::now();
-        let terms: Vec<String> = query.to_lowercase().split_whitespace().map(String::from).collect();
+        let all: Vec<String> = query.to_lowercase().split_whitespace().map(String::from).collect();
+        // Tier 0 `ext:pdf;docx` terms (the UI sends one for "pdf invoice").
+        let exts: Vec<String> = all
+            .iter()
+            .filter_map(|t| t.strip_prefix("ext:"))
+            .flat_map(|x| x.split([';', ',']).map(|e| format!(".{e}")).collect::<Vec<_>>())
+            .collect();
+        let terms: Vec<String> = all.into_iter().filter(|t| !t.starts_with("ext:")).collect();
         let mut idx: Vec<u32> = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
-            if matches_filter(e, filter) && terms.iter().all(|t| e.lower.contains(t.as_str())) {
+            if matches_filter(e, filter)
+                && (exts.is_empty() || exts.iter().any(|x| e.lower.ends_with(x.as_str())))
+                && terms.iter().all(|t| e.lower.contains(t.as_str()))
+            {
                 idx.push(i as u32);
             }
         }

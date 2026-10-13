@@ -51,7 +51,7 @@ function bringUp() {
 const bin: { e: E; at: number }[] = [];
 
 const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? null : e.size, mtime: Math.floor(e.mtime) });
-const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir);
+const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- search-by-meaning simulation ----
@@ -230,8 +230,10 @@ const inScope = (path: string) => include.some((r) => path.toLowerCase().startsW
 export const mockBackend: Backend = {
   async search({ query, offset, limit, sort, filter }) {
     const t0 = performance.now();
-    const terms = query.toLowerCase().split(/\s+/).filter(Boolean);
-    const m = DB.filter((e) => okFilter(e, filter) && terms.every((t) => e.lower.includes(t)));
+    const all = query.toLowerCase().split(/\s+/).filter(Boolean);
+    const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
+    const terms = all.filter((t) => !t.startsWith("ext:"));
+    const m = DB.filter((e) => okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => e.lower.includes(t)));
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
     else if (s === "size") m.sort((a, b) => b.size - a.size);
@@ -320,8 +322,18 @@ export const mockBackend: Backend = {
     if (!q) return { state: st, hits: [] };
     // Fake "image embeddings": stable pseudo-scores per (query, file); files whose name also matches a term
     // rank high, so the "name + meaning" chip and the dedupe are visible in the preview.
+    // Every third hit also carries OCR-style text, like a screenshot or scanned page would.
+    const OCR = ["Invoice no. 2025-0142 total due 240.00 EUR", "Meeting notes: budget review and next steps", "Receipt Paris cafe 12.50 EUR thank you"];
     const hits = DB.filter((e) => e.kind === 1 && inScope(e.path))
-      .map((e) => ({ path: e.path, score: 0.1 + 0.22 * hash01(q + "|" + e.path) + (terms.some((t) => e.lower.includes(t)) ? 0.2 : 0) }))
+      .map((e) => {
+        const h = hash01(q + "|" + e.path);
+        const text = hash01(e.path) < 0.34 ? OCR[Math.floor(hash01(e.path + "t") * OCR.length)] : null;
+        const snippet = text && terms.length ? text.replace(new RegExp(`(${terms.map((t) => t.replace(/[^a-z0-9]/g, "")).filter(Boolean).join("|") || "$^"})`, "gi"), "[$1]") : null;
+        return {
+          path: e.path, score: 0.1 + 0.22 * h + (terms.some((t) => e.lower.includes(t)) ? 0.2 : 0),
+          size: e.size, mtime: Math.floor(e.mtime), snippet: snippet && snippet.includes("[") ? snippet : null,
+        };
+      })
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(1, Math.min(k, 200)));
     return { state: st, hits };

@@ -21,7 +21,7 @@ use std::time::Duration;
 
 use serde::Serialize;
 use winseek_llama::Manifest;
-use winseek_store::{default_ignore, in_scope_with, Ignore, Scopes, Stats, Store};
+use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, Scopes, Stats, Store};
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
 use policy::PauseReason;
@@ -119,6 +119,23 @@ pub struct StatusDto {
 pub struct SemanticHit {
     pub path: String,
     pub score: f32,
+    /// On-disk size in bytes (None when the file cannot be stat-ed).
+    pub size: Option<u64>,
+    /// Modified time, unix ms.
+    pub mtime: Option<i64>,
+    /// Extracted text (OCR / PDF / text file) around the query words, matches wrapped in `[ ]`.
+    pub snippet: Option<String>,
+}
+
+/// Size + mtime for the UI's date / size chips.
+fn stat(path: &str) -> (Option<u64>, Option<i64>) {
+    match std::fs::metadata(path) {
+        Ok(m) => (
+            m.is_file().then_some(m.len()),
+            m.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map(|d| d.as_millis() as i64),
+        ),
+        Err(_) => (None, None),
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -335,12 +352,24 @@ impl Tier1 {
         };
         // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
         let snap = self.snapshot();
-        let raw = lock(&self.store).search_vectors(&vec, k * 4, None).map_err(|e| e.to_string())?;
+        let (raw, texts) = {
+            let store = lock(&self.store);
+            let raw = store.search_vectors(&vec, k * 4, None).map_err(|e| e.to_string())?;
+            // Words found inside the file (OCR / PDF text): a short snippet for the "why it matched" line.
+            let texts = store.search_text(&fts_escape(q), k * 4).unwrap_or_default();
+            (raw, texts)
+        };
+        let snippets: std::collections::HashMap<String, String> =
+            texts.into_iter().map(|t| (t.path.to_lowercase(), t.snippet)).collect();
         let hits = raw
             .into_iter()
             .filter(|h| snap.in_scope(&h.path))
             .take(k)
-            .map(|h| SemanticHit { path: h.path, score: h.score })
+            .map(|h| {
+                let (size, mtime) = stat(&h.path);
+                let snippet = snippets.get(&h.path.to_lowercase()).filter(|s| s.contains('[')).cloned();
+                SemanticHit { path: h.path, score: h.score, size, mtime, snippet }
+            })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
     }
@@ -539,6 +568,25 @@ mod tests {
         assert_eq!(r.hits[0].path, r"C:\Pics\cat.jpg");
         assert!(r.hits[0].score > 0.99 && r.hits[1].score.abs() < 1e-6);
         assert!(t.semantic_search("  ", 5).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn semantic_hits_carry_ocr_snippet_and_stat() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, r"C:\Pics\shot.png", 1, 1, "image").unwrap();
+            let v = [ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: unit(1) }];
+            s.complete(id, "h9", &v, &[(0, "Invoice 2025 total due".into())]).unwrap();
+        }
+        add_done(&t, 1, r"C:\Pics\cat.jpg", 1);
+        let r = t.semantic_search("cat", 5).unwrap();
+        assert!(r.hits.iter().all(|h| h.snippet.is_none()), "no text matches 'cat'");
+        assert!(r.hits.iter().all(|h| h.size.is_none() && h.mtime.is_none()), "files do not exist on disk");
+        // A query that the stub embeds the same way and whose word is in the OCR text.
+        let r = t.semantic_search("invoice", 5).unwrap();
+        let shot = r.hits.iter().find(|h| h.path.ends_with("shot.png")).expect("hit");
+        assert!(shot.snippet.as_deref().unwrap().contains("[Invoice]"), "{:?}", shot.snippet);
     }
 
     #[test]
