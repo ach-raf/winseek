@@ -1291,6 +1291,12 @@ mod tests {
         let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![] };
         assert!(in_scope(&root, r"D:\build\photos\x.jpg"));
         assert!(!in_scope(&root, r"D:\build\photos\out\x.jpg"));
+        // a projects library: sources in, build output and environments out
+        let lib = Scopes { include: vec![r"D:\Projects".into()], exclude: vec![] };
+        assert!(in_scope(&lib, r"D:\Projects\winseek\docs\shot.png"));
+        assert!(!in_scope(&lib, r"D:\Projects\winseek\target\debug\x.png"));
+        assert!(!in_scope(&lib, r"D:\Projects\winseek\app\ui\node_modules\x.png"));
+        assert!(!in_scope(&lib, r"D:\Projects\photo\.venv\Lib\x.png"));
     }
 
     #[test]
