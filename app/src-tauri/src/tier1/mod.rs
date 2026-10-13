@@ -421,10 +421,10 @@ pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usiz
     tauri::async_runtime::spawn_blocking(move || t.semantic_search(&query, k)).await.map_err(|e| e.to_string())?
 }
 
-/// Temp dir whose path hits no default ignored name (`AppData`, `target`): `<repo>/.tier1-tests`.
+/// Temp dir outside `%LOCALAPPDATA%` (paths containing an `appdata` segment are never in scope).
 #[cfg(test)]
 pub(crate) fn test_tmp() -> tempfile::TempDir {
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join(".tier1-tests");
+    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join("target").join("tier1-tests");
     std::fs::create_dir_all(&base).unwrap();
     tempfile::Builder::new().prefix("t").tempdir_in(base).unwrap()
 }

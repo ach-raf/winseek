@@ -228,7 +228,7 @@ pub struct Stats {
 }
 
 /// Folder scopes. A path is in scope if it is under an `include` prefix, not under an
-/// `exclude` prefix, and has no ignored name in its path. An empty `include` list
+/// `exclude` prefix, and has no ignored name below its root. An empty `include` list
 /// means nothing is in scope.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Scopes {
@@ -320,10 +320,14 @@ impl Ignore {
         self.globs.iter().any(|g| glob_match(g, &c))
     }
 
-    /// The first segment of `path` that matches, if any. Every segment counts, the include
-    /// root's own included: to index an ignored name, the user removes it from the list.
-    pub fn first_hit<'a>(&self, path: &'a str) -> Option<&'a str> {
-        path.split(['\\', '/']).find(|seg| !seg.is_empty() && self.matches_seg(&seg.to_lowercase()))
+    /// Any segment of `path_norm` *below* `root_norm` matches. The root's own segments are
+    /// exempt, so explicitly including `D:\build\photos` still indexes it.
+    fn hits(&self, root_norm: &str, path_norm: &str) -> bool {
+        path_norm
+            .get(root_norm.len()..)
+            .unwrap_or("")
+            .split('\\')
+            .any(|seg| !seg.is_empty() && self.matches_seg(seg))
     }
 }
 
@@ -336,13 +340,16 @@ pub fn in_scope(scopes: &Scopes, path: &str) -> bool {
 }
 
 /// In scope: under an `include` root, not under an `exclude` prefix, and no path segment
-/// matches `ignore`.
+/// below that root matches `ignore`.
 pub fn in_scope_with(scopes: &Scopes, ignore: &Ignore, path: &str) -> bool {
     let p = norm_path(path);
-    if ignore.first_hit(&p).is_some() || scopes.exclude.iter().any(|e| under(&norm_path(e), &p)) {
+    if scopes.exclude.iter().any(|e| under(&norm_path(e), &p)) {
         return false;
     }
-    scopes.include.iter().any(|i| under(&norm_path(i), &p))
+    scopes.include.iter().any(|i| {
+        let r = norm_path(i);
+        under(&r, &p) && !ignore.hits(&r, &p)
+    })
 }
 
 /// Quote user text so FTS5 treats every whitespace-separated token as a literal term.
@@ -1280,17 +1287,10 @@ mod tests {
         }
         assert!(in_scope(&sc, r"C:\u\Documents\Targets 2025\x.png"), "whole names only");
         assert!(in_scope(&sc, r"C:\u\Documents\builder\x.png"));
-        // the list applies everywhere, the include root's own path included
+        // the include root's own segments are exempt
         let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![] };
-        assert!(!in_scope(&root, r"D:\build\photos\x.jpg"));
-        assert_eq!(Ignore::defaults().first_hit(r"D:\Build\photos"), Some("Build"));
-        assert_eq!(Ignore::defaults().first_hit(r"D:\Projects\photos"), None);
-        // a projects library: sources in, build output and environments out
-        let lib = Scopes { include: vec![r"D:\Projects".into()], exclude: vec![] };
-        assert!(in_scope(&lib, r"D:\Projects\winseek\docs\shot.png"));
-        assert!(!in_scope(&lib, r"D:\Projects\winseek\target\debug\x.png"));
-        assert!(!in_scope(&lib, r"D:\Projects\winseek\app\ui\node_modules\x.png"));
-        assert!(!in_scope(&lib, r"D:\Projects\photo\.venv\Lib\x.png"));
+        assert!(in_scope(&root, r"D:\build\photos\x.jpg"));
+        assert!(!in_scope(&root, r"D:\build\photos\out\x.jpg"));
     }
 
     #[test]

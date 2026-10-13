@@ -10,25 +10,14 @@ function parseNames(text: string): string[] {
   return text.split(/[,;\r\n]+/).map((s) => s.trim().replace(/^"(.*)"$/, "$1").replace(/^[\\/]+|[\\/]+$/g, "")).filter(Boolean);
 }
 
-/** Same rule as winseek_store::Ignore: whole segment, case-insensitive, `*` and `?` wildcards. */
-function nameMatches(pattern: string, name: string): boolean {
-  const re = lc(pattern).replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".");
-  return new RegExp(`^${re}$`).test(lc(name));
-}
-
-/** The first segment of `path` on the ignore list, and the pattern it matched. */
-export function ignoredSegment(path: string, list: string[]): { seg: string; pattern: string } | null {
-  for (const seg of path.split(/[\\/]+/)) {
-    const pattern = seg ? list.find((p) => nameMatches(p, seg)) : undefined;
-    if (pattern) return { seg, pattern };
-  }
-  return null;
-}
-
-function IgnoredNames({ ig, save }: { ig: IgnoreList | null; save: (list: string[] | null) => void }) {
+function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [ig, setIg] = useState<IgnoreList | null>(null);
   const [filter, setFilter] = useState("");
   const [text, setText] = useState("");
   const [bad, setBad] = useState<string | null>(null);
+  useEffect(() => { backend.tier1GetIgnore().then(setIg).catch(onError); }, [backend, onError]);
+
+  const save = useCallback((list: string[] | null) => { backend.tier1SetIgnore(list).then(setIg).catch(onError); }, [backend, onError]);
   const defaults = useMemo(() => new Set((ig?.defaults ?? []).map(lc)), [ig]);
   const isDefault = !!ig && ig.list.length === ig.defaults.length && ig.list.every((n) => defaults.has(lc(n)));
   const shown = useMemo(() => {
@@ -53,7 +42,7 @@ function IgnoredNames({ ig, save }: { ig: IgnoreList | null; save: (list: string
   return (
     <div className="ignored">
       <div className="fl-title">Ignored names</div>
-      <p className="muted">Skipped anywhere in a path, including the folders above. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</p>
+      <p className="muted">Skipped anywhere inside the folders above. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</p>
       <div className="fl-add">
         <input value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
                spellCheck={false} autoComplete="off"
@@ -92,14 +81,6 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onClose, on
 }) {
   const root = useRef<HTMLElement>(null);
   useEffect(() => { root.current?.querySelector<HTMLElement>("input, button")?.focus(); }, []);
-  const [ig, setIg] = useState<IgnoreList | null>(null);
-  useEffect(() => { backend.tier1GetIgnore().then(setIg).catch(onError); }, [backend, onError]);
-  const save = useCallback((list: string[] | null) => { backend.tier1SetIgnore(list).then(setIg).catch(onError); }, [backend, onError]);
-  // Chosen folders that sit inside an ignored name index nothing; say so and offer the fix.
-  const blocked = (t1?.include ?? []).flatMap((p) => {
-    const hit = ig ? ignoredSegment(p, ig.list) : null;
-    return hit ? [{ path: p, ...hit }] : [];
-  });
   const off = !t1 || t1.state === "models_missing" || t1.state === "unavailable";
   const s = t1?.stats;
   return (
@@ -129,13 +110,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onClose, on
       </div>
 
       <Folders t1={t1} onChange={onFolders} />
-      {blocked.map((b) => (
-        <div key={b.path} className="ig-warn" role="status">
-          <span><b>{b.path}</b> is skipped because &ldquo;{b.seg}&rdquo; is an ignored name.</span>
-          <button className="btn quiet" onClick={() => ig && save(ig.list.filter((x) => x !== b.pattern))}>Stop ignoring {b.pattern}</button>
-        </div>
-      ))}
-      <IgnoredNames ig={ig} save={save} />
+      <IgnoredNames backend={backend} onError={onError} />
 
       <div className="actions">
         <span className="muted">Changes are saved right away.</span>

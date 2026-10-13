@@ -9,4 +9,3 @@ node_modules/
 *.gguf
 /models/
 /llama-bin/
-.tier1-tests/
