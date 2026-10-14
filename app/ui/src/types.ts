@@ -113,6 +113,10 @@ export interface VolumeDetail {
   done: number | null;
   total: number | null;
   error: string | null;
+  /** Filesystem ("NTFS", "FAT32", "exFAT", "ReFS"); "" when unknown. */
+  fs: string;
+  /** How the volume is kept live; "" when unknown. */
+  monitor: "usn" | "folder_watch" | "";
 }
 export interface StatusTier0 {
   source: "searchd" | "demo" | "unavailable";

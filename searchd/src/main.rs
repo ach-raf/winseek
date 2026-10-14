@@ -2,9 +2,11 @@
 //! named-pipe search server. Runs as `--console` (dev) or a Windows service (`--service`,
 //! managed with `--install` / `--uninstall`).
 //!
-//! Threads: main (signals, periodic snapshot) | writer (sole index mutator) |
-//! one worker per volume (scan / USN monitor) | pipe accept loop + one per connection.
+//! Threads: main (signals, periodic snapshot, volume arrival/removal) | writer (sole index
+//! mutator) | one worker per volume (NTFS/ReFS: scan + USN monitor; FAT/exFAT: scan +
+//! ReadDirectoryChangesW) | pipe accept loop + one per connection.
 
+mod folder_worker;
 mod index_ops;
 mod log;
 mod server;
@@ -12,18 +14,28 @@ mod service;
 mod state;
 mod worker;
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{mpsc, Arc};
+use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use winseek_index::Index;
+use winseek_folder::{list_volumes, watch_volume_interfaces, VolumeDesc};
+use winseek_index::{Index, VolKind};
 use winseek_ipc::pipe::PipeServer;
 use winseek_ipc::PIPE_NAME;
 use winseek_ntfs::{list_ntfs_volumes, open_volume_for_usn, VolumeInfo};
+use winseek_usn::{query_journal, JournalCursor};
 
 use log::{error, info, warn};
 use state::{Msg, Shared};
+use worker::Vol;
+
+/// How often the drive letters are re-checked without a device notification (the letter can
+/// be assigned after the volume-interface arrival event).
+const VOLUME_POLL: Duration = Duration::from_secs(10);
 
 const USAGE: &str = "usage: searchd --console [--data <dir>] [--volumes C,D] [--log <file>]
        searchd --service [--data <dir>] [--volumes C,D] [--log <file>]   (started by the SCM)
@@ -138,27 +150,31 @@ fn main() {
 fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     info!("searchd starting (data dir {}, log {})", args.data.display(), args.log.display());
     let _ = std::fs::create_dir_all(&args.data);
-
-    // Volumes to index.
-    let all = list_ntfs_volumes();
-    let vols: Vec<VolumeInfo> = match &args.volumes {
-        None => all,
-        Some(want) => {
-            for w in want.iter().filter(|w| !all.iter().any(|v| v.letter == **w)) {
-                warn!("{w}: is not an NTFS volume; skipped");
-            }
-            all.into_iter().filter(|v| want.contains(&v.letter)).collect()
+    // Volumes to index: NTFS, FAT/FAT32/exFAT, ReFS on fixed and removable drives.
+    let want = args.volumes.as_deref();
+    let vols = detect_volumes(want, &[]);
+    if let Some(want) = want {
+        for w in want.iter().filter(|w| !vols.iter().any(|v| v.letter == **w)) {
+            warn!("{w}: is not a supported volume (NTFS, FAT32, exFAT, ReFS); skipped");
         }
-    };
+        if vols.is_empty() {
+            error!("none of the selected volumes can be indexed");
+            return 1;
+        }
+    }
     if vols.is_empty() {
-        error!("no NTFS volumes to index");
-        return 1;
+        warn!("no volumes to index yet; waiting for one to arrive");
+    }
+    for v in &vols {
+        info!("{}: {} ({:?})", v.letter, v.fs, v.kind);
     }
 
-    // Fail fast without administrator rights (raw volume access needs them).
-    if let Err(e) = open_volume_for_usn(vols[0].letter) {
-        error!("searchd needs administrator to read $MFT; run elevated ({e})");
-        return 1;
+    // Fail fast without administrator rights (raw $MFT / USN access needs them).
+    if let Some(v) = vols.iter().find(|v| v.kind != VolKind::Folder) {
+        if let Err(e) = open_volume_for_usn(v.letter) {
+            error!("searchd needs administrator to read $MFT / the USN journal; run elevated ({e})");
+            return 1;
+        }
     }
 
     let pipe = match PipeServer::bind(PIPE_NAME) {
@@ -171,7 +187,7 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
 
     let letters: Vec<char> = vols.iter().map(|v| v.letter).collect();
     let snap_path = args.data.join("index.wsix");
-    let index = load_snapshot(&snap_path, &letters);
+    let index = load_snapshot(&snap_path, &vols);
     let cursors: Vec<_> = vols
         .iter()
         .map(|v| {
@@ -189,39 +205,54 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
         let sh = sh.clone();
         std::thread::spawn(move || state::writer_loop(&sh, rx))
     };
-    let mut workers = Vec::new();
+    let mut workers: BTreeMap<char, JoinHandle<()>> = BTreeMap::new();
     for (v, cur) in vols.into_iter().zip(cursors) {
-        match cur {
-            Some(c) => info!("{}: snapshot valid, catching up from USN {}", v.letter, c.next_usn),
-            None => info!("{}: no usable snapshot; full scan", v.letter),
+        match (v.kind, cur) {
+            (VolKind::Folder, _) => info!("{}: folder-watch volume; scanning", v.letter),
+            (_, Some(c)) => info!("{}: snapshot valid, catching up from USN {}", v.letter, c.next_usn),
+            (_, None) => info!("{}: no usable snapshot; full scan", v.letter),
         }
         if cur.is_some() {
             sh.set_state(v.letter, winseek_ipc::VolumeState::Live);
         }
-        let (sh, tx) = (sh.clone(), tx.clone());
-        workers.push(std::thread::spawn(move || worker::run(sh, tx, v, cur)));
+        workers.insert(v.letter, spawn_worker(&sh, &tx, v, cur));
     }
     server::spawn_accept_loop(sh.clone(), pipe);
+
+    // Volume arrival/removal: CM_Register_Notification on the volume device interface (no
+    // window needed, works as a service and in --console), plus a slow poll as a backstop.
+    let drives_changed = Arc::new(AtomicBool::new(false));
+    let _arrivals = {
+        let flag = drives_changed.clone();
+        watch_volume_interfaces(Box::new(move || flag.store(true, Ordering::SeqCst)))
+            .map_err(|e| warn!("no volume arrival notifications ({e}); polling every {}s", VOLUME_POLL.as_secs()))
+            .ok()
+    };
     info!("ready; serving {PIPE_NAME} (Ctrl+C to stop)");
     ready();
 
     let mut last_save = Instant::now();
+    let mut last_poll = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
         if sh.save_now.swap(false, Ordering::Relaxed) || last_save.elapsed() >= SAVE_EVERY {
             save_snapshot(&sh, &snap_path);
             last_save = Instant::now();
         }
+        let notified = drives_changed.swap(false, Ordering::SeqCst);
+        if notified || last_poll.elapsed() >= VOLUME_POLL {
+            reconcile_volumes(&sh, &tx, want, &mut workers);
+            // after a notification, look again shortly: the letter may not be mounted yet
+            last_poll = if notified { Instant::now() - VOLUME_POLL + Duration::from_secs(2) } else { Instant::now() };
+        }
     }
 
     info!("shutting down");
     sh.shutdown.store(true, Ordering::SeqCst);
-    for c in sh.ctl.values() {
-        c.stop.store(true, Ordering::SeqCst);
-    }
-    // Monitors flush their last batch within ~100 ms; a worker stuck in a scan is abandoned.
+    sh.stop_all();
+    // Monitors flush their last batch within ~250 ms; a worker stuck in a scan is abandoned.
     let deadline = Instant::now() + Duration::from_secs(3);
-    while Instant::now() < deadline && !workers.iter().all(|w| w.is_finished()) {
+    while Instant::now() < deadline && !workers.values().all(|w| w.is_finished()) {
         std::thread::sleep(Duration::from_millis(50));
     }
     let _ = tx.send(Msg::Shutdown);
@@ -231,15 +262,89 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     0
 }
 
-/// Load the snapshot if it is usable for exactly these volumes; otherwise start empty.
-fn load_snapshot(path: &std::path::Path, letters: &[char]) -> Index {
+fn spawn_worker(sh: &Arc<Shared>, tx: &Sender<Msg>, v: Vol, cur: Option<JournalCursor>) -> JoinHandle<()> {
+    let (sh, tx) = (sh.clone(), tx.clone());
+    std::thread::spawn(move || match v.kind {
+        VolKind::Folder => folder_worker::run(sh, tx, v),
+        _ => worker::run(sh, tx, v, cur),
+    })
+}
+
+/// Index a newly mounted volume; make the worker of a vanished one drop it.
+fn reconcile_volumes(sh: &Arc<Shared>, tx: &Sender<Msg>, want: Option<&[char]>, workers: &mut BTreeMap<char, JoinHandle<()>>) {
+    workers.retain(|_, h| !h.is_finished());
+    for &l in workers.keys() {
+        if !worker::present(l) {
+            let c = sh.ctl(l);
+            if !c.removing.swap(true, Ordering::SeqCst) {
+                info!("{l}: volume disappeared");
+                c.stop.store(true, Ordering::SeqCst);
+            }
+        }
+    }
+    let running: Vec<char> = workers.keys().copied().collect();
+    for v in detect_volumes(want, &running) {
+        info!("{}: new {} volume ({:?}); indexing", v.letter, v.fs, v.kind);
+        sh.set_state(v.letter, winseek_ipc::VolumeState::Scanning { done: 0, total: 0 });
+        workers.insert(v.letter, spawn_worker(sh, tx, v, None));
+    }
+}
+
+/// The volumes Tier 0 can index now, minus `skip`, restricted to `want` when given.
+fn detect_volumes(want: Option<&[char]>, skip: &[char]) -> Vec<Vol> {
+    let descs: Vec<VolumeDesc> = list_volumes()
+        .into_iter()
+        .filter(|d| !skip.contains(&d.letter) && want.is_none_or(|w| w.contains(&d.letter)))
+        .collect();
+    let ntfs = if descs.iter().any(|d| d.fs.eq_ignore_ascii_case("NTFS")) { list_ntfs_volumes() } else { Vec::new() };
+    descs.into_iter().filter_map(|d| classify(d, &ntfs, refs_has_journal)).collect()
+}
+
+/// Pick the volume kind from the filesystem name (Everything's volume types: NTFS / FAT
+/// folder index / ReFS; ReFS without a usable journal runs as a folder index, like
+/// Everything's RDC mode).
+fn classify(d: VolumeDesc, ntfs: &[VolumeInfo], refs_journal: impl Fn(char) -> bool) -> Option<Vol> {
+    let kind = match d.fs.to_ascii_uppercase().as_str() {
+        "NTFS" => VolKind::Ntfs,
+        "FAT" | "FAT12" | "FAT16" | "FAT32" | "EXFAT" => VolKind::Folder,
+        "REFS" if refs_journal(d.letter) => VolKind::Refs,
+        "REFS" => VolKind::Folder,
+        _ => return None,
+    };
+    let info = ntfs.iter().find(|i| i.letter == d.letter).cloned();
+    if kind == VolKind::Ntfs && info.is_none() {
+        return None;
+    }
+    let serial = info.as_ref().map_or(d.serial as u64, |i| i.serial);
+    Some(Vol { letter: d.letter, fs: d.fs, serial, kind, ntfs: info })
+}
+
+fn refs_has_journal(letter: char) -> bool {
+    match open_volume_for_usn(letter).map_err(|e| e.to_string()).and_then(|h| query_journal(&h).map_err(|e| e.to_string())) {
+        Ok(_) => true,
+        Err(e) => {
+            warn!("{letter}: ReFS USN journal unavailable ({e}); using folder watch");
+            false
+        }
+    }
+}
+
+/// Load the snapshot and keep the volumes that still match what is mounted (same letter,
+/// kind and serial); the others are dropped and rescanned. v1 snapshots load as NTFS.
+fn load_snapshot(path: &std::path::Path, vols: &[Vol]) -> Index {
     if path.exists() {
         match Index::load(path) {
             Ok(ix) if !ix.has_meta() => warn!("snapshot has no size/mtime columns; ignoring"),
-            Ok(ix) if ix.volumes().iter().any(|v| !letters.contains(&(v.letter as char))) => {
-                warn!("snapshot contains volumes that are not selected; ignoring it")
-            }
             Ok(ix) => {
+                let matches = |m: &winseek_index::VolumeMeta| {
+                    vols.iter().any(|v| {
+                        v.letter as u8 == m.letter && v.kind == m.kind && (m.serial == 0 || v.serial == 0 || m.serial == v.serial)
+                    })
+                };
+                for m in ix.volumes().iter().filter(|m| !matches(m)) {
+                    warn!("{}: snapshot volume ({:?}) is not mounted or changed; dropping it", m.letter as char, m.kind);
+                }
+                let ix = index_ops::retain_volumes(ix, matches);
                 info!("loaded snapshot: {} records", ix.live_count());
                 return ix;
             }
@@ -281,6 +386,23 @@ mod tests {
         assert_eq!(a.volumes, Some(vec!['C', 'D']));
         assert_eq!(a.log, PathBuf::from("D:\\x").join("searchd.log"));
         assert!(p(&["--console", "--volumes", "1"]).is_err());
+    }
+
+    #[test]
+    fn classify_volume_kinds() {
+        let d = |l: char, fs: &str| VolumeDesc { letter: l, fs: fs.into(), serial: 0xABCD, removable: true };
+        let ntfs = [VolumeInfo { letter: 'C', serial: 0x1122_3344_5566, bytes_per_cluster: 4096, record_size: 1024 }];
+        let k = |v: Option<Vol>| v.map(|v| (v.kind, v.serial));
+        assert_eq!(k(classify(d('C', "NTFS"), &ntfs, |_| true)), Some((VolKind::Ntfs, 0x1122_3344_5566)));
+        assert_eq!(k(classify(d('N', "NTFS"), &ntfs, |_| true)), None, "NTFS without geometry is skipped");
+        for fs in ["FAT32", "exFAT", "FAT"] {
+            assert_eq!(k(classify(d('E', fs), &ntfs, |_| true)), Some((VolKind::Folder, 0xABCD)), "{fs}");
+        }
+        assert_eq!(k(classify(d('R', "ReFS"), &ntfs, |_| true)), Some((VolKind::Refs, 0xABCD)));
+        assert_eq!(k(classify(d('R', "ReFS"), &ntfs, |_| false)), Some((VolKind::Folder, 0xABCD)), "RDC fallback");
+        assert_eq!(k(classify(d('U', "UDF"), &ntfs, |_| true)), None);
+        let v = classify(d('E', "exFAT"), &ntfs, |_| true).unwrap();
+        assert_eq!((v.monitor(), v.root().as_str()), (winseek_ipc::Monitor::FolderWatch, r"E:\"));
     }
 
     #[test]

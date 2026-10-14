@@ -87,6 +87,37 @@ impl Hasher for FxHasher {
     }
 }
 pub type FolderMap = HashMap<(u8, u64), u32, BuildHasherDefault<FxHasher>>;
+/// ReFS 128-bit FRN -> the u64 id used as that folder's `frn` (see [`Index::intern128`]).
+pub type Ids128 = HashMap<(u8, u128), u64, BuildHasherDefault<FxHasher>>;
+
+/// How a volume's records are identified and kept live. The numbers match Everything's
+/// ESDb volume types (0 = NTFS, 1 = FAT folder index, 2 = ReFS).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum VolKind {
+    /// 48-bit MFT FRNs, USN V2.
+    #[default]
+    Ntfs = 0,
+    /// No FRNs (FAT/exFAT, ReFS without a journal): synthetic folder ids from `next_id`,
+    /// path-based updates.
+    Folder = 1,
+    /// 128-bit FRNs interned to u64 ids, USN V3.
+    Refs = 2,
+}
+
+impl VolKind {
+    pub fn from_u8(v: u8) -> Option<VolKind> {
+        match v {
+            0 => Some(VolKind::Ntfs),
+            1 => Some(VolKind::Folder),
+            2 => Some(VolKind::Refs),
+            _ => None,
+        }
+    }
+}
+
+/// First synthetic id (`Folder` / `Refs` volumes). The root is always 5, like NTFS.
+pub const FIRST_SYNTHETIC_ID: u64 = 16;
 
 /// Per-volume state. `serial`, `journal_id`, `next_usn` are opaque, set by the caller.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -97,6 +128,9 @@ pub struct VolumeMeta {
     pub next_usn: i64,
     /// Record index of the volume root.
     pub root: u32,
+    pub kind: VolKind,
+    /// Next synthetic folder id (`Folder` / `Refs`); ids are never reused.
+    pub next_id: u64,
 }
 
 #[derive(Default)]
@@ -113,6 +147,8 @@ pub struct Index {
     pub(crate) arena: Vec<u8>,
     pub(crate) garbage: usize,
     pub(crate) folders: FolderMap,
+    /// ReFS twin of the folder map key space (Everything db+0x4a0): 128-bit FRN -> u64 id.
+    pub(crate) ids128: Ids128,
     pub(crate) vols: Vec<VolumeMeta>,
     pub(crate) order: Vec<u32>,
     /// slot -> position in `order` (NONE if not searchable); lets scans run in storage order
@@ -226,6 +262,55 @@ impl Index {
     pub fn root_of(&self, vol: u8) -> Option<u32> {
         self.vols.iter().find(|v| v.letter == vol).map(|v| v.root)
     }
+    pub fn kind_of(&self, vol: u8) -> Option<VolKind> {
+        self.vols.iter().find(|v| v.letter == vol).map(|v| v.kind)
+    }
+
+    // ---------------------------------------------------------------- synthetic ids
+    /// Next synthetic id of `vol` (`Folder` volumes: a new folder; `Refs`: a new FRN).
+    /// Adds the volume (root 5) if needed. Ids start at [`FIRST_SYNTHETIC_ID`].
+    pub fn alloc_id(&mut self, vol: u8) -> u64 {
+        self.add_volume_raw(vol, 5);
+        let m = self.volume_mut(vol).expect("volume just added");
+        let id = m.next_id.max(FIRST_SYNTHETIC_ID);
+        m.next_id = id + 1;
+        id
+    }
+    /// The u64 id of a 128-bit (ReFS) FRN, if known.
+    pub fn lookup128(&self, vol: u8, frn: u128) -> Option<u64> {
+        self.ids128.get(&(vol, frn)).copied()
+    }
+    /// Find-or-assign the u64 id of a 128-bit FRN. One folder map serves both id widths:
+    /// this interner is our stand-in for Everything's twin 128-bit folder tree.
+    pub fn intern128(&mut self, vol: u8, frn: u128) -> u64 {
+        if let Some(id) = self.lookup128(vol, frn) {
+            return id;
+        }
+        let id = self.alloc_id(vol);
+        self.ids128.insert((vol, frn), id);
+        id
+    }
+    /// Bind a 128-bit FRN to a fixed id (the volume root -> 5).
+    pub fn set_id128(&mut self, vol: u8, frn: u128, id: u64) {
+        self.ids128.insert((vol, frn), id);
+    }
+    /// Interned FRNs whose id is still a live folder (what a snapshot keeps).
+    pub fn live_ids128(&self) -> impl Iterator<Item = (u8, u128, u64)> + '_ {
+        self.ids128
+            .iter()
+            .filter(|(&(v, _), &id)| self.folders.contains_key(&(v, id)))
+            .map(|(&(v, f), &id)| (v, f, id))
+    }
+
+    /// Resolve `rel` (backslash-separated, relative to the volume root, exact names) to a
+    /// record. Empty `rel` is the root.
+    pub fn find_path(&mut self, vol: u8, rel: &str) -> Option<u32> {
+        let mut cur = self.root_of(vol)?;
+        for part in rel.split('\\').filter(|p| !p.is_empty()) {
+            cur = self.find_child(cur, part)?;
+        }
+        Some(cur)
+    }
     /// Approximate heap bytes used (capacities).
     pub fn mem_bytes(&self) -> usize {
         self.parent.capacity() * 4
@@ -240,6 +325,7 @@ impl Index {
             + self.order.capacity() * 4
             + self.rank.capacity() * 4
             + self.folders.capacity() * 25
+            + self.ids128.capacity() * 33
             + (self.first.capacity() + self.next.capacity() + self.prev.capacity() + self.tbl.capacity()) * 4
     }
 
@@ -950,6 +1036,20 @@ impl IndexBuilder {
     }
     pub fn volume_mut(&mut self, letter: u8) -> Option<&mut VolumeMeta> {
         self.idx.volume_mut(letter)
+    }
+    /// See [`Index::alloc_id`].
+    pub fn alloc_id(&mut self, vol: u8) -> u64 {
+        self.add_volume(vol, 5);
+        self.idx.alloc_id(vol)
+    }
+    /// See [`Index::intern128`].
+    pub fn intern128(&mut self, vol: u8, frn: u128) -> u64 {
+        self.add_volume(vol, 5);
+        self.idx.intern128(vol, frn)
+    }
+    /// See [`Index::set_id128`].
+    pub fn set_id128(&mut self, vol: u8, frn: u128, id: u64) {
+        self.idx.set_id128(vol, frn, id);
     }
     pub fn len(&self) -> usize {
         self.idx.parent.len()

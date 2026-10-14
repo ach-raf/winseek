@@ -413,3 +413,82 @@ fn incremental_counts_match_recount() {
     assert_eq!(rt.counts(C), ix.counts(C));
     assert_eq!(ix.counts(b'Z'), (0, 0));
 }
+
+#[test]
+fn synthetic_ids_and_refs_interner() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(b'R', 5);
+    b.volume_mut(b'R').unwrap().kind = VolKind::Refs;
+    let root128 = 0xdead_0000_0000_0000_0000_0000_0000_0001u128;
+    b.set_id128(b'R', root128, 5);
+    let a128 = (7u128 << 64) | 0x100;
+    let a = b.intern128(b'R', a128);
+    assert_eq!(a, FIRST_SYNTHETIC_ID);
+    assert_eq!(b.intern128(b'R', a128), a, "stable");
+    b.push(b'R', a, 5, "A", true, 0, 0);
+    b.push(b'R', 0, a, "f.txt", false, 1, 2);
+    let gone = b.intern128(b'R', 99); // interned, folder never pushed except as a stub parent
+    let mut ix = b.finish();
+    assert_eq!(ix.lookup128(b'R', root128), Some(5));
+    assert_eq!(ix.lookup128(b'R', 12345), None);
+    assert_eq!(ix.intern128(b'R', 12345), gone + 1, "continues from next_id");
+    assert_eq!(ix.find_path(b'R', r"A\f.txt").map(|i| ix.full_path(i)), Some(r"R:\A\f.txt".into()));
+    assert_eq!(ix.find_path(b'R', ""), ix.root_of(b'R'));
+    assert_eq!(ix.find_path(b'R', r"A\nope"), None);
+    // Folder volume: alloc_id adds the volume and never reuses ids
+    assert_eq!(ix.alloc_id(b'F'), FIRST_SYNTHETIC_ID);
+    assert_eq!(ix.alloc_id(b'F'), FIRST_SYNTHETIC_ID + 1);
+    assert!(ix.root_of(b'F').is_some());
+}
+
+#[test]
+fn snapshot_v2_keeps_kinds_ids_and_live_interned_folders() {
+    let mut ix = sample();
+    let r = ix.add_volume(b'R', 5);
+    let _ = r;
+    ix.volume_mut(b'R').unwrap().kind = VolKind::Refs;
+    ix.set_id128(b'R', 1, 5);
+    let a = ix.intern128(b'R', 0xAAAA_0000_0000_0000_0000_0000_0000_0000);
+    ix.insert(b'R', a, 5, "kept", true, 0, 0);
+    let b2 = ix.intern128(b'R', 0xBBBB);
+    ix.insert(b'R', b2, 5, "removed", true, 0, 0);
+    ix.remove_folder(b'R', b2);
+    ix.alloc_id(b'F');
+    ix.volume_mut(b'F').unwrap().kind = VolKind::Folder;
+    let ld = Index::from_bytes(&ix.to_bytes()).unwrap();
+    let kinds: Vec<_> = ld.volumes().iter().map(|v| (v.letter, v.kind, v.next_id)).collect();
+    assert!(kinds.contains(&(C, VolKind::Ntfs, 0)));
+    assert!(kinds.contains(&(b'R', VolKind::Refs, b2 + 1)));
+    assert!(kinds.contains(&(b'F', VolKind::Folder, FIRST_SYNTHETIC_ID + 1)));
+    assert_eq!(ld.lookup128(b'R', 0xAAAA_0000_0000_0000_0000_0000_0000_0000), Some(a));
+    assert_eq!(ld.lookup128(b'R', 1), Some(5), "root is a live folder");
+    assert_eq!(ld.lookup128(b'R', 0xBBBB), None, "dead folders are not persisted");
+    assert_eq!(ld.folder_idx(b'R', a).map(|i| ld.full_path(i)), Some(r"R:\kept".into()));
+}
+
+#[test]
+fn snapshot_v1_migrates_as_ntfs() {
+    let ix = sample(); // one volume, no interned ids
+    let v2 = ix.to_bytes();
+    // v2 -> v1: drop kind u8 + next_id u64 after the 29-byte volume entry and the empty ids
+    // section (u32 0) before the checksum, set version 1, re-checksum.
+    let body = &v2[..v2.len() - 8];
+    let mut v1 = Vec::new();
+    v1.extend_from_slice(&body[..4]);
+    v1.extend_from_slice(&1u32.to_le_bytes());
+    v1.extend_from_slice(&body[8..24 + 29]);
+    v1.extend_from_slice(&body[24 + 29 + 9..body.len() - 4]);
+    assert_eq!(&body[body.len() - 4..], &0u32.to_le_bytes());
+    let ck = super::snapshot::checksum_for_tests(&v1);
+    v1.extend_from_slice(&ck.to_le_bytes());
+    let ld = Index::from_bytes(&v1).unwrap();
+    assert_eq!(ld.volumes()[0].kind, VolKind::Ntfs);
+    assert_eq!(ld.volumes()[0].next_id, 0);
+    assert_eq!(names(&ld, "report"), names(&ix, "report"));
+    // unknown kind byte is rejected
+    let mut bad = v2[..v2.len() - 8].to_vec();
+    bad[24 + 29] = 9;
+    let ck = super::snapshot::checksum_for_tests(&bad);
+    bad.extend_from_slice(&ck.to_le_bytes());
+    assert!(Index::from_bytes(&bad).is_err());
+}

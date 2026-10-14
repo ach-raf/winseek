@@ -75,7 +75,7 @@ fn respond(sh: &Shared, req: Request) -> Response {
         Request::Recent { id, limit } => Response::RecentResult { id, hits: state::recent(sh, limit) },
         Request::Rescan { id, volume } => {
             let v = volume.to_ascii_uppercase();
-            match sh.ctl.get(&v) {
+            match sh.has_ctl(v).then(|| sh.ctl(v)) {
                 Some(c) => {
                     info!("{v}: rescan requested over IPC");
                     sh.set_state(v, VolumeState::Rescanning);

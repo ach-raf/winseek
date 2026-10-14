@@ -16,10 +16,10 @@ pub enum Change {
     /// Data/size/basic-info change; the index may want to refresh metadata.
     Modify(UsnRecord),
     Rename {
-        frn: u64,
-        old_parent: u64,
+        frn: u128,
+        old_parent: u128,
         old_name: String,
-        new_parent: u64,
+        new_parent: u128,
         new_name: String,
     },
 }
@@ -27,8 +27,8 @@ pub enum Change {
 pub struct RenamePairer {
     stale_after: u64,
     seen: u64,
-    parked: HashMap<u64, (u64, UsnRecord)>,
-    order: VecDeque<(u64, u64)>, // (seq, frn) in park order
+    parked: HashMap<u128, (u64, UsnRecord)>,
+    order: VecDeque<(u64, u128)>, // (seq, frn) in park order
 }
 
 impl RenamePairer {
@@ -116,7 +116,7 @@ mod tests {
         USN_REASON_RENAME_NEW_NAME, USN_REASON_RENAME_OLD_NAME,
     };
 
-    fn rec(frn: u64, parent: u64, reason: u32, name: &str) -> UsnRecord {
+    fn rec(frn: u128, parent: u128, reason: u32, name: &str) -> UsnRecord {
         UsnRecord { frn, parent_frn: parent, usn: 0, reason, attrs: 0, name: name.into() }
     }
 

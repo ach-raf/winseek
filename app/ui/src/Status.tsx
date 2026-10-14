@@ -37,6 +37,10 @@ function Row({ k, children, title }: { k: string; children: React.ReactNode; tit
   return (<><dt>{k}</dt><dd title={title}>{children}</dd></>);
 }
 
+/** "exFAT · folder watch" / "NTFS · USN journal"; empty when searchd did not say. */
+export const volKind = (v: VolumeDetail) =>
+  !v.fs ? "" : v.monitor === "folder_watch" ? `${v.fs} · folder watch` : v.monitor === "usn" ? `${v.fs} · USN journal` : v.fs;
+
 const volState = (v: VolumeDetail) =>
   v.state === "live" ? "Live" : v.state === "scanning" ? "Scanning" : v.state === "rescanning" ? "Rescanning" : v.state === "error" ? "Error" : "Demo data";
 
@@ -57,8 +61,10 @@ function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<string>; onR
           return (
             <li key={v.letter} className={"st-vol s-" + v.state}>
               <span className="letter">{v.letter}:</span>
-              <span className="nums">
+              <span className="nums" title={v.monitor === "folder_watch" ? "No change journal on this filesystem: changes are watched and the drive is rescanned when the watch overflows" : undefined}>
+                {volKind(v) && <span className="st-fs">{volKind(v)} · </span>}
                 {v.state === "scanning" && v.total ? `${fmt(v.done ?? 0)} of ${fmt(v.total)} entries`
+                  : v.state === "scanning" && v.done ? `${fmt(v.done)} entries`
                   : v.state === "error" ? "—" : `${fmt(v.files)} files · ${fmt(v.folders)} folders`}
               </span>
               <span className="st-state"><span className="dot" />{volState(v)}</span>

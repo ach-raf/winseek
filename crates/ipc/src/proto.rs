@@ -56,12 +56,29 @@ pub enum VolumeState {
     Error { msg: String },
 }
 
+/// How a volume's index is kept live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum Monitor {
+    /// USN journal (NTFS V2 records, ReFS V3 records).
+    #[default]
+    Usn,
+    /// `ReadDirectoryChangesW` plus rescans on overflow (FAT, exFAT, ReFS without a journal).
+    FolderWatch,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VolumeStatus {
     pub letter: char,
     pub files: u64,
     pub folders: u64,
     pub state: VolumeState,
+    /// Filesystem name as Windows reports it ("NTFS", "FAT32", "exFAT", "ReFS"); empty from
+    /// an older searchd.
+    #[serde(default)]
+    pub fs: String,
+    #[serde(default)]
+    pub monitor: Monitor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -101,9 +118,9 @@ mod tests {
         let r = Response::StatusResult {
             id: 2,
             volumes: vec![
-                VolumeStatus { letter: 'C', files: 1, folders: 2, state: VolumeState::Scanning { done: 1, total: 9 } },
-                VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Error { msg: "x".into() } },
-                VolumeStatus { letter: 'E', files: 0, folders: 0, state: VolumeState::Live },
+                VolumeStatus { letter: 'C', files: 1, folders: 2, state: VolumeState::Scanning { done: 1, total: 9 }, fs: "NTFS".into(), monitor: Monitor::Usn },
+                VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Error { msg: "x".into() }, fs: "ReFS".into(), monitor: Monitor::Usn },
+                VolumeStatus { letter: 'E', files: 0, folders: 0, state: VolumeState::Live, fs: "exFAT".into(), monitor: Monitor::FolderWatch },
             ],
             uptime_s: 5,
         };
@@ -113,6 +130,15 @@ mod tests {
         let s = serde_json::to_string(&c).unwrap();
         assert!(s.contains(r#""type":"change""#) && s.contains(r#""kind":"renamed""#), "{s}");
         assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), c);
+    }
+
+    #[test]
+    fn volume_status_fs_fields_are_optional_on_the_wire() {
+        let old = r#"{"letter":"C","files":1,"folders":2,"state":{"kind":"live"}}"#;
+        let v: VolumeStatus = serde_json::from_str(old).unwrap();
+        assert_eq!((v.fs.as_str(), v.monitor), ("", Monitor::Usn));
+        let s = serde_json::to_string(&VolumeStatus { monitor: Monitor::FolderWatch, ..v }).unwrap();
+        assert!(s.contains(r#""monitor":"folder_watch""#), "{s}");
     }
 
     #[test]

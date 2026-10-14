@@ -15,11 +15,16 @@ pub const USN_REASON_CLOSE: u32 = 0x8000_0000;
 
 /// Fixed part of USN_RECORD_V2 (the name starts at FileNameOffset >= 60).
 const V2_HEADER: usize = 60;
+/// Fixed part of USN_RECORD_V3 (128-bit FRNs, ReFS). Everything requires >= 0x4e
+/// bytes per record ("record overflow"), i.e. this header plus one UTF-16 unit.
+const V3_HEADER: usize = 0x4c;
 
+/// One journal record. FRNs are 128-bit so V3 (ReFS) records fit; V2 (NTFS)
+/// records zero-extend their 64-bit FRNs.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UsnRecord {
-    pub frn: u64,
-    pub parent_frn: u64,
+    pub frn: u128,
+    pub parent_frn: u128,
     pub usn: i64,
     pub reason: u32,
     pub attrs: u32,
@@ -32,7 +37,7 @@ pub enum UsnError {
     Truncated { offset: usize },
     /// RecordLength is < 8, not 8-aligned, or runs past the buffer.
     BadRecordLength { offset: usize, len: u32 },
-    /// A V2 record whose FileNameOffset/Length fall outside the record or are odd.
+    /// A V2/V3 record whose FileNameOffset/Length fall outside the record or are odd.
     BadName { offset: usize },
 }
 
@@ -61,14 +66,37 @@ fn rd_u64(b: &[u8], o: usize) -> u64 {
     v.copy_from_slice(&b[o..o + 8]);
     u64::from_le_bytes(v)
 }
+fn rd_u128(b: &[u8], o: usize) -> u128 {
+    let mut v = [0u8; 16];
+    v.copy_from_slice(&b[o..o + 16]);
+    u128::from_le_bytes(v)
+}
+
+/// Decode the UTF-16 name of a record whose fixed part is `header` bytes long, with
+/// FileNameLength / FileNameOffset at `len_at` / `len_at + 2`.
+fn record_name(rec: &[u8], header: usize, len_at: usize, offset: usize) -> Result<String, UsnError> {
+    let name_len = rd_u16(rec, len_at) as usize;
+    let name_off = rd_u16(rec, len_at + 2) as usize;
+    if name_off < header || !name_len.is_multiple_of(2) || name_off + name_len > rec.len() {
+        return Err(UsnError::BadName { offset });
+    }
+    let units: Vec<u16> = rec[name_off..name_off + name_len]
+        .as_chunks::<2>().0.iter()
+        .map(|c| u16::from_le_bytes([c[0], c[1]]))
+        .collect();
+    Ok(String::from_utf16_lossy(&units))
+}
 
 /// Parse a `FSCTL_READ_USN_JOURNAL` output buffer: the first 8 bytes are the
-/// next USN to read from, followed by `USN_RECORD_V2` entries.
+/// next USN to read from, followed by `USN_RECORD_V2` (NTFS, V0 request) or
+/// `USN_RECORD_V3` (ReFS, V1 request with Min/MaxMajorVersion 3) entries.
 ///
-/// Records of any other major version (V3 128-bit FRNs, V4 range records) are
-/// skipped using their RecordLength. The first structurally invalid record
-/// aborts the parse with an error (the caller should treat that as a read
-/// error / resync point); this function never panics.
+/// V3 layout (Everything pass 4, `FUN_14004ca10`): +0x08 FRN 128, +0x18 parent
+/// 128, +0x28 USN, +0x38 reason, +0x44 attributes, +0x48 name length, +0x4a name
+/// offset. Records of any other major version (V4 range records) are skipped
+/// using their RecordLength. The first structurally invalid record aborts the
+/// parse with an error (the caller should treat that as a read error / resync
+/// point); this function never panics.
 pub fn parse_usn_buffer(buf: &[u8]) -> Result<(i64, Vec<UsnRecord>), UsnError> {
     if buf.len() < 8 {
         return Err(UsnError::Truncated { offset: 0 });
@@ -87,28 +115,35 @@ pub fn parse_usn_buffer(buf: &[u8]) -> Result<(i64, Vec<UsnRecord>), UsnError> {
             return Err(UsnError::BadRecordLength { offset: off, len });
         }
         let major = rd_u16(buf, off + 4);
-        if major == 2 {
-            if l < V2_HEADER {
-                return Err(UsnError::BadRecordLength { offset: off, len });
+        let rec = &buf[off..off + l];
+        match major {
+            2 => {
+                if l < V2_HEADER {
+                    return Err(UsnError::BadRecordLength { offset: off, len });
+                }
+                records.push(UsnRecord {
+                    frn: rd_u64(rec, 8) as u128,
+                    parent_frn: rd_u64(rec, 16) as u128,
+                    usn: rd_u64(rec, 24) as i64,
+                    reason: rd_u32(rec, 40),
+                    attrs: rd_u32(rec, 52),
+                    name: record_name(rec, V2_HEADER, 56, off)?,
+                });
             }
-            let rec = &buf[off..off + l];
-            let name_len = rd_u16(rec, 56) as usize;
-            let name_off = rd_u16(rec, 58) as usize;
-            if name_off < V2_HEADER || !name_len.is_multiple_of(2) || name_off + name_len > l {
-                return Err(UsnError::BadName { offset: off });
+            3 => {
+                if l < V3_HEADER + 2 {
+                    return Err(UsnError::BadRecordLength { offset: off, len });
+                }
+                records.push(UsnRecord {
+                    frn: rd_u128(rec, 0x08),
+                    parent_frn: rd_u128(rec, 0x18),
+                    usn: rd_u64(rec, 0x28) as i64,
+                    reason: rd_u32(rec, 0x38),
+                    attrs: rd_u32(rec, 0x44),
+                    name: record_name(rec, V3_HEADER, 0x48, off)?,
+                });
             }
-            let units: Vec<u16> = rec[name_off..name_off + name_len]
-                .as_chunks::<2>().0.iter()
-                .map(|c| u16::from_le_bytes([c[0], c[1]]))
-                .collect();
-            records.push(UsnRecord {
-                frn: rd_u64(rec, 8),
-                parent_frn: rd_u64(rec, 16),
-                usn: rd_u64(rec, 24) as i64,
-                reason: rd_u32(rec, 40),
-                attrs: rd_u32(rec, 52),
-                name: String::from_utf16_lossy(&units),
-            });
+            _ => {}
         }
         off += l;
     }
@@ -181,6 +216,24 @@ pub(crate) mod tests {
         r
     }
 
+    /// Build one USN_RECORD_V3 (128-bit FRNs).
+    pub fn v3(frn: u128, parent: u128, usn: i64, reason: u32, attrs: u32, name: &str) -> Vec<u8> {
+        let u: Vec<u8> = name.encode_utf16().flat_map(|c| c.to_le_bytes()).collect();
+        let len = (V3_HEADER + u.len() + 7) & !7;
+        let mut r = vec![0u8; len];
+        r[0..4].copy_from_slice(&(len as u32).to_le_bytes());
+        r[4..6].copy_from_slice(&3u16.to_le_bytes());
+        r[0x08..0x18].copy_from_slice(&frn.to_le_bytes());
+        r[0x18..0x28].copy_from_slice(&parent.to_le_bytes());
+        r[0x28..0x30].copy_from_slice(&usn.to_le_bytes());
+        r[0x38..0x3c].copy_from_slice(&reason.to_le_bytes());
+        r[0x44..0x48].copy_from_slice(&attrs.to_le_bytes());
+        r[0x48..0x4a].copy_from_slice(&(u.len() as u16).to_le_bytes());
+        r[0x4a..0x4c].copy_from_slice(&(V3_HEADER as u16).to_le_bytes());
+        r[V3_HEADER..V3_HEADER + u.len()].copy_from_slice(&u);
+        r
+    }
+
     pub fn buffer(next: i64, recs: &[Vec<u8>]) -> Vec<u8> {
         let mut b = next.to_le_bytes().to_vec();
         for r in recs {
@@ -215,17 +268,69 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn skips_v3_and_v4_records() {
-        let mut v3 = vec![0u8; 80];
-        v3[0..4].copy_from_slice(&80u32.to_le_bytes());
-        v3[4..6].copy_from_slice(&3u16.to_le_bytes());
+    fn skips_v4_records() {
         let mut v4 = vec![0u8; 32];
         v4[0..4].copy_from_slice(&32u32.to_le_bytes());
         v4[4..6].copy_from_slice(&4u16.to_le_bytes());
-        let b = buffer(1, &[v3, v2(1, 2, 3, 0x100, 0, "x"), v4]);
+        let b = buffer(1, &[v2(1, 2, 3, 0x100, 0, "x"), v4]);
         let (_, r) = parse_usn_buffer(&b).unwrap();
         assert_eq!(r.len(), 1);
         assert_eq!(r[0].name, "x");
+    }
+
+    #[test]
+    fn parses_v3_records_with_128_bit_frns() {
+        let frn = 0x0011_2233_4455_6677_8899_aabb_ccdd_eeffu128;
+        let parent = 0xffff_0000_0000_0001_0000_0000_0000_0005u128;
+        let b = buffer(
+            77,
+            &[
+                v3(frn, parent, 4096, USN_REASON_FILE_CREATE | USN_REASON_CLOSE, 0x10, "Ordner"),
+                v2(9, 5, 4100, USN_REASON_FILE_DELETE, 0x20, "mixed.txt"),
+                v3(1, parent, 4200, USN_REASON_RENAME_NEW_NAME, 0x20, "日本.txt"),
+            ],
+        );
+        let (n, r) = parse_usn_buffer(&b).unwrap();
+        assert_eq!(n, 77);
+        assert_eq!(
+            r[0],
+            UsnRecord { frn, parent_frn: parent, usn: 4096, reason: 0x8000_0100, attrs: 0x10, name: "Ordner".into() }
+        );
+        assert_eq!((r[1].frn, r[1].parent_frn, r[1].name.as_str()), (9, 5, "mixed.txt"));
+        assert_eq!((r[2].frn, r[2].usn, r[2].name.as_str()), (1, 4200, "日本.txt"));
+        assert_eq!(classify(r[2].reason), Op::RenameNew);
+    }
+
+    #[test]
+    fn v3_guards_and_fuzz() {
+        // shorter than header + one unit (Everything: "record overflow" < 0x4e)
+        let mut r = vec![0u8; 0x48];
+        r[0..4].copy_from_slice(&0x48u32.to_le_bytes());
+        r[4..6].copy_from_slice(&3u16.to_le_bytes());
+        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadRecordLength { .. })));
+        // name offset inside the fixed part
+        let mut r = v3(1, 2, 3, 0, 0, "name");
+        r[0x4a..0x4c].copy_from_slice(&0x40u16.to_le_bytes());
+        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        // name past the record
+        let mut r = v3(1, 2, 3, 0, 0, "name");
+        r[0x48..0x4a].copy_from_slice(&200u16.to_le_bytes());
+        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        // odd name length
+        let mut r = v3(1, 2, 3, 0, 0, "name");
+        r[0x48..0x4a].copy_from_slice(&5u16.to_le_bytes());
+        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        let b = buffer(7, &[v3(1, 2, 3, 0x100, 0, "hello"), v3(4, 5, 6, 0x200, 0x10, "world")]);
+        for cut in 0..b.len() {
+            let _ = parse_usn_buffer(&b[..cut]);
+        }
+        let mut c = b.clone();
+        for i in 8..c.len() {
+            let old = c[i];
+            c[i] = old ^ 0xFF;
+            let _ = parse_usn_buffer(&c);
+            c[i] = old;
+        }
     }
 
     #[test]

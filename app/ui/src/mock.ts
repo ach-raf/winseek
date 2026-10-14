@@ -54,9 +54,10 @@ const NEAR_MS = 2400;
 // ?searchd=down: running service that does not answer, ?volerr=1: volume H reports an error) ----
 const params = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
 const SCAN_MS = 4000;
-const VOLS = [
-  { letter: "C", files: 5210442, folders: 740569, ms: SCAN_MS },
-  { letter: "H", files: 998120, folders: 206391, ms: SCAN_MS * 0.6 },
+const VOLS: { letter: string; files: number; folders: number; ms: number; fs: string; monitor: VolumeDetail["monitor"] }[] = [
+  { letter: "C", files: 5210442, folders: 740569, ms: SCAN_MS, fs: "NTFS", monitor: "usn" },
+  { letter: "H", files: 998120, folders: 206391, ms: SCAN_MS * 0.6, fs: "NTFS", monitor: "usn" },
+  { letter: "E", files: 18342, folders: 1207, ms: SCAN_MS * 0.3, fs: "exFAT", monitor: "folder_watch" },
 ];
 let svc: ServiceState = params.get("installed") === "1" ? "running" : params.get("stopped") === "1" ? "stopped" : "not_installed";
 let scanStart: number | null = svc === "running" ? -Infinity : null; // when the "pipe" comes up
@@ -185,23 +186,24 @@ function mockStatusPage(): StatusPage {
   const up = svc === "running" && scanStart !== null && now >= scanStart;
   const source = down ? "unavailable" : up ? "searchd" : "demo";
   const volumes: VolumeDetail[] = down ? [] : !up
-    ? [{ letter: "C", files: 12580243, folders: 1204511, state: "demo", done: null, total: null, error: null }]
-    : VOLS.map((v): VolumeDetail => {
-        const total = v.files + v.folders;
-        const el = now - (scanStart as number);
-        const rs = rescanAt[v.letter] !== undefined ? now - rescanAt[v.letter] : Infinity;
-        if (v.letter === "H" && params.get("volerr") === "1") {
-          return { letter: "H", files: 0, folders: 0, state: "error", done: null, total: null, error: "USN journal is not active and could not be created (access denied)" };
-        }
-        if (rs < 1500) return { letter: v.letter, files: v.files, folders: v.folders, state: "rescanning", done: null, total: null, error: null };
-        if (rs < 1500 + v.ms) {
-          const p = 1 - Math.pow(1 - (rs - 1500) / v.ms, 2);
-          return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
-        }
-        if (el >= v.ms) return { letter: v.letter, files: v.files, folders: v.folders, state: "live", done: null, total: null, error: null };
-        const p = 1 - Math.pow(1 - el / v.ms, 2);
-        return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
-      });
+    ? [{ letter: "C", files: 12580243, folders: 1204511, state: "demo", done: null, total: null, error: null, fs: "", monitor: "" }]
+    : VOLS.map((v): VolumeDetail => ({ ...volRow(v), fs: v.fs, monitor: v.monitor }));
+  function volRow(v: (typeof VOLS)[number]): Omit<VolumeDetail, "fs" | "monitor"> {
+    const total = v.files + v.folders;
+    const el = now - (scanStart as number);
+    const rs = rescanAt[v.letter] !== undefined ? now - rescanAt[v.letter] : Infinity;
+    if (v.letter === "H" && params.get("volerr") === "1") {
+      return { letter: "H", files: 0, folders: 0, state: "error", done: null, total: null, error: "USN journal is not active and could not be created (access denied)" };
+    }
+    if (rs < 1500) return { letter: v.letter, files: v.files, folders: v.folders, state: "rescanning", done: null, total: null, error: null };
+    if (rs < 1500 + v.ms) {
+      const p = 1 - Math.pow(1 - (rs - 1500) / v.ms, 2);
+      return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
+    }
+    if (el >= v.ms) return { letter: v.letter, files: v.files, folders: v.folders, state: "live", done: null, total: null, error: null };
+    const p = 1 - Math.pow(1 - el / v.ms, 2);
+    return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total, error: null };
+  }
 
   const s = t1.stats;
   const indexing = t1.state === "indexing";

@@ -45,6 +45,10 @@ pub struct VolumeDetail {
     pub done: Option<u64>,
     pub total: Option<u64>,
     pub error: Option<String>,
+    /// Filesystem ("NTFS", "FAT32", "exFAT", "ReFS"); empty when unknown (demo, old searchd).
+    pub fs: String,
+    /// "usn" | "folder_watch" | "" (unknown)
+    pub monitor: String,
 }
 
 /// Tier 0 as seen by the status page.
@@ -228,7 +232,17 @@ impl NameSource for MockSource {
         let volumes = self
             .status()
             .into_iter()
-            .map(|v| VolumeDetail { letter: v.letter, files: v.files, folders: v.folders, state: v.state, done: None, total: None, error: None })
+            .map(|v| VolumeDetail {
+                letter: v.letter,
+                files: v.files,
+                folders: v.folders,
+                state: v.state,
+                done: None,
+                total: None,
+                error: None,
+                fs: String::new(),
+                monitor: String::new(),
+            })
             .collect();
         Tier0Detail { kind: "demo", uptime_s: None, volumes }
     }

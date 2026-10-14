@@ -106,7 +106,7 @@ export function FirstRun({ mode, service, busy, error, rows, summary, onPrimary,
           <p>
             {stopped
               ? "The winseek name service keeps the file index up to date. Start it to search your drives; no administrator permission is needed."
-              : "The name service reads the NTFS file table, like Everything, and runs as a Windows service. Filenames never leave this PC."}
+              : "The name service reads the NTFS file table, like Everything, watches FAT, exFAT and ReFS drives, and runs as a Windows service. Filenames never leave this PC."}
           </p>
           <div className="actions">
             <button className="btn primary" disabled={busy} onClick={onPrimary} aria-busy={busy}>

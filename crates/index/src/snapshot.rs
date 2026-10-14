@@ -1,13 +1,15 @@
-//! Snapshot: `WSIX` v1, little endian, checksummed.
+//! Snapshot: `WSIX` v2, little endian, checksummed.
 //!
 //! ```text
 //! magic "WSIX" | version u32 | flags u32 (bit0 = size/mtime columns) | nvols u32 | nrec u32 | norder u32
-//! per volume: letter u8 | serial u64 | journal_id u64 | next_usn i64 | root u32
+//! per volume: letter u8 | serial u64 | journal_id u64 | next_usn i64 | root u32 | kind u8 | next_id u64
 //! parent u32[nrec] | vol u8[nrec] | flags u8[nrec] | frn u64[nrec] | (size u64[nrec] | mtime i64[nrec])
 //! names_len u64 | front-coded names in STORAGE order: per record varint(shared) varint(suffix_len) bytes
 //! order u32[norder]   (name sort array, deleted/stale/pending already folded in)
+//! nids u32 | per interned ReFS FRN of a live folder: vol u8 | frn u128 | id u64
 //! checksum u64 (over everything before it)
 //! ```
+//! v1 (no kind/next_id per volume, no ids section) still loads: every volume is NTFS.
 //! Deleted slots are stored (empty name, DELETED flag) so record indices stay stable.
 //! The FRN folder map, child links and hash table are rebuilt on load / lazily.
 
@@ -19,7 +21,8 @@ use std::io;
 use std::path::Path;
 
 const MAGIC: &[u8; 4] = b"WSIX";
-const VERSION: u32 = 1;
+const VERSION: u32 = 2;
+const VERSION_V1: u32 = 1;
 
 #[derive(Debug)]
 pub enum SnapshotError {
@@ -87,6 +90,9 @@ impl<'a> Rd<'a> {
     fn u64(&mut self) -> Result<u64, SnapshotError> {
         Ok(u64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
+    fn u128(&mut self) -> Result<u128, SnapshotError> {
+        Ok(u128::from_le_bytes(self.take(16)?.try_into().unwrap()))
+    }
     fn varint(&mut self) -> Result<u64, SnapshotError> {
         let (mut v, mut shift) = (0u64, 0);
         loop {
@@ -133,6 +139,8 @@ impl Index {
             b.extend_from_slice(&v.journal_id.to_le_bytes());
             b.extend_from_slice(&v.next_usn.to_le_bytes());
             b.extend_from_slice(&v.root.to_le_bytes());
+            b.push(v.kind as u8);
+            b.extend_from_slice(&v.next_id.to_le_bytes());
         }
         for &p in &self.parent {
             b.extend_from_slice(&p.to_le_bytes());
@@ -164,6 +172,14 @@ impl Index {
         b.extend_from_slice(&names);
         for &o in order.iter() {
             b.extend_from_slice(&o.to_le_bytes());
+        }
+        let mut ids: Vec<(u8, u128, u64)> = self.live_ids128().collect();
+        ids.sort_unstable();
+        b.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        for (v, f, id) in ids {
+            b.push(v);
+            b.extend_from_slice(&f.to_le_bytes());
+            b.extend_from_slice(&id.to_le_bytes());
         }
         let ck = checksum(&b);
         b.extend_from_slice(&ck.to_le_bytes());
@@ -204,9 +220,11 @@ impl Index {
         if r.take(4)? != MAGIC {
             return Err(c("magic"));
         }
-        if r.u32()? != VERSION {
+        let version = r.u32()?;
+        if version != VERSION && version != VERSION_V1 {
             return Err(c("version"));
         }
+        let v2 = version == VERSION;
         let fl = r.u32()?;
         let with_meta = fl & 1 != 0;
         let nvols = r.u32()? as usize;
@@ -226,7 +244,12 @@ impl Index {
             if root as usize >= n {
                 return Err(c("volume root"));
             }
-            vols.push(VolumeMeta { letter, serial, journal_id, next_usn, root });
+            let (kind, next_id) = if v2 {
+                (VolKind::from_u8(r.u8()?).ok_or(c("volume kind"))?, r.u64()?)
+            } else {
+                (VolKind::Ntfs, 0)
+            };
+            vols.push(VolumeMeta { letter, serial, journal_id, next_usn, root, kind, next_id });
         }
         let parent = r.u32s(n)?;
         let vol = r.take(n)?.to_vec();
@@ -265,6 +288,17 @@ impl Index {
             plen = shared + suffix;
         }
         let order = r.u32s(norder)?;
+        let mut ids128 = Ids128::default();
+        if v2 {
+            let nids = r.u32()? as usize;
+            if nids.saturating_mul(25) > body.len() - r.p {
+                return Err(c("ids count"));
+            }
+            for _ in 0..nids {
+                let (v, f, id) = (r.u8()?, r.u128()?, r.u64()?);
+                ids128.insert((v, f), id);
+            }
+        }
         if r.p != body.len() {
             return Err(c("trailing bytes"));
         }
@@ -323,6 +357,7 @@ impl Index {
         ix.mtime = mtime;
         ix.arena = arena;
         ix.vols = vols;
+        ix.ids128 = ids128;
         ix.rank = ix.compute_rank(&order);
         ix.order = order;
         ix.live = live;

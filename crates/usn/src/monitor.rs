@@ -89,19 +89,35 @@ pub fn query_journal(handle: &Handle) -> Result<JournalInfo, MonitorError> {
     })
 }
 
-/// READ_USN_JOURNAL_DATA_V0 (0x28 bytes).
-fn read_request(cursor: &JournalCursor) -> [u8; 0x28] {
-    let mut r = [0u8; 0x28];
+/// Which `READ_USN_JOURNAL_DATA` / record version to use.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RecordVersion {
+    /// READ_USN_JOURNAL_DATA_V0 (0x28 bytes) -> USN_RECORD_V2 (NTFS, 64-bit FRNs).
+    #[default]
+    V2,
+    /// READ_USN_JOURNAL_DATA_V1 (0x30 bytes, Min/MaxMajorVersion = 3) -> USN_RECORD_V3
+    /// (ReFS, 128-bit FRNs). Everything builds exactly this request for ReFS
+    /// (constants 0xffffffff and 0x00030003, pass 4 `FUN_14004ca10`).
+    V3,
+}
+
+/// READ_USN_JOURNAL_DATA_V0 (0x28 bytes) or _V1 (0x30 bytes).
+fn read_request(cursor: &JournalCursor, version: RecordVersion) -> Vec<u8> {
+    let mut r = vec![0u8; if version == RecordVersion::V3 { 0x30 } else { 0x28 }];
     r[0..8].copy_from_slice(&cursor.next_usn.to_le_bytes());
     r[8..12].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // ReasonMask: all
     // ReturnOnlyOnClose = 0, Timeout = 0, BytesToWaitFor = 0 (non-blocking)
     r[32..40].copy_from_slice(&cursor.journal_id.to_le_bytes());
+    if version == RecordVersion::V3 {
+        r[40..42].copy_from_slice(&3u16.to_le_bytes()); // MinMajorVersion
+        r[42..44].copy_from_slice(&3u16.to_le_bytes()); // MaxMajorVersion
+    }
     r
 }
 
 /// One FSCTL_READ_USN_JOURNAL call into `buf` (use >= 4 KiB; `DEFAULT_BUF`).
-pub fn read_journal(handle: &Handle, cursor: JournalCursor, buf: &mut [u8]) -> ReadOutcome {
-    let req = read_request(&cursor);
+pub fn read_journal(handle: &Handle, cursor: JournalCursor, version: RecordVersion, buf: &mut [u8]) -> ReadOutcome {
+    let req = read_request(&cursor, version);
     match handle.ioctl(FSCTL_READ_USN_JOURNAL, &req, buf) {
         Ok(n) => match parse_usn_buffer(&buf[..n]) {
             Ok((next, recs)) => {
@@ -127,6 +143,8 @@ pub struct MonitorConfig {
     pub buffer_size: usize,
     /// RenamePairer staleness window, in records.
     pub rename_stale_after: u64,
+    /// V2 for NTFS, V3 for ReFS.
+    pub version: RecordVersion,
 }
 
 impl Default for MonitorConfig {
@@ -137,6 +155,7 @@ impl Default for MonitorConfig {
             poll_interval: Duration::from_millis(250),
             buffer_size: DEFAULT_BUF,
             rename_stale_after: 10_000,
+            version: RecordVersion::V2,
         }
     }
 }
@@ -187,7 +206,7 @@ pub fn run_monitor(
             }
             return MonitorExit::Stopped;
         }
-        match read_journal(handle, cursor, &mut buf) {
+        match read_journal(handle, cursor, cfg.version, &mut buf) {
             ReadOutcome::Records(recs, next) => {
                 let drained = recs.is_empty();
                 for r in recs {
@@ -222,11 +241,19 @@ mod tests {
 
     #[test]
     fn read_request_layout() {
-        let r = read_request(&JournalCursor { journal_id: 0x1122_3344_5566_7788, next_usn: 4096 });
+        let cur = JournalCursor { journal_id: 0x1122_3344_5566_7788, next_usn: 4096 };
+        let r = read_request(&cur, RecordVersion::V2);
         assert_eq!(r.len(), 0x28);
         assert_eq!(&r[0..8], &4096i64.to_le_bytes());
         assert_eq!(&r[8..12], &0xFFFF_FFFFu32.to_le_bytes());
         assert_eq!(&r[12..32], &[0u8; 20]);
         assert_eq!(&r[32..40], &0x1122_3344_5566_7788u64.to_le_bytes());
+        // V1 request for ReFS: same prefix, then MinMajorVersion = MaxMajorVersion = 3
+        // (Everything's 0x00030003), padded to 0x30.
+        let r3 = read_request(&cur, RecordVersion::V3);
+        assert_eq!(r3.len(), 0x30);
+        assert_eq!(&r3[..0x28], &r[..]);
+        assert_eq!(&r3[40..44], &0x0003_0003u32.to_le_bytes());
+        assert_eq!(&r3[44..48], &[0u8; 4]);
     }
 }

@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/ntfs",
+    "crates/folder",
     "crates/index",
     "crates/usn",
     "crates/ipc",

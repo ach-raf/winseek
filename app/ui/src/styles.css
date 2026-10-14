@@ -379,6 +379,7 @@ mark { background: var(--mark); color: inherit; border-radius: 3px; padding: 0 1
 }
 .st-vol .letter { font-weight: 600; }
 .st-vol .nums { color: var(--fg-2); font-size: 12.5px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-vol .st-fs { color: var(--fg-3); }
 .st-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-3); white-space: nowrap; }
 .st-vol .btn { height: 26px; padding: 0 10px; font-size: 12px; }
 .st-vol .bar, .st-vol .st-err { grid-column: 2 / 5; }

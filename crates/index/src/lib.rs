@@ -12,7 +12,7 @@ pub mod store;
 
 pub use query::{Cond, Query, SearchOptions, SearchResult, Term};
 pub use snapshot::SnapshotError;
-pub use store::{norm_frn, Index, IndexBuilder, VolumeMeta, FRN_MASK, NONE};
+pub use store::{norm_frn, Index, IndexBuilder, VolKind, VolumeMeta, FIRST_SYNTHETIC_ID, FRN_MASK, NONE};
 
 #[cfg(test)]
 mod tests;

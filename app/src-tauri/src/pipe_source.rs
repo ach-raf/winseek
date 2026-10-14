@@ -7,7 +7,7 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use winseek_ipc::pipe::{connect, PipeConn};
-use winseek_ipc::{read_message, write_message, Request, Response, Sort, VolumeState, PIPE_NAME};
+use winseek_ipc::{read_message, write_message, Monitor, Request, Response, Sort, VolumeState, PIPE_NAME};
 
 use crate::source::{Hit, NameSource, SearchResult, Tier0Detail, VolumeDetail, VolumeStatus};
 
@@ -83,7 +83,23 @@ fn volume_detail(v: winseek_ipc::VolumeStatus) -> VolumeDetail {
         VolumeState::Rescanning => ("rescanning", None, None, None),
         VolumeState::Error { msg } => ("error", None, None, Some(msg)),
     };
-    VolumeDetail { letter: v.letter.to_string(), files: v.files, folders: v.folders, state: state.into(), done, total, error }
+    // An older searchd sends no fs: show nothing rather than a guessed monitor.
+    let monitor = match (v.fs.is_empty(), v.monitor) {
+        (true, _) => "",
+        (false, Monitor::Usn) => "usn",
+        (false, Monitor::FolderWatch) => "folder_watch",
+    };
+    VolumeDetail {
+        letter: v.letter.to_string(),
+        files: v.files,
+        folders: v.folders,
+        state: state.into(),
+        done,
+        total,
+        error,
+        fs: v.fs,
+        monitor: monitor.into(),
+    }
 }
 
 fn offline() -> Vec<VolumeStatus> {
@@ -169,7 +185,7 @@ mod tests {
 
     #[test]
     fn volume_detail_keeps_state_progress_and_error_text() {
-        let v = |state| winseek_ipc::VolumeStatus { letter: 'C', files: 7, folders: 2, state };
+        let v = |state| winseek_ipc::VolumeStatus { letter: 'C', files: 7, folders: 2, state, fs: "NTFS".into(), monitor: Monitor::Usn };
         let d = volume_detail(v(VolumeState::Scanning { done: 3, total: 9 }));
         assert_eq!((d.state.as_str(), d.done, d.total, d.letter.as_str()), ("scanning", Some(3), Some(9), "C"));
         let d = volume_detail(v(VolumeState::Error { msg: "journal gone".into() }));
@@ -177,5 +193,17 @@ mod tests {
         assert_eq!(volume_detail(v(VolumeState::Rescanning)).state, "rescanning");
         let d = volume_detail(v(VolumeState::Live));
         assert_eq!((d.state.as_str(), d.files, d.folders, d.error), ("live", 7, 2, None));
+        assert_eq!((d.fs.as_str(), d.monitor.as_str()), ("NTFS", "usn"));
+        let e = volume_detail(winseek_ipc::VolumeStatus {
+            letter: 'E',
+            files: 1,
+            folders: 0,
+            state: VolumeState::Live,
+            fs: "exFAT".into(),
+            monitor: Monitor::FolderWatch,
+        });
+        assert_eq!((e.fs.as_str(), e.monitor.as_str()), ("exFAT", "folder_watch"));
+        let old = volume_detail(winseek_ipc::VolumeStatus { fs: String::new(), ..winseek_ipc::VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Live, fs: String::new(), monitor: Monitor::Usn } });
+        assert_eq!((old.fs.as_str(), old.monitor.as_str()), ("", ""));
     }
 }

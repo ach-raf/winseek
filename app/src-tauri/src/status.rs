@@ -539,6 +539,8 @@ mod tests {
                         done: None,
                         total: None,
                         error: Some("journal".into()),
+                        fs: "NTFS".into(),
+                        monitor: "usn".into(),
                     }],
                 },
                 "running".into(),
