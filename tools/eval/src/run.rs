@@ -190,11 +190,11 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
             let exe = find_server_exe(&opts.llama).ok_or_else(|| format!("no llama-server under {}", opts.llama.display()))?;
             eprintln!("hashing model files...");
             let log = std::env::temp_dir().join("winseek-eval-llama.log");
-            let cfg = SpawnConfig { role: Role::Embedding, log_file: Some(log.clone()), ..Default::default() };
+            let cfg = SpawnConfig { role: Role::EmbedIndex, log_file: Some(log.clone()), ..Default::default() };
             eprintln!("spawning {} (log: {})", exe.display(), log.display());
             let server = LlamaServer::spawn_with(&exe, &model, Some(&mmproj), &[], &cfg).map_err(|e| e.to_string())?;
             // The exact argument list the preset produced, with the throwaway key redacted.
-            let args = build_args(&model, Some(&mmproj), server.port(), "***", Role::Embedding, &[]);
+            let args = build_args(&model, Some(&mmproj), server.port(), "***", Role::EmbedIndex, Default::default(), &[]);
             meta["server"] = json!({
                 "spawned": true,
                 "exe": exe.display().to_string(),

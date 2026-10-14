@@ -12,6 +12,7 @@ pub mod embedder;
 pub mod extract;
 pub mod feed;
 pub mod gitignore;
+pub mod gpu_phase;
 pub mod identity;
 pub mod library;
 pub mod ocr;
@@ -301,7 +302,15 @@ impl Tier1 {
     }
 
     fn recompute_pause(&self) {
-        self.paused.store(self.paused_reason().is_some(), Ordering::SeqCst);
+        let paused = self.paused_reason().is_some();
+        self.paused.store(paused, Ordering::SeqCst);
+        if paused {
+            // Unload the GPU model now, not just stop the work. If a pass holds the embedder the
+            // worker loop does it as soon as the pass returns (see `worker_loop`).
+            if let Ok(mut e) = self.embedder.try_lock() {
+                e.on_pause();
+            }
+        }
     }
 
     pub fn paused_reason(&self) -> Option<PauseReason> {
@@ -508,6 +517,9 @@ fn worker_loop(t: Arc<Tier1>) {
                 }
             }
         };
+        if t.paused.load(Ordering::Relaxed) {
+            lock(&t.embedder).on_pause();
+        }
         match r {
             Ok(Pass::Progress(n)) => {
                 lock(&t.throughput).record(started, std::time::Instant::now(), n);
@@ -845,6 +857,36 @@ mod tests {
         add_done(&t, 2, r"C:\Pics\dog.jpg", 2);
         assert_eq!(t.rebuild_with(|| Err("boom".into())), Err("boom".to_string()));
         assert_eq!(lock(&t.store).stats().unwrap().done, 1);
+    }
+
+    struct PauseProbe(Arc<std::sync::atomic::AtomicU32>);
+    impl Embedder for PauseProbe {
+        fn embed_images(&mut self, _: &[Vec<u8>]) -> embedder::Result<Vec<Vec<f32>>> {
+            Err(EmbedError::ModelsMissing)
+        }
+        fn embed_query(&mut self, _: &str) -> embedder::Result<Vec<f32>> {
+            Err(EmbedError::ModelsMissing)
+        }
+        fn meta(&self) -> winseek_store::IndexMeta {
+            index_meta("test")
+        }
+        fn on_pause(&mut self) {
+            self.0.fetch_add(1, Ordering::SeqCst);
+        }
+    }
+
+    #[test]
+    fn pausing_unloads_the_embedder_but_resuming_does_not() {
+        let n = Arc::new(std::sync::atomic::AtomicU32::new(0));
+        let t = tier(Box::new(PauseProbe(n.clone())), &[r"C:\Pics"]);
+        t.set_auto_pause(Some(PauseReason::Fullscreen));
+        assert_eq!(n.load(Ordering::SeqCst), 1);
+        t.set_auto_pause(None);
+        assert_eq!(n.load(Ordering::SeqCst), 1, "resuming must not unload");
+        t.set_paused(true);
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        t.set_paused(false);
+        assert_eq!(n.load(Ordering::SeqCst), 2);
     }
 
     #[test]

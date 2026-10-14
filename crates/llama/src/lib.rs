@@ -18,7 +18,7 @@ pub use embed::EmbedClient;
 pub use fetch::{fetch, fetch_with, rewrite_hf, FetchOptions, sha256_file, sha256_hex, Progress};
 pub use manifest::{Manifest, ModelProfile, ModelRole};
 pub use reaper::{Clock, IdleReaper, IdleSlot, SystemClock};
-pub use server::{fallback_chain, fallback_order, LlamaServer, Role, SpawnConfig};
+pub use server::{fallback_chain, fallback_order, LlamaServer, Profile, Role, SpawnConfig};
 
 #[derive(Debug)]
 pub enum Error {

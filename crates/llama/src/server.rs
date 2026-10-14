@@ -8,17 +8,41 @@ use std::time::{Duration, Instant};
 use crate::backend::Backend;
 use crate::{Error, Result};
 
+/// What a server is for. Every role pins `-np 1` and an explicit `-c` (llama-server otherwise
+/// defaults to 4 slots and the model's full trained context, which doubled the VRAM; PLAN
+/// "VRAM budget").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
+    /// Text-only EmbeddingGemma-2 for search queries: no mmproj, CPU, ~0 VRAM.
+    EmbedQuery,
+    /// EmbeddingGemma-2 with the mmproj for image/document indexing: GPU, ubatch >= 768.
+    EmbedIndex,
     /// Chat / vision parsing (Infinity-Parser2).
-    Chat,
-    /// Adds `--embeddings` (EmbeddingGemma-2).
-    Embedding,
+    Parser,
+}
+
+/// Resource profile (PLAN section 7). Only `Low` changes the argument lists.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Profile {
+    /// Minimise VRAM: the index server runs on CPU, the parser's mmproj stays off the GPU.
+    Low,
+    /// Default: the query/index split, GPU servers loaded one at a time and unloaded when idle.
+    #[default]
+    Balanced,
+    /// Like Balanced, but the GPU servers may stay resident while the app is open.
+    Fast,
+}
+
+impl Profile {
+    pub fn low_vram(self) -> bool {
+        self == Profile::Low
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct SpawnConfig {
     pub role: Role,
+    pub profile: Profile,
     pub health_timeout: Duration,
     /// Where to send the child's stdout+stderr (null if None).
     pub log_file: Option<PathBuf>,
@@ -26,7 +50,7 @@ pub struct SpawnConfig {
 
 impl Default for SpawnConfig {
     fn default() -> Self {
-        SpawnConfig { role: Role::Chat, health_timeout: Duration::from_secs(120), log_file: None }
+        SpawnConfig { role: Role::Parser, profile: Profile::Balanced, health_timeout: Duration::from_secs(120), log_file: None }
     }
 }
 
@@ -36,29 +60,49 @@ pub struct LlamaServer {
     api_key: String,
 }
 
-/// Build the argument list (pure, testable).
+/// The role/profile specific flags (pure). EmbedIndex needs the ubatch to hold the whole image
+/// (280 tokens): 512 silently drifts (cos 0.986), so it stays >= 768.
+pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
+    let low = profile.low_vram();
+    let flags: &[&str] = match role {
+        Role::EmbedQuery => &[
+            "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device",
+            "none",
+        ],
+        Role::EmbedIndex => &[
+            "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
+            "1024", "-b", "1024", "-ub", "1024", "-ngl", if low { "0" } else { "99" },
+        ],
+        Role::Parser => &[
+            "--jinja", "--reasoning-budget", "0", "-np", "1", "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99",
+        ],
+    };
+    let mut a: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+    // Low: keep the projector off the GPU too (otherwise it still occupies ~650 MB).
+    if low && matches!(role, Role::EmbedIndex | Role::Parser) {
+        a.push("--no-mmproj-offload".into());
+    }
+    a
+}
+
+/// Build the argument list (pure, testable). `EmbedQuery` never gets an mmproj.
 pub fn build_args(
     model: &Path,
     mmproj: Option<&Path>,
     port: u16,
     api_key: &str,
     role: Role,
+    profile: Profile,
     extra: &[String],
 ) -> Vec<String> {
     let mut a: Vec<String> = vec!["-m".into(), model.display().to_string()];
-    if let Some(m) = mmproj {
+    if let Some(m) = mmproj.filter(|_| role != Role::EmbedQuery) {
         a.push("--mmproj".into());
         a.push(m.display().to_string());
     }
     a.extend(["--host".into(), "127.0.0.1".into(), "--port".into(), port.to_string()]);
     a.extend(["--api-key".into(), api_key.to_string()]);
-    if role == Role::Embedding {
-        a.push("--embeddings".into());
-        a.extend(
-            ["--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-b", "8192", "-ub", "8192"]
-                .map(String::from),
-        );
-    }
+    a.extend(role_args(role, profile));
     a.extend(extra.iter().cloned());
     a
 }
@@ -211,15 +255,9 @@ pub fn wait_healthy(
 }
 
 impl LlamaServer {
-    /// Spawn a chat/vision server (`Role::Chat`, default config).
+    /// Spawn a parser server (`Role::Parser`, default config).
     pub fn spawn(exe: &Path, model: &Path, mmproj: Option<&Path>, extra_args: &[String]) -> Result<LlamaServer> {
         Self::spawn_with(exe, model, mmproj, extra_args, &SpawnConfig::default())
-    }
-
-    /// Spawn with `--embeddings`.
-    pub fn spawn_embedding(exe: &Path, model: &Path, mmproj: Option<&Path>, extra_args: &[String]) -> Result<LlamaServer> {
-        let cfg = SpawnConfig { role: Role::Embedding, ..Default::default() };
-        Self::spawn_with(exe, model, mmproj, extra_args, &cfg)
     }
 
     pub fn spawn_with(
@@ -229,9 +267,12 @@ impl LlamaServer {
         extra_args: &[String],
         cfg: &SpawnConfig,
     ) -> Result<LlamaServer> {
+        if cfg.role == Role::EmbedIndex && mmproj.is_none() {
+            return Err(Error::Spawn("the embedding index server needs the mmproj".into()));
+        }
         let port = free_port()?;
         let api_key = random_key()?;
-        let args = build_args(model, mmproj, port, &api_key, cfg.role, extra_args);
+        let args = build_args(model, mmproj, port, &api_key, cfg.role, cfg.profile, extra_args);
         let mut cmd = Command::new(exe);
         cmd.args(&args).stdin(Stdio::null());
         if let Some(dir) = exe.parent() {
@@ -323,25 +364,88 @@ mod tests {
     use super::*;
     use std::io::{BufRead, BufReader, Write};
 
+    const ALL: [Profile; 3] = [Profile::Low, Profile::Balanced, Profile::Fast];
+
+    fn args(role: Role, profile: Profile, mmproj: bool) -> Vec<String> {
+        build_args(Path::new("m.gguf"), mmproj.then(|| Path::new("p.gguf")), 5555, "KEY", role, profile, &[])
+    }
+
+    /// Expected full list: model, optional mmproj, fixed host/port/key, then `tail`.
+    fn want(mmproj: bool, tail: &[&str]) -> Vec<String> {
+        let mut v = vec!["-m", "m.gguf"];
+        if mmproj {
+            v.extend(["--mmproj", "p.gguf"]);
+        }
+        v.extend(["--host", "127.0.0.1", "--port", "5555", "--api-key", "KEY"]);
+        v.extend(tail);
+        v.into_iter().map(String::from).collect()
+    }
+
     #[test]
-    fn args_chat_and_embedding() {
-        let a = build_args(Path::new("m.gguf"), Some(Path::new("p.gguf")), 5555, "KEY", Role::Chat, &["-ngl".into(), "99".into()]);
-        assert_eq!(
-            a,
-            ["-m", "m.gguf", "--mmproj", "p.gguf", "--host", "127.0.0.1", "--port", "5555", "--api-key", "KEY", "-ngl", "99"]
-        );
-        let e = build_args(Path::new("m.gguf"), None, 1, "K", Role::Embedding, &[]);
-        assert!(e.contains(&"--embeddings".to_string()) && !e.contains(&"--mmproj".to_string()));
-        assert_eq!(
-            e,
-            [
-                "-m", "m.gguf", "--host", "127.0.0.1", "--port", "1", "--api-key", "K", "--embeddings", "--pooling", "mean",
-                "--image-min-tokens", "280", "--image-max-tokens", "280", "-b", "8192", "-ub", "8192"
+    fn embed_query_is_text_only_cpu() {
+        let tail = ["--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device", "none"];
+        // An mmproj is ignored, in every profile.
+        for p in ALL {
+            assert_eq!(args(Role::EmbedQuery, p, true), want(false, &tail));
+            assert_eq!(args(Role::EmbedQuery, p, false), want(false, &tail));
+        }
+    }
+
+    #[test]
+    fn embed_index_gpu_and_low_cpu() {
+        let tail = |ngl: &'static str| {
+            vec![
+                "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
+                "1024", "-b", "1024", "-ub", "1024", "-ngl", ngl,
             ]
-        );
-        let e2 = build_args(Path::new("m.gguf"), None, 1, "K", Role::Embedding, &["-ngl".into(), "0".into()]);
-        assert_eq!(&e2[e2.len() - 2..], ["-ngl", "0"]);
-        assert!(!a.contains(&"--pooling".to_string()));
+        };
+        for p in [Profile::Balanced, Profile::Fast] {
+            assert_eq!(args(Role::EmbedIndex, p, true), want(true, &tail("99")));
+        }
+        let mut low = tail("0");
+        low.push("--no-mmproj-offload");
+        assert_eq!(args(Role::EmbedIndex, Profile::Low, true), want(true, &low));
+    }
+
+    #[test]
+    fn parser_args_and_low_vram() {
+        let base = ["--jinja", "--reasoning-budget", "0", "-np", "1", "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99"];
+        assert_eq!(args(Role::Parser, Profile::Balanced, true), want(true, &base));
+        assert_eq!(args(Role::Parser, Profile::Fast, true), want(true, &base));
+        let low = [&base[..], &["--no-mmproj-offload"]].concat();
+        assert_eq!(args(Role::Parser, Profile::Low, true), want(true, &low));
+    }
+
+    #[test]
+    fn extra_args_come_last() {
+        let e = build_args(Path::new("m"), None, 1, "K", Role::EmbedIndex, Profile::Balanced, &["-ngl".into(), "0".into()]);
+        assert_eq!(&e[e.len() - 2..], ["-ngl", "0"]);
+    }
+
+    #[test]
+    fn every_role_pins_one_slot_and_context_and_index_ubatch_holds_the_image() {
+        let val = |a: &[String], flag: &str| -> Option<String> { a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1)).cloned() };
+        for role in [Role::EmbedQuery, Role::EmbedIndex, Role::Parser] {
+            for p in ALL {
+                let a = args(role, p, true);
+                assert_eq!(val(&a, "-np").as_deref(), Some("1"), "{role:?} {p:?}");
+                assert!(val(&a, "-c").and_then(|c| c.parse::<u32>().ok()).is_some(), "{role:?} {p:?} has no -c");
+                assert!(val(&a, "-ngl").is_some(), "{role:?} {p:?} has no -ngl");
+            }
+        }
+        for p in ALL {
+            let a = args(Role::EmbedIndex, p, true);
+            let n = |f: &str| val(&a, f).unwrap().parse::<u32>().unwrap();
+            let (ub, b, c) = (n("-ub"), n("-b"), n("-c"));
+            assert!(ub >= 768 && b >= ub && c >= ub, "{p:?}: -c {c} -b {b} -ub {ub}");
+        }
+    }
+
+    #[test]
+    fn embed_index_without_mmproj_is_refused_before_spawning() {
+        let cfg = SpawnConfig { role: Role::EmbedIndex, ..Default::default() };
+        let e = LlamaServer::spawn_with(Path::new("does-not-exist.exe"), Path::new("m.gguf"), None, &[], &cfg).err().unwrap();
+        assert!(e.to_string().contains("mmproj"), "{e}");
     }
 
     #[test]
