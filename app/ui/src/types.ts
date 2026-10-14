@@ -47,6 +47,25 @@ export interface SemanticHit {
   page?: number | null;
   /** "text": found in the extracted text only (e.g. before the models are installed); default "meaning". */
   source?: "meaning" | "text";
+  /** Where the query words sit on the image / PDF page (fractions 0-1); only boxes that contain a query word. */
+  boxes?: HitBox[] | null;
+}
+/** A rectangle on an image or PDF page, as fractions 0-1 of its size. */
+export interface HitBox {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+}
+/** Performance profile (Settings): how long the image / document models stay on the graphics card. */
+export type Profile = "low" | "balanced" | "fast";
+/** What "Extract text" returns for an image or one PDF page. */
+export interface ParsedDoc {
+  markdown: string;
+  tables: { html: string; tsv: string }[];
+  elements_count: number;
+  /** Answered from the in-memory cache (same content and page parsed a moment ago). */
+  cached: boolean;
 }
 export interface SemanticResult {
   state: string;
@@ -57,6 +76,8 @@ export interface PlanItem {
   /** null: the manifest has no size for this item (llama.cpp zips). */
   bytes: number | null;
   present: boolean;
+  /** Not part of the default setup (the document parser): offered as a checkbox, not counted in the total. */
+  optional?: boolean;
 }
 /** Tier 1 ignore list: folder/file names skipped anywhere inside the indexed folders. */
 export interface IgnoreList {
@@ -134,6 +155,18 @@ export interface StatusPdfium {
   /** On-disk size of the DLL; null when missing. */
   bytes: number | null;
 }
+/** The document parser (Infinity-Parser2) as the status page shows it. */
+export interface StatusParser {
+  model_id: string;
+  /** Model files and a llama build are on disk, so it can run. */
+  present: boolean;
+  files: StatusModelFile[];
+  server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
+  queue: { queued: number; done: number; failed: number };
+  profile: Profile;
+  /** Which images go to the parser. Guesses until the evaluation has tuned them. */
+  routing: { doc_min: number; doc_margin: number; screenshot_min_chars: number; provisional: boolean };
+}
 export interface StatusModels {
   llama_build: string;
   backend: "cuda12" | "vulkan" | "cpu";
@@ -145,6 +178,7 @@ export interface StatusModels {
   files: StatusModelFile[];
   pdfium: StatusPdfium;
   server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
+  parser: StatusParser;
 }
 export interface StatusPage {
   tier0: StatusTier0;
@@ -273,6 +307,15 @@ export interface Backend {
   /** Never rejects with anything but a user-readable string ("File not found"). */
   previewInfo(path: string): Promise<PreviewInfo>;
   semanticSearch(query: string, k: number): Promise<SemanticResult>;
+  /** Are the document parser's files installed? The preview offers its actions only then. */
+  parserPresent(): Promise<boolean>;
+  /** Read an image or one PDF page (1-based, ignored for images) with the document parser. Takes a few seconds. */
+  parseDocument(path: string, page?: number): Promise<ParsedDoc>;
+  /** Put text on the clipboard, with an HTML twin (a table) when given. */
+  copyTextHtml(text: string, html?: string | null): Promise<void>;
+  getProfile(): Promise<Profile>;
+  /** Saves and applies; resolves to what was saved. */
+  setProfile(profile: Profile): Promise<Profile>;
   /** One PDF page (1-based) rendered about `width` px wide; PNG (or SVG in the mock) as a Blob. */
   previewPdfPage(path: string, page: number, width: number): Promise<Blob>;
   /** Everything the status page shows. Never rejects because searchd is down (tier0.source says so). */
@@ -282,8 +325,8 @@ export interface Backend {
   /** Drop all embeddings and index the chosen folders again. Never touches the name index. */
   tier1Rebuild(): Promise<void>;
   modelsPlan(): Promise<ModelsPlan>;
-  /** Starts the background download; progress arrives via onModelsProgress / onModelsDone. */
-  modelsDownload(): Promise<void>;
+  /** Starts the background download (`includeParser`: also the optional document parser); progress arrives via onModelsProgress / onModelsDone. */
+  modelsDownload(includeParser?: boolean): Promise<void>;
   /** Aborts but keeps partial files; a later modelsDownload resumes. */
   modelsCancel(): Promise<void>;
   onModelsProgress(cb: (p: ModelsProgress) => void): Promise<() => void>;

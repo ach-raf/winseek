@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, toggleActual, zoomAt } from "./previewLogic.ts";
+import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, fitScale, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt } from "./previewLogic.ts";
 
 test("clampPage keeps a PDF page inside the document", () => {
   assert.equal(clampPage(3, 10), 3);
@@ -63,6 +63,43 @@ test("zoomAt keeps the point under the cursor fixed and respects limits", () => 
 test("clampView keeps a larger image covering the stage, centres a smaller one", () => {
   assert.deepEqual(clampView({ s: 1, tx: 999, ty: -999 }, 400, 300, 800, 600), { s: 1, tx: 200, ty: -150 });
   assert.deepEqual(clampView({ s: 0.5, tx: 50, ty: 50 }, 400, 300, 800, 600), { s: 0.5, tx: 0, ty: 0 });
+});
+
+test("cleanBoxes drops unusable boxes and clamps the rest into the image", () => {
+  assert.deepEqual(cleanBoxes(null), []);
+  assert.deepEqual(cleanBoxes(undefined), []);
+  assert.deepEqual(cleanBoxes([{ x: 0.1, y: 0.2, w: 0.3, h: 0.1 }]), [{ x: 0.1, y: 0.2, w: 0.3, h: 0.1 }]);
+  assert.deepEqual(cleanBoxes([{ x: Number.NaN, y: 0, w: 0.1, h: 0.1 }, { x: 0, y: 0, w: Infinity, h: 0.1 }]), []);
+  assert.deepEqual(cleanBoxes([{ x: 0.5, y: 0.5, w: 0, h: 0.2 }, { x: 0.5, y: 0.5, w: 0.2, h: -1 }]), [], "empty boxes");
+  assert.deepEqual(cleanBoxes([{ x: 0.9, y: 0.95, w: 0.5, h: 0.5 }]), [{ x: 0.9, y: 0.95, w: 0.1, h: 0.05 }], "cut at the edge");
+  assert.deepEqual(cleanBoxes([{ x: -0.2, y: 0.1, w: 0.5, h: 0.1 }]), [{ x: 0, y: 0.1, w: 0.3, h: 0.1 }], "negative start");
+  assert.deepEqual(cleanBoxes([{ x: 0.1, y: 0.1, w: 0.0001, h: 0.0001 }]), [{ x: 0.1, y: 0.1, w: 0.004, h: 0.004 }], "tiny boxes stay visible");
+  assert.equal(cleanBoxes([{ x: 5, y: 5, w: 1, h: 1 }]).length, 0, "entirely outside");
+});
+
+test("boxRect gives padded percentages that stay inside the image", () => {
+  assert.deepEqual(boxRect({ x: 0.1, y: 0.2, w: 0.5, h: 0.1 }, 0), { left: "10%", top: "20%", width: "50%", height: "10%" });
+  assert.deepEqual(boxRect({ x: 0.1, y: 0.2, w: 0.5, h: 0.1 }, 0.01), { left: "9%", top: "19%", width: "52%", height: "12%" });
+  assert.deepEqual(boxRect({ x: 0, y: 0, w: 1, h: 1 }, 0.05), { left: "0%", top: "0%", width: "100%", height: "100%" });
+  assert.deepEqual(boxRect({ x: 0.9, y: 0.9, w: 0.1, h: 0.1 }, 0.02), { left: "88%", top: "88%", width: "12%", height: "12%" });
+});
+
+test("boxes show on images always and on a PDF page only for the hit's page", () => {
+  const b = [{ x: 0.1, y: 0.1, w: 0.2, h: 0.1 }];
+  assert.equal(boxesForView(b, null, null).length, 1, "an image has no page");
+  assert.equal(boxesForView(b, 3, null).length, 1);
+  assert.equal(boxesForView(b, 3, 3).length, 1, "the hit's page");
+  assert.equal(boxesForView(b, 3, 4).length, 0, "another page");
+  assert.equal(boxesForView(b, null, 2).length, 0, "no page in the hit");
+  assert.equal(boxesForView(b, undefined, 1).length, 0);
+  assert.equal(boxesForView(null, 3, 3).length, 0);
+});
+
+test("tableLabel counts rows and columns of the tab-separated text", () => {
+  assert.equal(tableLabel(0, "a\tb\tc\n1\t2\t3\n4\t5\t6"), "Table 1: 3 rows × 3 columns");
+  assert.equal(tableLabel(1, "only"), "Table 2: 1 row × 1 column");
+  assert.equal(tableLabel(2, "a\tb\n1"), "Table 3: 2 rows × 2 columns", "the widest row counts");
+  assert.equal(tableLabel(0, ""), "Table 1");
 });
 
 test("double click toggles fit and 1:1", () => {

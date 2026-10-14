@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Filter, Hit, ServiceState, Sort, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, HitBox, ServiceState, Sort, VolumeStatus } from "./types";
 import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -201,7 +201,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Space preview: `pvOpen` toggles the pane, `pv` is the (debounced) hit it shows. `navigated`: the user has moved
   // through the list with the keyboard since the last keystroke in the box, so Space means "preview", not a space.
   const [pvOpen, setPvOpen] = useState(false);
-  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null } | null>(null);
+  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; boxes: HitBox[] | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [statusOpen, setStatusOpen] = useState(false);
@@ -401,20 +401,23 @@ export default function App({ backend }: { backend: Backend }) {
 
   const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
-  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}` : "";
+  const curBoxes = semSel?.boxes ?? (current ? semMap.get(pathKey(current.path))?.boxes : null) ?? null;
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curBoxes?.length ?? 0}` : "";
   const currentRef = useRef(current);
   currentRef.current = current;
   const snippetRef = useRef(curSnippet);
   snippetRef.current = curSnippet;
   const pageRef = useRef(curPage);
   pageRef.current = curPage;
+  const boxesRef = useRef(curBoxes);
+  boxesRef.current = curBoxes;
   // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
   const pvShown = useRef(false);
   useEffect(() => {
     if (!pvOpen) { pvShown.current = false; setPv(null); return; }
     const c = currentRef.current;
     if (!c) return;
-    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current }); };
+    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, boxes: boxesRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
@@ -838,7 +841,7 @@ export default function App({ backend }: { backend: Backend }) {
       )}
       </div>
       {pvOpen && pv && (
-        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page}
+        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes}
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} />
       )}
       </div>

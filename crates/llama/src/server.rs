@@ -37,6 +37,24 @@ impl Profile {
     pub fn low_vram(self) -> bool {
         self == Profile::Low
     }
+
+    /// The stored / UI name: `low`, `balanced` or `fast`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Profile::Low => "low",
+            Profile::Balanced => "balanced",
+            Profile::Fast => "fast",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Profile> {
+        match s {
+            "low" => Some(Profile::Low),
+            "balanced" => Some(Profile::Balanced),
+            "fast" => Some(Profile::Fast),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -446,6 +464,16 @@ mod tests {
         let cfg = SpawnConfig { role: Role::EmbedIndex, ..Default::default() };
         let e = LlamaServer::spawn_with(Path::new("does-not-exist.exe"), Path::new("m.gguf"), None, &[], &cfg).err().unwrap();
         assert!(e.to_string().contains("mmproj"), "{e}");
+    }
+
+    #[test]
+    fn profile_names_round_trip() {
+        for p in ALL {
+            assert_eq!(Profile::parse(p.as_str()), Some(p));
+        }
+        assert_eq!(Profile::parse("turbo"), None);
+        assert_eq!(Profile::parse("Balanced"), None);
+        assert_eq!(Profile::default(), Profile::Balanced);
     }
 
     #[test]

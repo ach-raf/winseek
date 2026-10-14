@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Backend, StatusModels, StatusPage, StatusTier0, StatusTier1, VolumeDetail } from "./types";
+import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusTier0, StatusTier1, VolumeDetail } from "./types";
 import { formatDuration, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 
@@ -142,6 +142,53 @@ function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: ()
 
 const backendName = (m: StatusModels) => (m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU");
 
+function Files({ files }: { files: StatusModelFile[] }) {
+  return (
+    <ul className="items st-files">
+      {files.map((f) => (
+        <li key={f.name} className={f.bytes != null ? "have" : ""}>
+          <span title={f.name}>{f.role === "model" ? "Model" : "Vision projector"} · {f.name}</span>
+          <span className={"sz" + (f.bytes == null ? " st-miss" : "")}>
+            {f.bytes == null ? `Missing (${formatSize(f.expected_bytes)})` : f.bytes === f.expected_bytes ? formatSize(f.bytes) : `${formatSize(f.bytes)} of ${formatSize(f.expected_bytes)}`}
+          </span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+const profileName = (p: StatusParser["profile"]) => p.charAt(0).toUpperCase() + p.slice(1);
+
+/** The document parser: files, server, queue, profile and the (provisional) routing thresholds. */
+function ParserRows({ p }: { p: StatusParser }) {
+  const sv = p.server;
+  const q = p.queue;
+  const r = p.routing;
+  return (
+    <>
+      <dl className="st-grid">
+        <Row k="Document parser" title="Infinity-Parser2 reads scans, receipts and screenshots into text and tables">
+          {p.model_id}
+          {p.present ? " · installed" : <span className="st-miss"> · not installed (optional, add it in Setup)</span>}
+        </Row>
+        <Row k="Parser server">
+          {sv.running
+            ? `Running${sv.port != null ? ` on port ${sv.port}` : ""}${sv.unload_in_s != null ? ` · frees GPU memory in ${formatDuration(sv.unload_in_s)} if idle` : ""}`
+            : `Not running. It starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`}
+        </Row>
+        <Row k="Parse queue" title="Images and scanned pages waiting for, done with, or given up on by the document parser">
+          {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.failed)} failed
+        </Row>
+        <Row k="Profile" title="Performance profile (Settings)">{profileName(p.profile)}</Row>
+        <Row k="Parser routing thresholds" title="Which images go to the parser. Guesses until the evaluation has tuned them.">
+          {r.provisional ? "provisional" : "tuned"} · document score ≥ {r.doc_min}, margin ≥ {r.doc_margin}, screenshots from {r.screenshot_min_chars} characters
+        </Row>
+      </dl>
+      <Files files={p.files} />
+    </>
+  );
+}
+
 function Models({ m }: { m: StatusModels }) {
   const sv = m.server;
   return (
@@ -165,16 +212,8 @@ function Models({ m }: { m: StatusModels }) {
             : `Not running. It starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`}
         </Row>
       </dl>
-      <ul className="items st-files">
-        {m.files.map((f) => (
-          <li key={f.name} className={f.bytes != null ? "have" : ""}>
-            <span title={f.name}>{f.role === "model" ? "Model" : "Vision projector"} · {f.name}</span>
-            <span className={"sz" + (f.bytes == null ? " st-miss" : "")}>
-              {f.bytes == null ? `Missing (${formatSize(f.expected_bytes)})` : f.bytes === f.expected_bytes ? formatSize(f.bytes) : `${formatSize(f.bytes)} of ${formatSize(f.expected_bytes)}`}
-            </span>
-          </li>
-        ))}
-      </ul>
+      <Files files={m.files} />
+      <ParserRows p={m.parser} />
     </div>
   );
 }

@@ -1,7 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, PreviewInfo, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -89,6 +89,15 @@ const MOCK_ITEMS: { name: string; bytes: number | null; real: number }[] = [
   { name: "EmbeddingGemma-2 vision projector", bytes: 554821024, real: 554821024 },
   { name: "PDF engine (pdfium 7881)", bytes: 3733154, real: 3733154 },
 ];
+// Optional document parser (Infinity-Parser2). ?parser=0: not installed, so the preview shows the disabled item
+// and Setup offers the download.
+const PARSER_ITEMS: { name: string; bytes: number | null; real: number }[] = [
+  { name: "Document parser model", bytes: 1274396736, real: 1274396736 },
+  { name: "Document parser vision projector", bytes: 336000000, real: 336000000 },
+];
+let parserInstalled = params.get("parser") !== "0";
+let lastParseAt: number | null = null; // when the parser server was last used (it unloads after IDLE_UNLOAD_S)
+let mockProfile: Profile = "balanced";
 let modelsInstalled = params.get("models") === "1";
 let dlRunning = false;
 let dlCancel = false;
@@ -112,25 +121,29 @@ let indexed = 0;
 let indexTick = performance.now();
 
 const itemHave = (i: { name: string; real: number }) => (dlDone[i.name] ?? 0) >= i.real;
+const parserHave = () => parserInstalled || PARSER_ITEMS.every(itemHave);
 // ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there.
 const pdfiumHave = () => params.get("pdfium") !== "0" || modelsInstalled || itemHave(MOCK_ITEMS[MOCK_ITEMS.length - 1]);
 
-async function runDownload() {
+async function runDownload(withParser: boolean) {
   dlRunning = true;
   dlCancel = false;
-  const all = MOCK_ITEMS.reduce((a, i) => a + i.real, 0);
+  // Only what is missing is downloaded: the base items unless already installed, the parser only when asked for.
+  const items = [...(modelsInstalled ? [] : MOCK_ITEMS), ...(withParser && !parserHave() ? PARSER_ITEMS : [])];
+  const all = items.reduce((a, i) => a + i.real, 0);
   const fail = (error: string) => { dlRunning = false; doneCbs.forEach((f) => f({ ok: false, error })); };
-  for (const item of MOCK_ITEMS) {
+  for (const item of items) {
     while ((dlDone[item.name] ?? 0) < item.real) {
       await sleep(100);
       if (dlCancel) return fail("cancelled");
       dlDone[item.name] = Math.min(item.real, (dlDone[item.name] ?? 0) + 30e6);
-      const got = MOCK_ITEMS.reduce((a, i) => a + (dlDone[i.name] ?? 0), 0);
+      const got = items.reduce((a, i) => a + (dlDone[i.name] ?? 0), 0);
       progressCbs.forEach((f) => f({ item: item.name, downloaded: dlDone[item.name], total: item.real, overall_downloaded: got, overall_total: all }));
       if (dlFailOnce && got / all > 0.6) { dlFailOnce = false; return fail("stalled: no data for 20s at 612345678 bytes"); }
     }
   }
   modelsInstalled = true;
+  if (withParser) parserInstalled = true;
   indexTick = performance.now();
   dlRunning = false;
   doneCbs.forEach((f) => f({ ok: true, error: null }));
@@ -248,9 +261,44 @@ function mockStatusPage(): StatusPage {
         unload_in_s: running ? Math.max(0, Math.round(IDLE_UNLOAD_S - idleFor)) : null,
         idle_unload_s: IDLE_UNLOAD_S,
       },
+      parser: {
+        model_id: "infinity-parser2-flash",
+        present: parserHave(),
+        files: [
+          { name: "Infinity-Parser2-Flash.Q4_K_M.gguf", role: "model", expected_bytes: 1274396736, bytes: parserHave() ? 1274396736 : null },
+          { name: "Infinity-Parser2-Flash.mmproj-q8_0.gguf", role: "mmproj", expected_bytes: 336000000, bytes: parserHave() ? 336000000 : null },
+        ],
+        server: parserServer(now),
+        queue: parserHave() ? { queued: modelsInstalled ? 3 : 0, done: modelsInstalled ? 41 : 0, failed: 0 } : { queued: 0, done: 0, failed: 0 },
+        profile: mockProfile,
+        routing: { doc_min: 0.12, doc_margin: 0.03, screenshot_min_chars: 200, provisional: true },
+      },
     },
   };
 }
+
+function parserServer(now: number): StatusPage["models"]["parser"]["server"] {
+  const idle = lastParseAt === null ? Infinity : (now - lastParseAt) / 1000;
+  const running = idle < IDLE_UNLOAD_S;
+  return { running, port: running ? SERVER_PORT + 1 : null, unload_in_s: running && mockProfile !== "fast" ? Math.max(0, Math.round(IDLE_UNLOAD_S - idle)) : null, idle_unload_s: IDLE_UNLOAD_S };
+}
+
+// What the parser "reads" from any image or page: an invoice with a table (a second table on even PDF pages).
+const MOCK_TABLE_A = {
+  html: "<table><tr><th>Item</th><th>Qty</th><th>Price</th></tr><tr><td>Graphics card</td><td>1</td><td>1,249.00</td></tr><tr><td>NVMe drive 2TB</td><td>2</td><td>310.00</td></tr><tr><td>Total due</td><td></td><td>1,869.00</td></tr></table>",
+  tsv: "Item\tQty\tPrice\nGraphics card\t1\t1,249.00\nNVMe drive 2TB\t2\t310.00\nTotal due\t\t1,869.00",
+};
+const MOCK_TABLE_B = {
+  html: "<table><tr><th>Month</th><th>Total</th></tr><tr><td>March</td><td>1,869.00</td></tr></table>",
+  tsv: "Month\tTotal\nMarch\t1,869.00",
+};
+const MOCK_MARKDOWN = [
+  "# Quarterly Invoice 4471",
+  "Billed by Winseek Hardware Ltd, 12 Rue des Fleurs, Casablanca.",
+  "| Item | Qty | Price |\n| --- | --- | --- |\n| Graphics card | 1 | 1,249.00 |\n| NVMe drive 2TB | 2 | 310.00 |\n| Total due |  | 1,869.00 |",
+  "Page 1 of 1",
+].join("\n\n");
+const parsedCache = new Set<string>();
 
 const hash01 = (s: string) => {
   let h = 2166136261;
@@ -522,9 +570,13 @@ export const mockBackend: Backend = {
         const h = hash01(q + "|" + e.path);
         const text = hash01(e.path) < 0.34 ? OCR[Math.floor(hash01(e.path + "t") * OCR.length)] : null;
         const snippet = text && terms.length ? text.replace(new RegExp(`(${terms.map((t) => t.replace(/[^a-z0-9]/g, "")).filter(Boolean).join("|") || "$^"})`, "gi"), "[$1]") : null;
+        // The OCR-style hits also say where the words sit on the picture: two highlight boxes.
+        const by = 0.12 + 0.5 * hash01(e.path + "|box");
+        const boxes = snippet ? [{ x: 0.12, y: by, w: 0.42, h: 0.06 }, { x: 0.12, y: by + 0.12, w: 0.58, h: 0.06 }] : null;
         return {
           path: e.path, score: 0.1 + 0.22 * h + (terms.some((t) => e.lower.includes(t)) ? 0.2 : 0),
           size: e.size, mtime: Math.floor(e.mtime), snippet: snippet && snippet.includes("[") ? snippet : null,
+          boxes: snippet && snippet.includes("[") ? boxes : null,
         };
       })
       .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
@@ -532,6 +584,28 @@ export const mockBackend: Backend = {
       .slice(0, Math.max(1, Math.min(k, 200)));
     return { state: st, hits };
   },
+  async parserPresent() { await sleep(20); return parserHave(); },
+  async parseDocument(path, page): Promise<ParsedDoc> {
+    if (!parserHave()) throw new Error("The document parser is not installed. Add it in Setup.");
+    const key = `${path}#${page ?? 0}`;
+    const cached = parsedCache.has(key);
+    await sleep(cached ? 40 : 800);
+    parsedCache.add(key);
+    lastParseAt = performance.now();
+    const two = !!page && page % 2 === 0;
+    return {
+      markdown: two ? `${MOCK_MARKDOWN}\n\n| Month | Total |\n| --- | --- |\n| March | 1,869.00 |` : MOCK_MARKDOWN,
+      tables: two ? [MOCK_TABLE_A, MOCK_TABLE_B] : [MOCK_TABLE_A],
+      elements_count: two ? 5 : 4,
+      cached,
+    };
+  },
+  async copyTextHtml(text, html) {
+    console.info("[mock] copy text", { text, html });
+    try { await navigator.clipboard.writeText(text); } catch { /* clipboard may be blocked in a plain browser */ }
+  },
+  async getProfile() { await sleep(20); return mockProfile; },
+  async setProfile(profile) { await sleep(40); mockProfile = profile; return mockProfile; },
   async previewPdfPage(path, page, width) {
     await sleep(60 + Math.random() * 80);
     const e = DB.find((x) => x.path === path);
@@ -556,20 +630,23 @@ export const mockBackend: Backend = {
   },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
-    const items = MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: modelsInstalled || itemHave(i) }));
+    const items: ModelsPlan["items"] = [
+      ...MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: modelsInstalled || itemHave(i) })),
+      ...PARSER_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: parserHave(), optional: true })),
+    ];
     return {
       backend: MOCK_BACKEND,
       gpu: MOCK_BACKEND === "cuda12" ? "NVIDIA GeForce RTX 4070" : MOCK_BACKEND === "vulkan" ? "AMD Radeon RX 6600" : null,
       driver: MOCK_BACKEND === "cuda12" ? "560.94" : null,
       items,
-      total_bytes_missing: items.filter((i) => !i.present).reduce((a, i) => a + (i.bytes ?? 0), 0),
-      size_unknown: items.some((i) => !i.present && i.bytes == null),
+      total_bytes_missing: items.filter((i) => !i.present && !i.optional).reduce((a, i) => a + (i.bytes ?? 0), 0),
+      size_unknown: items.some((i) => !i.present && !i.optional && i.bytes == null),
       downloading: dlRunning,
     };
   },
-  async modelsDownload() {
+  async modelsDownload(includeParser) {
     if (dlRunning) throw new Error("A download is already running");
-    void runDownload();
+    void runDownload(!!includeParser);
   },
   async modelsCancel() { dlCancel = true; },
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },

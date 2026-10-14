@@ -11,11 +11,16 @@ pub const JPEG_QUALITY: u8 = 90;
 
 /// Downscale (never upscale) so the long side is at most [`LONG_SIDE`], keeping aspect.
 pub fn canonicalise(img: DynamicImage) -> DynamicImage {
+    canonicalise_to(img, LONG_SIDE)
+}
+
+/// [`canonicalise`] with another long side (the document parser takes 1024 px).
+pub fn canonicalise_to(img: DynamicImage, long_side: u32) -> DynamicImage {
     let (w, h) = img.dimensions();
-    if w.max(h) <= LONG_SIDE {
+    if w.max(h) <= long_side {
         img
     } else {
-        img.resize(LONG_SIDE, LONG_SIDE, FilterType::Lanczos3)
+        img.resize(long_side, long_side, FilterType::Lanczos3)
     }
 }
 
@@ -36,8 +41,13 @@ fn to_rgb_on_white(img: &DynamicImage) -> RgbImage {
 
 /// Decode `bytes`, canonicalise to <= 768 px long side and re-encode as JPEG q90.
 pub fn prepare_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    prepare_jpeg_long(bytes, LONG_SIDE)
+}
+
+/// [`prepare_jpeg`] with another long side.
+pub fn prepare_jpeg_long(bytes: &[u8], long_side: u32) -> Result<Vec<u8>, String> {
     let img = image::load_from_memory(bytes).map_err(|e| format!("decode: {e}"))?;
-    let img = canonicalise(img);
+    let img = canonicalise_to(img, long_side);
     let rgb = to_rgb_on_white(&img);
     let mut out = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(Cursor::new(&mut out), JPEG_QUALITY)
@@ -67,6 +77,14 @@ mod tests {
         assert_eq!(small.dimensions(), (300, 200), "never upscale");
         let exact = canonicalise(DynamicImage::ImageRgb8(RgbImage::new(768, 500)));
         assert_eq!(exact.dimensions(), (768, 500));
+    }
+
+    #[test]
+    fn long_side_is_a_parameter() {
+        let back = image::load_from_memory(&prepare_jpeg_long(&png(3000, 1500, 2), 1024).unwrap()).unwrap();
+        assert_eq!(back.dimensions(), (1024, 512));
+        let small = image::load_from_memory(&prepare_jpeg_long(&png(600, 300, 2), 1024).unwrap()).unwrap();
+        assert_eq!(small.dimensions(), (600, 300), "never upscale");
     }
 
     #[test]

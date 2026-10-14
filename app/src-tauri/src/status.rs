@@ -13,16 +13,18 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 use winseek_llama::install::{pdfium_path, resolve_exe};
 use winseek_llama::manifest::ModelRole;
-use winseek_llama::{Detected, Manifest, ModelProfile};
-use winseek_store::Store;
+use winseek_llama::{Detected, Manifest, ModelProfile, Profile};
+use winseek_store::{ParseCounts, Store};
 
 use crate::commands::AppState;
 use crate::models::Models;
 use crate::service;
 use crate::source::{NameSource, Tier0Detail, VolumeDetail};
 use crate::tier1::embedder::{self, RuntimeInfo};
+use crate::tier1::parser;
 use crate::tier1::pdf;
 use crate::tier1::progress::{coverage, eta_secs};
+use crate::tier1::route;
 use crate::tier1::{self, StatsDto, Tier1};
 
 const TIER0_TIMEOUT: Duration = Duration::from_millis(1500);
@@ -92,6 +94,47 @@ pub struct ServerDto {
     pub idle_unload_s: u64,
 }
 
+/// Parse queue counts.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ParserQueueDto {
+    pub queued: u64,
+    pub done: u64,
+    pub failed: u64,
+}
+
+/// What decides which images go to the parser. Guesses until the eval has tuned them.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct RoutingDto {
+    pub doc_min: f32,
+    pub doc_margin: f32,
+    pub screenshot_min_chars: usize,
+    /// "parser routing thresholds: provisional"
+    pub provisional: bool,
+}
+
+/// The document parser (Infinity-Parser2): files, server, queue and the performance profile.
+#[derive(Debug, Clone, Serialize)]
+pub struct ParserDto {
+    pub model_id: &'static str,
+    /// Model files and a llama build are on disk: the parser can run.
+    pub present: bool,
+    pub files: Vec<ModelFileDto>,
+    pub server: ServerDto,
+    pub queue: ParserQueueDto,
+    /// "low" | "balanced" | "fast"
+    pub profile: &'static str,
+    pub routing: RoutingDto,
+}
+
+/// What the worker knows about the parser (the status page does not wait for a running parse).
+#[derive(Debug, Clone, Default)]
+pub struct ParserState {
+    pub rt: RuntimeInfo,
+    pub counts: ParseCounts,
+    pub profile: Profile,
+    pub present: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelsPageDto {
     pub llama_build: String,
@@ -105,6 +148,7 @@ pub struct ModelsPageDto {
     pub files: Vec<ModelFileDto>,
     pub pdfium: PdfiumDto,
     pub server: ServerDto,
+    pub parser: ParserDto,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -199,7 +243,12 @@ fn ocr_unavailable(store: &Store) -> bool {
 
 /// The default embedder's model files: expected size from the manifest, actual size from disk.
 fn model_files(manifest: &Manifest, dir: &Path) -> Vec<ModelFileDto> {
-    let Some(entry) = manifest.model(embedder::MODEL_ID, ModelProfile::Default) else { return vec![] };
+    files_of(manifest, embedder::MODEL_ID, dir)
+}
+
+/// The files of the default entry for `id`: expected size from the manifest, actual size from disk.
+fn files_of(manifest: &Manifest, id: &str, dir: &Path) -> Vec<ModelFileDto> {
+    let Some(entry) = manifest.model(id, ModelProfile::Default) else { return vec![] };
     entry
         .files
         .iter()
@@ -233,7 +282,7 @@ fn pdfium_section(root: Option<&Path>, manifest: &Manifest, env: Option<&std::ff
     }
 }
 
-fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: RuntimeInfo) -> ModelsPageDto {
+fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: RuntimeInfo, parser: ParserState) -> ModelsPageDto {
     ModelsPageDto {
         llama_build: manifest.llama.build.clone(),
         backend: det.backend,
@@ -249,6 +298,29 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
             port: rt.port,
             unload_in_s: rt.unload_in_s,
             idle_unload_s: embedder::IDLE_UNLOAD.as_secs(),
+        },
+        parser: parser_section(root, manifest, parser),
+    }
+}
+
+fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> ParserDto {
+    ParserDto {
+        model_id: parser::MODEL_ID,
+        present: p.present,
+        files: root.map(|r| files_of(manifest, parser::MODEL_ID, &embedder::models_dir(r))).unwrap_or_default(),
+        server: ServerDto {
+            running: p.rt.running,
+            port: p.rt.port,
+            unload_in_s: p.rt.unload_in_s,
+            idle_unload_s: parser::IDLE_UNLOAD.as_secs(),
+        },
+        queue: ParserQueueDto { queued: p.counts.queued, done: p.counts.done, failed: p.counts.failed },
+        profile: p.profile.as_str(),
+        routing: RoutingDto {
+            doc_min: route::DOC_MIN,
+            doc_margin: route::DOC_MARGIN,
+            screenshot_min_chars: route::SCREENSHOT_MIN_CHARS,
+            provisional: true,
         },
     }
 }
@@ -266,9 +338,13 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
             Err(e) => (None, Some(e)),
         };
         let rt = worker.as_ref().map(|t| t.runtime_info()).unwrap_or_default();
+        let parser = worker
+            .as_ref()
+            .map(|t| ParserState { rt: t.parser_runtime(), counts: t.parse_counts(), profile: t.profile(), present: t.parser_present() })
+            .unwrap_or_default();
         let det = app.state::<Models>().detected();
         let root = tier1::data_root();
-        (tier1_section(worker.as_deref(), why), models_section(root.as_deref(), &Manifest::embedded(), &det, rt))
+        (tier1_section(worker.as_deref(), why), models_section(root.as_deref(), &Manifest::embedded(), &det, rt, parser))
     });
     let tier0 = t0.await.map_err(|e| e.to_string())?;
     let (tier1, models) = rest.await.map_err(|e| e.to_string())?;
@@ -374,7 +450,13 @@ mod tests {
     #[test]
     fn models_section_without_a_data_root() {
         let det = Detected { backend: winseek_llama::Backend::Cpu, gpu_name: None, driver_version: None };
-        let m = models_section(None, &Manifest::embedded(), &det, RuntimeInfo { running: true, port: Some(8123), unload_in_s: Some(90) });
+        let m = models_section(
+            None,
+            &Manifest::embedded(),
+            &det,
+            RuntimeInfo { running: true, port: Some(8123), unload_in_s: Some(90) },
+            ParserState::default(),
+        );
         assert!(!m.llama_present && m.files.is_empty());
         assert_eq!((m.server.running, m.server.port, m.server.unload_in_s, m.server.idle_unload_s), (true, Some(8123), Some(90), 120));
         assert_eq!(m.model_id, "embeddinggemma-2");
@@ -407,7 +489,7 @@ mod tests {
         let pend = [winseek_store::PendingVec { chunk: 0, kind: winseek_store::VecKind::Text, locator: None }];
         s.complete_text_only(id, "h", &pend, &[(0, "words".into())]).unwrap();
         s.upsert_file(&key(2), r"C:.pdf", 1, 1, "pdf").unwrap();
-        let t = Tier1::new(s, Box::new(NoModels), winseek_store::Scopes::default());
+        let t = Tier1::new(s, Box::new(NoModels), Box::new(tier1::parser::NoParser), winseek_store::Scopes::default());
         let page = tier1_section(Some(&t), None);
         let st = page.stats.unwrap();
         assert_eq!((st.pending, st.text_only, st.done), (1, 1, 0));
@@ -467,6 +549,7 @@ mod tests {
                 &Manifest::embedded(),
                 &Detected { backend: winseek_llama::Backend::Vulkan, gpu_name: Some("GPU".into()), driver_version: None },
                 RuntimeInfo::default(),
+                ParserState::default(),
             ),
         };
         let v = serde_json::to_value(&page).unwrap();
@@ -482,5 +565,39 @@ mod tests {
         assert_eq!(v["models"]["pdfium"]["build"], "7881");
         assert_eq!(v["models"]["server"]["running"], false);
         assert_eq!(v["models"]["server"]["idle_unload_s"], 120);
+        assert_eq!(v["models"]["parser"]["model_id"], "infinity-parser2-flash");
+        assert_eq!(v["models"]["parser"]["queue"]["queued"], 0);
+        assert_eq!(v["models"]["parser"]["profile"], "balanced");
+        assert_eq!(v["models"]["parser"]["routing"]["provisional"], true);
+    }
+
+    #[test]
+    fn parser_section_reports_files_server_queue_and_profile() {
+        let man = Manifest::embedded();
+        let dir = tempfile::tempdir().unwrap();
+        let models = embedder::models_dir(dir.path());
+        std::fs::create_dir_all(&models).unwrap();
+        let state = ParserState {
+            rt: RuntimeInfo { running: true, port: Some(9001), unload_in_s: Some(42) },
+            counts: ParseCounts { queued: 7, done: 3, failed: 1 },
+            profile: Profile::Fast,
+            present: false,
+        };
+        let none = parser_section(Some(dir.path()), &man, state.clone());
+        assert_eq!(none.files.len(), 2);
+        assert!(none.files.iter().all(|f| f.bytes.is_none() && f.expected_bytes > 0));
+        assert_eq!(none.files.iter().map(|f| f.role).collect::<Vec<_>>(), ["model", "mmproj"]);
+        assert_eq!(none.files[0].name, "Infinity-Parser2-Flash.Q4_K_M.gguf");
+        assert_eq!(
+            (none.server.running, none.server.port, none.server.unload_in_s, none.server.idle_unload_s),
+            (true, Some(9001), Some(42), 120)
+        );
+        assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1 });
+        assert_eq!((none.profile, none.present), ("fast", false));
+        assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.12, 0.03, 200));
+        std::fs::write(models.join(&none.files[1].name), b"abc").unwrap();
+        let some = parser_section(Some(dir.path()), &man, state);
+        assert_eq!((some.files[0].bytes, some.files[1].bytes), (None, Some(3)));
+        assert!(parser_section(None, &man, ParserState::default()).files.is_empty());
     }
 }

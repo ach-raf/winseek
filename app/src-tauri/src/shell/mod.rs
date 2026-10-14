@@ -76,6 +76,15 @@ pub async fn copy_files(app: AppHandle, window: WebviewWindow, paths: Vec<String
     })
 }
 
+/// Text (and optionally an HTML twin, e.g. a table) to the clipboard.
+#[tauri::command]
+pub async fn copy_text_html(app: AppHandle, window: WebviewWindow, text: String, html: Option<String>) -> Result<(), String> {
+    on_main(&app.clone(), move || {
+        let hwnd = window_hwnd(&window)?;
+        clipboard::copy_text_html(hwnd, &text, html.as_deref())
+    })
+}
+
 #[tauri::command]
 pub async fn recycle(app: AppHandle, window: WebviewWindow, paths: Vec<String>) -> Result<(), String> {
     on_main(&app.clone(), move || {

@@ -29,6 +29,13 @@ pub const QUANT: &str = "Q8_0";
 pub const IMAGE_BUDGET: u32 = 280;
 pub const DIMS: usize = 768;
 pub const IDLE_UNLOAD: Duration = Duration::from_secs(120);
+/// Start of the error `start_index` returns while the parser holds the GPU.
+const GPU_BUSY: &str = "GPU is busy";
+
+/// Is `msg` the "parser holds the GPU" error (not a strike against the file being embedded)?
+pub fn is_gpu_busy(msg: &str) -> bool {
+    msg.starts_with(GPU_BUSY)
+}
 
 #[derive(Debug)]
 pub enum EmbedError {
@@ -84,6 +91,10 @@ pub trait Embedder {
     fn runtime_info(&mut self) -> RuntimeInfo {
         RuntimeInfo::default()
     }
+    /// The document parser needs the GPU: let go of the index server (the next image batch reloads it).
+    fn release_gpu(&mut self) {}
+    /// The performance profile changed: drop the servers and use the new profile from now on.
+    fn set_profile(&mut self, _p: Profile) {}
 }
 
 /// Matches the stored meta for a given llama build.
@@ -234,9 +245,8 @@ impl LlamaEmbedder {
         }
     }
 
-    /// The GPU residency tracker, for the parser spawner (it must `begin(Gpu::Parser)` first and
-    /// unload the index server via [`Embedder::on_pause`]-style release when told to).
-    #[allow(dead_code)] // consumed by the parser spawner, which does not exist in the app yet
+    /// The GPU residency tracker, shared with the parser (it must `begin(Gpu::Parser)` first and gets
+    /// told to release the index server via [`Embedder::release_gpu`] when that is busy).
     pub fn gpu_phase(&self) -> Arc<Mutex<GpuPhase>> {
         self.gpu.clone()
     }
@@ -305,7 +315,7 @@ impl LlamaEmbedder {
             lock(&self.gpu).end(Gpu::Index);
         }
         if let Some(other) = lock(&self.gpu).begin(Gpu::Index) {
-            return Err(EmbedError::Other(format!("GPU is busy with the {other:?} model; image work waits for it to unload")));
+            return Err(EmbedError::Other(format!("{GPU_BUSY} with the {other:?} model; image work waits for it to unload")));
         }
         match self.spawn_role(Role::EmbedIndex) {
             Ok(r) => {
@@ -417,6 +427,17 @@ impl Embedder for LlamaEmbedder {
 
     fn on_pause(&mut self) {
         self.drop_index();
+    }
+
+    fn release_gpu(&mut self) {
+        self.drop_index();
+    }
+
+    fn set_profile(&mut self, p: Profile) {
+        self.drop_index();
+        self.query = None;
+        self.profile = p;
+        *lock(&self.gpu) = GpuPhase::new(p);
     }
 
     fn runtime_info(&mut self) -> RuntimeInfo {
@@ -555,6 +576,29 @@ mod tests {
         let mut g = ParityGuard::default();
         g.record(text_parity(&three(0.0), &three(0.2)));
         assert_eq!(g.route(), TextRoute::Index); // 1/sqrt(1.04) = 0.98
+    }
+
+    #[test]
+    fn profile_switch_rebuilds_the_shared_gpu_phase() {
+        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        let gpu = e.gpu_phase();
+        assert_eq!(lock(&gpu).begin(Gpu::Index), None);
+        assert_eq!(lock(&gpu).begin(Gpu::Parser), Some(Gpu::Index), "balanced: one at a time");
+        e.set_profile(Profile::Fast);
+        assert_eq!(e.profile, Profile::Fast);
+        // same Arc, new inner value: nothing is loaded any more and Fast lets both live together
+        assert_eq!(lock(&gpu).begin(Gpu::Parser), None);
+        assert_eq!(lock(&gpu).begin(Gpu::Index), None);
+        e.set_profile(Profile::Balanced);
+        e.release_gpu(); // no server: harmless
+        assert_eq!(lock(&gpu).begin(Gpu::Index), None, "set_profile started from a clean phase");
+        assert_eq!(lock(&gpu).begin(Gpu::Parser), Some(Gpu::Index));
+    }
+
+    #[test]
+    fn gpu_busy_errors_are_recognised() {
+        assert!(is_gpu_busy(&format!("{GPU_BUSY} with the Parser model; image work waits for it to unload")));
+        assert!(!is_gpu_busy("boom"));
     }
 
     #[test]

@@ -1,4 +1,4 @@
-import type { Backend, Collection, DupGroup, Hit, IgnoreList, LibImage, NearState, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, Collection, DupGroup, Hit, IgnoreList, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -53,6 +53,11 @@ function tauriBackend(t: TauriGlobal): Backend {
       };
     },
     semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
+    parserPresent: () => inv<boolean>("parser_present"),
+    parseDocument: (path, page) => inv<ParsedDoc>("parse_document", { path, page: page ?? null }),
+    copyTextHtml: (text, html) => inv("copy_text_html", { text, html: html ?? null }),
+    getProfile: () => inv<Profile>("get_profile"),
+    setProfile: (profile) => inv<Profile>("set_profile", { profile }),
     previewPdfPage: async (path, page, width) => {
       // The command answers with raw bytes (an ArrayBuffer), not a JSON number array.
       const bytes = await inv<ArrayBuffer | number[]>("preview_pdf_page", { path, page, width });
@@ -62,7 +67,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     rescanVolume: (letter) => inv("rescan_volume", { letter }),
     tier1Rebuild: () => inv("tier1_rebuild"),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
-    modelsDownload: () => inv("models_download"),
+    modelsDownload: (includeParser) => inv("models_download", { includeParser: !!includeParser }),
     modelsCancel: () => inv("models_cancel"),
     onModelsProgress: (cb) => t.event.listen<ModelsProgress>("models-progress", (e) => cb(e.payload)),
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),

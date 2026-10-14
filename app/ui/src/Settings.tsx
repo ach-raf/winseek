@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, IgnoreList, Tier1Status } from "./types";
+import type { Backend, IgnoreList, Profile, Tier1Status } from "./types";
 import { Folders, pausedText } from "./Setup";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -95,6 +95,38 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
   );
 }
 
+const PROFILES: { id: Profile; label: string; blurb: string }[] = [
+  { id: "low", label: "Low", blurb: "Least graphics memory. Slow on images and documents." },
+  { id: "balanced", label: "Balanced", blurb: "Search on the processor, image and document models load on the graphics card only while they work." },
+  { id: "fast", label: "Fast", blurb: "Keeps models loaded while the app is open. Uses the most graphics memory." },
+];
+
+function Performance({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [p, setP] = useState<Profile | null>(null);
+  useEffect(() => { backend.getProfile().then(setP).catch(onError); }, [backend, onError]);
+  const change = (v: Profile) => {
+    const before = p;
+    setP(v);
+    backend.setProfile(v).then(setP).catch((e) => { setP(before); onError(e); });
+  };
+  const shown = p ?? "balanced";
+  return (
+    <div className="set-row perf">
+      <div>
+        <div className="fl-title">Performance</div>
+        <select value={shown} disabled={p === null} onChange={(e) => change(e.target.value as Profile)} aria-label="Performance">
+          {PROFILES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+        </select>
+        <ul className="perf-list">
+          {PROFILES.map((x) => (
+            <li key={x.id} className={x.id === shown ? "on" : ""}><b>{x.label}</b> {"–"} {x.blurb}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
 export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
   backend: Backend; t1: Tier1Status | null;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
@@ -131,6 +163,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
       </div>
 
       <Folders t1={t1} onChange={onFolders} />
+      <Performance backend={backend} onError={onError} />
       <CodeToggle backend={backend} onError={onError} />
       <IgnoredNames backend={backend} onError={onError} />
 

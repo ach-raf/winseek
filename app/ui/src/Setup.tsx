@@ -98,9 +98,15 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
   primaryRef: React.MutableRefObject<() => void>;
 }) {
   const { plan, running, progress, interrupted } = models;
-  const missing = plan ? plan.items.some((i) => !i.present) : false;
+  // The optional document parser never blocks the default setup: it is a checkbox (and, once the rest is
+  // installed, a separate offer).
+  const [includeParser, setIncludeParser] = useState(false);
+  const optional = plan ? plan.items.filter((i) => i.optional) : [];
+  const optMissing = optional.filter((i) => !i.present);
+  const parserBytes = optMissing.reduce((a, i) => a + (i.bytes ?? 0), 0);
+  const missing = plan ? plan.items.some((i) => !i.present && !i.optional) : false;
   const phase = running ? "downloading" : !plan ? "loading" : missing ? (interrupted ? "interrupted" : "choose") : "indexing";
-  primaryRef.current = () => { if (phase === "choose" || phase === "interrupted") models.start(); else if (phase === "indexing") onClose(); };
+  primaryRef.current = () => { if (phase === "choose" || phase === "interrupted") models.start(includeParser); else if (phase === "indexing") onClose(); };
   const root = useRef<HTMLElement>(null);
   const overall = progress && progress.overall_total > 0 ? progress.overall_downloaded / progress.overall_total : null;
   const cancelled = interrupted === "cancelled";
@@ -120,16 +126,28 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
         <div className="dl-plan">
           <div className="gpu">{backendLine(plan)}</div>
           <ul className="items">
-            {plan.items.map((i) => (
+            {plan.items.filter((i) => !i.optional).map((i) => (
               <li key={i.name} className={i.present ? "have" : ""}>
                 <span>{i.name}</span>
                 <span className="sz">{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
               </li>
             ))}
           </ul>
+          {optional.length > 0 && (
+            <div className="dl-opt">
+              <label className="dl-opt-head">
+                {optMissing.length > 0 && phase !== "downloading" && (
+                  <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
+                )}
+                <b>Document parser</b>
+                <span className="sz">{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
+              </label>
+              <div className="muted">Optional. Reads scanned pages, receipts and screenshots into text and tables you can search and copy.</div>
+            </div>
+          )}
           {phase !== "downloading" && (
             <div className="muted">
-              Download {formatSize(plan.total_bytes_missing)}{plan.size_unknown ? " plus the llama.cpp runtime" : ""}
+              Download {formatSize(plan.total_bytes_missing + (includeParser ? parserBytes : 0))}{plan.size_unknown ? " plus the llama.cpp runtime" : ""}
             </div>
           )}
         </div>
@@ -156,9 +174,17 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
 
       {phase === "indexing" && <Indexing t1={t1} onPause={onPause} />}
 
+      {phase === "indexing" && optMissing.length > 0 && (
+        <div className="dl-opt">
+          <div className="dl-opt-head"><b>Document parser</b><span className="sz">{formatSize(parserBytes)}</span></div>
+          <div className="muted">Optional. Reads scanned pages, receipts and screenshots into text and tables you can search and copy.</div>
+          <div><button className="btn quiet" onClick={() => models.start(true)}>Download the document parser</button></div>
+        </div>
+      )}
+
       <div className="actions">
         {(phase === "choose" || phase === "interrupted") && (
-          <button className="btn primary" onClick={models.start} disabled={!plan}>
+          <button className="btn primary" onClick={() => models.start(includeParser)} disabled={!plan}>
             {phase === "interrupted" ? "Resume download" : "Download"}
           </button>
         )}

@@ -1,9 +1,9 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Hit, PreviewInfo } from "./types";
+import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
-import { clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, toggleActual, zoomAt, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
@@ -18,6 +18,8 @@ export interface PreviewProps {
   start?: number;
   /** PDF page (1-based) to open on: the page the search hit is on. */
   page?: number | null;
+  /** Where the query words sit on the image / on that PDF page (fractions 0-1); drawn over the picture. */
+  boxes?: HitBox[] | null;
   onOpen: () => void;
   onReveal: () => void;
 }
@@ -27,14 +29,24 @@ export interface PreviewProps {
  * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
  * dimmed, until the new one arrives so arrowing through results does not flash.
  */
-export function Preview({ backend, hit, query, snippet, start, page, onOpen, onReveal }: PreviewProps) {
+export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal }: PreviewProps) {
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // The PDF page being shown (the actions read that page) and whether the optional document parser is installed.
+  const [pdfPage, setPdfPage] = useState<number | null>(null);
+  const [parser, setParser] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let live = true;
+    backend.parserPresent().then((p) => { if (live) setParser(p); }, () => { if (live) setParser(false); });
+    return () => { live = false; };
+  }, [backend, hit.path]);
 
   useEffect(() => {
     let live = true;
     setLoading(true);
+    setPdfPage(null);
     backend.previewInfo(hit.path).then(
       (i) => { if (live) { setInfo(i); setErr(null); setLoading(false); } },
       (e) => { if (live) { setInfo(null); setErr(errText(e)); setLoading(false); } },
@@ -64,11 +76,16 @@ export function Preview({ backend, hit, query, snippet, start, page, onOpen, onR
         {err ? (
           <div className="pv-msg" role="alert">{err}</div>
         ) : info ? (
-          <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null} />
+          <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
+                boxes={boxes ?? null} onPage={setPdfPage} />
         ) : (
           <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
         )}
       </div>
+      {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
+        <ParseBar backend={backend} path={shown.path} available={parser}
+                  page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
+      )}
       {shown && <Facts info={shown} />}
     </aside>
   );
@@ -102,10 +119,12 @@ function Facts({ info }: { info: PreviewInfo }) {
   );
 }
 
-function Body({ backend, info, query, start, page }: { backend: Backend; info: PreviewInfo; query: string; start?: number; page: number | null }) {
+function Body({ backend, info, query, start, page, boxes, onPage }: {
+  backend: Backend; info: PreviewInfo; query: string; start?: number; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
+}) {
   switch (info.kind) {
-    case "pdf": return <PdfView backend={backend} info={info} page={page} />;
-    case "image": return <ImageView info={info} />;
+    case "pdf": return <PdfView backend={backend} info={info} page={page} boxes={boxes} onPage={onPage} />;
+    case "image": return <ImageView info={info} boxes={boxes} />;
     case "video": case "audio": return <MediaView info={info} start={start} />;
     case "text": return <TextView info={info} query={query} />;
     default: return <OtherView info={info} />;
@@ -114,15 +133,16 @@ function Body({ backend, info, query, start, page }: { backend: Backend; info: P
 
 // ---- images: fit, wheel zoom, drag pan, double-click 1:1 ------------------------------------------------------
 
-function ImageView({ info }: { info: PreviewInfo }) {
+function ImageView({ info, boxes }: { info: PreviewInfo; boxes: HitBox[] | null }) {
   const meta = info.image;
   const [useThumb, setUseThumb] = useState(!!meta?.thumb);
   const [dead, setDead] = useState(false);
   const src = useThumb ? info.thumb : info.src;
+  const drawn = useMemo(() => boxesForView(boxes, null, null), [boxes]);
   if (!src || dead) return <OtherView info={info} note="This image cannot be shown here." />;
   return (
     <ImageStage
-      key={src} src={src} name={info.name}
+      key={src} src={src} name={info.name} boxes={drawn}
       dims={!useThumb && meta?.width && meta.height ? { w: meta.width, h: meta.height } : null}
       note={useThumb ? "Shell thumbnail" : null}
       onError={() => { if (!useThumb && info.thumb) setUseThumb(true); else setDead(true); }}
@@ -130,8 +150,8 @@ function ImageView({ info }: { info: PreviewInfo }) {
   );
 }
 
-function ImageStage({ src, name, dims, note, onError }: {
-  src: string; name: string; dims: { w: number; h: number } | null; note: string | null; onError: () => void;
+function ImageStage({ src, name, dims, note, boxes, onError }: {
+  src: string; name: string; dims: { w: number; h: number } | null; note: string | null; boxes: HitBox[]; onError: () => void;
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -198,19 +218,22 @@ function ImageStage({ src, name, dims, note, onError }: {
     ? {
         width: nat.w, height: nat.h, marginLeft: -nat.w / 2, marginTop: -nat.h / 2,
         transform: `translate(${cur.tx}px, ${cur.ty}px) scale(${cur.s})`,
-        imageRendering: cur.s >= 3 ? "pixelated" : "auto",
       }
     : { visibility: "hidden" };
 
   return (
     <div className={"pv-stage" + (dragging ? " dragging" : "") + (!fitted ? " zoomed" : "")} ref={stage}
          onPointerDown={onDown} onPointerMove={onMove} onPointerUp={onUp} onPointerCancel={onUp} onDoubleClick={onDouble}>
-      <img src={src} alt={name} draggable={false} style={style} decoding="async"
-           onLoad={(e) => {
-             const i = e.currentTarget;
-             setNat({ w: i.naturalWidth || 800, h: i.naturalHeight || 600 });
-           }}
-           onError={onError} />
+      {/* The boxes sit in the same transformed layer as the picture, so they follow zoom and pan. */}
+      <div className="pv-img" style={style}>
+        <img src={src} alt={name} draggable={false} decoding="async" style={{ imageRendering: cur.s >= 3 ? "pixelated" : "auto" }}
+             onLoad={(e) => {
+               const i = e.currentTarget;
+               setNat({ w: i.naturalWidth || 800, h: i.naturalHeight || 600 });
+             }}
+             onError={onError} />
+        {boxes.map((b, i) => <div key={i} className="pv-box" style={boxRect(b)} aria-hidden />)}
+      </div>
       <div className="pv-zoom" aria-hidden>{Math.round(cur.s * 100)}%{note ? ` · ${note}` : ""}</div>
     </div>
   );
@@ -218,9 +241,14 @@ function ImageStage({ src, name, dims, note, onError }: {
 
 // ---- PDF: the page rendered by pdfium, prev / next ---------------------------------------------------------
 
-function PdfView({ backend, info, page }: { backend: Backend; info: PreviewInfo; page: number | null }) {
+function PdfView({ backend, info, page, boxes, onPage }: {
+  backend: Backend; info: PreviewInfo; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
+}) {
   const pages = info.pdf?.pages ?? null;
   const [n, setN] = useState(() => clampPage(page ?? 1, pages));
+  useEffect(() => { onPage(n); }, [n, onPage]);
+  // The highlight belongs to the page the hit is on; other pages are drawn clean.
+  const drawn = useMemo(() => boxesForView(boxes, page, n), [boxes, page, n]);
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -266,11 +294,110 @@ function PdfView({ backend, info, page }: { backend: Backend; info: PreviewInfo;
         {err ? (
           <div className="pv-msg" role="alert">{err}</div>
         ) : url ? (
-          <ImageStage key={url} src={url} name={`${info.name}, page ${n}`} dims={null} note={null} onError={() => setErr("This page cannot be shown.")} />
+          <ImageStage key={url} src={url} name={`${info.name}, page ${n}`} dims={null} note={null} boxes={drawn} onError={() => setErr("This page cannot be shown.")} />
         ) : (
           <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
         )}
       </div>
+    </div>
+  );
+}
+
+// ---- on-demand document parser: extract text, copy a table, copy as Markdown ----------------------------------
+
+function ParseBar({ backend, path, page, available }: { backend: Backend; path: string; page: number | null; available: boolean }) {
+  const [doc, setDoc] = useState<ParsedDoc | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
+  const [panel, setPanel] = useState(false);
+  const [pick, setPick] = useState(false);
+  const key = `${path}#${page ?? 0}`;
+  const run = useRef(0);
+  // Another file or page: forget the result and ignore an answer that is still on its way.
+  useEffect(() => {
+    run.current++;
+    setDoc(null); setBusy(false); setMsg(null); setPanel(false); setPick(false);
+  }, [key]);
+  useEffect(() => {
+    if (!msg || msg.bad) return;
+    const t = window.setTimeout(() => setMsg(null), 2500);
+    return () => window.clearTimeout(t);
+  }, [msg]);
+
+  if (!available) {
+    return (
+      <div className="pv-parse">
+        <div className="pv-parse-bar">
+          <button className="btn quiet pv-btn" tabIndex={-1} disabled title="The document parser is an optional download">Install the document parser in Setup</button>
+        </div>
+      </div>
+    );
+  }
+
+  const load = async (): Promise<ParsedDoc | null> => {
+    if (doc) return doc;
+    const my = ++run.current;
+    setBusy(true);
+    setMsg(null);
+    try {
+      const d = await backend.parseDocument(path, page ?? undefined);
+      if (my !== run.current) return null;
+      setDoc(d);
+      return d;
+    } catch (e) {
+      if (my === run.current) setMsg({ text: errText(e), bad: true });
+      return null;
+    } finally {
+      if (my === run.current) setBusy(false);
+    }
+  };
+  const copy = async (text: string, html: string | null, what: string) => {
+    try { await backend.copyTextHtml(text, html); setMsg({ text: `${what} copied`, bad: false }); }
+    catch (e) { setMsg({ text: errText(e), bad: true }); }
+  };
+  const extract = async () => { const d = await load(); if (d) { setPick(false); setPanel(true); } };
+  const copyTable = async () => {
+    const d = await load();
+    if (!d) return;
+    setPanel(false);
+    if (d.tables.length === 0) setMsg({ text: "No table found here", bad: false });
+    else if (d.tables.length === 1) await copy(d.tables[0].tsv, d.tables[0].html, "Table");
+    else setPick(true);
+  };
+  const copyMarkdown = async () => { const d = await load(); if (d) await copy(d.markdown, null, "Markdown"); };
+
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
+  const btn = (label: string, action: () => Promise<void>, title: string) => (
+    <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={busy} onClick={() => void action()} title={title}>{label}</button>
+  );
+  return (
+    <div className="pv-parse">
+      <div className="pv-parse-bar">
+        {btn("Extract text", extract, "Read the text on this page with the document parser")}
+        {btn("Copy table", copyTable, "Copy the table on this page, ready to paste into a spreadsheet")}
+        {btn("Copy as Markdown", copyMarkdown, "Copy the whole page as Markdown")}
+        {busy && <span className="pv-parse-state"><span className="spin" aria-hidden /> Reading the page…</span>}
+        {msg && <span className={"pv-parse-state" + (msg.bad ? " bad" : "")} role={msg.bad ? "alert" : "status"}>{msg.text}</span>}
+      </div>
+      {pick && doc && (
+        <div className="pv-pick" role="menu" aria-label="Tables on this page">
+          {doc.tables.map((t, i) => (
+            <button key={i} className="btn quiet pv-btn" role="menuitem" tabIndex={-1} onMouseDown={keep}
+                    onClick={() => { setPick(false); void copy(t.tsv, t.html, `Table ${i + 1}`); }}>{tableLabel(i, t.tsv)}</button>
+          ))}
+        </div>
+      )}
+      {panel && doc && (
+        <div className="pv-parse-panel">
+          <div className="pv-parse-head">
+            <b>Extracted text</b>
+            <span className="muted">{doc.elements_count} block{doc.elements_count === 1 ? "" : "s"}</span>
+            <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={!doc.markdown} onClick={() => void copy(doc.markdown, null, "Text")}>Copy</button>
+            <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} onClick={() => setPanel(false)} aria-label="Close the extracted text">Close</button>
+          </div>
+          <pre>{doc.markdown || "No text found on this page."}</pre>
+        </div>
+      )}
     </div>
   );
 }

@@ -19,10 +19,11 @@ use winseek_store::{ChunkVec, PendingFile, PendingVec, Store, TextOnlyFile, VecK
 
 use super::chunk::{self, Chunk};
 use super::crawler::{KIND_IMAGE, KIND_PDF};
-use super::embedder::{EmbedError, Embedder};
+use super::embedder::{is_gpu_busy, EmbedError, Embedder};
 use super::extract::{self, ExtractError};
 use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
 use super::pdf::{self, PdfError};
+use super::route;
 
 pub const BATCH: usize = 16;
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -148,6 +149,15 @@ impl Processor {
         false
     }
 
+    /// Is there embedding work queued (pending files that can be processed now, or text-only files
+    /// waiting for their vectors)? The worker unloads the document parser before such work, and
+    /// starts parse jobs only when there is none.
+    pub fn has_index_work(&mut self, store: &Mutex<Store>) -> bool {
+        let skip = self.excluded_kinds(store);
+        let s = lock(store);
+        s.next_pending_where(1, &[], &skip, 0).is_ok_and(|p| !p.is_empty()) || s.next_text_only(1).is_ok_and(|p| !p.is_empty())
+    }
+
     /// Kinds to leave queued for now.
     fn excluded_kinds(&mut self, store: &Mutex<Store>) -> Vec<&'static str> {
         if self.pdf_ready(store) {
@@ -257,6 +267,10 @@ impl Processor {
         let vectors = match self.embed_all(embedder, &jpegs) {
             Ok(v) => v,
             Err(Failure::ModelsMissing) => return Ok(Pass::ModelsMissing),
+            // The parser holds the GPU: not the files' fault. The worker unloads the parser and retries.
+            Err(Failure::Systemic(msg)) if is_gpu_busy(&msg) => {
+                return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::EmbedFailed(msg) });
+            }
             Err(Failure::Systemic(msg)) => {
                 lock(embedder).reset();
                 for p in &prepared {
@@ -292,6 +306,9 @@ impl Processor {
                     }
                     // A duplicate in the same batch finds the content already stored and just links.
                     lock(store).complete(p.file.id, &p.hash, &chunks, &texts).map_err(|e| e.to_string())?;
+                    if ocr_by_slot.get(&p.slot).is_some_and(|t| route::screenshot_wants_parser(&t.text)) {
+                        lock(store).queue_parse(&p.hash, 0, "screenshot").map_err(|e| e.to_string())?;
+                    }
                 }
                 Err(msg) => lock(store).fail(p.file.id, &format!("embed: {msg}")).map_err(|e| e.to_string())?,
             }
@@ -349,14 +366,21 @@ impl Processor {
             return lock(store).skip(f.id, "no_text").map_err(db);
         }
         let texts = item_texts(&items);
-        let Some(embedder) = embedder else {
-            return lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db);
+        let stored = match embedder {
+            None => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
+            Some(embedder) => match embed_items(embedder, &items) {
+                Ok(vectors) => lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db),
+                Err(EmbedError::ModelsMissing) => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
+                Err(EmbedError::Other(_)) => lock(store).complete(f.id, &hash, &[], &texts).map_err(db),
+            },
         };
-        match embed_items(embedder, &items) {
-            Ok(vectors) => lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db),
-            Err(EmbedError::ModelsMissing) => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
-            Err(EmbedError::Other(_)) => lock(store).complete(f.id, &hash, &[], &texts).map_err(db),
+        // Scanned pages are enrichment candidates for the document parser (it upgrades their OCR text).
+        if stored.is_ok() && f.kind == KIND_PDF {
+            for page in scanned_pages(&items) {
+                lock(store).queue_parse(&hash, page, "scanned_pdf").map_err(db)?;
+            }
         }
+        stored
     }
 
     /// Text chunks per page; scanned pages are OCR-ed and also kept as page images. Chunk numbers
@@ -493,7 +517,11 @@ impl Processor {
             PendingVec { chunk: 0, kind: VecKind::Image, locator: Some(loc.clone()) },
             PendingVec { chunk: OCR_CHUNK, kind: VecKind::Text, locator: Some(loc) },
         ];
+        let wants_parser = route::screenshot_wants_parser(&text.text);
         lock(store).complete_text_only(f.id, &hash, &pending, &[(OCR_CHUNK, text.text)]).map_err(db)?;
+        if wants_parser {
+            lock(store).queue_parse(&hash, 0, "screenshot").map_err(db)?;
+        }
         Ok(true)
     }
 
@@ -543,6 +571,9 @@ impl Processor {
                     handled += 1;
                 }
                 Err(EmbedError::ModelsMissing) => return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::ModelsMissing }),
+                Err(EmbedError::Other(msg)) if is_gpu_busy(&msg) => {
+                    return Ok(if handled > 0 { Pass::Progress(handled) } else { Pass::EmbedFailed(msg) });
+                }
                 Err(EmbedError::Other(msg)) => {
                     let n = self.upgrade_strikes.entry(f.id.0).or_insert(0);
                     *n += 1;
@@ -677,6 +708,17 @@ enum Stop {
 
 fn page_image_locator(page: u32) -> String {
     serde_json::json!({ "page": page }).to_string()
+}
+
+/// The pages stored as page images (the scanned ones), in order.
+fn scanned_pages(items: &[Item]) -> Vec<u32> {
+    items
+        .iter()
+        .filter_map(|i| match i {
+            Item::Image { locator, .. } => super::locator_page(Some(locator)),
+            Item::Text { .. } => None,
+        })
+        .collect()
 }
 
 /// Document chunks as text items numbered from `first`.
@@ -1524,6 +1566,115 @@ mod tests {
         assert_eq!(p.run_fts_pass(&store, &paused).unwrap(), Pass::Paused);
         assert_eq!(p.run_upgrade_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Paused);
         assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1);
+    }
+
+    // ------------------------------------------------------------ routing to the document parser
+
+    /// 250 characters of readable Latin text.
+    const LONG_OCR: &str = "Quarterly report: revenue grew in every region this year, driven by the new hardware line. \
+        Operating costs stayed flat while headcount rose slightly. The board approved the budget for the next fiscal year, \
+        including two new offices and a larger research team.";
+
+    /// 260 characters of Cyrillic: long enough for the parser, but not a supported script.
+    const RU_OCR: &str = "Это длинный русский текст Это длинный русский текст Это длинный русский текст Это длинный русский текст \
+        Это длинный русский текст Это длинный русский текст Это длинный русский текст Это длинный русский текст \
+        Это длинный русский текст Это длинный русский текст";
+
+    #[test]
+    fn screenshots_with_a_lot_of_text_are_queued_for_the_parser() {
+        let (store, dir) = setup();
+        add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(LONG_OCR), calls: Arc::new(AtomicUsize::new(0)) }), None);
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let jobs = store.lock().unwrap().next_parse(10).unwrap();
+        assert_eq!(jobs.len(), 1);
+        assert_eq!((jobs[0].page, jobs[0].reason.as_str()), (0, "screenshot"));
+        assert!(jobs[0].path.ends_with("Screenshot 1.png"));
+        assert!(LONG_OCR.chars().count() >= 200, "{}", LONG_OCR.chars().count());
+    }
+
+    #[test]
+    fn short_or_unsupported_script_screenshots_stay_with_windows_ocr() {
+        for text in ["Save changes?  OK  Cancel", RU_OCR] {
+            let (store, dir) = setup();
+            add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
+            let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(text), calls: Arc::new(AtomicUsize::new(0)) }), None);
+            assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+            assert!(store.lock().unwrap().next_parse(10).unwrap().is_empty(), "{text}");
+        }
+    }
+
+    #[test]
+    fn fts_only_screenshots_are_queued_too() {
+        let (store, dir) = setup();
+        add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(LONG_OCR), calls: Arc::new(AtomicUsize::new(0)) }), None);
+        assert_eq!(p.run_fts_pass(&store, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 1);
+        let jobs = store.lock().unwrap().next_parse(10).unwrap();
+        assert_eq!(jobs.iter().map(|j| (j.page, j.reason.as_str())).collect::<Vec<_>>(), vec![(0, "screenshot")]);
+    }
+
+    #[test]
+    fn scanned_pdf_pages_are_queued_text_pages_are_not() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        let bytes = make_pdf(rt, &[Some("Quarterly invoice 4711 total due"), None, None]);
+        add_kind(&store, dir.path(), "scan.pdf", &bytes, 1, "pdf");
+        let (ocr, _) = fake_ocr(Some("Scanned receipt coffee"));
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        let mut jobs = store.lock().unwrap().next_parse(10).unwrap();
+        jobs.sort_by_key(|j| j.page);
+        assert_eq!(jobs.iter().map(|j| (j.page, j.reason.as_str())).collect::<Vec<_>>(), vec![(2, "scanned_pdf"), (3, "scanned_pdf")]);
+        assert!(jobs.iter().all(|j| j.hash == sha256_hex(&bytes)));
+        // the same content found again (a copy) adds nothing
+        add_kind(&store, dir.path(), "copy.pdf", &bytes, 2, "pdf");
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert_eq!(store.lock().unwrap().parse_counts().unwrap().queued, 2);
+    }
+
+    /// Index server that cannot load because the parser holds the GPU.
+    struct Busy;
+    impl Embedder for Busy {
+        fn embed_images(&mut self, _: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Err(EmbedError::Other("GPU is busy with the Parser model; image work waits for it to unload".into()))
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    #[test]
+    fn a_busy_gpu_is_not_a_strike_against_the_file() {
+        let (store, dir) = setup();
+        add(&store, dir.path(), "a.png", &png(30, 30, 1), 1);
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(Busy));
+        let mut p = Processor::default();
+        for _ in 0..MAX_STRIKES + 2 {
+            assert!(matches!(p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::EmbedFailed(m) if m.starts_with("GPU is busy")));
+        }
+        let st = store.lock().unwrap().stats().unwrap();
+        assert_eq!((st.pending, st.failed), (1, 0), "still waiting, never failed");
+        assert!(p.has_index_work(&store), "and the worker knows there is embedding work");
+    }
+
+    #[test]
+    fn index_work_means_pending_files_or_text_only_files() {
+        let (store, dir) = setup();
+        let mut p = Processor::default();
+        assert!(!p.has_index_work(&store));
+        add(&store, dir.path(), "a.png", &png(8, 8, 1), 1);
+        assert!(p.has_index_work(&store));
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert!(!p.has_index_work(&store), "done");
+        add_kind(&store, dir.path(), "a.txt", b"some words", 2, "doc");
+        assert_eq!(p.run_fts_pass(&store, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
+        assert!(p.has_index_work(&store), "text-only: vectors still owed");
     }
 
     #[test]

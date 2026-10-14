@@ -7,6 +7,7 @@ pub mod embed;
 pub mod fetch;
 pub mod install;
 pub mod manifest;
+pub mod parse;
 pub mod prep;
 pub mod reaper;
 pub mod server;
@@ -16,6 +17,7 @@ use std::fmt;
 pub use backend::{detect_backend, Backend, Detected};
 pub use embed::EmbedClient;
 pub use fetch::{fetch, fetch_with, rewrite_hf, FetchOptions, sha256_file, sha256_hex, Progress};
+pub use parse::{Element, ParseClient, Parsed, Table, PARSE_PROMPT_VERSION};
 pub use manifest::{Manifest, ModelProfile, ModelRole};
 pub use reaper::{Clock, IdleReaper, IdleSlot, SystemClock};
 pub use server::{fallback_chain, fallback_order, LlamaServer, Profile, Role, SpawnConfig};
@@ -36,6 +38,8 @@ pub enum Error {
     Stalled(String),
     /// Embedding request/response problem (bad dims, malformed reply).
     Embed(String),
+    /// Parser request/response problem (malformed reply, no usable elements).
+    Parse(String),
     /// Aborted by the caller (a download's cancel flag); partial files are kept.
     Cancelled,
 }
@@ -58,6 +62,7 @@ impl fmt::Display for Error {
             Error::NotFound(e) => write!(f, "not found: {e}"),
             Error::Stalled(e) => write!(f, "stalled: {e}"),
             Error::Embed(e) => write!(f, "embed: {e}"),
+            Error::Parse(e) => write!(f, "parse: {e}"),
             Error::Cancelled => write!(f, "cancelled"),
         }
     }

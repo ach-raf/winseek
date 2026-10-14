@@ -12,7 +12,7 @@ use std::path::Path;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 2;
+const SCHEMA_VERSION: i64 = 3;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -216,6 +216,55 @@ pub struct TextOnlyFile {
     pub path: String,
     pub kind: String,
     pub hash: String,
+}
+
+/// Why an item sits in the parse queue.
+pub const PARSE_REASONS: [&str; 3] = ["scanned_pdf", "doc_image", "screenshot"];
+/// Parse attempts before an item is given up on (`fail_parse`).
+pub const MAX_PARSE_ATTEMPTS: u32 = 3;
+/// Settings key: rowid of `vectors` the document-image route pass has scanned up to.
+pub const SETTING_PARSE_ROUTE_CURSOR: &str = "parse_route_cursor";
+
+/// One queued item for the document parser. `page` 0 is a standalone image.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseJob {
+    pub hash: String,
+    pub page: u32,
+    pub reason: String,
+    /// A live file with this content (the newest one).
+    pub path: String,
+    pub attempts: u32,
+}
+
+/// One text chunk produced by the parser (or by OCR when a document image is only made searchable).
+#[derive(Debug, Clone)]
+pub struct ParseChunk {
+    pub text: String,
+    pub locator: String,
+    /// The chunk's text vector; `None` while it is still owed (stored as a pending vector).
+    pub vec: Option<Vec<f32>>,
+}
+
+/// What replaces an item's text: new text chunks plus the locator for its image / page vector.
+#[derive(Debug, Clone)]
+pub struct ParseResult {
+    pub chunks: Vec<ParseChunk>,
+    pub locator: String,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseCounts {
+    pub queued: u64,
+    pub done: u64,
+    pub failed: u64,
+}
+
+/// An image vector for the document-image route pass.
+#[derive(Debug, Clone)]
+pub struct RouteImage {
+    pub rowid: i64,
+    pub hash: String,
+    pub vec: Vec<f32>,
 }
 
 #[derive(Debug, Clone)]
@@ -491,6 +540,8 @@ impl Store {
              DELETE FROM texts;
              DELETE FROM content;
              DELETE FROM pending_vecs;
+             DELETE FROM parse_queue;
+             DELETE FROM settings WHERE key = 'parse_route_cursor';
              DELETE FROM index_meta;
              UPDATE files SET content_hash = NULL, state = 0, error = NULL;
              COMMIT;",
@@ -676,6 +727,7 @@ impl Store {
         tx.execute(&format!("DELETE FROM vectors WHERE {orphan}"), [])?;
         tx.execute(&format!("DELETE FROM texts WHERE {orphan}"), [])?;
         tx.execute(&format!("DELETE FROM pending_vecs WHERE {orphan}"), [])?;
+        tx.execute(&format!("DELETE FROM parse_queue WHERE {orphan}"), [])?;
         let n = tx.execute(&format!("DELETE FROM content WHERE {orphan}"), [])?;
         tx.commit()?;
         Ok(n)
@@ -1169,6 +1221,135 @@ impl Store {
         Ok(out)
     }
 
+    // ------------------------------------------------------------ parse queue
+
+    /// Queue an item for the document parser (no-op when it is already queued / done / skipped).
+    /// Returns whether a row was added.
+    pub fn queue_parse(&mut self, hash: &str, page: u32, reason: &str) -> Result<bool> {
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO parse_queue(hash, page, reason) VALUES (?1, ?2, ?3)",
+            params![hash, page, reason],
+        )?;
+        Ok(n > 0)
+    }
+
+    /// Up to `limit` queued items, newest file first. Items whose content no live file has any more
+    /// are left out (the next `gc` drops them).
+    pub fn next_parse(&self, limit: usize) -> Result<Vec<ParseJob>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT q.hash, q.page, q.reason, q.attempts, f.path, MAX(f.mtime)
+             FROM parse_queue q JOIN files f ON f.content_hash = q.hash AND f.state IN (1, 4)
+             WHERE q.state = 0
+             GROUP BY q.hash, q.page ORDER BY MAX(f.mtime) DESC, q.hash, q.page LIMIT ?1",
+        )?;
+        let rows = st.query_map([limit as i64], |r| {
+            Ok(ParseJob { hash: r.get(0)?, page: r.get(1)?, reason: r.get(2)?, attempts: r.get(3)?, path: r.get(4)? })
+        })?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The newest live file with this content, if any.
+    pub fn live_path(&self, hash: &str) -> Result<Option<String>> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT path FROM files WHERE content_hash = ?1 AND state IN (1, 4) ORDER BY mtime DESC, id LIMIT 1",
+                [hash],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    /// Replace the item's text with the parser's output and mark it done, in one transaction.
+    pub fn finish_parse(&mut self, hash: &str, page: u32, result: &ParseResult) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        replace_item_text(&tx, self.dims, hash, page, result)?;
+        tx.execute(
+            "UPDATE parse_queue SET state = ?3, error = NULL WHERE hash = ?1 AND page = ?2",
+            params![hash, page, STATE_DONE],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Count a failed attempt (the item stays queued); returns the attempts so far.
+    pub fn bump_parse(&mut self, hash: &str, page: u32, error: &str) -> Result<u32> {
+        self.conn.execute(
+            "UPDATE parse_queue SET attempts = attempts + 1, error = ?3 WHERE hash = ?1 AND page = ?2",
+            params![hash, page, error],
+        )?;
+        Ok(self
+            .conn
+            .query_row("SELECT attempts FROM parse_queue WHERE hash = ?1 AND page = ?2", params![hash, page], |r| r.get(0))
+            .optional()?
+            .unwrap_or(0))
+    }
+
+    /// Give up on the item.
+    pub fn fail_parse(&mut self, hash: &str, page: u32, error: &str) -> Result<()> {
+        self.set_parse_state(hash, page, STATE_FAILED, error)
+    }
+
+    /// Leave the item as it is (e.g. `empty` parser output, `script` not supported).
+    pub fn skip_parse(&mut self, hash: &str, page: u32, reason: &str) -> Result<()> {
+        self.set_parse_state(hash, page, STATE_SKIPPED, reason)
+    }
+
+    /// Like [`skip_parse`](Self::skip_parse), but also stores `result` as the item's text (the OCR text of
+    /// a document image the parser does not support, so it still becomes text-searchable).
+    pub fn skip_parse_replacing(&mut self, hash: &str, page: u32, reason: &str, result: &ParseResult) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        replace_item_text(&tx, self.dims, hash, page, result)?;
+        tx.execute(
+            "UPDATE parse_queue SET state = ?3, error = ?4 WHERE hash = ?1 AND page = ?2",
+            params![hash, page, STATE_SKIPPED, reason],
+        )?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn set_parse_state(&mut self, hash: &str, page: u32, state: i64, msg: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE parse_queue SET state = ?3, error = ?4 WHERE hash = ?1 AND page = ?2",
+            params![hash, page, state, msg],
+        )?;
+        Ok(())
+    }
+
+    pub fn parse_counts(&self) -> Result<ParseCounts> {
+        let n = |s: i64| -> Result<u64> {
+            Ok(self.conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0))? as u64)
+        };
+        Ok(ParseCounts { queued: n(STATE_PENDING)?, done: n(STATE_DONE)?, failed: n(STATE_FAILED)? })
+    }
+
+    /// Standalone image vectors (chunk kind `image` without a PDF page in the locator) with a rowid
+    /// above `after_rowid`, oldest first, for the document-image route pass.
+    pub fn image_vectors_after(&self, after_rowid: i64, limit: usize) -> Result<Vec<RouteImage>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT rowid, hash, vec FROM vectors
+             WHERE rowid > ?1 AND kind = 'image'
+               AND (locator IS NULL OR NOT json_valid(locator) OR json_extract(locator, '$.page') IS NULL)
+             ORDER BY rowid LIMIT ?2",
+        )?;
+        let mut rows = st.query(params![after_rowid, limit as i64])?;
+        let mut out = Vec::new();
+        while let Some(r) = rows.next()? {
+            let blob = r.get_ref(2)?.as_blob()?;
+            if blob.len() != self.dims * 4 {
+                continue;
+            }
+            let vec = blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            out.push(RouteImage { rowid: r.get(0)?, hash: r.get(1)?, vec });
+        }
+        Ok(out)
+    }
+
+    /// Highest rowid in `vectors` (0 when empty).
+    pub fn max_vector_rowid(&self) -> Result<i64> {
+        Ok(self.conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM vectors", [], |r| r.get(0))?)
+    }
+
     // ------------------------------------------------------------ settings
 
     /// Free-form string setting (`None` when unset).
@@ -1311,6 +1492,91 @@ fn like_escape(s: &str) -> String {
     o
 }
 
+/// `page` of a locator JSON (0 when absent or unparseable): standalone images have none.
+fn locator_page(locator: Option<&str>) -> u32 {
+    locator
+        .and_then(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .and_then(|v| v["page"].as_u64())
+        .unwrap_or(0) as u32
+}
+
+/// The body of [`Store::finish_parse`]: drop the item's text chunks (OCR text, or an earlier parse),
+/// add the new chunks from `MAX(chunk)+1`, and rewrite the locator of its image / page vector.
+/// New chunks without a vector become pending vectors, which moves a done file to `text_only` so
+/// the upgrade pass embeds them.
+fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, page: u32, result: &ParseResult) -> Result<()> {
+    for c in &result.chunks {
+        if let Some(v) = &c.vec {
+            if v.len() != dims {
+                return Err(Error::BadVector { expected: dims, got: v.len() });
+            }
+        }
+    }
+    let rows = |sql: &str| -> Result<Vec<(u32, Option<String>)>> {
+        let mut st = tx.prepare_cached(sql)?;
+        let r = st.query_map([hash], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        Ok(r.collect::<std::result::Result<_, _>>()?)
+    };
+    let in_page = |r: &&(u32, Option<String>)| locator_page(r.1.as_deref()) == page;
+    let vec_text = rows("SELECT chunk, locator FROM vectors WHERE hash = ?1 AND kind = 'text'")?;
+    let pend_text = rows("SELECT chunk, locator FROM pending_vecs WHERE hash = ?1 AND kind = 'text'")?;
+    let mut old: Vec<u32> = vec_text.iter().chain(&pend_text).filter(in_page).map(|r| r.0).collect();
+    if page == 0 {
+        // text rows that never got a vector (embedding failed) have no locator to match on
+        let known: HashSet<u32> = vec_text.iter().chain(&pend_text).map(|r| r.0).collect();
+        old.extend(rows("SELECT chunk, NULL FROM texts WHERE hash = ?1")?.into_iter().map(|r| r.0).filter(|c| !known.contains(c)));
+    }
+    let next: u32 = tx.query_row(
+        "SELECT COALESCE(MAX(c), -1) + 1 FROM (
+             SELECT chunk AS c FROM vectors WHERE hash = ?1 UNION ALL
+             SELECT chunk FROM pending_vecs WHERE hash = ?1 UNION ALL
+             SELECT chunk FROM texts WHERE hash = ?1)",
+        [hash],
+        |r| r.get(0),
+    )?;
+    for c in &old {
+        tx.execute("DELETE FROM texts WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
+        tx.execute("DELETE FROM vectors WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
+        tx.execute("DELETE FROM pending_vecs WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
+    }
+    for (i, c) in result.chunks.iter().enumerate() {
+        let chunk = next + i as u32;
+        tx.execute("INSERT INTO texts(hash, chunk, body) VALUES (?1, ?2, ?3)", params![hash, chunk, c.text])?;
+        match &c.vec {
+            Some(v) => {
+                let mut blob = Vec::with_capacity(v.len() * 4);
+                for x in v {
+                    blob.extend_from_slice(&x.to_le_bytes());
+                }
+                tx.execute(
+                    "INSERT INTO vectors(hash, chunk, kind, locator, vec) VALUES (?1, ?2, 'text', ?3, ?4)",
+                    params![hash, chunk, c.locator, blob],
+                )?;
+            }
+            None => {
+                tx.execute(
+                    "INSERT INTO pending_vecs(hash, chunk, kind, locator) VALUES (?1, ?2, 'text', ?3)",
+                    params![hash, chunk, c.locator],
+                )?;
+            }
+        }
+    }
+    for table in ["vectors", "pending_vecs"] {
+        let imgs = rows(&format!("SELECT chunk, locator FROM {table} WHERE hash = ?1 AND kind IN ('image', 'page')"))?;
+        for (chunk, _) in imgs.iter().filter(in_page) {
+            tx.execute(
+                &format!("UPDATE {table} SET locator = ?3 WHERE hash = ?1 AND chunk = ?2"),
+                params![hash, chunk, result.locator],
+            )?;
+        }
+    }
+    let waiting = tx.prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?.exists([hash])?;
+    if waiting {
+        tx.execute("UPDATE files SET state = ?2 WHERE content_hash = ?1 AND state = ?3", params![hash, STATE_TEXT_ONLY, STATE_DONE])?;
+    }
+    Ok(())
+}
+
 fn migrate(conn: &Connection) -> Result<()> {
     let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
     if v > SCHEMA_VERSION {
@@ -1354,6 +1620,19 @@ fn migrate(conn: &Connection) -> Result<()> {
                  kind TEXT NOT NULL, locator TEXT,
                  PRIMARY KEY(hash, chunk));
              PRAGMA user_version = 2;
+             COMMIT;",
+        )?;
+    }
+    if v < 3 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS parse_queue(
+                 hash TEXT NOT NULL, page INTEGER NOT NULL,
+                 reason TEXT NOT NULL,
+                 state INTEGER NOT NULL DEFAULT 0,
+                 attempts INTEGER NOT NULL DEFAULT 0, error TEXT,
+                 PRIMARY KEY(hash, page));
+             PRAGMA user_version = 3;
              COMMIT;",
         )?;
     }
@@ -1968,5 +2247,219 @@ mod tests {
         let g = s.dup_groups().unwrap();
         assert_eq!(g.len(), 1);
         assert_eq!(g[0].hash, "hj");
+    }
+
+    // ---- parse queue --------------------------------------------------------------
+
+    fn tv(chunk: u32, page: u32, v: [f32; 4]) -> ChunkVec {
+        ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!("{{\"page\":{page}}}")), vec: v.to_vec() }
+    }
+
+    fn iv(chunk: u32, page: u32, v: [f32; 4]) -> ChunkVec {
+        ChunkVec { chunk, kind: VecKind::Image, locator: Some(format!("{{\"page\":{page}}}")), vec: v.to_vec() }
+    }
+
+    fn pc(text: &str, page: u32, v: Option<[f32; 4]>) -> ParseChunk {
+        ParseChunk { text: text.into(), locator: format!("{{\"page\":{page},\"parser\":{{}}}}"), vec: v.map(|v| v.to_vec()) }
+    }
+
+    fn locator_of(s: &Store, hash: &str, chunk: u32) -> Option<String> {
+        s.conn
+            .query_row("SELECT locator FROM vectors WHERE hash = ?1 AND chunk = ?2", params![hash, chunk], |r| r.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn schema_v2_database_gets_parse_queue() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("v2.db");
+        {
+            let conn = Connection::open(&p).unwrap();
+            conn.execute_batch("PRAGMA user_version = 0;").unwrap();
+            migrate(&conn).unwrap();
+            conn.execute_batch("DROP TABLE parse_queue; PRAGMA user_version = 2;").unwrap();
+        }
+        let mut s = Store::open(&p, &meta()).unwrap();
+        assert!(s.queue_parse("h", 0, "screenshot").unwrap());
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 0, failed: 0 });
+        let v: i64 = s.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn parse_queue_lifecycle() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let old = add(&mut s, 1, r"C:\p\old.png", 100);
+        let new = add(&mut s, 2, r"C:\p\new.png", 300);
+        let dead = add(&mut s, 3, r"C:\p\dead.png", 500);
+        s.complete(old, "ho", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(new, "hn", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        s.complete(dead, "hd", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        assert!(s.queue_parse("ho", 0, "doc_image").unwrap());
+        assert!(s.queue_parse("hn", 0, "screenshot").unwrap());
+        assert!(s.queue_parse("hd", 0, "doc_image").unwrap());
+        assert!(!s.queue_parse("hn", 0, "doc_image").unwrap(), "INSERT OR IGNORE");
+        s.remove(&key(3)).unwrap();
+        s.queue_parse("hn", 2, "scanned_pdf").unwrap();
+
+        let jobs = s.next_parse(10).unwrap();
+        let got: Vec<_> = jobs.iter().map(|j| (j.hash.as_str(), j.page, j.reason.as_str(), j.path.as_str())).collect();
+        assert_eq!(
+            got,
+            vec![("hn", 0, "screenshot", r"C:\p\new.png"), ("hn", 2, "scanned_pdf", r"C:\p\new.png"), ("ho", 0, "doc_image", r"C:\p\old.png")],
+            "newest file first, dead content left out"
+        );
+        assert_eq!(s.next_parse(1).unwrap().len(), 1);
+        assert_eq!(s.live_path("hn").unwrap().as_deref(), Some(r"C:\p\new.png"));
+        assert_eq!(s.live_path("hd").unwrap(), None);
+
+        assert_eq!(s.bump_parse("ho", 0, "boom").unwrap(), 1);
+        assert_eq!(s.bump_parse("ho", 0, "boom").unwrap(), 2);
+        assert_eq!(s.next_parse(10).unwrap().iter().find(|j| j.hash == "ho").unwrap().attempts, 2);
+        s.fail_parse("ho", 0, "boom").unwrap();
+        s.skip_parse("hn", 2, "empty").unwrap();
+        s.finish_parse("hn", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 1, failed: 1 }, "only the dead one is still queued");
+        assert!(s.next_parse(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn finish_parse_replaces_only_that_pages_text_and_rewrites_locator() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let f = s.upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf").unwrap();
+        // pages 1 and 2 are scanned: image vector, then OCR text; chunk numbers run across pages
+        let vecs = [
+            iv(0, 1, [1., 0., 0., 0.]),
+            tv(1, 1, [0., 1., 0., 0.]),
+            iv(2, 2, [0., 0., 1., 0.]),
+            tv(3, 2, [0., 0., 0., 1.]),
+            tv(4, 2, [1., 1., 0., 0.]),
+        ];
+        let texts: Vec<(u32, String)> = vec![(1, "p1 ocr".into()), (3, "p2 ocr a".into()), (4, "p2 ocr b".into())];
+        s.complete(f, "h", &vecs, &texts).unwrap();
+
+        let res = ParseResult {
+            chunks: vec![pc("p2 parsed one", 2, Some([0., 0., 1., 1.])), pc("p2 parsed two", 2, Some([1., 0., 1., 0.]))],
+            locator: r#"{"page":2,"parser":{"v":"x"}}"#.into(),
+        };
+        s.queue_parse("h", 2, "scanned_pdf").unwrap();
+        s.finish_parse("h", 2, &res).unwrap();
+
+        let t = s.texts_of("h").unwrap();
+        assert_eq!(
+            t,
+            vec![(1, "p1 ocr".into()), (5, "p2 parsed one".into()), (6, "p2 parsed two".into())],
+            "page 1 untouched, new numbers from MAX+1"
+        );
+        assert_eq!(locator_of(&s, "h", 2).as_deref(), Some(r#"{"page":2,"parser":{"v":"x"}}"#), "page image locator rewritten");
+        assert_eq!(locator_of(&s, "h", 0).as_deref(), Some(r#"{"page":1}"#), "page 1 image untouched");
+        assert_eq!(locator_of(&s, "h", 1).as_deref(), Some(r#"{"page":1}"#));
+        assert_eq!(locator_of(&s, "h", 5).as_deref(), Some(r#"{"page":2,"parser":{}}"#));
+        assert!(s.search_text("ocr", 5).unwrap().len() == 1, "only the page 1 text still says ocr");
+        let hits = s.search_vectors(&[0., 0., 1., 1.], 3, Some(VecKind::Text)).unwrap();
+        assert_eq!(hits[0].chunk, 5, "the new text vectors are searchable");
+        assert!(s.search_text("parsed", 5).unwrap().iter().all(|h| h.chunk >= 5));
+        assert_eq!(s.stats().unwrap().done, 1);
+        assert_eq!(s.parse_counts().unwrap().done, 1);
+
+        // re-parsing replaces the previous parse again
+        let again = ParseResult { chunks: vec![pc("p2 third", 2, Some([1., 1., 1., 1.]))], locator: res.locator.clone() };
+        s.finish_parse("h", 2, &again).unwrap();
+        assert_eq!(s.texts_of("h").unwrap(), vec![(1, "p1 ocr".into()), (7, "p2 third".into())]);
+    }
+
+    #[test]
+    fn finish_parse_standalone_image_and_pending_vectors() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let f = add(&mut s, 1, r"C:\p\shot.png", 1);
+        let ocr_loc = r#"{"ocr":{"w":10,"h":10,"lines":[]}}"#;
+        let vecs = [
+            ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(ocr_loc.into()), vec: vec![1., 0., 0., 0.] },
+            ChunkVec { chunk: 1, kind: VecKind::Text, locator: Some(ocr_loc.into()), vec: vec![0., 1., 0., 0.] },
+        ];
+        s.complete(f, "h", &vecs, &[(1, "short ocr".into())]).unwrap();
+        let res = ParseResult {
+            chunks: vec![ParseChunk { text: "parsed".into(), locator: "{\"parser\":{}}".into(), vec: None }],
+            locator: "{\"parser\":{\"v\":\"x\"}}".into(),
+        };
+        s.finish_parse("h", 0, &res).unwrap();
+        assert_eq!(s.texts_of("h").unwrap(), vec![(2, "parsed".to_string())]);
+        assert_eq!(locator_of(&s, "h", 0).as_deref(), Some("{\"parser\":{\"v\":\"x\"}}"));
+        // the text vector is owed: the file waits as text_only and the upgrade pass can find it
+        let pend = s.pending_vecs("h").unwrap();
+        assert_eq!(pend, vec![PendingVec { chunk: 2, kind: VecKind::Text, locator: Some("{\"parser\":{}}".into()) }]);
+        assert_eq!(s.stats().unwrap().text_only, 1);
+        assert_eq!(s.next_text_only(5).unwrap().len(), 1);
+        s.finish_vectors("h", &[ChunkVec { chunk: 2, kind: VecKind::Text, locator: Some("{}".into()), vec: vec![0., 0., 1., 0.] }]).unwrap();
+        assert_eq!(s.stats().unwrap().done, 1);
+        // wrong dimension is rejected before anything changes
+        let bad = ParseResult {
+            chunks: vec![ParseChunk { text: "x".into(), locator: "{}".into(), vec: Some(vec![1.0]) }],
+            locator: "{}".into(),
+        };
+        assert!(matches!(s.finish_parse("h", 0, &bad), Err(Error::BadVector { .. })));
+        assert_eq!(s.texts_of("h").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn skip_parse_replacing_stores_ocr_text() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let f = add(&mut s, 1, r"C:\p\doc.jpg", 1);
+        s.complete(f, "h", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.queue_parse("h", 0, "doc_image").unwrap();
+        let res = ParseResult {
+            chunks: vec![ParseChunk { text: "arabic text".into(), locator: "{\"ocr\":{}}".into(), vec: Some(vec![0., 1., 0., 0.]) }],
+            locator: "{\"ocr\":{}}".into(),
+        };
+        s.skip_parse_replacing("h", 0, "script", &res).unwrap();
+        assert_eq!(s.texts_of("h").unwrap(), vec![(1, "arabic text".to_string())]);
+        assert_eq!(s.search_text("arabic", 3).unwrap().len(), 1);
+        let (state, err): (i64, String) =
+            s.conn.query_row("SELECT state, error FROM parse_queue WHERE hash = 'h'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        assert_eq!((state, err.as_str()), (STATE_SKIPPED, "script"));
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts::default());
+    }
+
+    #[test]
+    fn route_scan_skips_pdf_pages_and_follows_cursor() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
+        let p = s.upsert_file(&key(2), r"C:\p\b.pdf", 10, 2, "pdf").unwrap();
+        let c = add(&mut s, 3, r"C:\p\c.jpg", 3);
+        s.complete(a, "ha", &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec![1., 0., 0., 0.] }], &[]).unwrap();
+        s.complete(p, "hp", &[iv(0, 1, [0., 1., 0., 0.]), tv(1, 1, [0., 0., 1., 0.])], &[(1, "t".into())]).unwrap();
+        let ocr = r#"{"ocr":{"w":1,"h":1,"lines":[]}}"#;
+        s.complete(c, "hc", &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(ocr.into()), vec: vec![0., 0., 0., 1.] }], &[]).unwrap();
+        assert!(s.max_vector_rowid().unwrap() >= 4);
+        let r = s.image_vectors_after(0, 10).unwrap();
+        assert_eq!(r.iter().map(|x| x.hash.as_str()).collect::<Vec<_>>(), vec!["ha", "hc"], "page vectors are not standalone images");
+        assert_eq!(r[1].vec, vec![0., 0., 0., 1.]);
+        assert_eq!(s.image_vectors_after(r[0].rowid, 10).unwrap().len(), 1);
+        assert_eq!(s.image_vectors_after(r[1].rowid, 10).unwrap().len(), 0);
+        assert_eq!(s.image_vectors_after(0, 1).unwrap().len(), 1, "limit");
+        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("7")).unwrap();
+        assert_eq!(s.get_setting(SETTING_PARSE_ROUTE_CURSOR).unwrap().as_deref(), Some("7"));
+    }
+
+    #[test]
+    fn gc_and_reset_drop_parse_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("s.db");
+        let mut s = Store::open(&p, &meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.queue_parse("ha", 0, "doc_image").unwrap();
+        s.queue_parse("ghost", 0, "doc_image").unwrap(); // content nothing references
+        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("3")).unwrap();
+        s.gc().unwrap();
+        assert_eq!(s.parse_counts().unwrap().queued, 1, "only the live content keeps its row");
+        s.remove(&key(1)).unwrap();
+        s.gc().unwrap();
+        assert_eq!(s.parse_counts().unwrap().queued, 0);
+        s.queue_parse("ha", 0, "doc_image").unwrap();
+        drop(s);
+        let s = Store::reset(&p, &meta()).unwrap();
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts::default());
+        assert_eq!(s.get_setting(SETTING_PARSE_ROUTE_CURSOR).unwrap(), None);
     }
 }

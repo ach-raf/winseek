@@ -23,7 +23,8 @@ export interface Models {
   progress: ModelsProgress | null;
   /** "cancelled" after Cancel (partial files kept), else the failure text, else null. */
   interrupted: string | null;
-  start(): void;
+  /** `includeParser`: also download the optional document parser. */
+  start(includeParser?: boolean): void;
   cancel(): void;
   refreshPlan(): void;
 }
@@ -60,10 +61,10 @@ export function useModels(backend: Backend, onDone: () => void): Models {
     return () => { dead = true; offs.forEach((u) => u()); };
   }, [backend, refreshPlan]);
 
-  const start = useCallback(() => {
+  const start = useCallback((includeParser?: boolean) => {
     setInterrupted(null);
     setRunning(true);
-    backend.modelsDownload().catch((e) => { setRunning(false); setInterrupted(errText(e)); });
+    backend.modelsDownload(includeParser).catch((e) => { setRunning(false); setInterrupted(errText(e)); });
   }, [backend]);
   const cancel = useCallback(() => { backend.modelsCancel().catch(() => {}); }, [backend]);
 

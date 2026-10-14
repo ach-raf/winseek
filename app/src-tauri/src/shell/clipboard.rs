@@ -1,4 +1,5 @@
-//! Copy files to the clipboard as CF_HDROP + `Preferred DropEffect` = COPY.
+//! Copy files to the clipboard as CF_HDROP + `Preferred DropEffect` = COPY, or text as
+//! CF_UNICODETEXT with an optional `HTML Format` (CF_HTML) twin for pasting tables into Office.
 
 use super::wide;
 use std::time::Duration;
@@ -8,7 +9,7 @@ use windows::Win32::System::DataExchange::{
     CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE};
-use windows::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY};
+use windows::Win32::System::Ole::{CF_HDROP, CF_UNICODETEXT, DROPEFFECT_COPY};
 use windows::Win32::UI::Shell::DROPFILES;
 
 /// DROPFILES header + double-NUL-terminated wide path list.
@@ -95,6 +96,75 @@ pub(super) fn copy_files(hwnd: HWND, paths: &[String]) -> Result<(), String> {
     }
 }
 
+/// NUL-terminated UTF-16LE bytes (CF_UNICODETEXT).
+fn utf16_nul_bytes(s: &str) -> Vec<u8> {
+    wide(s).iter().flat_map(|u| u.to_le_bytes()).collect()
+}
+
+/// CF_HTML payload for `fragment`: the offset header (fixed-width numbers, byte offsets into this UTF-8
+/// string) plus the `<!--StartFragment-->` / `<!--EndFragment-->` markers Office looks for.
+fn cf_html(fragment: &str) -> String {
+    const PRE: &str = "<html><body>\r\n<!--StartFragment-->";
+    const POST: &str = "<!--EndFragment-->\r\n</body></html>";
+    // Every number is 10 digits wide, so the header length is known before the numbers are.
+    let header = |sh: usize, eh: usize, sf: usize, ef: usize| {
+        format!("Version:0.9\r\nStartHTML:{sh:010}\r\nEndHTML:{eh:010}\r\nStartFragment:{sf:010}\r\nEndFragment:{ef:010}\r\n")
+    };
+    let start_html = header(0, 0, 0, 0).len();
+    let start_fragment = start_html + PRE.len();
+    let end_fragment = start_fragment + fragment.len();
+    let end_html = end_fragment + POST.len();
+    format!("{}{PRE}{fragment}{POST}", header(start_html, end_html, start_fragment, end_fragment))
+}
+
+/// Put `text` (and, when given, `html` as `HTML Format`) on the clipboard.
+pub(super) fn copy_text_html(hwnd: HWND, text: &str, html: Option<&str>) -> Result<(), String> {
+    let unicode = global_with(&utf16_nul_bytes(text))?;
+    let html_mem = match html {
+        Some(h) => {
+            let mut bytes = cf_html(h).into_bytes();
+            bytes.push(0);
+            match global_with(&bytes) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    // SAFETY: `unicode` was never handed to the clipboard.
+                    unsafe {
+                        let _ = GlobalFree(Some(unicode));
+                    }
+                    return Err(e);
+                }
+            }
+        }
+        None => None,
+    };
+    if let Err(e) = open_clipboard(hwnd) {
+        // SAFETY: neither handle was handed to the clipboard.
+        unsafe {
+            let _ = GlobalFree(Some(unicode));
+            if let Some(m) = html_mem {
+                let _ = GlobalFree(Some(m));
+            }
+        }
+        return Err(e);
+    }
+    // SAFETY: clipboard is open; ownership of each HGLOBAL moves to the system on success.
+    unsafe {
+        let _ = EmptyClipboard();
+        let r1 = SetClipboardData(CF_UNICODETEXT.0 as u32, Some(HANDLE(unicode.0)));
+        if r1.is_err() {
+            let _ = GlobalFree(Some(unicode));
+        }
+        if let Some(m) = html_mem {
+            let fmt_html = RegisterClipboardFormatW(w!("HTML Format"));
+            if SetClipboardData(fmt_html, Some(HANDLE(m.0))).is_err() {
+                let _ = GlobalFree(Some(m));
+            }
+        }
+        let _ = CloseClipboard();
+        r1.map(|_| ()).map_err(|e| e.to_string())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -102,6 +172,29 @@ mod tests {
     use windows::Win32::System::DataExchange::GetClipboardData;
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
     use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP};
+
+    #[test]
+    fn cf_html_offsets_point_at_the_fragment() {
+        for fragment in ["<table><tr><td>a</td></tr></table>", "", "<td>caf\u{e9} \u{65e5}\u{672c}</td>"] {
+            let s = cf_html(fragment);
+            let num = |key: &str| -> usize {
+                let at = s.find(key).unwrap() + key.len();
+                s[at..at + 10].parse().unwrap()
+            };
+            let (sh, eh, sf, ef) = (num("StartHTML:"), num("EndHTML:"), num("StartFragment:"), num("EndFragment:"));
+            assert_eq!(eh, s.len(), "EndHTML is the end of the payload");
+            assert_eq!(&s[sf..ef], fragment, "the fragment sits between the offsets (byte offsets)");
+            assert!(s[sh..].starts_with("<html>"));
+            assert!(s[..sf].ends_with("<!--StartFragment-->") && s[ef..].starts_with("<!--EndFragment-->"));
+            assert!(s.starts_with("Version:0.9\r\n"));
+        }
+    }
+
+    #[test]
+    fn unicode_text_is_utf16_with_a_terminator() {
+        assert_eq!(utf16_nul_bytes("a\u{e9}"), vec![0x61, 0, 0xe9, 0, 0, 0]);
+        assert_eq!(utf16_nul_bytes(""), vec![0, 0]);
+    }
 
     #[test]
     fn hdrop_layout() {

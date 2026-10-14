@@ -1,6 +1,7 @@
 //! First-run download of everything Tier 1 needs: the llama.cpp build for the detected GPU
 //! backend plus the default EmbeddingGemma-2 model and mmproj (PLAN "llama.cpp distribution"),
 //! and the pinned pdfium DLL for PDF files (also fetched on its own the first time a PDF is queued).
+//! The document parser (Infinity-Parser2, about 1.6 GB) is an optional extra, off unless asked for.
 //!
 //! `models_plan` shows sizes up front; `models_download` runs in a background thread and emits
 //! `models-progress` / `models-done` events; `models_cancel` aborts but keeps `.part` files, so
@@ -19,7 +20,7 @@ use winseek_llama::{
     detect_backend, fetch_with, Backend, Detected, Error as LlamaError, FetchOptions, Manifest, ModelProfile, ModelRole, Progress,
 };
 
-use crate::tier1::{self, embedder, pdf};
+use crate::tier1::{self, embedder, parser, pdf};
 
 /// Progress events are throttled to about 10 per second.
 pub const EMIT_EVERY: Duration = Duration::from_millis(100);
@@ -30,6 +31,9 @@ pub struct PlanItem {
     /// `None` when the manifest does not carry a size: learned once the download starts.
     pub bytes: Option<u64>,
     pub present: bool,
+    /// Not part of the default setup (the document parser): the UI offers it as a checkbox, and it is
+    /// left out of `total_bytes_missing`.
+    pub optional: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -39,7 +43,7 @@ pub struct Plan {
     pub gpu: Option<String>,
     pub driver: Option<String>,
     pub items: Vec<PlanItem>,
-    /// Sum of the known sizes of the missing items.
+    /// Sum of the known sizes of the missing items (not counting the optional ones).
     pub total_bytes_missing: u64,
     /// True when a missing item has no known size (so the total is a lower bound).
     pub size_unknown: bool,
@@ -93,7 +97,7 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
     if let Some(asset) = manifest.asset(backend) {
         let present = resolve_exe(root, manifest, backend).is_some();
         let mut push = |name: String, url: &str, bytes: Option<u64>| {
-            out.push(Job { item: PlanItem { name, bytes, present }, source: Source::Llama { file: zip_name(url) } });
+            out.push(Job { item: PlanItem { name, bytes, present, optional: false }, source: Source::Llama { file: zip_name(url) } });
         };
         push(format!("llama.cpp {} ({})", manifest.llama.build, backend_label(backend)), &asset.url, asset.size);
         for e in &asset.extra {
@@ -108,7 +112,7 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
                 ModelRole::Mmproj => "EmbeddingGemma-2 vision projector",
             };
             out.push(Job {
-                item: PlanItem { name: name.into(), bytes: Some(f.size), present: dir.join(f.file_name()).is_file() },
+                item: PlanItem { name: name.into(), bytes: Some(f.size), present: dir.join(f.file_name()).is_file(), optional: false },
                 source: Source::Model(f.clone()),
             });
         }
@@ -119,15 +123,29 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
             name: format!("PDF engine (pdfium {})", pd.build),
             bytes: Some(pd.size),
             present: pdf::locate_dll_in(std::env::var_os(pdf::ENV_PDFIUM).as_deref(), Some(root), manifest).is_some(),
+            optional: false,
         },
         source: Source::Pdfium { file: zip_name(&pd.url) },
     });
+    if let Some(entry) = manifest.model(parser::MODEL_ID, ModelProfile::Default) {
+        let dir = embedder::models_dir(root);
+        for f in &entry.files {
+            let name = match f.role {
+                ModelRole::Model => "Document parser model",
+                ModelRole::Mmproj => "Document parser vision projector",
+            };
+            out.push(Job {
+                item: PlanItem { name: name.into(), bytes: Some(f.size), present: dir.join(f.file_name()).is_file(), optional: true },
+                source: Source::Model(f.clone()),
+            });
+        }
+    }
     out
 }
 
 pub fn build_plan(root: &Path, manifest: &Manifest, det: &Detected, downloading: bool) -> Plan {
     let items: Vec<PlanItem> = jobs(root, manifest, det.backend).into_iter().map(|j| j.item).collect();
-    let missing = items.iter().filter(|i| !i.present);
+    let missing = items.iter().filter(|i| !i.present && !i.optional);
     Plan {
         backend: det.backend,
         gpu: det.gpu_name.clone(),
@@ -202,17 +220,19 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Install the llama build and fetch the missing model files under `root`. Blocking.
-/// `opts.cancel` aborts with `Err("cancelled")`; partial files stay for the next call.
+/// Install the llama build and fetch the missing model files under `root`; the optional document
+/// parser only with `include_parser`. Blocking. `opts.cancel` aborts with `Err("cancelled")`; partial
+/// files stay for the next call.
 pub fn run_download(
     root: &Path,
     manifest: &Manifest,
     backend: Backend,
+    include_parser: bool,
     opts: &FetchOptions,
     emit_every: Duration,
     emit: &mut dyn FnMut(ProgressEvent),
 ) -> Result<(), String> {
-    let jobs = jobs(root, manifest, backend);
+    let jobs: Vec<Job> = jobs(root, manifest, backend).into_iter().filter(|j| include_parser || !j.item.optional).collect();
     let plan_items: Vec<PlanItem> = jobs.iter().map(|j| j.item.clone()).collect();
     let tracker = Mutex::new(Tracker::new(&plan_items));
     let throttle = Mutex::new(Throttle { every: emit_every, last: None });
@@ -350,8 +370,15 @@ pub async fn models_plan(m: State<'_, Models>) -> Result<Plan, String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Start the background download. `include_parser`: also fetch the optional document parser.
 #[tauri::command]
-pub fn models_download(app: AppHandle, m: State<'_, Models>, h: State<'_, tier1::Handle>) -> Result<(), String> {
+pub fn models_download(
+    app: AppHandle,
+    m: State<'_, Models>,
+    h: State<'_, tier1::Handle>,
+    include_parser: Option<bool>,
+) -> Result<(), String> {
+    let include_parser = include_parser.unwrap_or(false);
     let root = tier1::data_root().ok_or("LOCALAPPDATA is not set")?;
     if m.running.swap(true, Ordering::SeqCst) {
         return Err("A download is already running".into());
@@ -363,7 +390,7 @@ pub fn models_download(app: AppHandle, m: State<'_, Models>, h: State<'_, tier1:
     let spawned = std::thread::Builder::new().name("models-download".into()).spawn(move || {
         let backend = detect_cached(&slot).backend;
         let opts = FetchOptions { cancel: Some(cancel), ..FetchOptions::default() };
-        let r = run_download(&root, &Manifest::embedded(), backend, &opts, EMIT_EVERY, &mut |ev| {
+        let r = run_download(&root, &Manifest::embedded(), backend, include_parser, &opts, EMIT_EVERY, &mut |ev| {
             let _ = app.emit("models-progress", ev);
         });
         if r.is_ok() {
@@ -403,13 +430,32 @@ mod tests {
         let names: Vec<_> = p.items.iter().map(|i| i.name.as_str()).collect();
         assert_eq!(names[0], format!("llama.cpp {} (CUDA 12)", man.llama.build));
         assert_eq!(names[1], "CUDA runtime libraries");
-        assert_eq!(&names[2..], ["EmbeddingGemma-2 model", "EmbeddingGemma-2 vision projector", "PDF engine (pdfium 7881)"]);
+        assert_eq!(
+            &names[2..],
+            [
+                "EmbeddingGemma-2 model",
+                "EmbeddingGemma-2 vision projector",
+                "PDF engine (pdfium 7881)",
+                "Document parser model",
+                "Document parser vision projector"
+            ]
+        );
         assert!(p.items.iter().all(|i| !i.present));
-        assert_eq!(p.total_bytes_missing, 265_217_350 + 391_443_627 + 309_855_456 + 554_821_024 + 3_733_154);
+        let optional: Vec<_> = p.items.iter().filter(|i| i.optional).map(|i| i.name.as_str()).collect();
+        assert_eq!(optional, ["Document parser model", "Document parser vision projector"], "only the parser is optional");
+        let parser_bytes: u64 = p.items.iter().filter(|i| i.optional).filter_map(|i| i.bytes).sum();
+        let entry = man.model(parser::MODEL_ID, ModelProfile::Default).unwrap();
+        assert_eq!(parser_bytes, entry.files.iter().map(|f| f.size).sum::<u64>(), "sizes come from the manifest");
+        assert!(parser_bytes > 1_500_000_000 && parser_bytes < 1_800_000_000, "about 1.6 GB: {parser_bytes}");
+        assert_eq!(
+            p.total_bytes_missing,
+            265_217_350 + 391_443_627 + 309_855_456 + 554_821_024 + 3_733_154,
+            "the optional parser is not in the default total"
+        );
         assert!(!p.size_unknown && !p.downloading);
         assert_eq!(p.backend, Backend::Cuda12);
         let cpu = build_plan(d.path(), &man, &det(Backend::Cpu), true);
-        assert_eq!(cpu.items.len(), 4);
+        assert_eq!(cpu.items.len(), 6);
         assert!(cpu.downloading);
         assert_eq!(serde_json::to_value(&cpu).unwrap()["backend"], "cpu");
     }
@@ -428,7 +474,7 @@ mod tests {
         assert!(find_server_exe(&dir).is_some());
         let p = build_plan(d.path(), &man, &det(Backend::Vulkan), false);
         let present: Vec<_> = p.items.iter().map(|i| i.present).collect();
-        assert_eq!(present, [true, true, false, false]);
+        assert_eq!(present, [true, true, false, false, false, false]);
         assert_eq!(p.total_bytes_missing, 554_821_024 + 3_733_154);
         assert!(!p.size_unknown);
     }
@@ -436,9 +482,9 @@ mod tests {
     #[test]
     fn tracker_overall_counts_only_missing_items() {
         let items = vec![
-            PlanItem { name: "zip".into(), bytes: None, present: false },
-            PlanItem { name: "have".into(), bytes: Some(500), present: true },
-            PlanItem { name: "model".into(), bytes: Some(1000), present: false },
+            PlanItem { name: "zip".into(), bytes: None, present: false, optional: false },
+            PlanItem { name: "have".into(), bytes: Some(500), present: true, optional: false },
+            PlanItem { name: "model".into(), bytes: Some(1000), present: false, optional: false },
         ];
         let mut t = Tracker::new(&items);
         let e = t.update("zip", Progress { downloaded: 50, total: Some(200) });
@@ -543,7 +589,7 @@ mod tests {
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
@@ -558,7 +604,7 @@ mod tests {
         assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model") && evs.iter().any(|e| e.item.ends_with("projector")));
         // already present -> nothing to do (no server left to answer)
         let mut n = 0;
-        run_download(d.path(), &man, Backend::Cpu, &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
         assert_eq!(n, 0);
     }
 
@@ -570,7 +616,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
-        let r = run_download(d.path(), &man, Backend::Cpu, &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
+        let r = run_download(d.path(), &man, Backend::Cpu, false, &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
             if e.downloaded > 0 {
                 f2.store(true, Ordering::SeqCst);
             }
@@ -583,7 +629,7 @@ mod tests {
         assert!(Path::new(&part).is_file());
         // resume: this server ignores Range and restarts, which fetch handles
         flag.store(false, Ordering::SeqCst);
-        run_download(d.path(), &man, Backend::Cpu, &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
     }
@@ -593,7 +639,42 @@ mod tests {
         let base = serve(vec![], 1);
         let man = test_manifest(&base, b"a", b"b");
         let d = tempfile::tempdir().unwrap();
-        let r = run_download(d.path(), &man, Backend::Cpu, &quick(None), Duration::ZERO, &mut |_| {});
+        let r = run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| {});
         assert!(r.unwrap_err().contains("404"));
+    }
+
+    #[test]
+    fn parser_files_are_only_downloaded_on_request() {
+        let (a, b, pm, pp) = (vec![7u8; 1000], vec![9u8; 500], vec![3u8; 800], vec![4u8; 400]);
+        let base = serve(
+            vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz()), ("/pm.gguf", pm.clone()), ("/pp.gguf", pp.clone())],
+            5,
+        );
+        let mut man = test_manifest(&base, &a, &b);
+        let file = |role, name: &str, body: &[u8]| ModelFile {
+            role,
+            url: format!("{base}/{name}"),
+            sha256: sha256_hex(body),
+            size: body.len() as u64,
+            mirrors: vec![],
+        };
+        man.models.push(ModelEntry {
+            id: parser::MODEL_ID.into(),
+            profile: ModelProfile::Default,
+            files: vec![file(ModelRole::Model, "pm.gguf", &pm), file(ModelRole::Mmproj, "pp.gguf", &pp)],
+        });
+        let d = tempfile::tempdir().unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
+        let (m, p) = parser::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
+        assert!(!m.exists() && !p.exists(), "the parser is off by default");
+        let mut evs = Vec::new();
+        run_download(d.path(), &man, Backend::Cpu, true, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        assert_eq!(std::fs::read(&m).unwrap(), pm);
+        assert_eq!(std::fs::read(&p).unwrap(), pp);
+        let last = evs.last().unwrap();
+        assert_eq!((last.overall_downloaded, last.overall_total), (1200, 1200), "progress covers only what was fetched");
+        assert!(evs.iter().any(|e| e.item == "Document parser model"));
+        let plan = build_plan(d.path(), &man, &det(Backend::Cpu), false);
+        assert!(plan.items.iter().filter(|i| i.optional).all(|i| i.present));
     }
 }

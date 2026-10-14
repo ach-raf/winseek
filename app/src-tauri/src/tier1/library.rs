@@ -192,7 +192,7 @@ impl Tier1 {
             .take(cap)
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet: None, page: None, source: "meaning" }
+                SemanticHit { path: h.path, score: h.score, size, mtime, snippet: None, page: None, source: "meaning", boxes: None }
             })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
@@ -469,7 +469,7 @@ mod tests {
 
     fn tier(include: &[&str]) -> Arc<Tier1> {
         let store = Store::open_in_memory(&index_meta("test")).unwrap();
-        Tier1::new(store, Box::new(Q), Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
+        Tier1::new(store, Box::new(Q), Box::new(crate::tier1::parser::NoParser), Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
     }
 
     fn add(t: &Tier1, n: u64, path: &str, size: u64, mtime: i64, hash: &str, vec: Vec<f32>) {

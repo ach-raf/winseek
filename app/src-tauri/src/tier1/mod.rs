@@ -13,13 +13,17 @@ pub mod extract;
 pub mod feed;
 pub mod gitignore;
 pub mod gpu_phase;
+pub mod hitbox;
 pub mod identity;
 pub mod library;
 pub mod ocr;
+pub mod parse_pass;
+pub mod parser;
 pub mod pdf;
 pub mod policy;
 pub mod process;
 pub mod progress;
+pub mod route;
 pub mod scopes;
 
 use std::path::PathBuf;
@@ -28,10 +32,14 @@ use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
-use winseek_llama::Manifest;
-use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, Scopes, Stats, Store};
+use winseek_llama::prep::prepare_jpeg_long;
+use winseek_llama::{Manifest, Profile, Table};
+use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, ParseCounts, Scopes, Stats, Store};
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
+use hitbox::HitBox;
+use parse_pass::{ParsePass, PARSE_LONG_SIDE};
+use parser::{LlamaParser, Parser};
 use policy::PauseReason;
 use process::{Pass, Processor};
 
@@ -43,10 +51,18 @@ const ST_INDEXING: u8 = 2;
 pub const MODELS_POLL: Duration = Duration::from_secs(30);
 const IDLE_POLL: Duration = Duration::from_secs(1);
 const ERROR_BACKOFF: Duration = Duration::from_secs(30);
+/// Store setting: the performance profile (`low` | `balanced` | `fast`).
+pub const SETTING_PROFILE: &str = "profile";
+/// On-demand parse results kept in memory (by content hash and page).
+const DOC_CACHE: usize = 8;
 
 pub struct Tier1 {
     pub store: Mutex<Store>,
     embedder: Mutex<Box<dyn Embedder + Send>>,
+    /// The document parser (Infinity-Parser2). Never locked together with the embedder.
+    parser: Mutex<Box<dyn Parser + Send>>,
+    /// Last on-demand parse results, newest last.
+    doc_cache: Mutex<Vec<((String, u32), ParsedDoc)>>,
     /// Effective pause flag read by the processor: user pause or an automatic reason.
     paused: AtomicBool,
     user_paused: AtomicBool,
@@ -149,12 +165,30 @@ pub struct SemanticHit {
     pub page: Option<u32>,
     /// "meaning" (vector hit) or "text" (found in the extracted text only, e.g. before the models are installed).
     pub source: &'static str,
+    /// Where the query words sit on the image / PDF page (fractions 0-1), from the chunk's OCR or parser
+    /// boxes; only boxes whose text contains a query word. `None` when there are none.
+    pub boxes: Option<Vec<HitBox>>,
+}
+
+/// Result of the on-demand "Extract text" in the preview.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ParsedDoc {
+    pub markdown: String,
+    pub tables: Vec<Table>,
+    pub elements_count: usize,
+    /// Answered from the in-memory cache (same content and page parsed a moment ago).
+    pub cached: bool,
 }
 
 /// The `page` of a chunk locator (`{"page":3,"chars":[0,90]}`).
 pub fn locator_page(locator: Option<&str>) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
     u32::try_from(v.get("page")?.as_u64()?).ok().filter(|p| *p > 0)
+}
+
+/// The saved performance profile (`balanced` when unset or unreadable).
+pub fn stored_profile(store: &Store) -> Profile {
+    store.get_setting(SETTING_PROFILE).ok().flatten().and_then(|s| Profile::parse(&s)).unwrap_or_default()
 }
 
 /// Size + mtime for the UI's date / size chips.
@@ -193,12 +227,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Tier1 {
     /// Build from parts (tests inject a fake embedder and an in-memory store).
-    pub fn new(store: Store, embedder: Box<dyn Embedder + Send>, scopes: Scopes) -> Arc<Tier1> {
+    pub fn new(store: Store, embedder: Box<dyn Embedder + Send>, parser: Box<dyn Parser + Send>, scopes: Scopes) -> Arc<Tier1> {
         let ignore = Arc::new(Ignore::new(&store.get_ignore().unwrap_or_else(|_| default_ignore())));
         let index_code = store.get_index_code().unwrap_or(false);
         Arc::new(Tier1 {
             store: Mutex::new(store),
             embedder: Mutex::new(embedder),
+            parser: Mutex::new(parser),
+            doc_cache: Mutex::new(Vec::new()),
             paused: AtomicBool::new(false),
             user_paused: AtomicBool::new(false),
             auto_pause: AtomicU8::new(0),
@@ -217,7 +253,8 @@ impl Tier1 {
     pub fn open_default() -> Result<Arc<Tier1>, String> {
         let root = data_root().ok_or("LOCALAPPDATA is not set")?;
         std::fs::create_dir_all(&root).map_err(|e| format!("create {}: {e}", root.display()))?;
-        let embedder = LlamaEmbedder::new(root.clone(), Manifest::embedded());
+        let manifest = Manifest::embedded();
+        let mut embedder = LlamaEmbedder::new(root.clone(), manifest.clone());
         let meta = embedder.meta();
         let path = root.join("tier1.sqlite");
         let store = match Store::open(&path, &meta) {
@@ -226,7 +263,11 @@ impl Tier1 {
             Err(e) => return Err(format!("open store: {e}")),
         };
         let (scopes, defaulted) = scopes::effective(store.get_scopes().map_err(|e| e.to_string())?);
-        let t = Tier1::new(store, Box::new(embedder), scopes.clone());
+        // The saved profile applies to both GPU models; they share one phase tracker.
+        let profile = stored_profile(&store);
+        embedder.set_profile(profile);
+        let parser = LlamaParser::new(root, manifest, profile, embedder.gpu_phase());
+        let t = Tier1::new(store, Box::new(embedder), Box::new(parser), scopes.clone());
         if defaulted {
             let _ = lock(&t.store).set_scopes(&scopes);
         }
@@ -310,6 +351,9 @@ impl Tier1 {
             if let Ok(mut e) = self.embedder.try_lock() {
                 e.on_pause();
             }
+            if let Ok(mut p) = self.parser.try_lock() {
+                p.unload();
+            }
         }
     }
 
@@ -374,6 +418,94 @@ impl Tier1 {
         }
     }
 
+    /// Document-parser server state (see [`runtime_info`](Self::runtime_info): a parse in progress
+    /// means the server is up).
+    pub fn parser_runtime(&self) -> RuntimeInfo {
+        match self.parser.try_lock() {
+            Ok(mut p) => p.runtime_info(),
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().runtime_info(),
+            Err(std::sync::TryLockError::WouldBlock) => RuntimeInfo { running: true, port: None, unload_in_s: None },
+        }
+    }
+
+    /// The parser's model files and a llama build are on disk (a parse in progress counts as present).
+    pub fn parser_present(&self) -> bool {
+        match self.parser.try_lock() {
+            Ok(p) => p.present(),
+            Err(std::sync::TryLockError::Poisoned(p)) => p.into_inner().present(),
+            Err(std::sync::TryLockError::WouldBlock) => true,
+        }
+    }
+
+    /// Items in the parse queue: waiting / done / failed.
+    pub fn parse_counts(&self) -> ParseCounts {
+        lock(&self.store).parse_counts().unwrap_or_default()
+    }
+
+    pub fn profile(&self) -> Profile {
+        stored_profile(&lock(&self.store))
+    }
+
+    /// Save the profile and apply it: both GPU models are dropped and use the new profile when they
+    /// next load. Waits for a running pass (the embedder lock is held for whole passes), so call it
+    /// off the UI thread. The two locks are taken one after the other, never together.
+    pub fn set_profile(&self, p: Profile) -> Result<Profile, String> {
+        lock(&self.store).set_setting(SETTING_PROFILE, Some(p.as_str())).map_err(|e| e.to_string())?;
+        lock(&self.embedder).set_profile(p);
+        lock(&self.parser).set_profile(p);
+        Ok(p)
+    }
+
+    /// "Extract text" for one image or PDF page (preview footer): the page is rendered at 1024 px, run
+    /// through the parser (loading it, and unloading the index model, as needed) and returned as
+    /// markdown plus tables. Nothing is stored. The last [`DOC_CACHE`] results are kept in memory by
+    /// content hash and page, so Copy table / Copy as Markdown right after do not parse again.
+    pub fn parse_document(&self, path: &str, page: Option<u32>) -> Result<ParsedDoc, String> {
+        use crate::preview::{classify, ext_of, Kind};
+        if !self.parser_present() {
+            return Err("The document parser is not installed. Add it in Setup.".into());
+        }
+        let (page, limit) = match classify(&ext_of(path)) {
+            Kind::Image => (0, process::MAX_FILE_BYTES),
+            Kind::Pdf => (page.filter(|p| *p > 0).unwrap_or(1), pdf::MAX_FILE_BYTES),
+            _ => return Err("Only images and PDF pages can be read.".into()),
+        };
+        let md = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
+        if md.len() > limit {
+            return Err("The file is too large to read.".into());
+        }
+        let bytes = std::fs::read(path).map_err(|e| format!("Cannot read file: {e}"))?;
+        let key = (process::sha256_hex(&bytes), page);
+        if let Some(mut d) = self.cached_doc(&key) {
+            d.cached = true;
+            return Ok(d);
+        }
+        let jpeg = if page == 0 {
+            prepare_jpeg_long(&bytes, PARSE_LONG_SIDE)?
+        } else {
+            let rt = pdf::runtime().map_err(|e| e.to_string())?;
+            let mut pages = pdf::render_pages(rt, &bytes, &[page]).map_err(|e| e.to_string())?;
+            if pages.is_empty() {
+                return Err(format!("Page {page} could not be rendered."));
+            }
+            pages.remove(0).1
+        };
+        drop(bytes);
+        let parsed = parser::parse_phased(&self.parser, &self.embedder, &jpeg).map_err(|e| e.to_string())?;
+        let doc = ParsedDoc { markdown: parsed.markdown(), tables: parsed.tables(), elements_count: parsed.elements.len(), cached: false };
+        let mut cache = lock(&self.doc_cache);
+        cache.retain(|(k, _)| *k != key);
+        cache.push((key, doc.clone()));
+        if cache.len() > DOC_CACHE {
+            cache.remove(0);
+        }
+        Ok(doc)
+    }
+
+    fn cached_doc(&self, key: &(String, u32)) -> Option<ParsedDoc> {
+        lock(&self.doc_cache).iter().find(|(k, _)| k == key).map(|(_, d)| d.clone())
+    }
+
     /// Swap in a freshly reset store (embeddings dropped, files back to pending) and make the
     /// crawler re-run. `reset` builds the new store; the store lock is held throughout so the
     /// worker cannot write to the old one meanwhile. Never touches Tier 0.
@@ -435,7 +567,8 @@ impl Tier1 {
                 let (size, mtime) = stat(&h.path);
                 let snippet = snippets.get(&h.path.to_lowercase()).filter(|s| s.contains('[')).cloned();
                 let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&h.path.to_lowercase()).copied());
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet, page, source: "meaning" }
+                let boxes = hitbox::hit_boxes(h.locator.as_deref(), q);
+                SemanticHit { path: h.path, score: h.score, size, mtime, snippet, page, source: "meaning", boxes }
             })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
@@ -460,6 +593,7 @@ impl Tier1 {
                     mtime,
                     snippet: Some(h.snippet).filter(|s| s.contains('[')),
                     source: "text",
+                    boxes: hitbox::hit_boxes(h.locator.as_deref(), q),
                 }
             })
             .collect();
@@ -486,16 +620,36 @@ fn worker_loop(t: Arc<Tier1>) {
         })) as Box<dyn Fn() + Send>
     };
     let mut proc = Processor::default().with_pdf_requester(requester);
+    let mut parse_pass = ParsePass::default();
     loop {
         let have_models = {
             let mut e = lock(&t.embedder);
             e.tick_idle();
             e.models_present()
         };
+        if let Ok(mut p) = t.parser.try_lock() {
+            p.tick_idle(); // a parse in progress (preview) is not idle
+        }
+        // Embedding work comes first: the parser gives the GPU back before the index model loads.
+        if have_models && proc.has_index_work(&t.store) {
+            lock(&t.parser).unload();
+        }
         let started = std::time::Instant::now();
         let r = if have_models {
             match proc.run_upgrade_pass(&t.store, &t.embedder, &t.paused) {
-                Ok(Pass::Idle) => proc.run_pass(&t.store, &t.embedder, &t.paused),
+                Ok(Pass::Idle) => match proc.run_pass(&t.store, &t.embedder, &t.paused) {
+                    // The embed queue is empty: route images to the document parser / parse queued items.
+                    Ok(Pass::Idle) => match parse_pass.run(&t.store, &t.embedder, &t.parser, &t.paused) {
+                        Ok(true) => {
+                            t.state.store(ST_INDEXING, Ordering::Relaxed);
+                            *lock(&t.last_error) = None;
+                            continue;
+                        }
+                        Ok(false) => Ok(Pass::Idle),
+                        Err(msg) => Err(msg),
+                    },
+                    other => other,
+                },
                 other => other,
             }
         } else {
@@ -519,6 +673,7 @@ fn worker_loop(t: Arc<Tier1>) {
         };
         if t.paused.load(Ordering::Relaxed) {
             lock(&t.embedder).on_pause();
+            lock(&t.parser).unload();
         }
         match r {
             Ok(Pass::Progress(n)) => {
@@ -534,6 +689,8 @@ fn worker_loop(t: Arc<Tier1>) {
                 t.state.store(ST_MODELS_MISSING, Ordering::Relaxed);
                 t.nap(MODELS_POLL);
             }
+            // The document parser holds the GPU: unload it and go again right away.
+            Ok(Pass::EmbedFailed(msg)) if embedder::is_gpu_busy(&msg) => lock(&t.parser).unload(),
             Ok(Pass::EmbedFailed(msg)) => {
                 *lock(&t.last_error) = Some(msg);
                 std::thread::sleep(ERROR_BACKOFF);
@@ -630,6 +787,35 @@ pub fn tier1_pause(app: tauri::AppHandle, h: tauri::State<'_, Handle>, paused: b
     Ok(())
 }
 
+/// "Extract text" for an image or one PDF page (`page` is 1-based, ignored for images).
+#[tauri::command]
+pub async fn parse_document(h: tauri::State<'_, Handle>, path: String, page: Option<u32>) -> Result<ParsedDoc, String> {
+    let t = h.get()?;
+    tauri::async_runtime::spawn_blocking(move || t.parse_document(&path, page)).await.map_err(|e| e.to_string())?
+}
+
+/// Are the document parser's model files installed (the preview offers its actions only then)?
+#[tauri::command]
+pub async fn parser_present(h: tauri::State<'_, Handle>) -> Result<bool, String> {
+    let t = h.get()?;
+    tauri::async_runtime::spawn_blocking(move || t.parser_present()).await.map_err(|e| e.to_string())
+}
+
+/// The saved performance profile: `low` | `balanced` | `fast`.
+#[tauri::command]
+pub fn get_profile(h: tauri::State<'_, Handle>) -> Result<String, String> {
+    Ok(h.get()?.profile().as_str().to_string())
+}
+
+/// Save and apply a performance profile. Returns what was saved.
+#[tauri::command]
+pub async fn set_profile(h: tauri::State<'_, Handle>, profile: String) -> Result<String, String> {
+    let p = Profile::parse(&profile).ok_or_else(|| format!("Unknown profile: {profile}"))?;
+    let t = h.get()?;
+    let saved = tauri::async_runtime::spawn_blocking(move || t.set_profile(p)).await.map_err(|e| e.to_string())??;
+    Ok(saved.as_str().to_string())
+}
+
 #[tauri::command]
 pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usize) -> Result<SemanticResult, String> {
     let t = h.get()?;
@@ -686,8 +872,12 @@ mod tests {
     }
 
     fn tier(e: Box<dyn Embedder + Send>, include: &[&str]) -> Arc<Tier1> {
+        tier_with(e, Box::new(parser::NoParser), include)
+    }
+
+    fn tier_with(e: Box<dyn Embedder + Send>, p: Box<dyn Parser + Send>, include: &[&str]) -> Arc<Tier1> {
         let store = Store::open_in_memory(&index_meta("test")).unwrap();
-        Tier1::new(store, e, Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
+        Tier1::new(store, e, p, Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
     }
 
     fn add_done(t: &Tier1, n: u64, path: &str, hot: usize) {
@@ -915,6 +1105,222 @@ mod tests {
         let t0 = std::time::Instant::now();
         t.nap(Duration::from_secs(30));
         assert!(t0.elapsed() < Duration::from_secs(5));
+    }
+
+    // ---- parser, boxes, profile ----------------------------------------------------
+
+    type Shared<T> = Arc<Mutex<T>>;
+
+    /// Parser stand-in: one canned page, counts its calls / unloads, remembers the profile it was given.
+    struct FakeParser {
+        present: bool,
+        calls: Arc<std::sync::atomic::AtomicU32>,
+        unloads: Arc<std::sync::atomic::AtomicU32>,
+        profile: Shared<Option<Profile>>,
+    }
+    impl FakeParser {
+        fn boxed(present: bool) -> (Box<dyn Parser + Send>, Self) {
+            let f = FakeParser { present, calls: Arc::default(), unloads: Arc::default(), profile: Arc::default() };
+            let probe = FakeParser { present, calls: f.calls.clone(), unloads: f.unloads.clone(), profile: f.profile.clone() };
+            (Box::new(f), probe)
+        }
+    }
+    impl Parser for FakeParser {
+        fn present(&self) -> bool {
+            self.present
+        }
+        fn parse(&mut self, _: &[u8]) -> Result<winseek_llama::Parsed, parser::ParseError> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            winseek_llama::parse::parse_output(
+                r##"[{"bbox":[100,50,900,120],"category":"title","text":"# Quarterly Invoice 4471"},
+                    {"bbox":[100,200,900,400],"category":"table","text":"<table><tr><th>Item</th><th>Qty</th></tr><tr><td>Card</td><td>1</td></tr></table>"}]"##,
+            )
+            .map(|elements| winseek_llama::Parsed { elements, prompt_version: "doc2json-v1".into() })
+            .map_err(|e| parser::ParseError::Other(e.to_string()))
+        }
+        fn unload(&mut self) {
+            self.unloads.fetch_add(1, Ordering::SeqCst);
+        }
+        fn set_profile(&mut self, p: Profile) {
+            *self.profile.lock().unwrap() = Some(p);
+        }
+    }
+
+    struct ProfileProbe(Shared<Option<Profile>>);
+    impl Embedder for ProfileProbe {
+        fn embed_images(&mut self, _: &[Vec<u8>]) -> embedder::Result<Vec<Vec<f32>>> {
+            Err(EmbedError::ModelsMissing)
+        }
+        fn embed_query(&mut self, _: &str) -> embedder::Result<Vec<f32>> {
+            Err(EmbedError::ModelsMissing)
+        }
+        fn meta(&self) -> winseek_store::IndexMeta {
+            index_meta("test")
+        }
+        fn set_profile(&mut self, p: Profile) {
+            *self.0.lock().unwrap() = Some(p);
+        }
+    }
+
+    #[test]
+    fn profile_setting_round_trips_and_reaches_both_models() {
+        let seen: Shared<Option<Profile>> = Arc::default();
+        let (parser, probe) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(ProfileProbe(seen.clone())), parser, &[r"C:\Pics"]);
+        assert_eq!(t.profile(), Profile::Balanced, "default");
+        assert_eq!(t.set_profile(Profile::Low), Ok(Profile::Low));
+        assert_eq!(t.profile(), Profile::Low);
+        assert_eq!(lock(&t.store).get_setting(SETTING_PROFILE).unwrap().as_deref(), Some("low"));
+        assert_eq!((*seen.lock().unwrap(), *probe.profile.lock().unwrap()), (Some(Profile::Low), Some(Profile::Low)));
+        t.set_profile(Profile::Fast).unwrap();
+        assert_eq!((t.profile(), *seen.lock().unwrap(), *probe.profile.lock().unwrap()), (Profile::Fast, Some(Profile::Fast), Some(Profile::Fast)));
+        // an unreadable stored value falls back to the default
+        lock(&t.store).set_setting(SETTING_PROFILE, Some("turbo")).unwrap();
+        assert_eq!(t.profile(), Profile::Balanced);
+    }
+
+    #[test]
+    fn pausing_unloads_the_parser_too() {
+        let (parser, probe) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
+        t.set_auto_pause(Some(PauseReason::Battery));
+        assert_eq!(probe.unloads.load(Ordering::SeqCst), 1);
+        t.set_auto_pause(None);
+        assert_eq!(probe.unloads.load(Ordering::SeqCst), 1, "resuming must not unload");
+    }
+
+    #[test]
+    fn parser_state_for_the_status_page() {
+        let (parser, _) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
+        assert!(t.parser_present());
+        assert_eq!(t.parser_runtime(), RuntimeInfo::default());
+        assert_eq!(t.parse_counts(), ParseCounts::default());
+        lock(&t.store).queue_parse("h", 0, "doc_image").unwrap();
+        assert_eq!(t.parse_counts().queued, 1);
+        let held = lock(&t.parser); // a parse in progress: present, and the server is by definition up
+        assert!(t.parser_present() && t.parser_runtime().running);
+        drop(held);
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        assert!(!t.parser_present());
+    }
+
+    #[test]
+    fn hits_carry_boxes_for_the_query_words() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, r"C:\Pics\scan.png", 1, 1, "image").unwrap();
+            let loc = r#"{"ocr":{"w":200,"h":100,"lines":[{"t":"Invoice 4711","r":[20,10,100,20]},{"t":"other","r":[0,50,10,10]}]}}"#;
+            let v = [ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(loc.into()), vec: unit(2) }];
+            s.complete(id, "h9", &v, &[(0, "Invoice 4711 other".into())]).unwrap();
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 10 }, r"C:\Pics\parsed.png", 1, 1, "image").unwrap();
+            let loc = r#"{"parser":{"v":"doc2json-v1","boxes":[{"b":[100,200,600,300],"c":"text","t":"Total due: Invoice"}]}}"#;
+            let v = [ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(loc.into()), vec: unit(2) }];
+            s.complete(id, "h10", &v, &[]).unwrap();
+        }
+        let r = t.semantic_search("invoice", 5).unwrap();
+        let by = |name: &str| r.hits.iter().find(|h| h.path.ends_with(name)).unwrap();
+        assert_eq!(by("scan.png").boxes, Some(vec![HitBox { x: 0.1, y: 0.1, w: 0.5, h: 0.2 }]));
+        assert_eq!(by("parsed.png").boxes, Some(vec![HitBox { x: 0.1, y: 0.2, w: 0.5, h: 0.1 }]));
+        // words that are in no box: no highlight
+        let r = t.semantic_search("zebra", 5).unwrap();
+        assert!(r.hits.iter().all(|h| h.boxes.is_none()));
+        // JSON shape the UI reads
+        let v = serde_json::to_value(by_name(&t.semantic_search("invoice", 5).unwrap(), "scan.png")).unwrap();
+        assert_eq!(v["boxes"][0]["w"], 0.5);
+    }
+
+    fn by_name<'a>(r: &'a SemanticResult, name: &str) -> &'a SemanticHit {
+        r.hits.iter().find(|h| h.path.ends_with(name)).unwrap()
+    }
+
+    #[test]
+    fn text_only_hits_carry_boxes_too() {
+        let t = tier(Box::new(Missing), &[r"C:\Pics"]);
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, r"C:\Pics\shot.png", 1, 1, "image").unwrap();
+            let loc = r#"{"ocr":{"w":10,"h":10,"lines":[{"t":"invoice","r":[1,2,3,4]}]}}"#;
+            let pend = [winseek_store::PendingVec { chunk: 1, kind: VecKind::Text, locator: Some(loc.into()) }];
+            s.complete_text_only(id, "h", &pend, &[(1, "invoice".into())]).unwrap();
+        }
+        let r = t.semantic_search("invoice", 5).unwrap();
+        assert_eq!(r.hits[0].source, "text");
+        assert_eq!(r.hits[0].boxes, Some(vec![HitBox { x: 0.1, y: 0.2, w: 0.3, h: 0.4 }]));
+    }
+
+    fn write_png(dir: &std::path::Path, name: &str) -> String {
+        let img = image::RgbImage::from_pixel(60, 40, image::Rgb([200, 200, 200]));
+        let p = dir.join(name);
+        img.save(&p).unwrap();
+        p.to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn parse_document_returns_markdown_tables_and_caches_by_content() {
+        let dir = test_tmp();
+        let (parser, probe) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
+        let path = write_png(dir.path(), "invoice.png");
+        let d = t.parse_document(&path, Some(7)).unwrap(); // the page is ignored for images
+        assert!(!d.cached);
+        assert_eq!(d.elements_count, 2);
+        assert_eq!(d.markdown, "# Quarterly Invoice 4471\n\n| Item | Qty |\n| --- | --- |\n| Card | 1 |");
+        assert_eq!((d.tables.len(), d.tables[0].tsv.as_str()), (1, "Item\tQty\nCard\t1"));
+        let again = t.parse_document(&path, None).unwrap();
+        assert!(again.cached, "same content: no second parse");
+        assert_eq!((again.markdown, again.elements_count), (d.markdown.clone(), 2));
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 1);
+        // the same bytes under another name hit the cache too; different bytes do not
+        std::fs::copy(&path, dir.path().join("copy.png")).unwrap();
+        assert!(t.parse_document(&dir.path().join("copy.png").to_string_lossy(), None).unwrap().cached);
+        let other = image::RgbImage::from_pixel(61, 40, image::Rgb([1, 2, 3]));
+        other.save(dir.path().join("other.png")).unwrap();
+        assert!(!t.parse_document(&dir.path().join("other.png").to_string_lossy(), None).unwrap().cached);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn parse_document_cache_keeps_the_last_eight() {
+        let dir = test_tmp();
+        let (parser, probe) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
+        let paths: Vec<String> = (0..9u32)
+            .map(|i| {
+                let img = image::RgbImage::from_pixel(10 + i, 10, image::Rgb([i as u8, 0, 0]));
+                let p = dir.path().join(format!("{i}.png"));
+                img.save(&p).unwrap();
+                p.to_string_lossy().into_owned()
+            })
+            .collect();
+        for p in &paths {
+            t.parse_document(p, None).unwrap();
+        }
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 9);
+        assert!(t.parse_document(&paths[8], None).unwrap().cached);
+        assert!(t.parse_document(&paths[1], None).unwrap().cached, "the 8 newest are kept");
+        assert!(!t.parse_document(&paths[0], None).unwrap().cached, "the oldest was evicted");
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 10);
+    }
+
+    #[test]
+    fn parse_document_refuses_what_it_cannot_read() {
+        let dir = test_tmp();
+        let (parser, probe) = FakeParser::boxed(true);
+        let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
+        let txt = dir.path().join("a.txt");
+        std::fs::write(&txt, "hello").unwrap();
+        assert!(t.parse_document(&txt.to_string_lossy(), None).unwrap_err().contains("images and PDF"));
+        assert!(t.parse_document(&dir.path().join("missing.png").to_string_lossy(), None).unwrap_err().contains("Cannot read"));
+        let bad = dir.path().join("bad.png");
+        std::fs::write(&bad, b"not an image").unwrap();
+        assert!(t.parse_document(&bad.to_string_lossy(), None).unwrap_err().contains("decode"));
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
+        // no parser installed
+        let none = tier(Box::new(Q), &[r"C:\Pics"]);
+        let png = write_png(dir.path(), "x.png");
+        assert!(none.parse_document(&png, None).unwrap_err().contains("not installed"));
     }
 
     #[test]
