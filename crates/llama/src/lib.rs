@@ -5,6 +5,7 @@
 pub mod backend;
 pub mod embed;
 pub mod fetch;
+pub mod import;
 pub mod install;
 pub mod manifest;
 pub mod parse;

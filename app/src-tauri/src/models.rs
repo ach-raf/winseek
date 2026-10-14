@@ -7,13 +7,14 @@
 //! `models-progress` / `models-done` events; `models_cancel` aborts but keeps `.part` files, so
 //! the next `models_download` resumes.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
+use winseek_llama::import::{configured_dirs, import_file};
 use winseek_llama::install::{install_llama_with, install_pdfium_with, resolve_exe};
 use winseek_llama::manifest::ModelFile;
 use winseek_llama::{
@@ -222,12 +223,15 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 /// Install the llama build and fetch the missing model files under `root`; the optional document
 /// parser only with `include_parser`. Blocking. `opts.cancel` aborts with `Err("cancelled")`; partial
-/// files stay for the next call.
+/// files stay for the next call. A pinned file found (same name + sha256) under one of `import`
+/// is linked / copied instead of downloaded (dev machines, see `winseek_llama::import`).
+#[allow(clippy::too_many_arguments)]
 pub fn run_download(
     root: &Path,
     manifest: &Manifest,
     backend: Backend,
     include_parser: bool,
+    import: &[PathBuf],
     opts: &FetchOptions,
     emit_every: Duration,
     emit: &mut dyn FnMut(ProgressEvent),
@@ -247,6 +251,15 @@ pub fn run_download(
 
     let llama: Vec<&Job> = jobs.iter().filter(|j| matches!(j.source, Source::Llama { .. }) && !j.item.present).collect();
     if !llama.is_empty() {
+        if let Some(asset) = manifest.asset(backend) {
+            let zips = std::iter::once((&asset.url, &asset.sha256, asset.size))
+                .chain(asset.extra.iter().map(|e| (&e.url, &e.sha256, e.size)));
+            for (url, sha, size) in zips {
+                let name = zip_name(url);
+                // install_llama finds it in downloads\ and only re-verifies it
+                import_file(import, &name, size, sha, &root.join("downloads").join(&name));
+            }
+        }
         let name_of = |file: &str| {
             llama
                 .iter()
@@ -272,6 +285,11 @@ pub fn run_download(
             continue;
         }
         let name = j.item.name.clone();
+        if import_file(import, f.file_name(), Some(f.size), &f.sha256, &dir.join(f.file_name())) {
+            let ev = locked(&tracker).finish(&name);
+            send(ev, true);
+            continue;
+        }
         fetch_with(&f.urls(), &dir.join(f.file_name()), &f.sha256, opts, &mut |p| {
             let ev = locked(&tracker).update(&name, p);
             send(ev, false);
@@ -286,6 +304,9 @@ pub fn run_download(
             continue;
         }
         let name = j.item.name.clone();
+        let pd = &manifest.pdfium;
+        let tgz = root.join("downloads").join(format!("pdfium-{}-{file}", pd.build));
+        import_file(import, file, Some(pd.size), &pd.sha256, &tgz);
         install_pdfium_with(root, manifest, opts, &mut |f, p| {
             if f == file {
                 let ev = locked(&tracker).update(&name, p);
@@ -370,15 +391,9 @@ pub async fn models_plan(m: State<'_, Models>) -> Result<Plan, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Start the background download. `include_parser`: also fetch the optional document parser.
-#[tauri::command]
-pub fn models_download(
-    app: AppHandle,
-    m: State<'_, Models>,
-    h: State<'_, tier1::Handle>,
-    include_parser: Option<bool>,
-) -> Result<(), String> {
-    let include_parser = include_parser.unwrap_or(false);
+/// Start the background download (one at a time). `include_parser`: also fetch the optional document parser.
+pub fn start_download(app: &AppHandle, include_parser: bool) -> Result<(), String> {
+    let m = app.state::<Models>();
     let root = tier1::data_root().ok_or("LOCALAPPDATA is not set")?;
     if m.running.swap(true, Ordering::SeqCst) {
         return Err("A download is already running".into());
@@ -386,11 +401,13 @@ pub fn models_download(
     m.cancel.store(false, Ordering::SeqCst);
     let guard = RunGuard(m.running.clone());
     let (cancel, slot) = (m.cancel.clone(), m.detected.clone());
-    let worker = h.get().ok();
+    let worker = app.state::<tier1::Handle>().get().ok();
+    let app = app.clone();
     let spawned = std::thread::Builder::new().name("models-download".into()).spawn(move || {
         let backend = detect_cached(&slot).backend;
         let opts = FetchOptions { cancel: Some(cancel), ..FetchOptions::default() };
-        let r = run_download(&root, &Manifest::embedded(), backend, include_parser, &opts, EMIT_EVERY, &mut |ev| {
+        let import = configured_dirs(&root);
+        let r = run_download(&root, &Manifest::embedded(), backend, include_parser, &import, &opts, EMIT_EVERY, &mut |ev| {
             let _ = app.emit("models-progress", ev);
         });
         if r.is_ok() {
@@ -402,6 +419,34 @@ pub fn models_download(
         let _ = app.emit("models-done", DoneEvent { ok: r.is_ok(), error: r.err() });
     });
     spawned.map(|_| ()).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn models_download(app: AppHandle, include_parser: Option<bool>) -> Result<(), String> {
+    start_download(&app, include_parser.unwrap_or(false))
+}
+
+/// Zero-setup first run: when the default Tier 1 set (llama build, EmbeddingGemma-2, pdfium) is
+/// incomplete, start downloading it in the background without waiting for a click. The optional
+/// document parser is left to the Setup panel. Runs once per app start (off the main thread: GPU
+/// detection shells out to nvidia-smi).
+pub fn auto_download(app: AppHandle) {
+    let _ = std::thread::Builder::new().name("models-auto".into()).spawn(move || {
+        let Some(root) = tier1::data_root() else { return };
+        let det = app.state::<Models>().detected();
+        let plan = build_plan(&root, &Manifest::embedded(), &det, false);
+        if !needs_download(&plan) {
+            return;
+        }
+        if let Err(e) = start_download(&app, false) {
+            eprintln!("winseek: automatic model download not started: {e}");
+        }
+    });
+}
+
+/// True when a non-optional item is missing.
+fn needs_download(plan: &Plan) -> bool {
+    plan.items.iter().any(|i| !i.present && !i.optional)
 }
 
 #[tauri::command]
@@ -589,7 +634,7 @@ mod tests {
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
@@ -604,7 +649,7 @@ mod tests {
         assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model") && evs.iter().any(|e| e.item.ends_with("projector")));
         // already present -> nothing to do (no server left to answer)
         let mut n = 0;
-        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
         assert_eq!(n, 0);
     }
 
@@ -616,7 +661,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
-        let r = run_download(d.path(), &man, Backend::Cpu, false, &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
+        let r = run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
             if e.downloaded > 0 {
                 f2.store(true, Ordering::SeqCst);
             }
@@ -629,9 +674,41 @@ mod tests {
         assert!(Path::new(&part).is_file());
         // resume: this server ignores Range and restarts, which fetch handles
         flag.store(false, Ordering::SeqCst);
-        run_download(d.path(), &man, Backend::Cpu, false, &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
+    }
+
+    #[test]
+    fn import_dir_replaces_the_download() {
+        let (a, b) = (vec![7u8; 4000], vec![9u8; 3000]);
+        // only pdfium is served: both model files must come from the import folder
+        let base = serve(vec![("/pdfium.tgz", pdfium_tgz())], 1);
+        let man = test_manifest(&base, &a, &b);
+        let src = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(src.path().join("repo")).unwrap();
+        std::fs::write(src.path().join("repo").join("m.gguf"), &a).unwrap();
+        std::fs::write(src.path().join("p.gguf"), &b).unwrap();
+        let d = tempfile::tempdir().unwrap();
+        let mut evs = Vec::new();
+        let import = vec![src.path().to_path_buf()];
+        run_download(d.path(), &man, Backend::Cpu, false, &import, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
+        assert_eq!((std::fs::read(m).unwrap(), std::fs::read(p).unwrap()), (a, b));
+        assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model" && e.downloaded == 4000));
+        let last = evs.last().unwrap();
+        assert_eq!(last.overall_downloaded, last.overall_total);
+    }
+
+    #[test]
+    fn needs_download_ignores_optional() {
+        let d = tempfile::tempdir().unwrap();
+        let mut p = build_plan(d.path(), &Manifest::embedded(), &det(Backend::Cpu), false);
+        assert!(needs_download(&p));
+        for i in p.items.iter_mut().filter(|i| !i.optional) {
+            i.present = true;
+        }
+        assert!(!needs_download(&p), "the parser alone never triggers the automatic download");
     }
 
     #[test]
@@ -639,7 +716,7 @@ mod tests {
         let base = serve(vec![], 1);
         let man = test_manifest(&base, b"a", b"b");
         let d = tempfile::tempdir().unwrap();
-        let r = run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| {});
+        let r = run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| {});
         assert!(r.unwrap_err().contains("404"));
     }
 
@@ -664,11 +741,11 @@ mod tests {
             files: vec![file(ModelRole::Model, "pm.gguf", &pm), file(ModelRole::Mmproj, "pp.gguf", &pp)],
         });
         let d = tempfile::tempdir().unwrap();
-        run_download(d.path(), &man, Backend::Cpu, false, &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
         let (m, p) = parser::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert!(!m.exists() && !p.exists(), "the parser is off by default");
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, true, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, true, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         assert_eq!(std::fs::read(&m).unwrap(), pm);
         assert_eq!(std::fs::read(&p).unwrap(), pp);
         let last = evs.last().unwrap();

@@ -56,6 +56,8 @@ pub struct Processor {
     ocr_flag: Option<bool>,
     /// Binds / returns the process-wide pdfium (tests inject a stub).
     pdf_runtime: fn() -> Result<&'static Pdfium, PdfError>,
+    /// Is the pdfium DLL on disk (tests stub it: the real check looks at %LOCALAPPDATA%)?
+    pdf_on_disk: fn() -> bool,
     /// Asked (from the worker thread, must not block) to fetch pdfium when PDFs are queued without it.
     pdf_requester: Option<Box<dyn Fn() + Send>>,
     /// pdfium is on disk but would not load: leave PDFs alone until then.
@@ -116,6 +118,7 @@ impl Processor {
             screenshots_dir,
             ocr_flag: None,
             pdf_runtime: pdf::runtime,
+            pdf_on_disk: || pdf::locate_dll().is_some(),
             pdf_requester: None,
             pdf_block_until: None,
             img_cursor: 0,
@@ -138,7 +141,7 @@ impl Processor {
         if (self.pdf_runtime)().is_ok() {
             return true;
         }
-        if pdf::locate_dll().is_some() {
+        if (self.pdf_on_disk)() {
             // on disk but unloadable (corrupt / wrong architecture): do not hammer it
             self.pdf_block_until = Some(Instant::now() + PDF_RETRY);
         } else if lock(store).has_pending_kind(KIND_PDF).unwrap_or(false) {
@@ -1409,6 +1412,7 @@ mod tests {
             a2.fetch_add(1, Ordering::SeqCst);
         }));
         p.pdf_runtime = no_pdfium;
+        p.pdf_on_disk = || false; // hermetic: the dev machine may have the real DLL installed
         assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
         assert!(asked.load(Ordering::SeqCst) >= 1);
         let st = store.lock().unwrap().stats().unwrap();

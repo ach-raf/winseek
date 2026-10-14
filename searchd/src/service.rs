@@ -255,7 +255,11 @@ fn query_state(svc: &Handle) -> Result<u32, String> {
     Ok(st.current_state)
 }
 
-/// Ask the service to stop (if running) and poll every 250 ms for up to 30 s.
+/// How long `--install` / `--uninstall` wait for a running service to stop. Stopping saves the
+/// snapshot, which takes 30-50 s for ~14.5M records on the dev machine (2026-10-14).
+const STOP_WAIT: Duration = Duration::from_secs(180);
+
+/// Ask the service to stop (if running) and poll every 250 ms for up to [`STOP_WAIT`].
 fn stop_and_wait(svc: &Handle) -> Result<(), String> {
     if query_state(svc)? == SERVICE_STOPPED {
         return Ok(());
@@ -269,14 +273,14 @@ fn stop_and_wait(svc: &Handle) -> Result<(), String> {
             return Err(format!("ControlService(stop): {e}"));
         }
     }
-    let deadline = Instant::now() + Duration::from_secs(30);
+    let deadline = Instant::now() + STOP_WAIT;
     while Instant::now() < deadline {
         if query_state(svc)? == SERVICE_STOPPED {
             return Ok(());
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err("service did not stop within 30 s".into())
+    Err(format!("service did not stop within {} s", STOP_WAIT.as_secs()))
 }
 
 /// Parse SDDL into a self-relative SD (free with `LocalFree`).
@@ -475,7 +479,11 @@ pub fn uninstall() -> Result<(), String> {
     match open_service(&scm)? {
         None => info!("service {SERVICE_NAME} is not installed"),
         Some(s) => {
-            stop_and_wait(&s)?;
+            // Still stopping is no reason to keep the service: DeleteService only marks it, and the
+            // SCM removes it once the process has exited.
+            if let Err(e) = stop_and_wait(&s) {
+                error!("{e}; deleting anyway");
+            }
             // SAFETY: valid handle.
             if unsafe { DeleteService(s.0) } == 0 {
                 return Err(os_err("DeleteService"));
@@ -484,13 +492,30 @@ pub fn uninstall() -> Result<(), String> {
         }
     }
     let dir = install_dir();
-    match std::fs::remove_file(dir.join("searchd.exe")) {
+    let exe = dir.join("searchd.exe");
+    let same = |a: &Path| matches!((std::fs::canonicalize(a), std::fs::canonicalize(&exe)), (Ok(x), Ok(y)) if x == y);
+    if std::env::current_exe().is_ok_and(|c| same(&c)) {
+        // run by the installer from the installed copy itself: it removes the file afterwards
+        return Ok(());
+    }
+    // the exe stays locked for a moment after the service reports STOPPED
+    let mut r = std::fs::remove_file(&exe);
+    for _ in 0..40 {
+        match &r {
+            Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
+                std::thread::sleep(Duration::from_millis(250));
+                r = std::fs::remove_file(&exe);
+            }
+            _ => break,
+        }
+    }
+    match r {
         Ok(()) => {
             let _ = std::fs::remove_dir(&dir);
             info!("removed {}", dir.display());
         }
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-        Err(e) => info!("could not remove {}: {e} (ignored)", dir.join("searchd.exe").display()),
+        Err(e) => info!("could not remove {}: {e} (ignored)", exe.display()),
     }
     Ok(())
 }

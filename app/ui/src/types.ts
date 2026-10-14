@@ -328,6 +328,10 @@ export interface Backend {
   rescanVolume(letter: string): Promise<void>;
   /** Drop all embeddings and index the chosen folders again. Never touches the name index. */
   tier1Rebuild(): Promise<void>;
+  /** "Start with Windows" (HKCU Run value). */
+  autostartGet(): Promise<boolean>;
+  /** Resolves to the state after the change. */
+  autostartSet(on: boolean): Promise<boolean>;
   modelsPlan(): Promise<ModelsPlan>;
   /** Starts the background download (`includeParser`: also the optional document parser); progress arrives via onModelsProgress / onModelsDone. */
   modelsDownload(includeParser?: boolean): Promise<void>;

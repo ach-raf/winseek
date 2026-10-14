@@ -66,6 +66,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     statusPage: () => inv<StatusPage>("status_page"),
     rescanVolume: (letter) => inv("rescan_volume", { letter }),
     tier1Rebuild: () => inv("tier1_rebuild"),
+    autostartGet: () => inv<boolean>("autostart_get"),
+    autostartSet: (on) => inv<boolean>("autostart_set", { on }),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
     modelsDownload: (includeParser) => inv("models_download", { includeParser: !!includeParser }),
     modelsCancel: () => inv("models_cancel"),

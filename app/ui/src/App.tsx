@@ -848,6 +848,13 @@ export default function App({ backend }: { backend: Backend }) {
 
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>
+        {models.running && (
+          <button className="dl-chip" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
+                  onMouseDown={(e) => e.preventDefault()} onClick={openSetup}>
+            Setting up search by meaning{models.progress && models.progress.overall_total > 0
+              ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
+          </button>
+        )}
         {toast ? (
           <span className="toast" role="status">
             {toast.msg}

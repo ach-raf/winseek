@@ -95,6 +95,27 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
   );
 }
 
+function AutostartToggle({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [on, setOn] = useState<boolean | null>(null);
+  useEffect(() => { backend.autostartGet().then(setOn).catch(onError); }, [backend, onError]);
+  const change = (v: boolean) => {
+    setOn(v);
+    backend.autostartSet(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
+  };
+  return (
+    <div className="set-row">
+      <div>
+        <div className="fl-title">Startup</div>
+        <label className="set-state">
+          <input type="checkbox" checked={!!on} disabled={on === null} onChange={(e) => change(e.target.checked)} aria-label="Start with Windows" />
+          {" "}Start with Windows
+        </label>
+        <p className="muted">Starts winseek in the tray when you sign in, so <kbd>Alt</kbd>+<kbd>Space</kbd> works right away. The name index runs as a service either way.</p>
+      </div>
+    </div>
+  );
+}
+
 const PROFILES: { id: Profile; label: string; blurb: string }[] = [
   { id: "low", label: "Low", blurb: "Least graphics memory. Slow on images and documents." },
   { id: "balanced", label: "Balanced", blurb: "Search on the processor, image and document models load on the graphics card only while they work." },
@@ -166,6 +187,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
       <Performance backend={backend} onError={onError} />
       <CodeToggle backend={backend} onError={onError} />
       <IgnoredNames backend={backend} onError={onError} />
+      <AutostartToggle backend={backend} onError={onError} />
 
       <div className="actions">
         <span className="muted">Changes are saved right away.</span>

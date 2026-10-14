@@ -8,6 +8,7 @@ description = "winseek desktop app (popup + library UI)"
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
 window-vibrancy = "0.6"
 png = "0.17"
 serde = { workspace = true }

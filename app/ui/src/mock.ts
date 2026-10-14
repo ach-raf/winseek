@@ -100,6 +100,7 @@ let parserInstalled = params.get("parser") !== "0";
 let lastParseAt: number | null = null; // when the parser server was last used (it unloads after IDLE_UNLOAD_S)
 let mockProfile: Profile = "balanced";
 let modelsInstalled = params.get("models") === "1";
+let autostart = true;
 let dlRunning = false;
 let dlCancel = false;
 let dlFailOnce = params.get("dlfail") === "1";
@@ -630,6 +631,8 @@ export const mockBackend: Backend = {
     indexTick = performance.now();
     rateSamples = [];
   },
+  async autostartGet() { return autostart; },
+  async autostartSet(on) { await sleep(30); autostart = on; return autostart; },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
     const items: ModelsPlan["items"] = [

@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod autostart;
 mod commands;
 mod libwindow;
 mod models;
@@ -37,7 +38,17 @@ fn pick_source() -> Arc<dyn source::NameSource> {
 fn main() {
     let hotkey = Shortcut::new(Some(Modifiers::ALT), Code::Space);
 
+    // Started from the Run key at login: stay in the tray. Any other launch (Start menu, installer,
+    // a second double-click) shows the popup.
+    let autostarted = std::env::args().any(|a| a == autostart::ARG);
+
     tauri::Builder::default()
+        // must be the first plugin: a second launch hands over to the running instance and exits
+        .plugin(tauri_plugin_single_instance::init(|app, argv, _cwd| {
+            if !argv.iter().any(|a| a == autostart::ARG) {
+                popup::show(app);
+            }
+        }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(move |app, sc, ev| {
@@ -100,7 +111,9 @@ fn main() {
             status::tier1_rebuild,
             models::models_plan,
             models::models_download,
-            models::models_cancel
+            models::models_cancel,
+            autostart::autostart_get,
+            autostart::autostart_set
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
@@ -187,6 +200,11 @@ fn main() {
             }
             tray.build(app)?;
             watcher::spawn(app.handle().clone());
+            autostart::init_default();
+            models::auto_download(app.handle().clone());
+            if !autostarted {
+                popup::show(app.handle());
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
