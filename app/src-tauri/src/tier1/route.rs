@@ -5,10 +5,18 @@
 use super::embedder::{EmbedError, Embedder};
 
 /// Zero-shot document check on the image vector: the best document prototype must reach `DOC_MIN`
-/// and beat the best non-document prototype by `DOC_MARGIN`. Provisional guesses (shown as such on
-/// the status page); eval tuning is a later step.
-pub const DOC_MIN: f32 = 0.12;
-pub const DOC_MARGIN: f32 = 0.03;
+/// and beat the best non-document prototype by `DOC_MARGIN`.
+///
+/// Measured 2026-10-14 with `winseek-eval route` (EmbeddingGemma-2 Q8_0, llama.cpp b11588) on 418
+/// labelled images: 138 documents (synthetic receipts / invoices / forms / contracts / slides / book
+/// pages / whiteboards, flat and "photographed", plus first pages of 40 real PDFs) and 280 others
+/// (real phone photos, wallpapers, game and film stills, screenshots, memes). Cosines live in
+/// 0.53..0.76: every document scored best_doc >= 0.61 but so did many photos (up to 0.66), so the
+/// margin does the separating. Documents: margin >= 0.042; photos: margin <= 0.034. At 0.60 / 0.04:
+/// recall 138/138, no photo routed, 2 false positives (both web-page screenshots). Margin 0.05 would
+/// lose a real PDF page for no photo gain on this set; 0.03 (the old guess) routed 3 photos.
+pub const DOC_MIN: f32 = 0.60;
+pub const DOC_MARGIN: f32 = 0.04;
 /// A screenshot goes to the parser when Windows OCR read at least this many characters.
 pub const SCREENSHOT_MIN_CHARS: usize = 200;
 /// Image vectors looked at per route pass.
@@ -146,12 +154,24 @@ mod tests {
     #[test]
     fn doc_needs_min_score_and_margin() {
         let p = protos();
-        assert!(p.is_doc(&mix(0.5, 0.1)));
-        assert!(!p.is_doc(&mix(0.11, 0.0)), "below DOC_MIN");
-        assert!(!p.is_doc(&mix(0.3, 0.29)), "margin 0.01 < DOC_MARGIN");
-        assert!(p.is_doc(&mix(0.3, 0.26)), "margin 0.04");
+        assert!(p.is_doc(&mix(0.7, 0.6)));
+        assert!(!p.is_doc(&mix(0.59, 0.0)), "below DOC_MIN");
+        assert!(p.is_doc(&mix(0.61, 0.0)));
+        assert!(!p.is_doc(&mix(0.66, 0.63)), "margin 0.03 < DOC_MARGIN");
+        assert!(p.is_doc(&mix(0.66, 0.615)), "margin 0.045");
         assert!(!p.is_doc(&mix(0.0, 0.9)), "a photo");
-        assert!(p.is_doc(&mix(0.13, 0.0)));
+    }
+
+    /// Guard: these are measured (see the constants' doc comment), not free parameters. Re-run
+    /// `winseek-eval route` before changing them, and keep the status page's `provisional` in step.
+    #[test]
+    fn routing_thresholds_are_the_measured_ones() {
+        assert_eq!((DOC_MIN, DOC_MARGIN), (0.60, 0.04));
+        // real scores from the eval set: worst document vs. best-scoring photos
+        let p = protos();
+        assert!(p.is_doc(&mix(0.647, 0.605)), "real PDF page, margin 0.042");
+        assert!(!p.is_doc(&mix(0.647, 0.613)), "photo, margin 0.034");
+        assert!(!p.is_doc(&mix(0.622, 0.589)), "photo, margin 0.033");
     }
 
     struct Q;

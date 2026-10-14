@@ -95,6 +95,17 @@ pub struct LibState(Arc<LibInner>);
 
 // ---------------------------------------------------------------- collections
 
+/// Threshold of the first, unmeasured defaults. EmbeddingGemma-2 image/query cosines are never that
+/// low, so a saved default still carrying it matched every image; loading upgrades it.
+const LEGACY_DEFAULT_THRESHOLD: f32 = 0.2;
+
+/// The default collections. Thresholds measured 2026-10-14 with `winseek-eval route` (EmbeddingGemma-2
+/// Q8_0, llama.cpp b11588, 418 labelled images): real photos score at most 0.585 / 0.601 / 0.619 /
+/// 0.597 against these four queries, members (synthetic receipts + invoices, whiteboards, captioned
+/// memes, contracts + forms) score at least 0.691 / 0.614 / 0.634 / 0.645. Each threshold is the
+/// midpoint between the best-scoring photo and the members' 10th percentile: no photo in any
+/// collection, every member in. Other documents do score high on Receipts / Documents to sign (the
+/// zero-shot query barely tells document kinds apart), which the slider can trim.
 pub fn default_collections() -> Vec<Collection> {
     let c = |name: &str, query: &str, threshold: f32, rule: Option<&str>| Collection {
         name: name.into(),
@@ -103,12 +114,24 @@ pub fn default_collections() -> Vec<Collection> {
         rule: rule.map(Into::into),
     };
     vec![
-        c("Receipts", "a photo of a paper receipt or invoice", 0.2, None),
-        c("Whiteboards", "a whiteboard with handwritten notes and diagrams", 0.2, None),
-        c("Memes", "a meme: an image with a funny caption", 0.2, None),
-        c("Documents to sign", "a contract or form with a signature line to sign", 0.2, None),
+        c("Receipts", "a photo of a paper receipt or invoice", 0.64, None),
+        c("Whiteboards", "a whiteboard with handwritten notes and diagrams", 0.61, None),
+        c("Memes", "a meme: an image with a funny caption", 0.63, None),
+        c("Documents to sign", "a contract or form with a signature line to sign", 0.63, None),
         c("Screenshots", "", 0.0, Some("screenshots")),
     ]
+}
+
+/// A saved list from before the thresholds were measured: defaults the user never changed (same
+/// name, query and the legacy threshold) get the measured threshold. Anything edited stays.
+pub fn upgrade_legacy_thresholds(mut list: Vec<Collection>) -> Vec<Collection> {
+    let defaults = default_collections();
+    for c in list.iter_mut().filter(|c| c.threshold == LEGACY_DEFAULT_THRESHOLD) {
+        if let Some(d) = defaults.iter().find(|d| d.name == c.name && d.query == c.query) {
+            c.threshold = d.threshold;
+        }
+    }
+    list
 }
 
 /// Trim, validate and cap a user-edited list. Names must be unique (case-insensitive).
@@ -143,7 +166,7 @@ impl Tier1 {
         let raw = lock(&self.store).get_setting(COLLECTIONS_KEY).map_err(|e| e.to_string())?;
         match raw {
             None => Ok(default_collections()),
-            Some(s) => Ok(serde_json::from_str(&s).unwrap_or_else(|_| default_collections())),
+            Some(s) => Ok(serde_json::from_str(&s).map(upgrade_legacy_thresholds).unwrap_or_else(|_| default_collections())),
         }
     }
 
@@ -499,6 +522,31 @@ mod tests {
         assert!(bad(vec![c("A", "  ")]).contains("search phrase"));
         assert!(bad(vec![c("A", "x"), c("a", "y")]).contains("already"));
         assert!(t.get_collections().unwrap().is_empty(), "a rejected save changes nothing");
+    }
+
+    /// Guard: measured values (see `default_collections`); re-run `winseek-eval route` before changing.
+    #[test]
+    fn default_thresholds_are_the_measured_ones() {
+        let d = default_collections();
+        let t: Vec<(&str, f32)> = d.iter().map(|c| (c.name.as_str(), c.threshold)).collect();
+        assert_eq!(t, [("Receipts", 0.64), ("Whiteboards", 0.61), ("Memes", 0.63), ("Documents to sign", 0.63), ("Screenshots", 0.0)]);
+        // every query collection sits above the best-scoring real photo (0.62) of the eval set
+        assert!(d.iter().filter(|c| c.rule.is_none()).all(|c| c.threshold > 0.6));
+    }
+
+    #[test]
+    fn saved_legacy_defaults_get_the_measured_thresholds() {
+        let t = tier(&[r"C:\Pics"]);
+        let mut old = default_collections();
+        for c in old.iter_mut().filter(|c| c.rule.is_none()) {
+            c.threshold = LEGACY_DEFAULT_THRESHOLD;
+        }
+        old[1].query = "my own whiteboard query".into(); // edited: keeps 0.2
+        old.push(Collection { name: "Cats".into(), query: "cat".into(), threshold: 0.2, rule: None });
+        t.set_collections(old).unwrap();
+        let got = t.get_collections().unwrap();
+        let thr: Vec<f32> = got.iter().map(|c| c.threshold).collect();
+        assert_eq!(thr, [0.64, 0.2, 0.63, 0.63, 0.0, 0.2]);
     }
 
     #[test]

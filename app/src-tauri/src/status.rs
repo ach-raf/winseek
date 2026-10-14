@@ -102,13 +102,13 @@ pub struct ParserQueueDto {
     pub failed: u64,
 }
 
-/// What decides which images go to the parser. Guesses until the eval has tuned them.
+/// What decides which images go to the parser (measured with `winseek-eval route`, see `tier1::route`).
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct RoutingDto {
     pub doc_min: f32,
     pub doc_margin: f32,
     pub screenshot_min_chars: usize,
-    /// "parser routing thresholds: provisional"
+    /// "parser routing thresholds: provisional" (guesses) vs. "tuned" (measured on the eval set)
     pub provisional: bool,
 }
 
@@ -320,7 +320,7 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
             doc_min: route::DOC_MIN,
             doc_margin: route::DOC_MARGIN,
             screenshot_min_chars: route::SCREENSHOT_MIN_CHARS,
-            provisional: true,
+            provisional: false,
         },
     }
 }
@@ -568,7 +568,7 @@ mod tests {
         assert_eq!(v["models"]["parser"]["model_id"], "infinity-parser2-flash");
         assert_eq!(v["models"]["parser"]["queue"]["queued"], 0);
         assert_eq!(v["models"]["parser"]["profile"], "balanced");
-        assert_eq!(v["models"]["parser"]["routing"]["provisional"], true);
+        assert_eq!(v["models"]["parser"]["routing"]["provisional"], false);
     }
 
     #[test]
@@ -594,7 +594,8 @@ mod tests {
         );
         assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1 });
         assert_eq!((none.profile, none.present), ("fast", false));
-        assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.12, 0.03, 200));
+        assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.60, 0.04, 200));
+        assert!(!none.routing.provisional, "measured with winseek-eval route");
         std::fs::write(models.join(&none.files[1].name), b"abc").unwrap();
         let some = parser_section(Some(dir.path()), &man, state);
         assert_eq!((some.files[0].bytes, some.files[1].bytes), (None, Some(3)));

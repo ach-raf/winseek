@@ -159,7 +159,7 @@ function Files({ files }: { files: StatusModelFile[] }) {
 
 const profileName = (p: StatusParser["profile"]) => p.charAt(0).toUpperCase() + p.slice(1);
 
-/** The document parser: files, server, queue, profile and the (provisional) routing thresholds. */
+/** The document parser: files, server, queue, profile and the routing thresholds. */
 function ParserRows({ p }: { p: StatusParser }) {
   const sv = p.server;
   const q = p.queue;
@@ -180,7 +180,7 @@ function ParserRows({ p }: { p: StatusParser }) {
           {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.failed)} failed
         </Row>
         <Row k="Profile" title="Performance profile (Settings)">{profileName(p.profile)}</Row>
-        <Row k="Parser routing thresholds" title="Which images go to the parser. Guesses until the evaluation has tuned them.">
+        <Row k="Parser routing thresholds" title="Which images go to the parser. Tuned = measured on a labelled set of documents and photos.">
           {r.provisional ? "provisional" : "tuned"} · document score ≥ {r.doc_min}, margin ≥ {r.doc_margin}, screenshots from {r.screenshot_min_chars} characters
         </Row>
       </dl>

@@ -43,7 +43,7 @@ impl Embed for EmbedClient {
     }
 }
 
-fn finish(raw: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, String> {
+pub fn finish(raw: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, String> {
     raw.iter().map(|v| truncate_normalize(v, DIMS).map_err(|e| e.to_string())).collect()
 }
 
@@ -157,24 +157,16 @@ fn version_of(exe: &Path) -> String {
         .unwrap_or_default()
 }
 
-/// Full live run. Spawns llama-server (unless `url` is given) and drops it at the end.
-pub fn run(opts: &RunOptions) -> Result<Report, String> {
-    let corpus = load_index(&opts.corpus)?;
-    let cases_text = std::fs::read_to_string(&opts.cases).map_err(|e| format!("{}: {e}", opts.cases.display()))?;
-    let cases = crate::metrics::parse_cases(&cases_text)?;
-    let manifest = Manifest::embedded();
+/// A vision-enabled embedding client. Holds the spawned llama-server (if any) alive; Drop kills it.
+pub struct Connection {
+    pub client: EmbedClient,
+    _server: Option<LlamaServer>,
+}
 
+/// Connect to `opts.url`, or spawn llama-server with the app's EmbedIndex preset. Records how in
+/// `meta["server"]` (exe, version, exact preset args, model hashes).
+pub fn connect(opts: &RunOptions, meta: &mut serde_json::Value) -> Result<Connection, String> {
     let (model, mmproj) = model_files(&opts.models)?;
-    let mut meta = json!({
-        "manifest_build": manifest.llama.build,
-        "dims": DIMS,
-        "quant": QUANT,
-        "image_budget": IMAGE_BUDGET,
-        "corpus_files": corpus.files.len(),
-        "cases": cases.len(),
-    });
-
-    // Keep the server alive until the end of the run (Drop kills it).
     let mut _server: Option<LlamaServer> = None;
     let (base_url, key) = match &opts.url {
         Some(u) => {
@@ -211,18 +203,36 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
     };
     meta["unix_time"] = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
 
-    let mut client = EmbedClient::new(&base_url, &key);
+    let client = EmbedClient::new(&base_url, &key);
     match client.vision_enabled() {
-        Ok(true) => {}
-        Ok(false) => return Err("llama-server has no vision (mmproj not loaded)".into()),
-        Err(e) => return Err(format!("/props: {e}")),
+        Ok(true) => Ok(Connection { client, _server }),
+        Ok(false) => Err("llama-server has no vision (mmproj not loaded)".into()),
+        Err(e) => Err(format!("/props: {e}")),
     }
+}
+
+/// Full live run. Spawns llama-server (unless `url` is given) and drops it at the end.
+pub fn run(opts: &RunOptions) -> Result<Report, String> {
+    let corpus = load_index(&opts.corpus)?;
+    let cases_text = std::fs::read_to_string(&opts.cases).map_err(|e| format!("{}: {e}", opts.cases.display()))?;
+    let cases = crate::metrics::parse_cases(&cases_text)?;
+    let manifest = Manifest::embedded();
+    let mut meta = json!({
+        "manifest_build": manifest.llama.build,
+        "dims": DIMS,
+        "quant": QUANT,
+        "image_budget": IMAGE_BUDGET,
+        "corpus_files": corpus.files.len(),
+        "cases": cases.len(),
+    });
+    let mut conn = connect(opts, &mut meta)?;
+    let client = &mut conn.client;
     let started = std::time::Instant::now();
     eprintln!("embedding {} corpus files...", corpus.files.len());
-    let store = build_store(&opts.corpus, &corpus, &mut client, &manifest.llama.build)?;
+    let store = build_store(&opts.corpus, &corpus, client, &manifest.llama.build)?;
     meta["index_secs"] = json!((started.elapsed().as_secs_f64() * 100.0).round() / 100.0);
     eprintln!("running {} cases...", cases.len());
-    let results = run_cases(&store, &cases, &mut client, corpus.files.len())?;
+    let results = run_cases(&store, &cases, client, corpus.files.len())?;
     Ok(Report::new(meta, results))
 }
 

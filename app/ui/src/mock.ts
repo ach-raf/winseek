@@ -41,10 +41,10 @@ for (const f of LIB) {
 }
 const livePaths = () => new Set(DB.map((e) => e.path));
 let collections: Collection[] = [
-  { name: "Receipts", query: "a photo of a paper receipt or invoice", threshold: 0.2 },
-  { name: "Whiteboards", query: "a whiteboard with handwritten notes and diagrams", threshold: 0.2 },
-  { name: "Memes", query: "a meme: an image with a funny caption", threshold: 0.2 },
-  { name: "Documents to sign", query: "a contract or form with a signature line to sign", threshold: 0.2 },
+  { name: "Receipts", query: "a photo of a paper receipt or invoice", threshold: 0.64 },
+  { name: "Whiteboards", query: "a whiteboard with handwritten notes and diagrams", threshold: 0.61 },
+  { name: "Memes", query: "a meme: an image with a funny caption", threshold: 0.63 },
+  { name: "Documents to sign", query: "a contract or form with a signature line to sign", threshold: 0.63 },
   { name: "Screenshots", query: "", threshold: 0, rule: "screenshots" },
 ];
 let nearStartedAt: number | null = null;
@@ -271,7 +271,7 @@ function mockStatusPage(): StatusPage {
         server: parserServer(now),
         queue: parserHave() ? { queued: modelsInstalled ? 3 : 0, done: modelsInstalled ? 41 : 0, failed: 0 } : { queued: 0, done: 0, failed: 0 },
         profile: mockProfile,
-        routing: { doc_min: 0.12, doc_margin: 0.03, screenshot_min_chars: 200, provisional: true },
+        routing: { doc_min: 0.6, doc_margin: 0.04, screenshot_min_chars: 200, provisional: false },
       },
     },
   };
@@ -682,7 +682,8 @@ export const mockBackend: Backend = {
     const hits = LIB.filter((f) => f.kind === 1 && f.tile && live.has(f.path))
       .map((f) => {
         const h = hash01(q + "|" + f.path);
-        const score = want ? (f.tile!.theme === want ? 0.26 + 0.2 * h : 0.03 + 0.15 * h) : 0.05 + 0.3 * h;
+        // the range real EmbeddingGemma-2 image/query cosines live in (members ~0.61-0.75, photos ~0.46-0.62)
+        const score = want ? (f.tile!.theme === want ? 0.64 + 0.1 * h : 0.46 + 0.14 * h) : 0.46 + 0.2 * h;
         return { path: f.path, score, size: f.size, mtime: Math.floor(f.mtime), snippet: null };
       })
       .filter((h) => h.score >= threshold)

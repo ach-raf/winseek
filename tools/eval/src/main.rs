@@ -4,9 +4,12 @@
 //! winseek-eval cases                     print the cases JSON for that corpus (eval/cases.json)
 //! winseek-eval run --corpus D --cases F --models D --llama D [--url U] [--api-key K] [--out F]
 //! winseek-eval diff a.json b.json        per-case regressions; exit 1 if recall@5 drops > 2 points
+//! winseek-eval route --set D --models D --llama D [--max-fp F] [--current MIN,MARGIN] [--out F]
+//!                                        doc-image routing + smart-collection thresholds on a labelled set
 
 mod corpus;
 mod metrics;
+mod route;
 mod run;
 
 use std::path::PathBuf;
@@ -18,7 +21,8 @@ const USAGE: &str = "usage:
   winseek-eval gen <dir>
   winseek-eval cases
   winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--out <results.json>]
-  winseek-eval diff <a.json> <b.json>";
+  winseek-eval diff <a.json> <b.json>
+  winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -68,6 +72,24 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
                 std::fs::write(&out, json + "\n").map_err(|e| format!("{out}: {e}"))?;
                 println!("results written to {out}");
             }
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("route") => {
+            let opts = run::RunOptions {
+                corpus: PathBuf::new(),
+                cases: PathBuf::new(),
+                models: PathBuf::from(flag(&args, "--models").unwrap_or_default()),
+                llama: PathBuf::from(flag(&args, "--llama").unwrap_or_default()),
+                url: flag(&args, "--url"),
+                api_key: flag(&args, "--api-key").unwrap_or_default(),
+            };
+            let set = PathBuf::from(need(&args, "--set")?);
+            let max_fp: f32 = flag(&args, "--max-fp").map_or(Ok(0.01), |s| s.parse()).map_err(|e| format!("--max-fp: {e}"))?;
+            let current = flag(&args, "--current").unwrap_or_else(|| "0.60,0.04".into());
+            let (a, b) = current.split_once(',').ok_or("--current takes min,margin")?;
+            let current = (a.trim().parse().map_err(|e| format!("--current: {e}"))?, b.trim().parse().map_err(|e| format!("--current: {e}"))?);
+            let out = flag(&args, "--out").map(PathBuf::from);
+            print!("{}", route::run(&opts, &set, max_fp, current, out.as_deref())?);
             Ok(ExitCode::SUCCESS)
         }
         Some("diff") => {

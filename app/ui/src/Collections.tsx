@@ -14,6 +14,11 @@ interface Eval {
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const CAP = 500;
+/** EmbeddingGemma-2 image/query cosines: photos reach ~0.62, collection members sit ~0.61-0.75
+ *  (measured with `winseek-eval route`), so the useful slider range is narrow and high. */
+const THRESHOLD_MIN = 0.4;
+const THRESHOLD_MAX = 0.9;
+const NEW_THRESHOLD = 0.62;
 const sigOf = (c: Collection, gen: number) => `${c.query}|${c.threshold}|${gen}`;
 
 interface Draft {
@@ -155,7 +160,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
             );
           })}
         </div>
-        <button className="btn quiet co-new" onClick={() => { setDraft({ orig: null, name: "", query: "", threshold: 0.2 }); setFormErr(null); }}>+ New collection</button>
+        <button className="btn quiet co-new" onClick={() => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD }); setFormErr(null); }}>+ New collection</button>
         <p className="co-note">Each collection is a saved search by meaning. {embedded !== undefined && `${embedded.toLocaleString("en-US")} photos understood so far; collections refresh as indexing goes on.`}</p>
       </aside>
 
@@ -168,7 +173,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
               <>
                 <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a photo of a paper receipt" /></label>
                 <label>Minimum match: <b>{draft.threshold.toFixed(2)}</b>
-                  <input type="range" min={0} max={0.6} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
+                  <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
                 </label>
               </>
             )}
@@ -188,7 +193,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
               {!sel.rule && (
                 <label className="co-thr" title="Minimum cosine match for a photo to belong to the collection">
                   Match ≥ <b>{(thr ?? sel.threshold).toFixed(2)}</b>
-                  <input type="range" min={0} max={0.6} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
+                  <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
                 </label>
               )}
               <div className="co-btns">
