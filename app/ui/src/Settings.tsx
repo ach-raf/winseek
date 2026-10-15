@@ -401,7 +401,7 @@ export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onC
           {section === "general" && (
             <>
               <AutostartToggle backend={backend} onError={onError} />
-              <div>
+              <div className="set-sec">
                 <div className="fl-title">Library</div>
                 <div className="set-group">
                   <div className="set-row">

@@ -59,10 +59,10 @@ fn place_on_cursor_monitor(w: &WebviewWindow) {
     let _ = w.set_position(PhysicalPosition::new(x, y));
 }
 
-/// Starts a native window drag from the search bar (UI command). The drag loop can fire a
-/// transient focus loss on Windows, so the time is armed for the blur guard.
+/// Starts a native window drag from the search bar (UI command, invoked as `move_popup`). The
+/// drag loop can fire a transient focus loss on Windows, so the time is armed for the blur guard.
 #[tauri::command]
-pub fn start_move(w: WebviewWindow) {
+pub fn move_popup(w: WebviewWindow) {
     DRAG_AT_MS.store(now_ms(), Ordering::Relaxed);
     let _ = w.start_dragging();
 }

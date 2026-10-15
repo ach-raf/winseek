@@ -77,7 +77,7 @@ fn main() {
             shell::rename_path,
             shell::show_context_menu,
             shell::start_drag,
-            popup::start_move,
+            popup::move_popup,
             service::service_state,
             service::install_service,
             service::start_service,
