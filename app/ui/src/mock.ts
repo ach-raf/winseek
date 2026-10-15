@@ -674,6 +674,7 @@ export const mockBackend: Backend = {
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
   async openLibrary() { window.open(`${location.pathname}?view=library`, "winseek-library"); },
+  async openPopup() { console.info("[mock] openPopup"); location.href = location.pathname; },
   async libraryImages(): Promise<LibImage[]> {
     await sleep(30);
     const live = livePaths();

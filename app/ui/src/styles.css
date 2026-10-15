@@ -480,7 +480,7 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .ig-list li.none { background: none; font: 12.5px var(--font); color: var(--fg-3); padding: 0; }
 .ig-x { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 10px; color: var(--fg-3); flex: none; }
 .ig-x:hover { background: var(--hover); color: var(--fg); }
-.ig-x:focus-visible, .gear:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+.ig-x:focus-visible, .gear:focus-visible, .lib-back:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
 
 /* status section (inside Settings) */
 .st-cols { display: flex; flex-direction: column; gap: 16px; }
@@ -617,6 +617,8 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib { height: 100%; display: flex; flex-direction: column; background: var(--bg-solid); position: relative; }
 .lib-top { display: flex; align-items: center; gap: 18px; height: 52px; padding: 0 18px; flex: none; border-bottom: 1px solid var(--line); }
 .lib-top h1 { margin: 0; font: 600 18px/1 var(--font-display); letter-spacing: -0.01em; }
+.lib-back { display: grid; place-items: center; flex: none; width: 26px; height: 26px; margin-left: -7px; border-radius: 7px; color: var(--fg-2); }
+.lib-back:hover { background: var(--hover); color: var(--fg); }
 .lib-tabs { display: flex; gap: 4px; }
 .lib-status { display: inline-flex; align-items: center; gap: 7px; font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .lib-status.s-indexing .dot, .lib-status.s-paused .dot { background: var(--warn); }

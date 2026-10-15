@@ -354,6 +354,8 @@ export interface Backend {
   onSourceChanged(cb: () => void): Promise<() => void>;
   /** Show (or create) the library window. */
   openLibrary(): Promise<void>;
+  /** Back from the library: show the popup again. */
+  openPopup(): Promise<void>;
   /** Every indexed image, newest first. */
   libraryImages(): Promise<LibImage[]>;
   libraryCollections(): Promise<Collection[]>;

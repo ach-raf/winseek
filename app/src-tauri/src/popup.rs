@@ -94,6 +94,13 @@ pub fn hide(app: &AppHandle) {
     }
 }
 
+/// UI command, invoked as `open_popup`: the library's back button returns to the popup
+/// (the library window then hides itself, mirroring how the popup hides on open_library).
+#[tauri::command]
+pub fn open_popup(app: AppHandle) {
+    show(&app);
+}
+
 pub fn toggle(app: &AppHandle) {
     match window(app).map(|w| w.is_visible().unwrap_or(false)) {
         Some(true) => hide(app),

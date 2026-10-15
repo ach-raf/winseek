@@ -69,6 +69,11 @@ export default function Library({ backend }: { backend: Backend }) {
   }, []);
   const fail = useCallback((e: unknown) => flash(errText(e), false, 4500), [flash]);
 
+  // Back to the popup: it shows first, then this window hides — the mirror of openLibrary in the popup.
+  const goBack = useCallback(() => {
+    backend.openPopup().then(() => backend.hide()).catch(fail);
+  }, [backend, fail]);
+
   const trashed = useCallback((paths: string[]) => {
     setHidden((h) => { const n = new Set(h); paths.forEach((p) => n.add(p)); return n; });
     undoRef.current = paths;
@@ -148,6 +153,9 @@ export default function Library({ backend }: { backend: Backend }) {
   return (
     <div className="lib">
       <header className="lib-top">
+        <button className="lib-back" onClick={goBack} title="Back to search (Alt+Space)" aria-label="Back to search">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+        </button>
         <h1>Library</h1>
         <nav className="lib-tabs" role="tablist">
           <div className="seg">

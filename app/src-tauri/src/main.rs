@@ -78,6 +78,7 @@ fn main() {
             shell::show_context_menu,
             shell::start_drag,
             popup::move_popup,
+            popup::open_popup,
             service::service_state,
             service::install_service,
             service::start_service,
