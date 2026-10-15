@@ -565,7 +565,7 @@ export const mockBackend: Backend = {
     const terms = q.split(/\s+/).filter(Boolean);
     if (!q) return { state: st, hits: [] };
     // Fake "image embeddings": stable pseudo-scores per (query, file); files whose name also matches a term
-    // rank high, so the "name + meaning" chip and the dedupe are visible in the preview.
+    // rank high (the overview shows a file once, in its best section).
     // Every third hit also carries OCR-style text, like a screenshot or scanned page would.
     const OCR = ["Invoice no. 2025-0142 total due 240.00 EUR", "Meeting notes: budget review and next steps", "Receipt Paris cafe 12.50 EUR thank you"];
     const hits: SemanticHit[] = DB.filter((e) => e.kind === 1 && inScope(e.path))
@@ -583,6 +583,8 @@ export const mockBackend: Backend = {
         };
       })
       .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
+      // Like the app's calibrated gate: only what clearly stands out is returned, never "the least unrelated".
+      .filter((h) => h.score >= 0.28)
       .sort((a, b) => b.score - a.score)
       .slice(0, Math.max(1, Math.min(k, 200)));
     return { state: st, hits };

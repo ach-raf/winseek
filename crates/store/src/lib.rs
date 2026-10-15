@@ -10,6 +10,9 @@ use std::fmt;
 use std::path::Path;
 
 use rusqlite::{params, Connection, OptionalExtension};
+
+pub mod relevance;
+use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 
 const SCHEMA_VERSION: i64 = 3;
@@ -1097,6 +1100,82 @@ impl Store {
         Ok(out)
     }
 
+    /// Calibrated search by meaning (see [`relevance`]): every vector is scored against the
+    /// query, hub-corrected with `hub`, and each file content's best `adj` per modality is placed
+    /// in that modality's distribution. Returns the best `per_modality` file contents of each
+    /// modality as candidates (one per file path), ungated: [`relevance::gate`] decides.
+    pub fn search_calibrated(&self, query: &[f32], hub: &[f32], per_modality: usize) -> Result<Vec<Candidate>> {
+        if query.len() != self.dims || hub.len() != self.dims {
+            return Err(Error::BadVector { expected: self.dims, got: if query.len() != self.dims { query.len() } else { hub.len() } });
+        }
+        let mut by_hash: HashMap<String, Vec<(FileId, String)>> = HashMap::new();
+        {
+            let mut st = self.conn.prepare_cached(
+                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL",
+            )?;
+            let mut rows = st.query([])?;
+            while let Some(r) = rows.next()? {
+                by_hash.entry(r.get(0)?).or_default().push((FileId(r.get(1)?), r.get(2)?));
+            }
+        }
+        // (hash, modality) -> (adj, raw, chunk)
+        let mut best: HashMap<(String, Modality), (f32, f32, u32)> = HashMap::new();
+        {
+            let mut st = self.conn.prepare_cached("SELECT hash, chunk, kind, vec FROM vectors")?;
+            let mut rows = st.query([])?;
+            while let Some(r) = rows.next()? {
+                let hash = r.get_ref(0)?.as_str()?;
+                if !by_hash.contains_key(hash) {
+                    continue;
+                }
+                let Some(kind) = VecKind::parse(r.get_ref(2)?.as_str()?) else { continue };
+                let blob = r.get_ref(3)?.as_blob()?;
+                if blob.len() != self.dims * 4 {
+                    continue;
+                }
+                let raw = dot_le(query, blob);
+                let adj = raw - dot_le(hub, blob);
+                let chunk: u32 = r.get(1)?;
+                let key = (hash.to_owned(), Modality::from(kind));
+                match best.get_mut(&key) {
+                    Some(b) if b.0 >= adj => {}
+                    Some(b) => *b = (adj, raw, chunk),
+                    None => {
+                        best.insert(key, (adj, raw, chunk));
+                    }
+                }
+            }
+        }
+        let mut out = Vec::new();
+        for m in [Modality::Visual, Modality::Text] {
+            let mut items: Vec<(&String, f32, f32, u32)> =
+                best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v.0, v.1, v.2)).collect();
+            let adjs: Vec<f32> = items.iter().map(|i| i.1).collect();
+            let (mu, sd) = relevance::mean_sd(&adjs);
+            let n = items.len();
+            items.sort_by(|a, b| b.1.total_cmp(&a.1));
+            for (hash, adj, raw, chunk) in items.into_iter().take(per_modality) {
+                let locator: Option<String> = self
+                    .conn
+                    .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?
+                    .query_row(params![hash, chunk], |r| r.get(0))?;
+                for (fid, path) in &by_hash[hash] {
+                    out.push(Candidate {
+                        file_id: *fid,
+                        path: path.clone(),
+                        chunk,
+                        locator: locator.clone(),
+                        modality: m,
+                        score: raw,
+                        adj,
+                        z: relevance::z_of(adj, n, mu, sd),
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
     /// Full-text search over extracted text (FTS5 syntax; see [`fts_escape`] for raw user
     /// input). One hit per file, best bm25 first.
     pub fn search_text(&self, fts_query: &str, k: usize) -> Result<Vec<TextHit>> {
@@ -1936,6 +2015,30 @@ mod tests {
         add(&mut s, 5, r"C:\100%_x\e.jpg", 0);
         add(&mut s, 6, r"C:\100Zax\f.jpg", 0);
         assert_eq!(s.rename_under(r"C:\100%_x", r"C:\y").unwrap(), 1);
+    }
+
+    #[test]
+    fn calibrated_search_corrects_hubs_and_splits_modalities() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, "a", 1);
+        let b = add(&mut s, 2, "b", 1);
+        let t = add(&mut s, 3, "t", 1);
+        // a: on topic; b: a hub (close to the hub direction, so close to everything)
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(b, "hb", &[cv(0, [0.8, 0.6, 0., 0.])], &[]).unwrap();
+        let text = ChunkVec { kind: VecKind::Text, ..cv(1, [0.6, 0., 0.8, 0.]) };
+        s.complete(t, "ht", &[text], &[]).unwrap();
+        let hub = [0., 1., 0., 0.];
+        let c = s.search_calibrated(&[0.8, 0.6, 0., 0.], &hub, 10).unwrap();
+        assert_eq!(c.len(), 3);
+        let visual: Vec<&str> = c.iter().filter(|c| c.modality == Modality::Visual).map(|c| c.path.as_str()).collect();
+        assert_eq!(visual, ["a", "b"], "raw score favours the hub b, adj favours a");
+        let ca = c.iter().find(|c| c.path == "a").unwrap();
+        assert!((ca.adj - 0.8).abs() < 1e-5 && (ca.score - 0.8).abs() < 1e-5);
+        assert!(ca.z.is_none(), "two files are no population");
+        let ct = c.iter().find(|c| c.path == "t").unwrap();
+        assert_eq!((ct.modality, ct.chunk), (Modality::Text, 1));
+        assert!(matches!(s.search_calibrated(&[1., 0.], &hub, 5), Err(Error::BadVector { .. })));
     }
 
     #[test]

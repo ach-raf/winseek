@@ -34,6 +34,7 @@ use std::time::Duration;
 use serde::Serialize;
 use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::{Manifest, Profile, Table};
+use winseek_store::relevance::{self, HUB_PROMPTS};
 use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, ParseCounts, Scopes, Stats, Store};
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
@@ -78,6 +79,8 @@ pub struct Tier1 {
     throughput: Mutex<progress::Throughput>,
     /// Last known embedding-server state (the embedder lock is held for whole passes).
     runtime: Mutex<RuntimeInfo>,
+    /// Mean embedding of the generic hub prompts (relevance calibration), per query model.
+    hub: Mutex<Option<(String, Vec<f32>)>>,
 }
 
 /// Scopes + compiled ignore list + generation, read together so a walk never mixes versions.
@@ -245,6 +248,7 @@ impl Tier1 {
             last_error: Mutex::new(None),
             throughput: Mutex::new(progress::Throughput::default()),
             runtime: Mutex::new(RuntimeInfo::default()),
+            hub: Mutex::new(None),
         })
     }
 
@@ -524,20 +528,53 @@ impl Tier1 {
         Ok(())
     }
 
-    /// Embed the query and return the best `k` in-scope files.
+    /// The hub direction for relevance calibration ([`relevance`]): computed once per query
+    /// model (48 short queries), kept in memory and in the store's settings.
+    fn hub_vector(&self, e: &mut Box<dyn Embedder + Send>) -> Result<Vec<f32>, EmbedError> {
+        let model = e.meta().model_id;
+        if let Some((m, v)) = lock(&self.hub).as_ref() {
+            if *m == model {
+                return Ok(v.clone());
+            }
+        }
+        let key = format!("relevance_hub:{model}");
+        let stored: Option<Vec<f32>> = lock(&self.store)
+            .get_setting(&key)
+            .ok()
+            .flatten()
+            .and_then(|s| serde_json::from_str(&s).ok());
+        let v = match stored.filter(|v| !v.is_empty()) {
+            Some(v) => v,
+            None => {
+                let bank = HUB_PROMPTS.iter().map(|p| e.embed_query(p)).collect::<Result<Vec<_>, _>>()?;
+                let v = relevance::hub_vector(&bank);
+                if let Ok(json) = serde_json::to_string(&v) {
+                    let _ = lock(&self.store).set_setting(&key, Some(&json));
+                }
+                v
+            }
+        };
+        *lock(&self.hub) = Some((model, v.clone()));
+        Ok(v)
+    }
+
+    /// Embed the query and return the in-scope files that are *relevant* (calibrated gate, see
+    /// [`relevance`]), best first, at most `k`; then files whose extracted text contains the query
+    /// words (`source: "text"`), which are evidence on their own. Nothing relevant -> no hits.
     pub fn semantic_search(&self, query: &str, k: usize) -> Result<SemanticResult, String> {
         let k = k.clamp(1, 200);
         let q = query.trim();
         if q.is_empty() {
             return Ok(SemanticResult { state: self.state_str().into(), hits: vec![] });
         }
-        let vec = {
+        let (vec, hub) = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
                 drop(e);
                 return Ok(self.text_only_search(q, k));
             }
-            match e.embed_query(q) {
+            let r = e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?)));
+            match r {
                 Ok(v) => v,
                 Err(EmbedError::ModelsMissing) => {
                     drop(e);
@@ -546,24 +583,24 @@ impl Tier1 {
                 Err(EmbedError::Other(m)) => return Err(m),
             }
         };
-        // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
         let snap = self.snapshot();
-        let (raw, texts) = {
+        let (cands, texts) = {
             let store = lock(&self.store);
-            let raw = store.search_vectors(&vec, k * 4, None).map_err(|e| e.to_string())?;
-            // Words found inside the file (OCR / PDF text): a short snippet for the "why it matched" line.
+            // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
+            let cands = store.search_calibrated(&vec, &hub, (k * 4).max(40)).map_err(|e| e.to_string())?;
             let texts = store.search_text(&fts_escape(q), k * 4).unwrap_or_default();
-            (raw, texts)
+            (cands, texts)
         };
+        let gated = relevance::gate(cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect(), k);
         let text_pages: std::collections::HashMap<String, u32> =
             texts.iter().filter_map(|t| Some((t.path.to_lowercase(), locator_page(t.locator.as_deref())?))).collect();
         let snippets: std::collections::HashMap<String, String> =
-            texts.into_iter().map(|t| (t.path.to_lowercase(), t.snippet)).collect();
-        let hits = raw
+            texts.iter().map(|t| (t.path.to_lowercase(), t.snippet.clone())).collect();
+        let mut seen = std::collections::HashSet::new();
+        let mut hits: Vec<SemanticHit> = gated
             .into_iter()
-            .filter(|h| snap.in_scope(&h.path))
-            .take(k)
             .map(|h| {
+                seen.insert(h.path.to_lowercase());
                 let (size, mtime) = stat(&h.path);
                 let snippet = snippets.get(&h.path.to_lowercase()).filter(|s| s.contains('[')).cloned();
                 let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&h.path.to_lowercase()).copied());
@@ -571,6 +608,24 @@ impl Tier1 {
                 SemanticHit { path: h.path, score: h.score, size, mtime, snippet, page, source: "meaning", boxes }
             })
             .collect();
+        // The words themselves, found inside files (documents, PDFs, screenshot text).
+        let extra = (k / 3).max(3);
+        for t in texts.into_iter().filter(|t| snap.in_scope(&t.path) && t.snippet.contains('[')) {
+            if hits.len() >= k + extra || !seen.insert(t.path.to_lowercase()) {
+                continue;
+            }
+            let (size, mtime) = stat(&t.path);
+            hits.push(SemanticHit {
+                page: locator_page(t.locator.as_deref()),
+                boxes: hitbox::hit_boxes(t.locator.as_deref(), q),
+                path: t.path,
+                score: 0.0,
+                size,
+                mtime,
+                snippet: Some(t.snippet),
+                source: "text",
+            });
+        }
         Ok(SemanticResult { state: self.state_str().into(), hits })
     }
 
@@ -842,7 +897,8 @@ mod tests {
             Ok(j.iter().map(|_| unit(0)).collect())
         }
         fn embed_query(&mut self, q: &str) -> embedder::Result<Vec<f32>> {
-            Ok(unit(if q == "cat" { 1 } else { 2 }))
+            // The relevance hub prompts get their own direction, unrelated to every test vector.
+            Ok(unit(if HUB_PROMPTS.contains(&q) { 3 } else if q == "cat" { 1 } else { 2 }))
         }
         fn meta(&self) -> winseek_store::IndexMeta {
             index_meta("test")
@@ -893,10 +949,28 @@ mod tests {
         add_done(&t, 2, r"C:\Pics\dog.jpg", 2);
         add_done(&t, 3, r"C:\Old\cat2.jpg", 1); // no longer in scope
         let r = t.semantic_search("cat", 5).unwrap();
-        assert_eq!(r.hits.len(), 2);
+        assert_eq!(r.hits.len(), 1, "dog.jpg is unrelated to the query: gated out, not listed last");
         assert_eq!(r.hits[0].path, r"C:\Pics\cat.jpg");
-        assert!(r.hits[0].score > 0.99 && r.hits[1].score.abs() < 1e-6);
+        assert!(r.hits[0].score > 0.99);
         assert!(t.semantic_search("  ", 5).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn words_found_in_text_are_listed_after_meaning_hits_and_hub_is_stored() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        add_done(&t, 1, r"C:\Pics\cat.jpg", 1);
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, r"C:\Pics\notes.txt", 1, 1, "doc").unwrap();
+            let v = [ChunkVec { chunk: 0, kind: VecKind::Text, locator: None, vec: unit(0) }];
+            s.complete(id, "h9", &v, &[(0, "feed the cat at noon".into())]).unwrap();
+        }
+        let r = t.semantic_search("cat", 5).unwrap();
+        let src: Vec<(&str, &str)> = r.hits.iter().map(|h| (h.path.rsplit('\\').next().unwrap(), h.source)).collect();
+        assert_eq!(src, [("cat.jpg", "meaning"), ("notes.txt", "text")]);
+        assert!(r.hits[1].snippet.as_deref().unwrap().contains("[cat]"));
+        let stored = lock(&t.store).get_setting("relevance_hub:embeddinggemma-2").unwrap();
+        assert!(stored.is_some_and(|s| s.starts_with('[')), "hub persisted per query model");
     }
 
     #[test]

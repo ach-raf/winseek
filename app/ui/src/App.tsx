@@ -6,11 +6,13 @@ import { Setup } from "./Setup";
 import { Settings } from "./Settings";
 import { Status } from "./Status";
 import { Preview } from "./Preview";
-import { SemRow, SemanticHint, baseName, dedupe, pathKey, semAccepts, whyName } from "./Semantic";
+import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
+import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
+import { buildOverview, ovMove, type Expand, type OvItem } from "./overviewLogic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
-import { formatDate, formatSize, kindOf, matchRanges, splitDir } from "./format";
+import { formatDate, formatSize, kindOf, splitDir } from "./format";
 
 const ROW_H = 54;
 const PAGE = 80;
@@ -30,60 +32,6 @@ const SORTS: { id: Sort; label: string }[] = [
   { id: "date", label: "Date modified" },
   { id: "size", label: "Size" },
 ];
-
-function Highlight({ text, query }: { text: string; query: string }) {
-  const ranges = matchRanges(text, query);
-  if (!ranges.length) return <>{text}</>;
-  const out: React.ReactNode[] = [];
-  let at = 0;
-  ranges.forEach(([s, e], i) => {
-    if (s > at) out.push(text.slice(at, s));
-    out.push(<mark key={i}>{text.slice(s, e)}</mark>);
-    at = e;
-  });
-  if (at < text.length) out.push(text.slice(at));
-  return <>{out}</>;
-}
-
-function RenameInput({ initial, isDir, onCommit, onCancel }: {
-  initial: string; isDir: boolean; onCommit: (name: string) => void; onCancel: () => void;
-}) {
-  const ref = useRef<HTMLInputElement>(null);
-  const done = useRef(false);
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const dot = initial.lastIndexOf(".");
-    const end = !isDir && dot > 0 ? dot : initial.length;
-    const apply = () => { el.focus(); el.setSelectionRange(0, end); };
-    apply();
-    const t = window.setTimeout(apply, 0); // some engines re-select-all after a keyboard-initiated focus
-    return () => window.clearTimeout(t);
-  }, [initial, isDir]);
-  const finish = (commit: boolean) => {
-    if (done.current) return;
-    done.current = true;
-    if (commit) onCommit(ref.current!.value); else onCancel();
-  };
-  return (
-    <input
-      ref={ref}
-      className="rename"
-      defaultValue={initial}
-      spellCheck={false}
-      autoComplete="off"
-      aria-label="New name"
-      onKeyDown={(e) => {
-        e.stopPropagation(); // global handler must not see keys while renaming
-        if (e.key === "Enter") { e.preventDefault(); finish(true); }
-        else if (e.key === "Escape") { e.preventDefault(); finish(false); }
-      }}
-      onBlur={() => finish(false)}
-      onClick={(e) => e.stopPropagation()}
-      onMouseDown={(e) => e.stopPropagation()}
-    />
-  );
-}
 
 const SCAN_PAGE = 2000;
 const SCAN_MAX = 30000;
@@ -119,11 +67,10 @@ async function scanRanges(
 }
 
 const Row = memo(function Row({
-  hit, query, why, selected, top, icon, thumb, renaming, both, onPick, onHover, onDown, onMenu, onRenameCommit, onRenameCancel,
+  hit, query, why, selected, top, icon, thumb, renaming, onPick, onOpen, onDown, onMenu, onRenameCommit, onRenameCancel,
 }: {
   hit: Hit | undefined; query: string; why: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
-  both: boolean; // also found by meaning
-  onPick: () => void; onHover: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
+  onPick: () => void; onOpen: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
   onRenameCommit: (name: string) => void; onRenameCancel: () => void;
 }) {
   if (!hit) {
@@ -141,8 +88,9 @@ const Row = memo(function Row({
       style={{ transform: `translateY(${top}px)` }}
       role="option"
       aria-selected={selected}
+      data-sel={selected ? "1" : undefined}
       onClick={renaming ? undefined : onPick}
-      onMouseMove={renaming ? undefined : onHover}
+      onDoubleClick={renaming ? undefined : onOpen}
       onMouseDown={onDown}
       onContextMenu={onMenu}
       title={hit.path}
@@ -152,7 +100,7 @@ const Row = memo(function Row({
         <div className="name">
           {renaming
             ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={onRenameCommit} onCancel={onRenameCancel} />
-            : <><Highlight text={hit.name} query={query} />{both && <span className="chip-both">name + meaning</span>}</>}
+            : <><Highlight text={hit.name} query={query} /></>}
         </div>
         <div className="path">
           <span className="head">{head}</span><span className="tail">{tail}</span>
@@ -198,8 +146,9 @@ export default function App({ backend }: { backend: Backend }) {
   const [counting, setCounting] = useState(false);
   // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
   const [setupOpen, setSetupOpen] = useState(false);
-  // Space preview: `pvOpen` toggles the pane, `pv` is the (debounced) hit it shows. `navigated`: the user has moved
-  // through the list with the keyboard since the last keystroke in the box, so Space means "preview", not a space.
+  // The preview pane always shows the selection (Spotlight); Space (`pvOpen`) blows it up to a full-window
+  // Quick Look. `pv` is the (debounced) hit it shows. `navigated`: the user has moved through the results with the
+  // keyboard since the last keystroke in the box, so Space means "Quick Look", not a space.
   const [pvOpen, setPvOpen] = useState(false);
   const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; boxes: HitBox[] | null } | null>(null);
   const navigated = useRef(false);
@@ -214,7 +163,7 @@ export default function App({ backend }: { backend: Backend }) {
   const primaryRef = useRef<() => void>(() => {});
   const setupOpenRef = useRef(false);
   const setupPrimaryRef = useRef<() => void>(() => {});
-  const semRef = useRef<HTMLDivElement>(null);
+  const ovRef = useRef<HTMLDivElement>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -254,13 +203,23 @@ export default function App({ backend }: { backend: Backend }) {
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed)), [sem.hits, parsed]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
-  // A file found by both stays where it is in the name results (they never move); only the others are listed here.
-  // Dedupe looks at the first 400 name rows, the ones a user can plausibly be looking at.
-  const semRows = useMemo(
-    () => dedupe(semHits, data.rows.slice(0, 400).flatMap((h) => (h ? [h.path] : []))),
-    [semHits, data.rows],
+  const selCount = data.total;
+
+  // ---- Spotlight overview --------------------------------------------------
+  // A typed search shows sections (Top Hit, Files, Images, Documents) with "Show all"; the recent list, a sort
+  // other than best match, and "Show all files" use the full virtualised list instead.
+  const [expand, setExpand] = useState<Expand>(null);
+  useEffect(() => { setExpand(null); }, [query, filter]);
+  const overview = !isRecent && sort === "rel" && expand !== "files";
+  const ov = useMemo(
+    () => buildOverview({ names: data.rows, nameTotal: data.total, sem: semHits, text: parsed.text, expand, isImage: (n) => kindOf(n, false) === "image" }),
+    [data.rows, data.total, semHits, parsed.text, expand],
   );
-  const selCount = data.total + semRows.length;
+  // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
+  const [oselKey, setOselKey] = useState<string | null>(null);
+  useEffect(() => { setOselKey(null); }, [query, filter, expand]);
+  const osel = Math.max(0, oselKey ? ov.flat.findIndex((x) => x.key === oselKey) : 0);
+  const ovItem: OvItem | undefined = overview ? ov.flat[osel] : undefined;
 
   // ---- data loading --------------------------------------------------------
   useEffect(() => {
@@ -394,10 +353,10 @@ export default function App({ backend }: { backend: Backend }) {
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
   const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
 
-  const semSel = sel >= data.total ? semRows[sel - data.total] : undefined;
-  const current: Hit | undefined = sel < data.total
-    ? data.rows[sel]
-    : semSel && { name: baseName(semSel.path), path: semSel.path, is_dir: false, size: semSel.size ?? null, mtime: semSel.mtime ?? null };
+  const semSel = ovItem?.sem;
+  const current: Hit | undefined = overview ? ovItem?.hit : data.rows[sel];
+  /** Index of the selection in the name results, when it is one (rename / recycle / menu work on those rows). */
+  const curIdx: number | undefined = overview ? ovItem?.nameIdx : current ? sel : undefined;
 
   const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
@@ -414,14 +373,13 @@ export default function App({ backend }: { backend: Backend }) {
   // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
   const pvShown = useRef(false);
   useEffect(() => {
-    if (!pvOpen) { pvShown.current = false; setPv(null); return; }
     const c = currentRef.current;
-    if (!c) return;
+    if (!c) { pvShown.current = false; setPv(null); return; }
     const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, boxes: boxesRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
-  }, [pvOpen, curKey]);
+  }, [curKey]);
   useEffect(() => { navigated.current = false; }, [query]);
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
@@ -529,9 +487,15 @@ export default function App({ backend }: { backend: Backend }) {
   }, [data.total, selCount]);
 
   useEffect(() => {
-    if (sel >= data.total) semRef.current?.querySelector('[data-sel="1"]')?.scrollIntoView({ block: "nearest" });
     setSel((s) => (s >= selCount ? Math.max(0, selCount - 1) : s));
-  }, [sel, data.total, selCount]);
+  }, [sel, selCount]);
+  useEffect(() => {
+    if (!overview) return;
+    const el = ovRef.current?.querySelector('[data-sel="1"]');
+    if (el) el.scrollIntoView({ block: "nearest" });
+    else if (osel === 0) ovRef.current?.scrollTo({ top: 0 });
+  }, [overview, osel, oselKey]);
+  const ovGo = useCallback((i: number) => { const it = ov.flat[i]; if (it) setOselKey(it.key); }, [ov.flat]);
 
   const openSemMenu = useCallback(async (path: string, x: number, y: number) => {
     try {
@@ -553,14 +517,28 @@ export default function App({ backend }: { backend: Backend }) {
       const menuAtSelection = () => {
         const el = listRef.current;
         if (!el || !current) return;
-        if (sel >= data.total) {
-          const sr = semRef.current?.querySelector('[data-sel="1"]')?.getBoundingClientRect();
-          if (sr) void openSemMenu(current.path, sr.left + 120, sr.top + sr.height / 2);
+        if (overview) {
+          const sr = ovRef.current?.querySelector('[data-sel="1"]')?.getBoundingClientRect();
+          if (!sr) return;
+          const x = sr.left + Math.min(120, sr.width / 2), y = sr.top + sr.height / 2;
+          if (curIdx !== undefined) void openMenu(curIdx, x, y); else void openSemMenu(current.path, x, y);
           return;
         }
         const r = el.getBoundingClientRect();
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
+      const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir)); };
+      if (overview && !e.altKey && !e.shiftKey) {
+        // Ctrl+arrows / PageUp / PageDown jump between sections; left / right walk the image grid once the
+        // keyboard is in the results (before that they move the caret in the search box).
+        if (e.key === "ArrowDown") return ovStep(e.ctrlKey ? "next" : "down");
+        if (e.key === "ArrowUp") return ovStep(e.ctrlKey ? "prev" : "up");
+        if (e.key === "PageDown") return ovStep("next");
+        if (e.key === "PageUp") return ovStep("prev");
+        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && navigated.current && ovItem?.section === "images") {
+          return ovStep(e.key === "ArrowLeft" ? "left" : "right");
+        }
+      }
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLibrary(); return; }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); return; }
@@ -572,7 +550,7 @@ export default function App({ backend }: { backend: Backend }) {
         case "Home": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(0); } break;
         case "End": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(selCount - 1); } break;
         case " ":
-          // Space closes the preview; it opens one when it cannot be a typed space (empty box, or after arrowing
+          // Space closes Quick Look; it opens it when it cannot be a typed space (empty box, or after arrowing
           // through the results). Ctrl+Space always toggles.
           if (pvOpen) { e.preventDefault(); setPvOpen(false); }
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
@@ -592,6 +570,7 @@ export default function App({ backend }: { backend: Backend }) {
         case "Escape":
           e.preventDefault();
           if (pvOpen) setPvOpen(false);
+          else if (expand && !setupOpenRef.current) setExpand(null);
           else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); refocus(); } else void backend.hide();
           break;
         case "Tab": {
@@ -610,10 +589,14 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         case "F2":
           e.preventDefault();
-          if (current && sel < data.total) setRenaming(true);
+          if (current && curIdx !== undefined) setRenaming(true);
           break;
         case "Delete":
-          if (atEnd && current && sel < data.total) { e.preventDefault(); void doRecycle(sel); }
+          if (atEnd && current) {
+            e.preventDefault();
+            if (curIdx !== undefined) void doRecycle(curIdx);
+            else backend.recycle([current.path]).then(() => { pushUndo({ kind: "recycle", paths: [current.path] }, "Moved to Recycle Bin"); setEpoch((x) => x + 1); }).catch(fail);
+          }
           break;
         case "z": case "Z":
           if (e.ctrlKey && !e.shiftKey && undoRef.current && (!inInput || inp!.value === "" || inp!.value === undoQuery.current)) {
@@ -632,7 +615,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, query, pvOpen, filter, data.total, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -641,7 +624,7 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
 
   // moving the selection / reloading the list cancels an inline rename
-  useEffect(() => { setRenaming(false); }, [sel, epoch, query, filter, sort]);
+  useEffect(() => { setRenaming(false); }, [sel, oselKey, epoch, query, filter, sort]);
 
   // ---- first run -----------------------------------------------------------
   const demo = status.length > 0 && status.every((v) => v.state === "demo");
@@ -712,12 +695,12 @@ export default function App({ backend }: { backend: Backend }) {
       out.push(
         <Row key={i} hit={h} query={parsed.text} why={h && !data.recent ? whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score) : ""} selected={i === sel} top={i * ROW_H}
              icon={h ? backend.iconUrl(h.path, h.is_dir, thumbKind) : null} thumb={thumbKind}
-             renaming={renaming && i === sel} both={!!h && semMap.has(pathKey(h.path))}
+             renaming={renaming && i === sel}
              onPick={() => {
                if (suppressClick.current) { suppressClick.current = false; return; }
-               setSel(i); void act("open", h);
+               setSel(i); refocus();
              }}
-             onHover={() => setSel((s) => (s === i ? s : i))}
+             onOpen={() => { if (!suppressClick.current) void act("open", h); }}
              onDown={(e) => { if (h) onRowDown(e, h); }}
              onMenu={(e) => { e.preventDefault(); if (!h) return; setSel(i); void openMenu(i, e.clientX, e.clientY); }}
              onRenameCommit={(n) => void doRename(i, n)}
@@ -726,6 +709,27 @@ export default function App({ backend }: { backend: Backend }) {
     }
     return out;
   }, [first, last, data.rows, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
+
+  const ovHandlers: ItemHandlers = useMemo(() => ({
+    onSelect: (i) => {
+      if (suppressClick.current) { suppressClick.current = false; return; }
+      ovGo(i); refocus();
+    },
+    onOpen: (i) => { if (!suppressClick.current) void act("open", ov.flat[i]?.hit); },
+    onMenu: (i, e) => {
+      e.preventDefault();
+      const it = ov.flat[i];
+      if (!it) return;
+      ovGo(i);
+      if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
+    },
+    onDown: (i, e) => { const it = ov.flat[i]; if (it) onRowDown(e, it.hit); },
+    onRenameCommit: (i, n) => { const idx = ov.flat[i]?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
+    onRenameCancel: () => { setRenaming(false); refocus(); },
+  }), [ov.flat, ovGo, act, openMenu, openSemMenu, onRowDown, doRename, refocus]);
+  const showList = !overview;
+  const waitingSem = overview && sem.query !== parsed.text.trim() && parsed.text.trim().length >= 2 && !!t1 && t1.state !== "unavailable";
+  const pvPane = !showPanel && !!pv && !!current;
 
   return (
     <div className="shell">
@@ -806,41 +810,46 @@ export default function App({ backend }: { backend: Backend }) {
         />
       ))}
 
-      <div className={"main" + (pvOpen && pv ? " split" : "")} hidden={showPanel}>
+      <div className={"main" + (pvPane ? " split" : "") + (pvPane && pvOpen ? " ql" : "")} hidden={showPanel}>
       <div className="lcol">
-      {!showPanel && heading && <div className="section">{heading}</div>}
+      {!showPanel && showList && (heading || expand === "files") && (
+        <div className="section">
+          {expand === "files" ? (
+            <button className="ov-back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => setExpand(null)} aria-label="Back to all results">
+              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+            </button>
+          ) : null}
+          {expand === "files" ? <>Files <span className="ov-count">{data.total.toLocaleString("en-US")}</span></> : heading}
+        </div>
+      )}
 
-      <div className="list" hidden={showPanel} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
+      <div className="list" hidden={showPanel || !showList} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
         <div className="spacer-v" style={{ height: data.total * ROW_H }}>{visible}</div>
         {loaded && data.total === 0 && (
           <div className="empty">
             <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
-            <strong>No {semRows.length ? "name matches" : "results"}{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</strong>
+            <strong>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</strong>
             <span>Check the spelling, or try a different filter.</span>
           </div>
         )}
       </div>
 
-      {!showPanel && semRows.length > 0 && (
-        <div className="sem" ref={semRef}>
-          <div className="section">By meaning</div>
-          <div className="sem-rows" role="listbox" aria-label="Results by meaning">
-            {semRows.map((h, i) => (
-              <SemRow key={h.path} hit={h} query={sem.query} selected={data.total + i === sel}
-                      icon={backend.iconUrl(h.path, false, true)} thumb
-                      onPick={() => { setSel(data.total + i); void act("open", { name: baseName(h.path), path: h.path, is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null }); }}
-                      onHover={() => setSel((s) => (s === data.total + i ? s : data.total + i))}
-                      onMenu={(e) => { e.preventDefault(); setSel(data.total + i); void openSemMenu(h.path, e.clientX, e.clientY); }} />
-            ))}
-          </div>
+      {!showPanel && overview && (ov.flat.length > 0 ? (
+        <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}
+                  handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} />
+      ) : loaded && !waitingSem ? (
+        <div className="empty">
+          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
+          <strong>No results for &ldquo;{query.trim()}&rdquo;</strong>
+          <span>Nothing by name, and nothing that clearly matches by meaning.</span>
         </div>
-      )}
+      ) : <div className="ov" />)}
 
       {!showPanel && t1Off && !hintOff && query.trim() !== "" && (
         <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
       )}
       </div>
-      {pvOpen && pv && (
+      {pvPane && (
         <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes}
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} />
       )}
@@ -861,25 +870,25 @@ export default function App({ backend }: { backend: Backend }) {
             {toast.undo && <> · <button className="undo" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => void doUndo()}>Undo</button></>}
           </span>
         ) : (
-          !data.recent && loaded && <span className="count">{data.total.toLocaleString("en-US")}{data.partial ? "+" : ""} result{data.total === 1 && !data.partial ? "" : "s"}{data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}</span>
+          !data.recent && loaded && <span className="count">
+            {data.total.toLocaleString("en-US")}{data.partial ? "+" : ""} {overview && semHits.length ? "by name" : `result${data.total === 1 && !data.partial ? "" : "s"}`}
+            {data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}
+            {overview && semHits.length > 0 && ` · ${semHits.length} by meaning`}
+          </span>
         )}
         <span className="spacer" />
         <span className="hints">
           {pvOpen ? (
             <>
               <span><kbd>Space</kbd> Close</span>
-              <span><kbd>↵</kbd> Open</span>
-              <span><kbd>Ctrl ↵</kbd> Reveal</span>
               <span><kbd>↑↓</kbd> Next</span>
+              <span><kbd>↵</kbd> Open</span>
             </>
           ) : (
             <>
-              <span><kbd>Space</kbd> Preview</span>
               <span><kbd>↵</kbd> Open</span>
-              <span><kbd>Ctrl ↵</kbd> Reveal</span>
-              <span><kbd>Ctrl ⇧ C</kbd> Path</span>
-              <span><kbd>F2</kbd> Rename</span>
-              <span><kbd>Del</kbd> Recycle</span>
+              <span><kbd>Space</kbd> Quick Look</span>
+              <span><kbd>Ctrl ↵</kbd> Show in folder</span>
             </>
           )}
           <button className="lib-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={openLibrary} title="Photos by month, smart collections, clean up (Ctrl+L)">Library</button>

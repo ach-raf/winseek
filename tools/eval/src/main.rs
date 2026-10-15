@@ -6,8 +6,11 @@
 //! winseek-eval diff a.json b.json        per-case regressions; exit 1 if recall@5 drops > 2 points
 //! winseek-eval route --set D --models D --llama D [--max-fp F] [--current MIN,MARGIN] [--out F]
 //!                                        doc-image routing + smart-collection thresholds on a labelled set
+//! winseek-eval gate --db F --labels F --url U [--api-key K]
+//!                                        meaning-result precision before/after the relevance gate on a real index copy
 
 mod corpus;
+mod gate;
 mod metrics;
 mod route;
 mod run;
@@ -22,7 +25,8 @@ const USAGE: &str = "usage:
   winseek-eval cases
   winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--out <results.json>]
   winseek-eval diff <a.json> <b.json>
-  winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]";
+  winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]
+  winseek-eval gate --db <copy of tier1.sqlite> --labels <labels.json> --url <http://127.0.0.1:PORT> [--api-key <key>]";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -90,6 +94,16 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
             let current = (a.trim().parse().map_err(|e| format!("--current: {e}"))?, b.trim().parse().map_err(|e| format!("--current: {e}"))?);
             let out = flag(&args, "--out").map(PathBuf::from);
             print!("{}", route::run(&opts, &set, max_fp, current, out.as_deref())?);
+            Ok(ExitCode::SUCCESS)
+        }
+        Some("gate") => {
+            let db = need(&args, "--db")?;
+            let labels = gate::load_labels(std::path::Path::new(&need(&args, "--labels")?))?;
+            let url = need(&args, "--url")?;
+            let store = winseek_store::Store::open(&db, &run::index_meta(&flag(&args, "--llama-build").unwrap_or_else(|| "b11588".into())))
+                .map_err(|e| format!("{db}: {e}"))?;
+            let mut client = winseek_llama::EmbedClient::new(&url, &flag(&args, "--api-key").unwrap_or_default());
+            print!("{}", gate::report(&gate::evaluate(&store, &labels, &mut client)?));
             Ok(ExitCode::SUCCESS)
         }
         Some("diff") => {
