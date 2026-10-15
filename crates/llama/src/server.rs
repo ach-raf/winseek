@@ -8,9 +8,9 @@ use std::time::{Duration, Instant};
 use crate::backend::Backend;
 use crate::{Error, Result};
 
-/// What a server is for. Every role pins `-np 1` and an explicit `-c` (llama-server otherwise
-/// defaults to 4 slots and the model's full trained context, which doubled the VRAM; PLAN
-/// "VRAM budget").
+/// What a server is for. Embedding roles pin `-np 1` and every role pins an explicit `-c`
+/// (llama-server otherwise defaults to 4 slots and the model's full trained context, which doubled
+/// the VRAM; PLAN "VRAM budget"). The parser serves several pages at once — see [`parser_slots`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
     /// Text-only EmbeddingGemma-2 for search queries: no mmproj, CPU, ~0 VRAM. Capped at 4 threads:
@@ -58,6 +58,20 @@ impl Profile {
     }
 }
 
+/// Context kept per parser slot: a 1024 px page is a few thousand tokens in and out.
+pub const PARSER_CTX_PER_SLOT: u32 = 8192;
+
+/// Parallel pages one parser server decodes at once, per profile. Decode is memory-bandwidth
+/// bound, so concurrent slots raise aggregate throughput roughly with the slot count until the
+/// GPU saturates; Low keeps the single slot (VRAM first).
+pub fn parser_slots(profile: Profile) -> u32 {
+    match profile {
+        Profile::Low => 1,
+        Profile::Balanced => 2,
+        Profile::Fast => 4,
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct SpawnConfig {
     pub role: Role,
@@ -80,10 +94,11 @@ pub struct LlamaServer {
 }
 
 /// The role/profile specific flags (pure). EmbedIndex needs the ubatch to hold the whole image
-/// (280 tokens): 512 silently drifts (cos 0.986), so it stays >= 768.
+/// (280 tokens): 512 silently drifts (cos 0.986), so it stays >= 768. The parser's `-c` is the
+/// total across its slots (`-np`), so each keeps [`PARSER_CTX_PER_SLOT`].
 pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
     let low = profile.low_vram();
-    let flags: &[&str] = match role {
+    let statics: &[&str] = match role {
         Role::EmbedQuery => &[
             "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device",
             "none", "-t", "4", "-tb", "4",
@@ -92,13 +107,25 @@ pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
             "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
             "1024", "-b", "1024", "-ub", "1024", "-ngl", if low { "0" } else { "99" },
         ],
-        Role::Parser => &[
-            "--jinja", "--reasoning-budget", "0", "-np", "1", "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99",
-        ],
+        // The numbers below are per-profile, so they are built as strings after the static flags.
+        Role::Parser => {
+            let slots = parser_slots(profile);
+            let mut p: Vec<String> = [
+                "--jinja".into(), "--reasoning-budget".into(), "0".into(), "-np".into(), slots.to_string(),
+                "-c".into(), (PARSER_CTX_PER_SLOT * slots).to_string(), "-ctk".into(), "q8_0".into(), "-ctv".into(),
+                "q8_0".into(), "-ngl".into(), "99".into(),
+            ]
+            .into();
+            // Low: keep the projector off the GPU too (otherwise it still occupies ~650 MB).
+            if low {
+                p.push("--no-mmproj-offload".into());
+            }
+            return p;
+        }
     };
-    let mut a: Vec<String> = flags.iter().map(|s| s.to_string()).collect();
+    let mut a: Vec<String> = statics.iter().map(|s| s.to_string()).collect();
     // Low: keep the projector off the GPU too (otherwise it still occupies ~650 MB).
-    if low && matches!(role, Role::EmbedIndex | Role::Parser) {
+    if low && matches!(role, Role::EmbedIndex) {
         a.push("--no-mmproj-offload".into());
     }
     a
@@ -430,12 +457,16 @@ mod tests {
     }
 
     #[test]
-    fn parser_args_and_low_vram() {
-        let base = ["--jinja", "--reasoning-budget", "0", "-np", "1", "-c", "8192", "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99"];
-        assert_eq!(args(Role::Parser, Profile::Balanced, true), want(true, &base));
-        assert_eq!(args(Role::Parser, Profile::Fast, true), want(true, &base));
-        let low = [&base[..], &["--no-mmproj-offload"]].concat();
-        assert_eq!(args(Role::Parser, Profile::Low, true), want(true, &low));
+    fn parser_args_scale_slots_with_the_profile() {
+        for (profile, slots) in [(Profile::Low, 1u32), (Profile::Balanced, 2), (Profile::Fast, 4)] {
+            let (np, ctx) = (slots.to_string(), (PARSER_CTX_PER_SLOT * slots).to_string());
+            let mut tail: Vec<&str> =
+                vec!["--jinja", "--reasoning-budget", "0", "-np", &np, "-c", &ctx, "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99"];
+            if profile.low_vram() {
+                tail.push("--no-mmproj-offload");
+            }
+            assert_eq!(args(Role::Parser, profile, true), want(true, &tail), "{profile:?}");
+        }
     }
 
     #[test]
@@ -445,9 +476,9 @@ mod tests {
     }
 
     #[test]
-    fn every_role_pins_one_slot_and_context_and_index_ubatch_holds_the_image() {
+    fn embedding_roles_pin_one_slot_and_context_and_index_ubatch_holds_the_image() {
         let val = |a: &[String], flag: &str| -> Option<String> { a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1)).cloned() };
-        for role in [Role::EmbedQuery, Role::EmbedIndex, Role::Parser] {
+        for role in [Role::EmbedQuery, Role::EmbedIndex] {
             for p in ALL {
                 let a = args(role, p, true);
                 assert_eq!(val(&a, "-np").as_deref(), Some("1"), "{role:?} {p:?}");

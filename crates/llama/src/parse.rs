@@ -100,6 +100,20 @@ impl ParseClient {
         let elements = parse_output(response_content(&v)?)?;
         Ok(Parsed { elements, prompt_version: PARSE_PROMPT_VERSION.to_string() })
     }
+
+    /// Several page images at once: one request each, sent in parallel so the server decodes them
+    /// together across its slots (`-np`). Results are in input order; a failed page does not
+    /// affect the others.
+    pub fn parse_image_jpegs(&self, jpegs: &[&[u8]]) -> Vec<Result<Parsed>> {
+        std::thread::scope(|s| {
+            jpegs.iter()
+                .map(|j| s.spawn(|| self.parse_image_jpeg(j)))
+                .collect::<Vec<_>>()
+                .into_iter()
+                .map(|h| h.join().expect("parse request thread panicked"))
+                .collect()
+        })
+    }
 }
 
 /// Drop a leading ```` ```json ```` / ```` ``` ```` line and a trailing ```` ``` ````.
@@ -533,6 +547,44 @@ mod tests {
         assert_eq!(reqline.trim(), "POST /v1/chat/completions HTTP/1.1");
         assert_eq!(auth, "Bearer SECRET");
         assert!(response_content(&json!({"choices": []})).is_err());
+    }
+
+    /// One mocked chat-completions round trip (headers drained, canned reply, connection closed).
+    fn serve_once(l: &TcpListener, resp: &str) {
+        let (mut s, _) = l.accept().unwrap();
+        let mut r = BufReader::new(s.try_clone().unwrap());
+        let mut len = 0usize;
+        loop {
+            let mut line = String::new();
+            r.read_line(&mut line).unwrap();
+            if line == "\r\n" || line.is_empty() {
+                break;
+            }
+            if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                len = v.trim().parse().unwrap();
+            }
+        }
+        let mut body = vec![0u8; len];
+        r.read_exact(&mut body).unwrap();
+        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}", resp.len());
+    }
+
+    #[test]
+    fn pages_parse_in_parallel_against_a_mock() {
+        let content = serde_json::to_string(ARR).unwrap();
+        let resp = format!(r#"{{"choices":[{{"message":{{"content":{content}}}}}]}}"#);
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}/", l.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            for _ in 0..3 {
+                serve_once(&l, &resp);
+            }
+        });
+        let client = ParseClient::new(&url, "K");
+        let out = client.parse_image_jpegs(&[b"a", b"b", b"c"]);
+        server.join().unwrap();
+        assert_eq!(out.len(), 3);
+        assert!(out.iter().all(|r| r.as_ref().unwrap().elements.len() == 5), "{out:?}");
     }
 
     /// Live: needs the real llama-server + Infinity-Parser2 files.
