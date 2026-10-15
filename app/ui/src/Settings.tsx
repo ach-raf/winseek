@@ -257,7 +257,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
 
       <div className="actions">
         <span className="muted">Changes are saved right away.</span>
-        <button className="btn quiet" onClick={onStatus}>Status…</button>
+        <button className="btn secondary" onClick={onStatus} title="Name index volumes, indexing details and model files">View status</button>
         <button className="btn primary" onClick={onClose}>Done</button>
       </div>
     </section>
