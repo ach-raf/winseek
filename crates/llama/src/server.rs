@@ -13,7 +13,8 @@ use crate::{Error, Result};
 /// "VRAM budget").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Role {
-    /// Text-only EmbeddingGemma-2 for search queries: no mmproj, CPU, ~0 VRAM.
+    /// Text-only EmbeddingGemma-2 for search queries: no mmproj, CPU, ~0 VRAM. Capped at 4 threads:
+    /// a query is ~30 ms either way, and uncapped it took every core whenever it was handed bulk work.
     EmbedQuery,
     /// EmbeddingGemma-2 with the mmproj for image/document indexing: GPU, ubatch >= 768.
     EmbedIndex,
@@ -85,7 +86,7 @@ pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
     let flags: &[&str] = match role {
         Role::EmbedQuery => &[
             "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device",
-            "none",
+            "none", "-t", "4", "-tb", "4",
         ],
         Role::EmbedIndex => &[
             "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
@@ -401,7 +402,10 @@ mod tests {
 
     #[test]
     fn embed_query_is_text_only_cpu() {
-        let tail = ["--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device", "none"];
+        let tail = [
+            "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device", "none", "-t",
+            "4", "-tb", "4",
+        ];
         // An mmproj is ignored, in every profile.
         for p in ALL {
             assert_eq!(args(Role::EmbedQuery, p, true), want(false, &tail));

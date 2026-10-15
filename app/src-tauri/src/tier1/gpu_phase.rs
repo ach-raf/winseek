@@ -61,7 +61,6 @@ impl GpuPhase {
         self.set(g, false);
     }
 
-    #[cfg(test)]
     pub fn is_loaded(&self, g: Gpu) -> bool {
         self.loaded(g)
     }

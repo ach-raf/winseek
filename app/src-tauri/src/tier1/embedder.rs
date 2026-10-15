@@ -1,10 +1,10 @@
 //! The embedding backend behind Tier 1: a trait, plus the real implementation that runs two
 //! `llama-server`s (PLAN "VRAM budget"):
 //!
-//! - the *query* server: text-only, CPU, spawned on the first text embedding and resident while
-//!   the app runs. Searching and text-only indexing never touch the GPU;
-//! - the *index* server: GPU, with the mmproj, spawned only for image work, unloaded after 2
-//!   minutes idle and immediately when the pause policy pauses.
+//! - the *query* server: text-only, CPU, spawned on the first query and resident while the app
+//!   runs. Searching never touches the GPU;
+//! - the *index* server: GPU, with the mmproj, spawned for indexing (images and document text),
+//!   unloaded after 2 minutes idle and immediately when the pause policy pauses.
 //!
 //! The split relies on both servers producing the same text vectors; [`text_parity`] checks that
 //! once per session and routes all text to the index server if they drift.
@@ -355,6 +355,15 @@ impl LlamaEmbedder {
         Ok(&self.index.as_ref().expect("started").client)
     }
 
+    /// Bulk document text (indexing) goes to the GPU index server: the CPU query server is sized for
+    /// one search at a time, and a crawl of thousands of documents through it pinned every core
+    /// while the GPU sat idle. The query server still takes documents in the Low profile (the index
+    /// server is on the CPU there anyway) and while the parser holds the GPU (a few chunks after a
+    /// parse). Same vectors either way: that is what the parity check guards.
+    fn documents_on_gpu(&self) -> bool {
+        self.profile != Profile::Low && !lock(&self.gpu).is_loaded(Gpu::Parser)
+    }
+
     /// The client for text: the query server unless the parity check routed text to the index
     /// server. If the query server cannot start but the index server is already up, use that.
     fn text_client(&mut self) -> Result<&EmbedClient> {
@@ -401,6 +410,13 @@ impl Embedder for LlamaEmbedder {
 
     fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
         let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+        if self.documents_on_gpu() {
+            match self.index_client() {
+                Ok(c) => return finish(c.embed_documents(&refs).map_err(other)?),
+                Err(EmbedError::ModelsMissing) => return Err(EmbedError::ModelsMissing),
+                Err(e) => eprintln!("winseek: index server unavailable for documents ({e}); using the query server"),
+            }
+        }
         let raw = self.text_client()?.embed_documents(&refs).map_err(other)?;
         finish(raw)
     }
@@ -599,6 +615,20 @@ mod tests {
     fn gpu_busy_errors_are_recognised() {
         assert!(is_gpu_busy(&format!("{GPU_BUSY} with the Parser model; image work waits for it to unload")));
         assert!(!is_gpu_busy("boom"));
+    }
+
+    /// Live: document text is embedded by the GPU index server, not the CPU query server.
+    /// Needs the installed llama build + models under `%LOCALAPPDATA%\winseek`.
+    #[test]
+    #[ignore]
+    fn documents_go_to_the_index_server_live() {
+        let mut e = LlamaEmbedder::new(crate::tier1::data_root().unwrap(), Manifest::embedded());
+        let v = e.embed_documents(&["Invoice 4471: total due 1,869.00".into()]).unwrap();
+        assert_eq!(v[0].len(), DIMS);
+        assert!(e.index.is_some(), "index (GPU) server should have answered");
+        assert!(e.query.is_none(), "the CPU query server must not be started for documents");
+        e.embed_query("invoice").unwrap();
+        assert!(e.query.is_some(), "queries use the CPU server");
     }
 
     #[test]
