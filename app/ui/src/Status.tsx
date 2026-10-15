@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusTier0, StatusTier1, VolumeDetail } from "./types";
 import { formatDuration, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
@@ -44,7 +44,7 @@ export const volKind = (v: VolumeDetail) =>
 const volState = (v: VolumeDetail) =>
   v.state === "live" ? "Live" : v.state === "scanning" ? "Scanning" : v.state === "rescanning" ? "Rescanning" : v.state === "error" ? "Error" : "Demo data";
 
-function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<string>; onRescan: (letter: string) => void }) {
+export function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<string>; onRescan: (letter: string) => void }) {
   const head =
     t0.source === "searchd" ? `Name service running${t0.uptime_s != null ? ` for ${formatDuration(t0.uptime_s)}` : ""}`
     : t0.source === "demo" ? `Name service ${t0.service === "not_installed" ? "not installed" : t0.service === "stopped" ? "stopped" : "not running"}. Showing demo data.`
@@ -52,9 +52,9 @@ function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<string>; onR
   return (
     <div className="st-sec" aria-label="Names">
       <div className="fl-title">Names · Tier 0</div>
-      <div className={"set-state st-head " + (t0.source === "searchd" ? "s-live" : "s-warn")}><span className="dot" />{head}</div>
+      <div className={"st-head " + (t0.source === "searchd" ? "s-live" : "s-warn")}><span className="dot" />{head}</div>
       {t0.source === "unavailable" && <div className="muted">Service state: {t0.service.replace("_", " ")}. This page keeps retrying.</div>}
-      <ul className="st-vols">
+      <ul className="st-vols set-group">
         {t0.volumes.map((v) => {
           const working = v.state === "scanning" || v.state === "rescanning";
           const off = !t0.can_rescan || working || busy.has(v.letter);
@@ -91,24 +91,26 @@ function stateLine(t: StatusTier1): string {
     : t.queue > 0 ? "Waiting for work" : "All caught up";
 }
 
-function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean }) {
+export function StatusMeaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean }) {
   const [ask, setAsk] = useState(false);
   const s = t1.stats;
   useEffect(() => { if (!t1.can_rebuild) setAsk(false); }, [t1.can_rebuild]);
   return (
     <div className="st-sec" aria-label="Meaning">
       <div className="fl-title">Meaning · Tier 1</div>
-      <div className={"set-state st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</div>
+      <div className={"st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</div>
       {t1.state === "unavailable" ? (
         t1.error && <div className="fr-error" role="alert">{t1.error}</div>
       ) : (
-        <>
-          <div className="st-cov">
-            <div className="idx-line">
-              <b>Coverage</b>
-              <span className="nums">{t1.coverage == null ? "—" : formatPercent(t1.coverage)}</span>
+        <div className="set-group">
+          <div className="set-row col">
+            <div className="st-cov">
+              <div className="idx-line">
+                <span className="nums"><b>Coverage</b></span>
+                <span className="nums">{t1.coverage == null ? "—" : formatPercent(t1.coverage)}</span>
+              </div>
+              <Bar value={t1.coverage} label="Indexing coverage" />
             </div>
-            <Bar value={t1.coverage} label="Indexing coverage" />
           </div>
           <dl className="st-grid">
             <Row k="Embedded">{s ? fmt(s.done) : "—"}</Row>
@@ -125,23 +127,23 @@ function Meaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: ()
             </Row>
             <Row k="Time left">{t1.eta_s != null ? `about ${formatDuration(t1.eta_s)}` : "—"}</Row>
           </dl>
-          {t1.error && <div className="fr-error" role="alert">Last error: {t1.error}</div>}
-        </>
-      )}
-      <div className="st-act">
-        {!ask ? (
-          <button className="btn quiet" disabled={!t1.can_rebuild || rebuilding} onClick={() => setAsk(true)}
-                  title={t1.can_rebuild ? "Forget every embedding and index the folders again" : "Search by meaning is not available"}>
-            {rebuilding ? "Rebuilding…" : "Rebuild meaning index…"}
-          </button>
-        ) : (
-          <div className="st-confirm" role="alertdialog" aria-label="Confirm rebuild">
-            <span>Delete the meaning index and embed every file again? This can take a while. Name search is not affected.</span>
-            <button className="btn primary" autoFocus onClick={() => { setAsk(false); onRebuild(); }}>Rebuild</button>
-            <button className="btn quiet" onClick={() => setAsk(false)}>Cancel</button>
+          {t1.error && <div className="st-act"><div className="fr-error" role="alert">Last error: {t1.error}</div></div>}
+          <div className="st-act">
+            {!ask ? (
+              <button className="btn quiet" disabled={!t1.can_rebuild || rebuilding} onClick={() => setAsk(true)}
+                      title={t1.can_rebuild ? "Forget every embedding and index the folders again" : "Search by meaning is not available"}>
+                {rebuilding ? "Rebuilding…" : "Rebuild meaning index…"}
+              </button>
+            ) : (
+              <div className="st-confirm" role="alertdialog" aria-label="Confirm rebuild">
+                <span>Delete the meaning index and embed every file again? This can take a while. Name search is not affected.</span>
+                <button className="btn primary" autoFocus onClick={() => { setAsk(false); onRebuild(); }}>Rebuild</button>
+                <button className="btn quiet" onClick={() => setAsk(false)}>Cancel</button>
+              </div>
+            )}
           </div>
-        )}
-      </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -150,7 +152,7 @@ const backendName = (m: StatusModels) => (m.backend === "cuda12" ? "CUDA 12" : m
 
 function Files({ files }: { files: StatusModelFile[] }) {
   return (
-    <ul className="items st-files">
+    <ul className="items st-files set-group">
       {files.map((f) => (
         <li key={f.name} className={f.bytes != null ? "have" : ""}>
           <span title={f.name}>{f.role === "model" ? "Model" : "Vision projector"} · {f.name}</span>
@@ -172,7 +174,7 @@ function ParserRows({ p }: { p: StatusParser }) {
   const r = p.routing;
   return (
     <>
-      <dl className="st-grid">
+      <dl className="st-grid set-group">
         <Row k="Document parser" title="Infinity-Parser2 reads scans, receipts and screenshots into text and tables">
           {p.model_id}
           {p.present ? " · installed" : <span className="st-miss"> · not installed (optional, add it in Setup)</span>}
@@ -195,12 +197,12 @@ function ParserRows({ p }: { p: StatusParser }) {
   );
 }
 
-function Models({ m }: { m: StatusModels }) {
+export function Models({ m }: { m: StatusModels }) {
   const sv = m.server;
   return (
     <div className="st-sec" aria-label="Models">
       <div className="fl-title">Models</div>
-      <dl className="st-grid">
+      <dl className="st-grid set-group">
         <Row k="llama.cpp">
           {m.llama_build} · {backendName(m)}{m.gpu ? ` · ${m.gpu}` : ""}
           {!m.llama_present && <span className="st-miss"> · not installed</span>}
@@ -221,47 +223,5 @@ function Models({ m }: { m: StatusModels }) {
       <Files files={m.files} />
       <ParserRows p={m.parser} />
     </div>
-  );
-}
-
-export function Status({ backend, onClose, onError }: { backend: Backend; onClose: () => void; onError: (e: unknown) => void }) {
-  const root = useRef<HTMLElement>(null);
-  const [page, err, reload] = useStatusPage(backend);
-  const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [rebuilding, setRebuilding] = useState(false);
-  useEffect(() => { root.current?.querySelector<HTMLElement>(".actions button")?.focus(); }, []);
-
-  const rescan = useCallback((letter: string) => {
-    setBusy((b) => new Set(b).add(letter));
-    backend.rescanVolume(letter).then(reload).catch(onError).finally(() => {
-      setBusy((b) => { const n = new Set(b); n.delete(letter); return n; });
-    });
-  }, [backend, reload, onError]);
-  const rebuild = useCallback(() => {
-    setRebuilding(true);
-    backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
-  }, [backend, reload, onError]);
-
-  return (
-    <section ref={root} className="firstrun setup settings statuspage" aria-label="Status"
-             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
-      <h2>Status</h2>
-      {!page ? (
-        err ? <div className="fr-error" role="alert">Could not read the status: {err}</div>
-          : <div className="vols"><Bar value={null} label="Loading" /><span className="muted">Loading…</span></div>
-      ) : (
-        <>
-          <div className="st-cols">
-            <Names t0={page.tier0} busy={busy} onRescan={rescan} />
-            <Meaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding} />
-          </div>
-          <Models m={page.models} />
-        </>
-      )}
-      <div className="actions">
-        <span className="muted">Updates every second.</span>
-        <button className="btn primary" onClick={onClose}>Done</button>
-      </div>
-    </section>
   );
 }

@@ -3,8 +3,7 @@ import type { Backend, Filter, Hit, HitBox, ServiceState, Sort, VolumeStatus } f
 import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
-import { Settings } from "./Settings";
-import { Status } from "./Status";
+import { Settings, type SettingsSection } from "./Settings";
 import { Preview } from "./Preview";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
@@ -155,7 +154,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; boxes: HitBox[] | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [statusOpen, setStatusOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("meaning");
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   const t0 = useRef<number | null>(null);
@@ -543,7 +542,7 @@ export default function App({ backend }: { backend: Backend }) {
       }
       const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLibrary(); return; }
-      if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); return; }
+        if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setSettingsOpen(true); refreshT1(); return; }
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); navigated.current = true; move(sel + 1); break;
         case "ArrowUp": e.preventDefault(); navigated.current = true; move(sel - 1); break;
@@ -573,7 +572,7 @@ export default function App({ backend }: { backend: Backend }) {
           e.preventDefault();
           if (pvOpen) setPvOpen(false);
           else if (expand && !setupOpenRef.current) setExpand(null);
-          else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); refocus(); } else void backend.hide();
+          else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
@@ -631,7 +630,7 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- first run -----------------------------------------------------------
   const demo = status.length > 0 && status.every((v) => v.state === "demo");
   const needsSetup = demo && (service === "not_installed" || service === "stopped") && !dismissed;
-  const panelOpen = setupOpen || settingsOpen || statusOpen;
+  const panelOpen = setupOpen || settingsOpen;
   const showPanel = panelOpen || (query.trim() === "" && (counting || needsSetup));
   showPanelRef.current = panelOpen || (needsSetup && query.trim() === "");
   setupOpenRef.current = panelOpen;
@@ -652,18 +651,17 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend, service, setupBusy, startCounting, refocus]);
   primaryRef.current = runSetup;
   useEffect(() => { if (query.trim() && counting && summary) setCounting(false); }, [query, counting, summary]);
-  useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
+  useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
   const openSetup = useCallback(() => {
-    setSettingsOpen(false); setStatusOpen(false);
+    setSettingsOpen(false);
     setSetupOpen(true);
     models.refreshPlan();
     refreshT1();
   }, [models, refreshT1]);
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
-  const openSettings = useCallback(() => { setSetupOpen(false); setStatusOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
+  const openSettings = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
   const closeSettings = useCallback(() => { setSettingsOpen(false); refocus(); }, [refocus]);
-  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(false); setStatusOpen(true); }, []);
-  const closeStatus = useCallback(() => { setStatusOpen(false); refocus(); }, [refocus]);
+  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); setSettingsSection("status"); refreshT1(); }, [refreshT1]);
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.onOpenStatus(openStatus).then((u) => (dead ? u() : (off = u)));
@@ -735,7 +733,7 @@ export default function App({ backend }: { backend: Backend }) {
 
   return (
     <div className="shell">
-      <header className="searchbar" data-tauri-drag-region>
+      <header className={"searchbar" + (query ? "" : " idle")} data-tauri-drag-region>
         <svg className="glass" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" />
         </svg>
@@ -771,17 +769,19 @@ export default function App({ backend }: { backend: Backend }) {
         </div>
       )}
 
-      <div className="chips" role="tablist">
-        {FILTERS.map((f) => (
-          <button key={f.id} role="tab" aria-selected={effFilter === f.id} className={"chip" + (effFilter === f.id ? " on" : "")}
-                  tabIndex={-1} onClick={() => {
-                    const k = parsed.chips.find((c) => c.type === "kind");
-                    if (k) dropChip(k.key); // a tab click overrides the kind found in the text
-                    setFilter(f.id); inputRef.current?.focus();
-                  }}>
-            {f.label}
-          </button>
-        ))}
+      <div className="chips">
+        <div className="seg" role="tablist" aria-label="File type filter">
+          {FILTERS.map((f) => (
+            <button key={f.id} role="tab" aria-selected={effFilter === f.id} className={effFilter === f.id ? "on" : ""}
+                    tabIndex={-1} onClick={() => {
+                      const k = parsed.chips.find((c) => c.type === "kind");
+                      if (k) dropChip(k.key); // a tab click overrides the kind found in the text
+                      setFilter(f.id); inputRef.current?.focus();
+                    }}>
+              {f.label}
+            </button>
+          ))}
+        </div>
         <span className="spacer" />
         <button className="sort" tabIndex={-1} title="Change sort order"
                 onClick={() => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); }}>
@@ -796,12 +796,12 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
 
-      {showPanel && (statusOpen ? (
-        <Status backend={backend} onClose={closeStatus} onError={fail} />
-      ) : settingsOpen ? (
-        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onStatus={openStatus} onClose={closeSettings} onError={fail} />
-      ) : setupOpen ? (
+      {showPanel && (setupOpen ? (
         <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
+      ) : settingsOpen ? (
+        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing}
+                  onSetup={openSetup} onClose={closeSettings} onLibrary={openLibrary}
+                  section={settingsSection} onSection={setSettingsSection} onError={fail} />
       ) : (
         <FirstRun
           mode={counting ? "counter" : "setup"} service={service} busy={setupBusy} error={setupErr}

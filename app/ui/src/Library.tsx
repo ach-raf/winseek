@@ -150,9 +150,11 @@ export default function Library({ backend }: { backend: Backend }) {
       <header className="lib-top">
         <h1>Library</h1>
         <nav className="lib-tabs" role="tablist">
-          {TABS.map((t) => (
-            <button key={t.id} role="tab" aria-selected={tab === t.id} className={"chip" + (tab === t.id ? " on" : "")} onClick={() => setTab(t.id)}>{t.label}</button>
-          ))}
+          <div className="seg">
+            {TABS.map((t) => (
+              <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>
+            ))}
+          </div>
         </nav>
         <span className="spacer" />
         <span className={"lib-status s-" + (t1?.state ?? "idle")}><i className="dot" />{status}</span>

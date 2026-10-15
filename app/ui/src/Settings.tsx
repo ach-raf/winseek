@@ -2,12 +2,26 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, IgnoreList, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
-import { Bar, useStatusPage } from "./Status";
+import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDuration, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const lc = (s: string) => s.toLowerCase();
+
+const Switch = ({ checked, disabled, onChange, label }: {
+  checked: boolean; disabled?: boolean; onChange: (v: boolean) => void; label: string;
+}) => (
+  <label className="switch">
+    <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
+  </label>
+);
+
+const Check = () => (
+  <svg className="set-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    <path d="m5 12.5 4.5 4.5L19 7.5" />
+  </svg>
+);
 
 /** Split pasted text into names: commas, semicolons and new lines separate entries. */
 function parseNames(text: string): string[] {
@@ -45,35 +59,37 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
 
   return (
     <div className="ignored">
-      <div className="fl-title">Ignored names</div>
-      <p className="muted">Skipped anywhere inside the folders above. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</p>
-      <div className="fl-add">
-        <input value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
-               spellCheck={false} autoComplete="off"
-               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
-        <button className="btn quiet" onClick={add} disabled={!text.trim() || !ig}>Add</button>
+      <div className="fl-title">Skipped names</div>
+      <p className="muted set-note">Skipped anywhere inside the folders above. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</p>
+      <div className="set-group">
+        <div className="ig-add">
+          <input value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
+                 spellCheck={false} autoComplete="off"
+                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+          <button className="btn quiet" onClick={add} disabled={!text.trim() || !ig}>Add</button>
+        </div>
+        {bad && <div className="ig-err fr-error" role="alert">{bad}</div>}
+        <div className="ig-bar">
+          <input className="ig-filter" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label="Filter ignored names"
+                 spellCheck={false} autoComplete="off" />
+          <span className="nums">
+            {ig ? `${fmt(ig.list.length)} name${ig.list.length === 1 ? "" : "s"}` : "Loading…"}
+            {ig && (isDefault ? " · defaults" : removedDefaults ? ` · ${fmt(removedDefaults)} default${removedDefaults === 1 ? "" : "s"} removed` : "")}
+          </span>
+          <button className="btn quiet" onClick={() => save(null)} disabled={!ig || isDefault}>Reset to defaults</button>
+        </div>
+        <ul className="ig-list" aria-label="Ignored names">
+          {shown.map((n) => (
+            <li key={n} className={defaults.has(lc(n)) ? "" : "custom"} title={defaults.has(lc(n)) ? n : `${n} (added by you)`}>
+              <span>{n}</span>
+              <button className="ig-x" onClick={() => remove(n)} aria-label={`Stop ignoring ${n}`} title="Remove">
+                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+              </button>
+            </li>
+          ))}
+          {ig && shown.length === 0 && <li className="none">{ig.list.length ? "No name matches the filter" : "Nothing is ignored"}</li>}
+        </ul>
       </div>
-      {bad && <div className="fr-error" role="alert">{bad}</div>}
-      <div className="ig-bar">
-        <input className="ig-filter" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label="Filter ignored names"
-               spellCheck={false} autoComplete="off" />
-        <span className="nums">
-          {ig ? `${fmt(ig.list.length)} name${ig.list.length === 1 ? "" : "s"}` : "Loading…"}
-          {ig && (isDefault ? " · defaults" : removedDefaults ? ` · ${fmt(removedDefaults)} default${removedDefaults === 1 ? "" : "s"} removed` : "")}
-        </span>
-        <button className="btn quiet" onClick={() => save(null)} disabled={!ig || isDefault}>Reset to defaults</button>
-      </div>
-      <ul className="ig-list" aria-label="Ignored names">
-        {shown.map((n) => (
-          <li key={n} className={defaults.has(lc(n)) ? "" : "custom"} title={defaults.has(lc(n)) ? n : `${n} (added by you)`}>
-            <span>{n}</span>
-            <button className="ig-x" onClick={() => remove(n)} aria-label={`Stop ignoring ${n}`} title="Remove">
-              <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
-            </button>
-          </li>
-        ))}
-        {ig && shown.length === 0 && <li className="none">{ig.list.length ? "No name matches the filter" : "Nothing is ignored"}</li>}
-      </ul>
     </div>
   );
 }
@@ -86,14 +102,13 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
     backend.tier1SetIndexCode(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
   };
   return (
-    <div className="set-row">
-      <div>
-        <div className="fl-title">Source code</div>
-        <label className="set-state">
-          <input type="checkbox" checked={!!on} disabled={on === null} onChange={(e) => change(e.target.checked)} aria-label="Index source code" />
-          {" "}Index source code
-        </label>
-        <p className="muted">Searches the text of code files in your folders by content. Files ignored by a <code>.gitignore</code> are left out. Turning it off removes them from the index.</p>
+    <div className="set-group">
+      <div className="set-row">
+        <span className="set-optmain">
+          <b>Index source code</b>
+          <span className="muted">Searches the text of code files in your folders by content. Files ignored by a <code>.gitignore</code> are left out. Turning it off removes them from the index.</span>
+        </span>
+        <Switch checked={!!on} disabled={on === null} onChange={change} label="Index source code" />
       </div>
     </div>
   );
@@ -107,14 +122,13 @@ function AutostartToggle({ backend, onError }: { backend: Backend; onError: (e: 
     backend.autostartSet(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
   };
   return (
-    <div className="set-row">
-      <div>
-        <div className="fl-title">Startup</div>
-        <label className="set-state">
-          <input type="checkbox" checked={!!on} disabled={on === null} onChange={(e) => change(e.target.checked)} aria-label="Start with Windows" />
-          {" "}Start with Windows
-        </label>
-        <p className="muted">Starts winseek in the tray when you sign in, so <kbd>Alt</kbd>+<kbd>Space</kbd> works right away. The name index runs as a service either way.</p>
+    <div className="set-group">
+      <div className="set-row">
+        <span className="set-optmain">
+          <b>Start with Windows</b>
+          <span className="muted">Starts winseek in the tray when you sign in, so <kbd>Alt</kbd>+<kbd>Space</kbd> works right away. The name index runs as a service either way.</span>
+        </span>
+        <Switch checked={!!on} disabled={on === null} onChange={change} label="Start with Windows" />
       </div>
     </div>
   );
@@ -136,18 +150,17 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
   };
   const shown = p ?? "balanced";
   return (
-    <div className="set-row perf">
-      <div>
-        <div className="fl-title">Performance</div>
-        <select value={shown} disabled={p === null} onChange={(e) => change(e.target.value as Profile)} aria-label="Performance">
-          {PROFILES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
-        </select>
-        <ul className="perf-list">
-          {PROFILES.map((x) => (
-            <li key={x.id} className={x.id === shown ? "on" : ""}><b>{x.label}</b> {"–"} {x.blurb}</li>
-          ))}
-        </ul>
+    <div className="perf">
+      <div className="set-group" role="radiogroup" aria-label="Performance profile">
+        {PROFILES.map((x) => (
+          <button key={x.id} role="radio" aria-checked={x.id === shown} disabled={p === null}
+                  className={"set-row set-opt" + (x.id === shown ? " on" : "")} onClick={() => change(x.id)}>
+            <span className="set-optmain"><b>{x.label}</b><span className="muted">{x.blurb}</span></span>
+            <Check />
+          </button>
+        ))}
       </div>
+      <p className="muted set-note">Applies to search by meaning: where the models run and how long they stay loaded. Name search is not affected.</p>
     </div>
   );
 }
@@ -229,82 +242,185 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
   const get = (g: ModelGroup) => () => models.start(g === "parser", [g]);
   return (
     <div className="meaning" aria-label="Search by meaning">
-      <div className="set-row">
-        <div className="fl-title">Search by meaning</div>
-        {off ? (
-          t1?.state === "models_missing" && <button className="btn primary" onClick={onSetup}>Set up…</button>
-        ) : (
-          (pr == null || pr === "user") && (
-            <button className="btn quiet" onClick={() => onPause(pr == null)}>{pr == null ? "Pause indexing" : "Resume indexing"}</button>
-          )
+      <div className="set-group">
+        <div className="set-row">
+          <span className="set-optmain">
+            <b>Indexing</b>
+            <span className={"st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</span>
+          </span>
+          {off ? (
+            t1?.state === "models_missing" && <button className="btn primary" onClick={onSetup}>Set up…</button>
+          ) : (
+            (pr == null || pr === "user") && (
+              <button className="btn quiet" onClick={() => onPause(pr == null)}>{pr == null ? "Pause" : "Resume"}</button>
+            )
+          )}
+        </div>
+        {s && total > 0 && (
+          <div className="set-row col">
+            <div className="st-cov">
+              <div className="idx-line">
+                <span className="nums">{fmt(s.done)} of {fmt(total)} files</span>
+                <span className="nums muted">
+                  {[st?.rate != null && st.rate > 0 ? formatRate(st.rate) : null,
+                    st?.eta_s != null && live ? `about ${formatDuration(st.eta_s)} left` : null].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+              <Bar value={total ? s.done / total : null} label="Files indexed" />
+            </div>
+          </div>
         )}
       </div>
-      <div className={"set-state st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</div>
-      {s && total > 0 && (
-        <div className="st-cov">
-          <div className="idx-line">
-            <span className="nums">{fmt(s.done)} of {fmt(total)} files</span>
-            <span className="nums muted">
-              {[st?.rate != null && st.rate > 0 ? formatRate(st.rate) : null,
-                st?.eta_s != null && live ? `about ${formatDuration(st.eta_s)} left` : null].filter(Boolean).join(" · ")}
-            </span>
-          </div>
-          <Bar value={total ? s.done / total : null} label="Files indexed" />
-        </div>
-      )}
       {m && (
-        <ul className="models" aria-label="Models">
-          <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
-                     act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
-            {!embedOk ? "Not downloaded"
-              : sv?.running ? `Loaded on ${engineName(m)}`
-              : `Installed · loads on ${engineName(m)} when there is work`}
-          </ModelLine>
-          <ModelLine name="llama.cpp" detail={m.llama_build}
-                     act={act("llama", m.llama_present)} label="Download" onGet={get("llama")} onCancel={models.cancel}>
-            {m.llama_present ? `Installed · ${m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU"}` : "Not downloaded"}
-          </ModelLine>
-          <ModelLine name="PDF reader" detail={`pdfium ${m.pdfium.build}`} optional
-                     act={act("pdfium", m.pdfium.present)} label="Download" onGet={get("pdfium")} onCancel={models.cancel}>
-            {m.pdfium.present ? "Installed" : "Downloads when a PDF is found"}
-          </ModelLine>
-          <ModelLine name="Document parser" detail={m.parser.model_id} optional
-                     act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
-            {!m.parser.present ? "Optional"
-              : m.parser.server.running ? `Loaded · ${fmt(m.parser.queue.queued)} queued`
-              : `Installed · ${fmt(m.parser.queue.queued)} queued`}
-          </ModelLine>
-        </ul>
+        <>
+          <div className="fl-title">Components</div>
+          <ul className="set-group models" aria-label="Models">
+            <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
+                       act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
+              {!embedOk ? "Not downloaded"
+                : sv?.running ? `Loaded on ${engineName(m)}`
+                : `Installed · loads on ${engineName(m)} when there is work`}
+            </ModelLine>
+            <ModelLine name="llama.cpp" detail={m.llama_build}
+                       act={act("llama", m.llama_present)} label="Download" onGet={get("llama")} onCancel={models.cancel}>
+              {m.llama_present ? `Installed · ${m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU"}` : "Not downloaded"}
+            </ModelLine>
+            <ModelLine name="PDF reader" detail={`pdfium ${m.pdfium.build}`} optional
+                       act={act("pdfium", m.pdfium.present)} label="Download" onGet={get("pdfium")} onCancel={models.cancel}>
+              {m.pdfium.present ? "Installed" : "Downloads when a PDF is found"}
+            </ModelLine>
+            <ModelLine name="Document parser" detail={m.parser.model_id} optional
+                       act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
+              {!m.parser.present ? "Optional"
+                : m.parser.server.running ? `Loaded · ${fmt(m.parser.queue.queued)} queued`
+                : `Installed · ${fmt(m.parser.queue.queued)} queued`}
+            </ModelLine>
+          </ul>
+        </>
       )}
       {st?.error && <div className="fr-error" role="alert">Last error: {st.error}</div>}
     </div>
   );
 }
 
-export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
+/** The Status page, embedded as a Settings section: names index, meaning index, models and files. */
+function StatusSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [page, err, reload] = useStatusPage(backend);
+  const [busy, setBusy] = useState<Set<string>>(new Set());
+  const [rebuilding, setRebuilding] = useState(false);
+
+  const rescan = useCallback((letter: string) => {
+    setBusy((b) => new Set(b).add(letter));
+    backend.rescanVolume(letter).then(reload).catch(onError).finally(() => {
+      setBusy((b) => { const n = new Set(b); n.delete(letter); return n; });
+    });
+  }, [backend, reload, onError]);
+  const rebuild = useCallback(() => {
+    setRebuilding(true);
+    backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
+  }, [backend, reload, onError]);
+
+  if (!page) {
+    return err
+      ? <div className="fr-error" role="alert">Could not read the status: {err}</div>
+      : <div className="vols"><Bar value={null} label="Loading" /><span className="muted">Loading…</span></div>;
+  }
+  return (
+    <div className="st-cols">
+      <Names t0={page.tier0} busy={busy} onRescan={rescan} />
+      <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding} />
+      <ModelsPane m={page.models} />
+    </div>
+  );
+}
+
+export type SettingsSection = "meaning" | "indexing" | "performance" | "general" | "status";
+
+const I = {
+  meaning: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden><path d="M12 3.5c.65 4.1 2.75 6.2 6.9 6.9-4.15.7-6.25 2.8-6.9 6.9-.65-4.1-2.75-6.2-6.9-6.9 4.15-.7 6.25-2.8 6.9-6.9z" /><path d="M18.5 15.5c.3 1.9 1.3 2.9 3.2 3.2-1.9.3-2.9 1.3-3.2 3.2-.3-1.9-1.3-2.9-3.2-3.2 1.9-.3 2.9-1.3 3.2-3.2z" transform="scale(0.72) translate(7.2 6.6)" /></svg>,
+  indexing: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>,
+  performance: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4.5 18a8.5 8.5 0 1 1 15 0" /><path d="m12 14 3.6-4.6" /><circle cx="12" cy="14.2" r="1.3" fill="currentColor" stroke="none" /></svg>,
+  general: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden><path d="M4 8h8M17.5 8H20M4 16h3M12.5 16H20" /><circle cx="15" cy="8" r="2.2" /><circle cx="10" cy="16" r="2.2" /></svg>,
+  status: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12h4l2.5-6.5 4 13L16.5 12H21" /></svg>,
+};
+
+const NAV: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
+  { id: "meaning", label: "Search by meaning", icon: I.meaning },
+  { id: "indexing", label: "Indexing", icon: I.indexing },
+  { id: "performance", label: "Performance", icon: I.performance },
+  { id: "general", label: "General", icon: I.general },
+  { id: "status", label: "Status", icon: I.status },
+];
+
+export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onClose, onLibrary, section, onSection, onError }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
-  onSetup: () => void; onStatus: () => void; onClose: () => void; onError: (e: unknown) => void;
+  onSetup: () => void; onClose: () => void; onLibrary: () => void;
+  section: SettingsSection; onSection: (s: SettingsSection) => void; onError: (e: unknown) => void;
 }) {
-  const root = useRef<HTMLElement>(null);
-  useEffect(() => { root.current?.querySelector<HTMLElement>("input, button")?.focus(); }, []);
+  const navRef = useRef<HTMLElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    (navRef.current?.querySelector<HTMLElement>(".set-navitem.on")
+      ?? bodyRef.current?.querySelector<HTMLElement>("input, button"))?.focus();
+  }, [section]);
+  // Arrow keys walk the sidebar; the popup's global key handler skips everything inside panels.
+  const navKey = (e: React.KeyboardEvent) => {
+    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    e.preventDefault();
+    const items = Array.from(navRef.current?.querySelectorAll<HTMLElement>(".set-navitem") ?? []);
+    const at = items.indexOf(document.activeElement as HTMLElement);
+    const next = items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+    next?.focus();
+  };
   return (
-    <section ref={root} className="firstrun setup settings" aria-label="Settings"
+    <section className="firstrun setup settings" aria-label="Settings"
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
-      <h2>Settings</h2>
-
-      <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />
-
-      <Folders t1={t1} onChange={onFolders} />
-      <Performance backend={backend} onError={onError} />
-      <CodeToggle backend={backend} onError={onError} />
-      <IgnoredNames backend={backend} onError={onError} />
-      <AutostartToggle backend={backend} onError={onError} />
-
-      <div className="actions">
-        <span className="muted">Changes are saved right away.</span>
-        <button className="btn secondary" onClick={onStatus} title="Name index volumes, indexing details and model files">View status</button>
-        <button className="btn primary" onClick={onClose}>Done</button>
+      <div className="set-side">
+        <div className="set-brand">winseek</div>
+        <nav ref={navRef} className="set-nav" aria-label="Settings sections" onKeyDown={navKey}>
+          {NAV.map((s) => (
+            <button key={s.id} role="tab" aria-selected={section === s.id}
+                    className={"set-navitem" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
+              {s.icon}<span>{s.label}</span>
+            </button>
+          ))}
+        </nav>
+      </div>
+      <div className="set-detail">
+        <div className="set-body" ref={bodyRef}>
+          {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
+          {section === "indexing" && (
+            <>
+              <Folders t1={t1} onChange={onFolders} />
+              <CodeToggle backend={backend} onError={onError} />
+              <IgnoredNames backend={backend} onError={onError} />
+            </>
+          )}
+          {section === "performance" && <Performance backend={backend} onError={onError} />}
+          {section === "general" && (
+            <>
+              <AutostartToggle backend={backend} onError={onError} />
+              <div>
+                <div className="fl-title">Library</div>
+                <div className="set-group">
+                  <div className="set-row">
+                    <span className="set-optmain">
+                      <b>Photos &amp; clean up</b>
+                      <span className="muted">Photos by month, smart collections, and finding near-duplicates or oversized files.</span>
+                    </span>
+                    <button className="btn secondary" onClick={onLibrary}>Open</button>
+                  </div>
+                </div>
+              </div>
+            </>
+          )}
+          {section === "status" && <StatusSection backend={backend} onError={onError} />}
+        </div>
+        <footer className="set-foot">
+          <span className="muted">Changes are saved right away.</span>
+          <button className="btn primary" onClick={onClose}>Done</button>
+        </footer>
       </div>
     </section>
   );

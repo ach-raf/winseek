@@ -24,9 +24,11 @@ export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
   return (
     <div className="cl">
       <div className="cl-modes" role="tablist" aria-label="Clean up">
-        {([["exact", "Exact duplicates"], ["similar", "Similar photos"], ["large", "Large files"]] as [Mode, string][]).map(([id, label]) => (
-          <button key={id} role="tab" aria-selected={mode === id} className={"chip" + (mode === id ? " on" : "")} onClick={() => setMode(id)}>{label}</button>
-        ))}
+        <div className="seg">
+          {([["exact", "Exact duplicates"], ["similar", "Similar photos"], ["large", "Large files"]] as [Mode, string][]).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={mode === id} className={mode === id ? "on" : ""} onClick={() => setMode(id)}>{label}</button>
+          ))}
+        </div>
       </div>
       <div className="cl-body">
         {mode === "exact" && <Exact backend={backend} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={onError} />}

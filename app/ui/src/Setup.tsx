@@ -47,22 +47,24 @@ export function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (i
   return (
     <div className="folders">
       <div className="fl-title">Folders to index</div>
-      <ul>
-        {known.map((p) => (
-          <li key={p}>
-            <label title={p}>
-              <input type="checkbox" checked={on(p)} onChange={() => toggle(p)} />
-              <span>{p}</span>
-            </label>
-          </li>
-        ))}
-        {known.length === 0 && <li className="none">No folders yet</li>}
-      </ul>
-      <div className="fl-add">
-        <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
-               spellCheck={false} autoComplete="off"
-               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
-        <button className="btn quiet" onClick={add} disabled={!text.trim()}>Add</button>
+      <div className="set-group">
+        <ul className="fl-list">
+          {known.map((p) => (
+            <li key={p}>
+              <label title={p}>
+                <input type="checkbox" checked={on(p)} onChange={() => toggle(p)} />
+                <span>{p}</span>
+              </label>
+            </li>
+          ))}
+          {known.length === 0 && <li className="none">No folders yet</li>}
+        </ul>
+        <div className="fl-add">
+          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
+                 spellCheck={false} autoComplete="off"
+                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+          <button className="btn quiet" onClick={add} disabled={!text.trim()}>Add</button>
+        </div>
       </div>
     </div>
   );
@@ -125,7 +127,7 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
       {plan && (phase === "choose" || phase === "interrupted" || phase === "downloading") && (
         <div className="dl-plan">
           <div className="gpu">{backendLine(plan)}</div>
-          <ul className="items">
+          <ul className="items set-group">
             {plan.items.filter((i) => !i.optional).map((i) => (
               <li key={i.name} className={i.present ? "have" : ""}>
                 <span>{i.name}</span>
@@ -135,13 +137,15 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
           </ul>
           {optional.length > 0 && (
             <div className="dl-opt">
-              <label className="dl-opt-head">
+              <div className="dl-opt-head">
                 {optMissing.length > 0 && phase !== "downloading" && (
-                  <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
+                  <label className="switch">
+                    <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
+                  </label>
                 )}
                 <b>Document parser</b>
                 <span className="sz">{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
-              </label>
+              </div>
               <div className="muted">Optional. Reads scanned pages, receipts and screenshots into text and tables you can search and copy.</div>
             </div>
           )}
