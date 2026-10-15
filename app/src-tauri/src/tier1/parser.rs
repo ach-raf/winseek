@@ -51,6 +51,11 @@ pub trait Parser {
     fn present(&self) -> bool;
     /// Parse one page image (JPEG, long side 1024).
     fn parse(&mut self, jpeg: &[u8]) -> Result<Parsed, ParseError>;
+    /// Parse several pages at once. Default: one after another. The real server decodes
+    /// concurrent requests across its slots (`-np`), so pages go out in parallel.
+    fn parse_batch(&mut self, jpegs: &[&[u8]]) -> Vec<Result<Parsed, ParseError>> {
+        jpegs.iter().map(|j| self.parse(j)).collect()
+    }
     /// Called periodically; the real impl unloads the server when idle.
     fn tick_idle(&mut self) {}
     /// Drop the server (pause, profile change, GPU wanted by the index model).
@@ -140,6 +145,7 @@ impl LlamaParser {
             LlamaServer::spawn_with(&exe, &model, Some(&mmproj), &[], &cfg)
         })
         .map_err(|e| ParseError::Other(e.to_string()))?;
+        eprintln!("winseek: parser server on port {} ({} slot(s), {})", server.port(), winseek_llama::server::parser_slots(self.profile), self.profile.as_str());
         Ok(Running { client: ParseClient::new(&server.base_url(), server.api_key()), server })
     }
 
@@ -181,6 +187,20 @@ impl Parser for LlamaParser {
         let r = self.running.as_ref().expect("started").client.parse_image_jpeg(jpeg).map_err(|e| ParseError::Other(e.to_string()));
         self.reaper.touch(); // a 2.5 s page must not count as idle time
         r
+    }
+
+    fn parse_batch(&mut self, jpegs: &[&[u8]]) -> Vec<Result<Parsed, ParseError>> {
+        if jpegs.is_empty() {
+            return vec![];
+        }
+        if let Err(e) = self.ensure() {
+            let msg = e.to_string();
+            return (0..jpegs.len()).map(|_| Err(ParseError::Other(msg.clone()))).collect();
+        }
+        self.reaper.touch();
+        let out = self.running.as_ref().expect("started").client.parse_image_jpegs(jpegs);
+        self.reaper.touch();
+        out.into_iter().map(|r| r.map_err(|e| ParseError::Other(e.to_string()))).collect()
     }
 
     fn tick_idle(&mut self) {

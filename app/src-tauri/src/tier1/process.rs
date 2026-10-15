@@ -1629,27 +1629,31 @@ mod tests {
         Operating costs stayed flat while headcount rose slightly. The board approved the budget for the next fiscal year, \
         including two new offices and a larger research team.";
 
-    /// 260 characters of Cyrillic: long enough for the parser, but not a supported script.
+    /// 260 characters of Cyrillic, cleanly read: any script the OCR reads well stays.
     const RU_OCR: &str = "Это длинный русский текст Это длинный русский текст Это длинный русский текст Это длинный русский текст \
         Это длинный русский текст Это длинный русский текст Это длинный русский текст Это длинный русский текст \
         Это длинный русский текст Это длинный русский текст";
 
+    /// One unit of OCR junk (9 characters of punctuation and symbols).
+    const JUNK_OCR: &str = "·-\\|/ *_—";
+
     #[test]
-    fn screenshots_with_a_lot_of_text_are_queued_for_the_parser() {
+    fn screenshots_with_poor_text_are_queued_for_the_parser() {
         let (store, dir) = setup();
         add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
-        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(LONG_OCR), calls: Arc::new(AtomicUsize::new(0)) }), None);
+        let junk: String = JUNK_OCR.repeat(30);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(junk.clone().leak()), calls: Arc::new(AtomicUsize::new(0)) }), None);
         assert_eq!(p.run_pass(&store, &doc_embedder(), &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
         let jobs = store.lock().unwrap().next_parse(10).unwrap();
         assert_eq!(jobs.len(), 1);
         assert_eq!((jobs[0].page, jobs[0].reason.as_str()), (0, "screenshot"));
         assert!(jobs[0].path.ends_with("Screenshot 1.png"));
-        assert!(LONG_OCR.chars().count() >= 200, "{}", LONG_OCR.chars().count());
+        assert!(junk.chars().count() >= 200, "{}", junk.chars().count());
     }
 
     #[test]
-    fn short_or_unsupported_script_screenshots_stay_with_windows_ocr() {
-        for text in ["Save changes?  OK  Cancel", RU_OCR] {
+    fn short_or_cleanly_read_screenshots_stay_with_windows_ocr() {
+        for text in ["Save changes?  OK  Cancel", LONG_OCR, RU_OCR] {
             let (store, dir) = setup();
             add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
             let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(text), calls: Arc::new(AtomicUsize::new(0)) }), None);
@@ -1662,7 +1666,8 @@ mod tests {
     fn fts_only_screenshots_are_queued_too() {
         let (store, dir) = setup();
         add(&store, dir.path(), "Screenshot 1.png", &png(8, 8, 1), 1);
-        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(LONG_OCR), calls: Arc::new(AtomicUsize::new(0)) }), None);
+        let junk: String = JUNK_OCR.repeat(30);
+        let mut p = Processor::with_ocr(Box::new(FakeOcr { text: Some(junk.leak()), calls: Arc::new(AtomicUsize::new(0)) }), None);
         assert_eq!(p.run_fts_pass(&store, &AtomicBool::new(false)).unwrap(), Pass::Progress(1));
         assert_eq!(store.lock().unwrap().stats().unwrap().text_only, 1);
         let jobs = store.lock().unwrap().next_parse(10).unwrap();

@@ -1,6 +1,6 @@
-//! Which items go to the document parser (spec 2026-10-14-p3-parser, section C): the language gate,
-//! the screenshot rule and the zero-shot "is this image a document?" check on the stored image
-//! vector. All pure; the passes that use them live in `parse_pass`.
+//! Which items go to the document parser (spec 2026-10-14-p3-parser, section C): the OCR-quality
+//! gate, the screenshot rule and the zero-shot "is this image a document?" check on the stored
+//! image vector. All pure; the passes that use them live in `parse_pass`.
 
 use super::embedder::{EmbedError, Embedder};
 
@@ -19,10 +19,12 @@ pub const DOC_MIN: f32 = 0.60;
 pub const DOC_MARGIN: f32 = 0.04;
 /// A screenshot goes to the parser when Windows OCR read at least this many characters.
 pub const SCREENSHOT_MIN_CHARS: usize = 200;
+/// Stored / fresh OCR text shorter than this is treated as sparse (the parser should try the page).
+pub const MIN_OCR_CHARS: usize = 200;
+/// Share of non-space characters that must be alphanumeric for OCR text to count as readable.
+const ALNUM_MIN_SHARE: f32 = 0.6;
 /// Image vectors looked at per route pass.
 pub const ROUTE_BATCH: usize = 500;
-/// Share of alphabetic characters that must be Latin / CJK for the parser to take the item.
-pub const SCRIPT_MIN_SHARE: f32 = 0.8;
 
 pub const DOC_PROMPTS: [&str; 6] = [
     "a scanned document page",
@@ -41,27 +43,27 @@ pub const OTHER_PROMPTS: [&str; 6] = [
     "a product photo",
 ];
 
-/// Is `c` in a script the parser reads (Latin incl. extensions, Japanese kana, CJK ideographs)?
-/// Hangul is deliberately not: the model does not support it.
-fn supported_script(c: char) -> bool {
-    matches!(c as u32,
-        0x0000..=0x024F | 0x1E00..=0x1EFF
-        | 0x3040..=0x30FF | 0x3400..=0x4DBF | 0x4E00..=0x9FFF)
-}
-
-/// Language gate: the text is empty, or mostly (>= [`SCRIPT_MIN_SHARE`] of its letters) Latin / CJK.
-pub fn script_ok(text: &str) -> bool {
-    let (mut letters, mut ok) = (0usize, 0usize);
-    for c in text.chars().filter(|c| c.is_alphabetic()) {
-        letters += 1;
-        ok += usize::from(supported_script(c));
+/// Would the document parser plausibly beat this OCR text? Script-agnostic — Infinity-Parser2
+/// reads Latin, CJK and Arabic alike (verified live 2026-10-15 on a Moroccan ID card), so the old
+/// Latin/CJK language gate only blocked good parses. Text that is sparse (little came out of a
+/// page) or junk-heavy (mostly punctuation and symbols) is worth replacing; anything else keeps
+/// its OCR text and saves the GPU.
+pub fn ocr_looks_poor(text: &str) -> bool {
+    if text.chars().count() < MIN_OCR_CHARS {
+        return true;
     }
-    letters == 0 || ok as f32 / letters as f32 >= SCRIPT_MIN_SHARE
+    let (mut alnum, mut total) = (0usize, 0usize);
+    for c in text.chars().filter(|c| !c.is_whitespace()) {
+        total += 1;
+        alnum += usize::from(c.is_alphanumeric());
+    }
+    total == 0 || (alnum as f32) / (total as f32) < ALNUM_MIN_SHARE
 }
 
-/// Screenshots with a lot of readable text go to the parser; short UI captures stay with Windows OCR.
+/// Screenshots go to the parser when Windows OCR read a lot of text but it looks poor; short UI
+/// captures and cleanly-read ones stay with Windows OCR.
 pub fn screenshot_wants_parser(ocr_text: &str) -> bool {
-    ocr_text.chars().count() >= SCREENSHOT_MIN_CHARS && script_ok(ocr_text)
+    ocr_text.chars().count() >= SCREENSHOT_MIN_CHARS && ocr_looks_poor(ocr_text)
 }
 
 /// The embedded prototype queries (L2-normalised, like stored image vectors).
@@ -98,36 +100,30 @@ mod tests {
     use super::*;
 
     #[test]
-    fn script_gate_latin_cjk_and_the_rest() {
-        assert!(script_ok(""), "no letters: nothing to object to");
-        assert!(script_ok("  123 -- 456 "));
-        assert!(script_ok("Total due: 1,869.00 EUR"));
-        assert!(script_ok("Zażółć gęślą jaźń, café naïve"));
-        assert!(script_ok("Ạ Ế Ỳ"), "Latin Extended Additional");
-        assert!(script_ok("請求書 合計 ひらがな カタカナ"), "CJK + kana");
-        assert!(!script_ok("مرحبا بالعالم"), "Arabic");
-        assert!(!script_ok("Привет мир"), "Cyrillic");
-        assert!(!script_ok("안녕하세요 세계"), "Hangul is not supported");
-        assert!(!script_ok("สวัสดี"), "Thai");
+    fn quality_gate_is_script_agnostic() {
+        // 220 chars of clean text, Arabic first: the parser is not needed, whatever the script.
+        let arabic = "هذه فاتورة صادرة عن الشركة المغربية الشرقية بتاريخ أمس بطاقة إلكترونية ".repeat(4);
+        assert!(arabic.chars().count() >= MIN_OCR_CHARS);
+        assert!(!ocr_looks_poor(&arabic), "clean Arabic reads fine");
+        assert!(ocr_looks_poor("مرحبا بالعالم"), "sparse text goes to the parser");
+        assert!(ocr_looks_poor(""), "no text at all: let the parser try");
+        assert!(ocr_looks_poor(&"·-\\|/ *_—".repeat(40)), "symbol junk goes to the parser");
+        let clean = "Invoice number 4711 for the customer, total due 1,869.00 EUR, payable within 30 days of the invoice date. ".repeat(2);
+        assert!(!ocr_looks_poor(&clean), "clean Latin is kept");
+        // digits count as content: a mostly-numbers page (forms, IDs) still reads fine
+        let ids = "U1234567 05/12/1983 22/07/2029 CAH 123457 ".repeat(6);
+        assert!(!ocr_looks_poor(&ids));
     }
 
     #[test]
-    fn script_gate_threshold_is_80_percent_of_letters() {
-        // 8 Latin + 2 Cyrillic letters = exactly 0.8; digits and spaces do not count
-        assert!(script_ok("abcdefgh ЖЖ 12345"));
-        assert!(!script_ok("abcdefg ЖЖЖ 12345"));
-        // mixed with a little Arabic stays supported
-        assert!(script_ok("Invoice number 4711 for the customer مرحبا"));
-    }
-
-    #[test]
-    fn screenshots_need_200_chars_of_supported_text() {
-        let long = "word ".repeat(40);
-        assert!(screenshot_wants_parser(&long));
-        assert!(!screenshot_wants_parser(&long[..150]));
-        assert!(!screenshot_wants_parser(&"слово ".repeat(40)), "Cyrillic stays with Windows OCR");
-        assert!(screenshot_wants_parser(&"字".repeat(200)), "characters, not bytes");
-        assert!(!screenshot_wants_parser(&"字".repeat(199)));
+    fn screenshots_want_the_parser_only_for_poor_text() {
+        let clean = "word ".repeat(40);
+        assert!(!screenshot_wants_parser(&clean), "cleanly read: nothing to add");
+        assert!(!screenshot_wants_parser(&"word ".repeat(20)), "short capture stays with Windows OCR");
+        let junk = "·-\\|/ *_—".repeat(30);
+        assert!(screenshot_wants_parser(&junk), "plenty of chars but garbage: parse it");
+        let arabic = "بسم الله الرحمن الرحيم هذه فاتورة ".repeat(8);
+        assert!(!screenshot_wants_parser(&arabic), "clean Arabic stays, like clean Latin");
     }
 
     fn unit(i: usize) -> Vec<f32> {

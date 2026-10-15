@@ -2,9 +2,10 @@
 //!
 //! Runs in the worker only when the embed queue is empty, and never blocks it:
 //! - the *route pass* walks image vectors newer than the stored cursor and queues the document-like
-//!   ones (zero-shot against prototype queries), applying the language gate;
-//! - the *parse pass* takes up to [`PARSE_BATCH`] queued items, renders them at 1024 px, runs the
-//!   parser and replaces the item's OCR text with the parsed text (FTS rows + text vectors).
+//!   ones (zero-shot against prototype queries), applying the OCR-quality gate;
+//! - the *parse pass* takes up to [`PARSE_BATCH`] queued items, renders them at 1024 px and runs
+//!   the parser — the first page through the GPU phase gate, the rest concurrently across the
+//!   server's slots — and replaces the item's OCR text with the parsed text (FTS rows + vectors).
 //!
 //! Files are indexed exactly as before; this only upgrades text afterwards.
 
@@ -15,6 +16,7 @@ use std::time::{Duration, Instant};
 
 use pdfium_render::prelude::Pdfium;
 use winseek_llama::prep::prepare_jpeg_long;
+use winseek_llama::Parsed;
 use winseek_store::{ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS, SETTING_PARSE_ROUTE_CURSOR};
 
 use super::chunk;
@@ -23,7 +25,7 @@ use super::ocr::{Ocr, WinOcr};
 use super::parser::{parse_phased, ParseError, Parser};
 use super::pdf::{self, PdfError};
 use super::process::sha256_hex;
-use super::route::{script_ok, Prototypes, ROUTE_BATCH};
+use super::route::{ocr_looks_poor, Prototypes, ROUTE_BATCH};
 
 /// Queued items parsed per pass.
 pub const PARSE_BATCH: usize = 4;
@@ -51,13 +53,6 @@ enum Input {
     Skip(&'static str),
     /// pdfium is not usable right now: leave the job queued.
     Defer,
-}
-
-enum Outcome {
-    /// The item was finished, skipped or failed for good.
-    Done,
-    /// An attempt was made or the parser is unavailable: stop this pass.
-    Stop(bool),
 }
 
 pub struct ParsePass {
@@ -139,31 +134,37 @@ impl ParsePass {
         Ok(queued)
     }
 
-    /// Queue one document-like image, applying the language gate. An image without OCR text gets
-    /// Windows OCR first (cheap); when that shows an unsupported script the OCR text is stored instead
-    /// and the item is skipped (`script`), so it still becomes text-searchable.
+    /// Queue one document-like image. The OCR-quality gate, not a language gate, decides whether
+    /// it actually waits for the parser (the parser reads Latin, CJK and Arabic alike): text the
+    /// parser cannot plausibly beat — substantial and readable, whatever the script — keeps the
+    /// item out of the queue; sparse or junky text, or none, leaves it queued. An image without
+    /// stored text gets Windows OCR first (cheap): if that reads the page well, the text is stored
+    /// and the item is skipped (`ocr_ok`), so it is text-searchable without spending the GPU.
     fn route_doc(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, hash: &str) -> Result<(), String> {
         let have: String = lock(store).texts_of(hash).map_err(db)?.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n");
         lock(store).queue_parse(hash, 0, "doc_image").map_err(db)?;
         if !have.trim().is_empty() {
-            if !script_ok(&have) {
-                lock(store).skip_parse(hash, 0, "script").map_err(db)?;
+            if !ocr_looks_poor(&have) {
+                lock(store).skip_parse(hash, 0, "ocr_ok").map_err(db)?;
             }
             return Ok(());
         }
         let Some(path) = lock(store).live_path(hash).map_err(db)? else { return Ok(()) };
         let Some(ocr) = std::fs::read(Path::new(&path)).ok().and_then(|b| self.ocr.recognize(&b).ok()) else { return Ok(()) };
-        if ocr.is_empty() || script_ok(&ocr.text) {
-            return Ok(());
+        if ocr.is_empty() || ocr_looks_poor(&ocr.text) {
+            return Ok(()); // nothing readable: the parser reads the page itself
         }
         let locator = ocr.locator_json();
         let result = text_result(embedder, chunk_texts(&ocr.text, 0), &locator);
-        lock(store).skip_parse_replacing(hash, 0, "script", &result).map_err(db)
+        lock(store).skip_parse_replacing(hash, 0, "ocr_ok", &result).map_err(db)
     }
 
     // ------------------------------------------------------------ parsing
 
-    /// Parse up to [`PARSE_BATCH`] queued items; returns how many were attempted.
+    /// Parse up to [`PARSE_BATCH`] queued items; returns how many were handled (parsed, skipped,
+    /// failed, or attempted). Page images are prepared first (CPU only); the first page goes
+    /// through the GPU phase gate — it may release the index model and retry, and it brings the
+    /// server up — then the remaining pages are sent concurrently across the server's slots.
     fn parse_jobs(
         &mut self,
         store: &Mutex<Store>,
@@ -173,16 +174,59 @@ impl ParsePass {
     ) -> Result<usize, String> {
         let jobs = lock(store).next_parse(PARSE_BATCH).map_err(db)?;
         let mut n = 0usize;
+        let mut pages: Vec<(&ParseJob, Vec<u8>)> = Vec::new();
         for job in &jobs {
             if paused.load(Ordering::Relaxed) {
                 break;
             }
-            match self.parse_job(store, embedder, parser, job)? {
-                Outcome::Done => n += 1,
-                Outcome::Stop(attempted) => {
-                    n += usize::from(attempted);
-                    break;
+            match self.job_input(job) {
+                Input::Jpeg(j) => pages.push((job, j)),
+                Input::Fail(msg) => {
+                    lock(store).fail_parse(&job.hash, job.page, &msg).map_err(db)?;
+                    n += 1;
                 }
+                Input::Skip(reason) => {
+                    lock(store).skip_parse(&job.hash, job.page, reason).map_err(db)?;
+                    n += 1;
+                }
+                Input::Defer => break, // this job and the rest stay queued for when pdfium works
+            }
+        }
+        let Some(((first, first_jpeg), rest)) = pages.split_first() else { return Ok(n) };
+        match parse_phased(parser, embedder, first_jpeg) {
+            Ok(parsed) => {
+                finish_job(store, embedder, first, parsed)?;
+                n += 1;
+            }
+            // Nothing is wrong with the item: the model is missing, or the GPU is still the index model's.
+            Err(ParseError::ModelsMissing | ParseError::GpuBusy) => return Ok(n),
+            Err(ParseError::Other(msg)) => {
+                bump_attempt(store, parser, first, &msg)?;
+                return Ok(n + 1); // the server was unloaded: stop this pass, it starts fresh next time
+            }
+        }
+        if !rest.is_empty() {
+            let jpegs: Vec<&[u8]> = rest.iter().map(|(_, j)| j.as_slice()).collect();
+            let results = lock(parser).parse_batch(&jpegs);
+            let mut retriable = false;
+            for ((job, _), r) in rest.iter().zip(results) {
+                match r {
+                    Ok(parsed) => {
+                        finish_job(store, embedder, job, parsed)?;
+                        n += 1;
+                    }
+                    // The server went away mid-batch (crash / unloaded): the rest stay queued.
+                    Err(ParseError::ModelsMissing | ParseError::GpuBusy) => break,
+                    Err(ParseError::Other(msg)) => {
+                        if bump_attempt(store, parser, job, &msg)? {
+                            retriable = true;
+                        }
+                        n += 1;
+                    }
+                }
+            }
+            if retriable {
+                return Ok(n);
             }
         }
         Ok(n)
@@ -211,49 +255,37 @@ impl ParsePass {
             Err(e) => Input::Fail(e.to_string()),
         }
     }
+}
 
-    fn parse_job(
-        &mut self,
-        store: &Mutex<Store>,
-        embedder: &Mutex<Box<dyn Embedder + Send>>,
-        parser: &Mutex<Box<dyn Parser + Send>>,
-        job: &ParseJob,
-    ) -> Result<Outcome, String> {
-        let jpeg = match self.job_input(job) {
-            Input::Jpeg(j) => j,
-            Input::Fail(msg) => {
-                lock(store).fail_parse(&job.hash, job.page, &msg).map_err(db)?;
-                return Ok(Outcome::Done);
-            }
-            Input::Skip(reason) => {
-                lock(store).skip_parse(&job.hash, job.page, reason).map_err(db)?;
-                return Ok(Outcome::Done);
-            }
-            Input::Defer => return Ok(Outcome::Stop(false)),
-        };
-        let parsed = match parse_phased(parser, embedder, &jpeg) {
-            Ok(p) => p,
-            // Nothing is wrong with the item: the model is missing, or the GPU is still the index model's.
-            Err(ParseError::ModelsMissing | ParseError::GpuBusy) => return Ok(Outcome::Stop(false)),
-            Err(ParseError::Other(msg)) => {
-                let attempts = lock(store).bump_parse(&job.hash, job.page, &msg).map_err(db)?;
-                if attempts >= MAX_PARSE_ATTEMPTS {
-                    lock(store).fail_parse(&job.hash, job.page, &msg).map_err(db)?;
-                } else {
-                    lock(parser).unload(); // a wedged server must not eat the retries
-                }
-                return Ok(Outcome::Stop(true));
-            }
-        };
-        let text = parsed.plain_text();
-        if text.trim().is_empty() {
-            lock(store).skip_parse(&job.hash, job.page, "empty").map_err(db)?; // the OCR text stays
-            return Ok(Outcome::Done);
-        }
-        let locator = parsed.locator_json((job.page > 0).then_some(job.page));
-        let result = text_result(embedder, chunk_texts(&text, job.page), &locator);
-        lock(store).finish_parse(&job.hash, job.page, &result).map_err(db)?;
-        Ok(Outcome::Done)
+/// Store one parsed page: empty output keeps the OCR text (`empty`), otherwise the parsed text
+/// replaces it (FTS chunks + text vectors) and its boxes land on the locator.
+fn finish_job(
+    store: &Mutex<Store>,
+    embedder: &Mutex<Box<dyn Embedder + Send>>,
+    job: &ParseJob,
+    parsed: Parsed,
+) -> Result<(), String> {
+    let text = parsed.plain_text();
+    if text.trim().is_empty() {
+        lock(store).skip_parse(&job.hash, job.page, "empty").map_err(db)?; // the OCR text stays
+        return Ok(());
+    }
+    let locator = parsed.locator_json((job.page > 0).then_some(job.page));
+    let result = text_result(embedder, chunk_texts(&text, job.page), &locator);
+    lock(store).finish_parse(&job.hash, job.page, &result).map_err(db)
+}
+
+/// Count a failed parse attempt; the third strikes the item out. `true` = the attempt is
+/// recoverable: the server was dropped so the next pass starts fresh (a wedged server must not
+/// eat the retries).
+fn bump_attempt(store: &Mutex<Store>, parser: &Mutex<Box<dyn Parser + Send>>, job: &ParseJob, msg: &str) -> Result<bool, String> {
+    let attempts = lock(store).bump_parse(&job.hash, job.page, msg).map_err(db)?;
+    if attempts >= MAX_PARSE_ATTEMPTS {
+        lock(store).fail_parse(&job.hash, job.page, msg).map_err(db)?;
+        Ok(false)
+    } else {
+        lock(parser).unload();
+        Ok(true)
     }
 }
 
@@ -293,6 +325,10 @@ mod tests {
         v[i] = 1.0;
         v
     }
+
+    /// Clean, long-enough pages (doubled past [`super::super::route::MIN_OCR_CHARS`] in the tests).
+    const ARABIC_SENTENCE: &str = "هذه فاتورة صادرة عن الشركة المغربية العربية تحتوي على عدة بنود وأسعار وتاريخ الإصدار ورقم البطاقة وتفاصيل الدفع الكاملة المستحقة للفاتورة ";
+    const RUSSIAN_SENTENCE: &str = "Это страница напечатанного документа с несколькими строками текста и цифрами 4711 для проверки качества распознавания ";
 
     /// Prompts on axes 0 (documents) / 1 (others); documents embed to axis 2; images are never embedded here.
     #[derive(Default)]
@@ -438,17 +474,17 @@ mod tests {
         }
     }
 
-    struct FakeOcr(Option<&'static str>);
+    struct FakeOcr(Option<String>);
     impl Ocr for FakeOcr {
         fn recognize(&mut self, _: &[u8]) -> Result<OcrText, OcrError> {
-            match self.0 {
-                Some(t) => Ok(OcrText { text: t.into(), lines: vec![OcrLine { text: t.into(), rect: [1, 2, 3, 4] }], width: 40, height: 30 }),
+            match &self.0 {
+                Some(t) => Ok(OcrText { text: t.clone(), lines: vec![OcrLine { text: t.clone(), rect: [1, 2, 3, 4] }], width: 40, height: 30 }),
                 None => Err(OcrError::Unavailable),
             }
         }
     }
 
-    fn pass_with(ocr: Option<&'static str>) -> ParsePass {
+    fn pass_with(ocr: Option<String>) -> ParsePass {
         ParsePass::with_ocr(Box::new(FakeOcr(ocr)))
     }
 
@@ -513,32 +549,37 @@ mod tests {
     }
 
     #[test]
-    fn language_gate_on_existing_ocr_text() {
+    fn quality_gate_on_existing_ocr_text() {
+        let arabic_page = ARABIC_SENTENCE.repeat(2); // long, clean, any script: the parser is not needed
+        let junk = "·-\\|/ *_—".repeat(40); // long but garbage: worth the parser
         let e = env(true, false);
-        let latin = e.add_image("a.png", 1, unit(0), Some("Total due 1,869.00 EUR"));
-        let arabic = e.add_image("b.png", 2, unit(0), Some("مرحبا بالعالم هذا نص عربي"));
+        let readable = e.add_image("a.png", 1, unit(0), Some(&arabic_page));
+        let junky = e.add_image("b.png", 2, unit(0), Some(&junk));
+        let short = e.add_image("c.png", 3, unit(0), Some("Invoice"));
         let mut p = pass_with(None);
         assert!(e.pass(&mut p));
         let s = e.store.lock().unwrap();
         let queued: Vec<String> = s.next_parse(10).unwrap().into_iter().map(|j| j.hash).collect();
-        assert_eq!(queued, vec![latin], "the Arabic one is skipped(script), not queued");
-        assert_eq!(s.parse_counts().unwrap().queued, 1);
+        assert_eq!(queued.len(), 2, "the readable page stays out, junk and sparse text wait");
+        assert!(queued.contains(&junky) && queued.contains(&short) && !queued.contains(&readable));
+        assert_eq!(s.parse_counts().unwrap().queued, 2);
         drop(s);
-        // its OCR text is untouched
-        assert_eq!(e.store.lock().unwrap().texts_of(&arabic).unwrap().len(), 1);
+        // the readable page's OCR text is untouched
+        assert_eq!(e.store.lock().unwrap().texts_of(&readable).unwrap().len(), 1);
     }
 
     #[test]
-    fn doc_image_without_text_gets_windows_ocr_and_unsupported_script_is_stored_as_text() {
+    fn doc_image_without_text_gets_windows_ocr_and_readable_text_is_stored_without_parsing() {
         let e = env(true, false);
         let hash = e.add_image("ru.png", 1, unit(0), None);
-        let mut p = pass_with(Some("Привет мир это документ"));
+        let russian = format!("{RUSSIAN_SENTENCE}{RUSSIAN_SENTENCE}");
+        let mut p = pass_with(Some(russian.clone()));
         assert!(e.pass(&mut p));
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap().queued, 0, "skipped as script");
+        assert_eq!(s.parse_counts().unwrap().queued, 0, "stored as ocr_ok, not queued");
         assert!(s.next_parse(10).unwrap().is_empty());
-        assert_eq!(s.texts_of(&hash).unwrap(), vec![(1, "Привет мир это документ".to_string())]);
-        assert_eq!(s.search_text(&winseek_store::fts_escape("документ"), 5).unwrap().len(), 1, "text-searchable now");
+        assert_eq!(s.texts_of(&hash).unwrap(), vec![(1, russian.trim_end().to_string())], "chunking trims the text");
+        assert_eq!(s.search_text(&winseek_store::fts_escape("напечатанного"), 5).unwrap().len(), 1, "text-searchable now");
         let hits = s.search_vectors(&unit(2), 3, Some(VecKind::Text)).unwrap();
         assert_eq!(hits.len(), 1, "with a text vector");
         assert!(hits[0].locator.as_deref().unwrap().contains("\"ocr\""));
@@ -551,7 +592,7 @@ mod tests {
         let e = env(true, false);
         let a = e.add_image("a.png", 1, unit(0), None);
         e.add_image("b.png", 2, unit(0), None);
-        let mut p = pass_with(Some("Latin text here"));
+        let mut p = pass_with(Some("Latin text here".to_string()));
         assert!(e.pass(&mut p));
         assert_eq!(e.counts().queued, 2);
         assert!(e.store.lock().unwrap().texts_of(&a).unwrap().is_empty(), "Latin: the parser will provide the text");
