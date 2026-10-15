@@ -79,27 +79,29 @@ impl ParsePass {
         ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime }
     }
 
-    /// One step of routing or parsing. `Ok(true)` = did something, call again at once; `Ok(false)` =
-    /// nothing to do (or the parser / embedder is not available): the worker may nap.
+    /// One step of routing or parsing. `Ok(n)` = `n` items of work were done (queued for the parser
+    /// or parsed), call again at once; `Ok(0)` = nothing to do (or the parser / embedder is not
+    /// available): the worker may nap.
     pub fn run(
         &mut self,
         store: &Mutex<Store>,
         embedder: &Mutex<Box<dyn Embedder + Send>>,
         parser: &Mutex<Box<dyn Parser + Send>>,
         paused: &AtomicBool,
-    ) -> Result<bool, String> {
+    ) -> Result<usize, String> {
         if paused.load(Ordering::Relaxed) || !lock(parser).present() {
-            return Ok(false);
+            return Ok(0);
         }
-        if self.route_pass(store, embedder, paused)? > 0 {
-            return Ok(true);
+        let routed = self.route_pass(store, embedder, paused)?;
+        if routed > 0 {
+            return Ok(routed);
         }
-        Ok(self.parse_jobs(store, embedder, parser, paused)? > 0)
+        self.parse_jobs(store, embedder, parser, paused)
     }
 
     // ------------------------------------------------------------ routing
 
-    /// Look at the next batch of image vectors; returns how many were looked at.
+    /// Look at the next batch of image vectors; returns how many were queued for the parser.
     fn route_pass(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, paused: &AtomicBool) -> Result<usize, String> {
         let cursor: i64 = lock(store).get_setting(SETTING_PARSE_ROUTE_CURSOR).map_err(db)?.and_then(|s| s.parse().ok()).unwrap_or(0);
         let batch = lock(store).image_vectors_after(cursor, ROUTE_BATCH).map_err(db)?;
@@ -120,21 +122,21 @@ impl ParsePass {
             }
         }
         let Some(protos) = self.protos.clone() else { return Ok(0) };
-        let (mut last, mut n) = (cursor, 0usize);
+        let (mut last, mut queued) = (cursor, 0usize);
         for img in &batch {
             if paused.load(Ordering::Relaxed) {
                 break;
             }
             if protos.is_doc(&img.vec) {
                 self.route_doc(store, embedder, &img.hash)?;
+                queued += 1;
             }
             last = img.rowid;
-            n += 1;
         }
         if last != cursor {
             lock(store).set_setting(SETTING_PARSE_ROUTE_CURSOR, Some(&last.to_string())).map_err(db)?;
         }
-        Ok(n)
+        Ok(queued)
     }
 
     /// Queue one document-like image, applying the language gate. An image without OCR text gets
@@ -419,7 +421,7 @@ mod tests {
         }
 
         fn pass(&self, p: &mut ParsePass) -> bool {
-            p.run(&self.store, &self.embedder, &self.parser, &AtomicBool::new(false)).unwrap()
+            p.run(&self.store, &self.embedder, &self.parser, &AtomicBool::new(false)).unwrap() > 0
         }
 
         fn counts(&self) -> ParseCounts {
@@ -459,7 +461,7 @@ mod tests {
         let mut p = pass_with(None);
         // routing found something to do; the queued item is not parsed in the same step
         assert!(e.pass(&mut p));
-        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0 });
+        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 });
         assert_eq!(e.queued(), vec![doc]);
         assert!(!e.queued().contains(&photo));
         assert!(e.cursor().is_some());
@@ -467,7 +469,7 @@ mod tests {
         // second step: nothing new to route, the queued job is parsed
         assert!(e.pass(&mut p));
         assert_eq!(e.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 1, failed: 0 });
+        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
         // nothing left
         assert!(!e.pass(&mut p));
         assert_eq!(e.calls.load(Ordering::SeqCst), 1);
@@ -483,7 +485,7 @@ mod tests {
         let e = env(true, false);
         e.add_image("scan.png", 1, unit(0), Some("Invoice"));
         let paused = AtomicBool::new(true);
-        assert!(!p.run(&e.store, &e.embedder, &e.parser, &paused).unwrap());
+        assert_eq!(p.run(&e.store, &e.embedder, &e.parser, &paused).unwrap(), 0);
         assert_eq!((e.cursor(), e.counts()), (None, ParseCounts::default()));
     }
 
@@ -569,7 +571,7 @@ mod tests {
         e.pass(&mut p); // route
         e.pass(&mut p); // parse
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 1, failed: 0 });
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
         let texts = s.texts_of(&hash).unwrap();
         assert_eq!(texts.len(), 1);
         assert!(texts[0].1.contains("Quarterly Invoice 4471") && texts[0].1.contains("Total due\t1,869.00"), "{:?}", texts);
@@ -596,7 +598,7 @@ mod tests {
         e.pass(&mut p);
         e.pass(&mut p);
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts::default(), "skipped('empty'): not queued, done or failed");
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 0, failed: 0, skipped: 1 }, "skipped('empty'): not queued, done or failed");
         assert_eq!(s.texts_of(&hash).unwrap(), vec![(1, "Invoice kept text".to_string())]);
     }
 
@@ -628,7 +630,7 @@ mod tests {
         }
         for i in 1..=3 {
             assert!(e.pass(&mut p), "attempt {i} counts as progress");
-            let expect = if i < 3 { ParseCounts { queued: 1, done: 0, failed: 0 } } else { ParseCounts { queued: 0, done: 0, failed: 1 } };
+            let expect = if i < 3 { ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 } } else { ParseCounts { queued: 0, done: 0, failed: 1, skipped: 0 } };
             assert_eq!(e.counts(), expect, "after attempt {i}");
         }
         assert_eq!(e.unloads.load(Ordering::SeqCst), 2, "a failed attempt drops the server, the final one does not need to");
@@ -648,7 +650,7 @@ mod tests {
         e.script.lock().unwrap().extend([Err(ParseError::GpuBusy), Err(ParseError::GpuBusy)]);
         assert!(!e.pass(&mut p));
         assert!(e.released.load(Ordering::SeqCst), "release_gpu was called");
-        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0 }, "no attempt was counted");
+        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 }, "no attempt was counted");
         // busy once, free after the release: parsed
         e.script.lock().unwrap().push(Err(ParseError::GpuBusy));
         assert!(e.pass(&mut p));
@@ -665,7 +667,7 @@ mod tests {
         std::fs::remove_file(e.dir.path().join("gone.png")).unwrap();
         std::fs::write(e.dir.path().join("changed.png"), png(9, 9, 77)).unwrap();
         e.pass(&mut p);
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 0, failed: 1 }, "gone: failed; changed: skipped");
+        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 0, failed: 1, skipped: 1 }, "gone: failed; changed: skipped");
         assert_eq!(e.calls.load(Ordering::SeqCst), 0);
         let s = e.store.lock().unwrap();
         assert_eq!(s.texts_of(&gone).unwrap().len(), 1);
@@ -679,7 +681,7 @@ mod tests {
         let mut p = pass_with(None);
         e.pass(&mut p); // route
         let paused = AtomicBool::new(true);
-        assert!(!p.run(&e.store, &e.embedder, &e.parser, &paused).unwrap());
+        assert_eq!(p.run(&e.store, &e.embedder, &e.parser, &paused).unwrap(), 0);
         assert_eq!(e.counts().queued, 1);
         assert_eq!(e.calls.load(Ordering::SeqCst), 0);
     }

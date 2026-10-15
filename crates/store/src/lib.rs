@@ -262,6 +262,8 @@ pub struct ParseCounts {
     pub queued: u64,
     pub done: u64,
     pub failed: u64,
+    /// Skipped by the parser (empty output / unsupported script): their previous text stays.
+    pub skipped: u64,
 }
 
 /// An image vector for the document-image route pass.
@@ -1412,7 +1414,7 @@ impl Store {
         let n = |s: i64| -> Result<u64> {
             Ok(self.conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0))? as u64)
         };
-        Ok(ParseCounts { queued: n(STATE_PENDING)?, done: n(STATE_DONE)?, failed: n(STATE_FAILED)? })
+        Ok(ParseCounts { queued: n(STATE_PENDING)?, done: n(STATE_DONE)?, failed: n(STATE_FAILED)?, skipped: n(STATE_SKIPPED)? })
     }
 
     /// Standalone image vectors (chunk kind `image` without a PDF page in the locator) with a rowid
@@ -2414,7 +2416,7 @@ mod tests {
         }
         let mut s = Store::open(&p, &meta()).unwrap();
         assert!(s.queue_parse("h", 0, "screenshot").unwrap());
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 0, failed: 0 });
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 });
         let v: i64 = s.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, SCHEMA_VERSION);
     }
@@ -2452,7 +2454,7 @@ mod tests {
         s.fail_parse("ho", 0, "boom").unwrap();
         s.skip_parse("hn", 2, "empty").unwrap();
         s.finish_parse("hn", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 1, failed: 1 }, "only the dead one is still queued");
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 1, failed: 1, skipped: 1 }, "only the dead one is still queued");
         assert!(s.next_parse(10).unwrap().is_empty());
     }
 
@@ -2550,7 +2552,7 @@ mod tests {
         let (state, err): (i64, String) =
             s.conn.query_row("SELECT state, error FROM parse_queue WHERE hash = 'h'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
         assert_eq!((state, err.as_str()), (STATE_SKIPPED, "script"));
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts::default());
+        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 0, failed: 0, skipped: 1 });
     }
 
     #[test]

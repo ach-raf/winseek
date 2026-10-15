@@ -100,6 +100,8 @@ pub struct ParserQueueDto {
     pub queued: u64,
     pub done: u64,
     pub failed: u64,
+    /// Skipped by the parser (empty output / unsupported script); their previous text stays.
+    pub skipped: u64,
 }
 
 /// What decides which images go to the parser (measured with `winseek-eval route`, see `tier1::route`).
@@ -121,6 +123,10 @@ pub struct ParserDto {
     pub files: Vec<ModelFileDto>,
     pub server: ServerDto,
     pub queue: ParserQueueDto,
+    /// Pages per second over the last minute of parsing (null when the parser was not recently working).
+    pub rate: Option<f64>,
+    /// Seconds until the parse queue drains at that rate (null when idle or unknown).
+    pub eta_s: Option<u64>,
     /// "low" | "balanced" | "fast"
     pub profile: &'static str,
     pub routing: RoutingDto,
@@ -133,6 +139,8 @@ pub struct ParserState {
     pub counts: ParseCounts,
     pub profile: Profile,
     pub present: bool,
+    /// Pages per second over the last minute of parsing.
+    pub rate: Option<f64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -314,7 +322,9 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
             unload_in_s: p.rt.unload_in_s,
             idle_unload_s: parser::IDLE_UNLOAD.as_secs(),
         },
-        queue: ParserQueueDto { queued: p.counts.queued, done: p.counts.done, failed: p.counts.failed },
+        queue: ParserQueueDto { queued: p.counts.queued, done: p.counts.done, failed: p.counts.failed, skipped: p.counts.skipped },
+        rate: p.rate,
+        eta_s: eta_secs(p.counts.queued, p.rate),
         profile: p.profile.as_str(),
         routing: RoutingDto {
             doc_min: route::DOC_MIN,
@@ -340,7 +350,13 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
         let rt = worker.as_ref().map(|t| t.runtime_info()).unwrap_or_default();
         let parser = worker
             .as_ref()
-            .map(|t| ParserState { rt: t.parser_runtime(), counts: t.parse_counts(), profile: t.profile(), present: t.parser_present() })
+            .map(|t| ParserState {
+                rt: t.parser_runtime(),
+                counts: t.parse_counts(),
+                profile: t.profile(),
+                present: t.parser_present(),
+                rate: t.parse_rate(),
+            })
             .unwrap_or_default();
         let det = app.state::<Models>().detected();
         let root = tier1::data_root();
@@ -568,6 +584,8 @@ mod tests {
         assert_eq!(v["models"]["server"]["idle_unload_s"], 120);
         assert_eq!(v["models"]["parser"]["model_id"], "infinity-parser2-flash");
         assert_eq!(v["models"]["parser"]["queue"]["queued"], 0);
+        assert_eq!(v["models"]["parser"]["queue"]["skipped"], 0);
+        assert!(v["models"]["parser"]["rate"].is_null() && v["models"]["parser"]["eta_s"].is_null());
         assert_eq!(v["models"]["parser"]["profile"], "balanced");
         assert_eq!(v["models"]["parser"]["routing"]["provisional"], false);
     }
@@ -580,9 +598,10 @@ mod tests {
         std::fs::create_dir_all(&models).unwrap();
         let state = ParserState {
             rt: RuntimeInfo { running: true, port: Some(9001), unload_in_s: Some(42) },
-            counts: ParseCounts { queued: 7, done: 3, failed: 1 },
+            counts: ParseCounts { queued: 7, done: 3, failed: 1, skipped: 2 },
             profile: Profile::Fast,
             present: false,
+            rate: Some(0.25),
         };
         let none = parser_section(Some(dir.path()), &man, state.clone());
         assert_eq!(none.files.len(), 2);
@@ -593,7 +612,8 @@ mod tests {
             (none.server.running, none.server.port, none.server.unload_in_s, none.server.idle_unload_s),
             (true, Some(9001), Some(42), 120)
         );
-        assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1 });
+        assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1, skipped: 2 });
+        assert_eq!((none.rate, none.eta_s), (Some(0.25), Some(28)), "7 queued pages at 0.25 pages/s");
         assert_eq!((none.profile, none.present), ("fast", false));
         assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.60, 0.04, 200));
         assert!(!none.routing.provisional, "measured with winseek-eval route");

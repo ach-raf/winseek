@@ -82,6 +82,8 @@ pub struct Tier1 {
     last_recovery: Mutex<Option<Instant>>,
     /// Rolling completed-files rate for the status page (fed by the worker loop).
     throughput: Mutex<progress::Throughput>,
+    /// Rolling parsed-pages rate for the status page (fed by the worker loop, parse passes only).
+    parse_throughput: Mutex<progress::Throughput>,
     /// Last known embedding-server state (the embedder lock is held for whole passes).
     runtime: Mutex<RuntimeInfo>,
     /// Mean embedding of the generic hub prompts (relevance calibration), per query model.
@@ -253,6 +255,7 @@ impl Tier1 {
             last_error: Mutex::new(None),
             last_recovery: Mutex::new(None),
             throughput: Mutex::new(progress::Throughput::default()),
+            parse_throughput: Mutex::new(progress::Throughput::default()),
             runtime: Mutex::new(RuntimeInfo::default()),
             hub: Mutex::new(None),
         })
@@ -420,6 +423,11 @@ impl Tier1 {
         lock(&self.throughput).rate(std::time::Instant::now())
     }
 
+    /// Pages per second over the last minute of parsing, `None` when the parser was not recently working.
+    pub fn parse_rate(&self) -> Option<f64> {
+        lock(&self.parse_throughput).rate(std::time::Instant::now())
+    }
+
     /// Embedding-server state without waiting for a running pass: while the embedder is busy
     /// the server is by definition up, so the last known port is reused.
     pub fn runtime_info(&self) -> RuntimeInfo {
@@ -535,6 +543,7 @@ impl Tier1 {
     fn restart_indexing(&self) {
         *lock(&self.last_error) = None;
         lock(&self.throughput).clear();
+        lock(&self.parse_throughput).clear();
         {
             let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
             snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
@@ -761,15 +770,16 @@ fn worker_loop(t: Arc<Tier1>) {
             match proc.run_upgrade_pass(&t.store, &t.embedder, &t.paused) {
                 Ok(Pass::Idle) => match proc.run_pass(&t.store, &t.embedder, &t.paused) {
                     // The embed queue is empty: route images to the document parser / parse queued items.
-                    Ok(Pass::Idle) => match parse_pass.run(&t.store, &t.embedder, &t.parser, &t.paused) {
-                        Ok(true) => {
-                            t.state.store(ST_INDEXING, Ordering::Relaxed);
-                            *lock(&t.last_error) = None;
-                            continue;
-                        }
-                        Ok(false) => Ok(Pass::Idle),
-                        Err(msg) => Err(msg),
-                    },
+                Ok(Pass::Idle) => match parse_pass.run(&t.store, &t.embedder, &t.parser, &t.paused) {
+                    Ok(n) if n > 0 => {
+                        lock(&t.parse_throughput).record(started, std::time::Instant::now(), n);
+                        t.state.store(ST_INDEXING, Ordering::Relaxed);
+                        *lock(&t.last_error) = None;
+                        continue;
+                    }
+                    Ok(_) => Ok(Pass::Idle),
+                    Err(msg) => Err(msg),
+                },
                     other => other,
                 },
                 other => other,
