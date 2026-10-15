@@ -78,7 +78,11 @@ export interface PlanItem {
   present: boolean;
   /** Not part of the default setup (the document parser): offered as a checkbox, not counted in the total. */
   optional?: boolean;
+  /** Which Settings row (component) the item belongs to. */
+  group: ModelGroup;
 }
+/** One component of search by meaning: the llama.cpp build, the embedding model, pdfium, the optional parser. */
+export type ModelGroup = "llama" | "embedder" | "pdfium" | "parser";
 /** Tier 1 ignore list: folder/file names skipped anywhere inside the indexed folders. */
 export interface IgnoreList {
   list: string[];
@@ -333,8 +337,9 @@ export interface Backend {
   /** Resolves to the state after the change. */
   autostartSet(on: boolean): Promise<boolean>;
   modelsPlan(): Promise<ModelsPlan>;
-  /** Starts the background download (`includeParser`: also the optional document parser); progress arrives via onModelsProgress / onModelsDone. */
-  modelsDownload(includeParser?: boolean): Promise<void>;
+  /** Starts the background download (`includeParser`: also the optional document parser; `groups`: only these
+   *  components, as a Settings row asks); progress arrives via onModelsProgress / onModelsDone. */
+  modelsDownload(includeParser?: boolean, groups?: ModelGroup[]): Promise<void>;
   /** Aborts but keeps partial files; a later modelsDownload resumes. */
   modelsCancel(): Promise<void>;
   onModelsProgress(cb: (p: ModelsProgress) => void): Promise<() => void>;

@@ -69,7 +69,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     autostartGet: () => inv<boolean>("autostart_get"),
     autostartSet: (on) => inv<boolean>("autostart_set", { on }),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
-    modelsDownload: (includeParser) => inv("models_download", { includeParser: !!includeParser }),
+    modelsDownload: (includeParser, groups) => inv("models_download", { includeParser: !!includeParser, groups: groups ?? null }),
     modelsCancel: () => inv("models_cancel"),
     onModelsProgress: (cb) => t.event.listen<ModelsProgress>("models-progress", (e) => cb(e.payload)),
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),

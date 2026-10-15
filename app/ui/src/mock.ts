@@ -1,7 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -77,26 +77,29 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 // ---- search-by-meaning simulation ----
 // query: ?models=1 (models already installed, indexing runs), ?dlfail=1 (first download attempt fails at ~60%),
 // ?unavailable=1 (Tier 1 store failed to open), ?battery=1 / ?fullscreen=1 (indexing auto-paused),
-// ?gpu=vulkan|cpu (default: NVIDIA / CUDA)
+// ?gpu=vulkan|cpu (default: NVIDIA / CUDA), ?missing=llama,embedder,pdfium (with ?models=1: these parts are not
+// installed, so Settings offers their download buttons)
 const T1_FILES = 3880;
 const T1_RATE = 120; // files per second once indexing runs
 const TEXT_ONLY = 412; // documents + PDFs already searchable by text while the models are missing
 const gpuParam = params.get("gpu");
 const MOCK_BACKEND: ModelsPlan["backend"] = gpuParam === "cpu" ? "cpu" : gpuParam === "vulkan" ? "vulkan" : "cuda12";
-const MOCK_ITEMS: { name: string; bytes: number | null; real: number }[] = [
-  { name: `llama.cpp b11588 (${MOCK_BACKEND === "cuda12" ? "CUDA 12" : MOCK_BACKEND === "vulkan" ? "Vulkan" : "CPU"})`, bytes: null, real: MOCK_BACKEND === "cuda12" ? 210e6 : 40e6 },
-  ...(MOCK_BACKEND === "cuda12" ? [{ name: "CUDA runtime libraries", bytes: null, real: 370e6 }] : []),
-  { name: "EmbeddingGemma-2 model", bytes: 309855456, real: 309855456 },
-  { name: "EmbeddingGemma-2 vision projector", bytes: 554821024, real: 554821024 },
-  { name: "PDF engine (pdfium 7881)", bytes: 3733154, real: 3733154 },
+type MockItem = { name: string; bytes: number | null; real: number; group: ModelGroup };
+const MOCK_ITEMS: MockItem[] = [
+  { name: `llama.cpp b11588 (${MOCK_BACKEND === "cuda12" ? "CUDA 12" : MOCK_BACKEND === "vulkan" ? "Vulkan" : "CPU"})`, bytes: null, real: MOCK_BACKEND === "cuda12" ? 210e6 : 40e6, group: "llama" },
+  ...(MOCK_BACKEND === "cuda12" ? [{ name: "CUDA runtime libraries", bytes: null, real: 370e6, group: "llama" as const }] : []),
+  { name: "EmbeddingGemma-2 model", bytes: 309855456, real: 309855456, group: "embedder" },
+  { name: "EmbeddingGemma-2 vision projector", bytes: 554821024, real: 554821024, group: "embedder" },
+  { name: "PDF engine (pdfium 7881)", bytes: 3733154, real: 3733154, group: "pdfium" },
 ];
 // Optional document parser (Infinity-Parser2). ?parser=0: not installed, so the preview shows the disabled item
 // and Setup offers the download.
-const PARSER_ITEMS: { name: string; bytes: number | null; real: number }[] = [
-  { name: "Document parser model", bytes: 1274396736, real: 1274396736 },
-  { name: "Document parser vision projector", bytes: 336000000, real: 336000000 },
+const PARSER_ITEMS: MockItem[] = [
+  { name: "Document parser model", bytes: 1274396736, real: 1274396736, group: "parser" },
+  { name: "Document parser vision projector", bytes: 336000000, real: 336000000, group: "parser" },
 ];
-let parserInstalled = params.get("parser") !== "0";
+const missingParam = new Set((params.get("missing") ?? "").split(",").filter(Boolean));
+const parserInstalled = params.get("parser") !== "0" && !missingParam.has("parser");
 let lastParseAt: number | null = null; // when the parser server was last used (it unloads after IDLE_UNLOAD_S)
 let mockProfile: Profile = "balanced";
 let modelsInstalled = params.get("models") === "1";
@@ -123,15 +126,22 @@ let indexed = 0;
 let indexTick = performance.now();
 
 const itemHave = (i: { name: string; real: number }) => (dlDone[i.name] ?? 0) >= i.real;
-const parserHave = () => parserInstalled || PARSER_ITEMS.every(itemHave);
-// ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there.
-const pdfiumHave = () => params.get("pdfium") !== "0" || modelsInstalled || itemHave(MOCK_ITEMS[MOCK_ITEMS.length - 1]);
+// Installed parts start out "downloaded": ?models=1 everything but ?missing=…, the parser unless ?parser=0.
+for (const i of MOCK_ITEMS) if (modelsInstalled && !missingParam.has(i.group) && !(i.group === "pdfium" && params.get("pdfium") === "0")) dlDone[i.name] = i.real;
+if (parserInstalled) for (const i of PARSER_ITEMS) dlDone[i.name] = i.real;
+/** Search by meaning runs once the llama build and the embedding model are there. */
+const coreHave = () => MOCK_ITEMS.filter((i) => i.group !== "pdfium").every(itemHave);
+modelsInstalled = coreHave();
+const groupHave = (g: ModelGroup) => [...MOCK_ITEMS, ...PARSER_ITEMS].filter((i) => i.group === g).every(itemHave);
+const parserHave = () => groupHave("parser");
+// ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there (first run included).
+const pdfiumHave = () => groupHave("pdfium") || (!modelsInstalled && params.get("pdfium") !== "0" && !missingParam.has("pdfium"));
 
-async function runDownload(withParser: boolean) {
+async function runDownload(groups: ModelGroup[]) {
   dlRunning = true;
   dlCancel = false;
-  // Only what is missing is downloaded: the base items unless already installed, the parser only when asked for.
-  const items = [...(modelsInstalled ? [] : MOCK_ITEMS), ...(withParser && !parserHave() ? PARSER_ITEMS : [])];
+  // Only what is missing in the asked-for parts is downloaded.
+  const items = [...MOCK_ITEMS, ...PARSER_ITEMS].filter((i) => groups.includes(i.group) && !itemHave(i));
   const all = items.reduce((a, i) => a + i.real, 0);
   const fail = (error: string) => { dlRunning = false; doneCbs.forEach((f) => f({ ok: false, error })); };
   for (const item of items) {
@@ -144,8 +154,7 @@ async function runDownload(withParser: boolean) {
       if (dlFailOnce && got / all > 0.6) { dlFailOnce = false; return fail("stalled: no data for 20s at 612345678 bytes"); }
     }
   }
-  modelsInstalled = true;
-  if (withParser) parserInstalled = true;
+  modelsInstalled = coreHave();
   indexTick = performance.now();
   dlRunning = false;
   doneCbs.forEach((f) => f({ ok: true, error: null }));
@@ -221,7 +230,7 @@ function mockStatusPage(): StatusPage {
   const denom = s ? s.done + s.pending + s.text_only + failed : 0;
   const idleFor = lastEmbedAt === null ? Infinity : (now - lastEmbedAt) / 1000;
   const running = modelsInstalled && t1.state !== "unavailable" && idleFor < IDLE_UNLOAD_S;
-  const bytes = (expected: number, name: string) => (modelsInstalled || (dlDone[name] ?? 0) >= expected ? expected : null);
+  const bytes = (expected: number, name: string) => ((dlDone[name] ?? 0) >= expected ? expected : null);
   return {
     tier0: {
       source,
@@ -247,7 +256,7 @@ function mockStatusPage(): StatusPage {
       llama_build: "b11588",
       backend: MOCK_BACKEND,
       gpu: MOCK_BACKEND === "cuda12" ? "NVIDIA GeForce RTX 4070" : MOCK_BACKEND === "vulkan" ? "AMD Radeon RX 6600" : null,
-      llama_present: modelsInstalled || MOCK_ITEMS.filter((i) => i.name.startsWith("llama.cpp")).every(itemHave),
+      llama_present: groupHave("llama"),
       model_id: "embeddinggemma-2",
       profile: "default",
       quant: "Q8_0",
@@ -638,8 +647,8 @@ export const mockBackend: Backend = {
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
     const items: ModelsPlan["items"] = [
-      ...MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: modelsInstalled || itemHave(i) })),
-      ...PARSER_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: parserHave(), optional: true })),
+      ...MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: itemHave(i), group: i.group })),
+      ...PARSER_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: itemHave(i), optional: true, group: i.group })),
     ];
     return {
       backend: MOCK_BACKEND,
@@ -651,9 +660,9 @@ export const mockBackend: Backend = {
       downloading: dlRunning,
     };
   },
-  async modelsDownload(includeParser) {
+  async modelsDownload(includeParser, groups) {
     if (dlRunning) throw new Error("A download is already running");
-    void runDownload(!!includeParser);
+    void runDownload(groups ?? ["llama", "embedder", "pdfium", ...(includeParser ? ["parser" as const] : [])]);
   },
   async modelsCancel() { dlCancel = true; },
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },

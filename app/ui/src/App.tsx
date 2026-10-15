@@ -799,7 +799,7 @@ export default function App({ backend }: { backend: Backend }) {
       {showPanel && (statusOpen ? (
         <Status backend={backend} onClose={closeStatus} onError={fail} />
       ) : settingsOpen ? (
-        <Settings backend={backend} t1={t1} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onStatus={openStatus} onClose={closeSettings} onError={fail} />
+        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onSetup={openSetup} onStatus={openStatus} onClose={closeSettings} onError={fail} />
       ) : setupOpen ? (
         <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
       ) : (

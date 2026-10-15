@@ -5,14 +5,15 @@
 //!
 //! `models_plan` shows sizes up front; `models_download` runs in a background thread and emits
 //! `models-progress` / `models-done` events; `models_cancel` aborts but keeps `.part` files, so
-//! the next `models_download` resumes.
+//! the next `models_download` resumes. Settings fetches one component at a time (`groups`), which
+//! is also how a failed automatic download is retried and the parser added after the first run.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use winseek_llama::import::{configured_dirs, import_file};
 use winseek_llama::install::{install_llama_with, install_pdfium_with, resolve_exe};
@@ -26,6 +27,19 @@ use crate::tier1::{self, embedder, parser, pdf};
 /// Progress events are throttled to about 10 per second.
 pub const EMIT_EVERY: Duration = Duration::from_millis(100);
 
+/// The component a plan item belongs to: Settings shows one row, and one download button, per group.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Group {
+    Llama,
+    Embedder,
+    Pdfium,
+    Parser,
+}
+
+/// What the first-run download fetches (everything but the optional parser).
+pub const DEFAULT_GROUPS: [Group; 3] = [Group::Llama, Group::Embedder, Group::Pdfium];
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct PlanItem {
     pub name: String,
@@ -35,6 +49,7 @@ pub struct PlanItem {
     /// Not part of the default setup (the document parser): the UI offers it as a checkbox, and it is
     /// left out of `total_bytes_missing`.
     pub optional: bool,
+    pub group: Group,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,7 +113,10 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
     if let Some(asset) = manifest.asset(backend) {
         let present = resolve_exe(root, manifest, backend).is_some();
         let mut push = |name: String, url: &str, bytes: Option<u64>| {
-            out.push(Job { item: PlanItem { name, bytes, present, optional: false }, source: Source::Llama { file: zip_name(url) } });
+            out.push(Job {
+                item: PlanItem { name, bytes, present, optional: false, group: Group::Llama },
+                source: Source::Llama { file: zip_name(url) },
+            });
         };
         push(format!("llama.cpp {} ({})", manifest.llama.build, backend_label(backend)), &asset.url, asset.size);
         for e in &asset.extra {
@@ -113,7 +131,13 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
                 ModelRole::Mmproj => "EmbeddingGemma-2 vision projector",
             };
             out.push(Job {
-                item: PlanItem { name: name.into(), bytes: Some(f.size), present: dir.join(f.file_name()).is_file(), optional: false },
+                item: PlanItem {
+                    name: name.into(),
+                    bytes: Some(f.size),
+                    present: dir.join(f.file_name()).is_file(),
+                    optional: false,
+                    group: Group::Embedder,
+                },
                 source: Source::Model(f.clone()),
             });
         }
@@ -125,6 +149,7 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
             bytes: Some(pd.size),
             present: pdf::locate_dll_in(std::env::var_os(pdf::ENV_PDFIUM).as_deref(), Some(root), manifest).is_some(),
             optional: false,
+            group: Group::Pdfium,
         },
         source: Source::Pdfium { file: zip_name(&pd.url) },
     });
@@ -136,7 +161,13 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
                 ModelRole::Mmproj => "Document parser vision projector",
             };
             out.push(Job {
-                item: PlanItem { name: name.into(), bytes: Some(f.size), present: dir.join(f.file_name()).is_file(), optional: true },
+                item: PlanItem {
+                    name: name.into(),
+                    bytes: Some(f.size),
+                    present: dir.join(f.file_name()).is_file(),
+                    optional: true,
+                    group: Group::Parser,
+                },
                 source: Source::Model(f.clone()),
             });
         }
@@ -221,8 +252,8 @@ fn locked<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Install the llama build and fetch the missing model files under `root`; the optional document
-/// parser only with `include_parser`. Blocking. `opts.cancel` aborts with `Err("cancelled")`; partial
+/// Install / fetch whatever is missing of `groups` under `root` (the first run: [`DEFAULT_GROUPS`];
+/// the optional document parser only when [`Group::Parser`] is listed). Blocking. `opts.cancel` aborts with `Err("cancelled")`; partial
 /// files stay for the next call. A pinned file found (same name + sha256) under one of `import`
 /// is linked / copied instead of downloaded (dev machines, see `winseek_llama::import`).
 #[allow(clippy::too_many_arguments)]
@@ -230,13 +261,13 @@ pub fn run_download(
     root: &Path,
     manifest: &Manifest,
     backend: Backend,
-    include_parser: bool,
+    groups: &[Group],
     import: &[PathBuf],
     opts: &FetchOptions,
     emit_every: Duration,
     emit: &mut dyn FnMut(ProgressEvent),
 ) -> Result<(), String> {
-    let jobs: Vec<Job> = jobs(root, manifest, backend).into_iter().filter(|j| include_parser || !j.item.optional).collect();
+    let jobs: Vec<Job> = jobs(root, manifest, backend).into_iter().filter(|j| groups.contains(&j.item.group)).collect();
     let plan_items: Vec<PlanItem> = jobs.iter().map(|j| j.item.clone()).collect();
     let tracker = Mutex::new(Tracker::new(&plan_items));
     let throttle = Mutex::new(Throttle { every: emit_every, last: None });
@@ -391,8 +422,11 @@ pub async fn models_plan(m: State<'_, Models>) -> Result<Plan, String> {
     .map_err(|e| e.to_string())?
 }
 
-/// Start the background download (one at a time). `include_parser`: also fetch the optional document parser.
-pub fn start_download(app: &AppHandle, include_parser: bool) -> Result<(), String> {
+/// Start the background download of what is missing in `groups` (one download at a time).
+pub fn start_download(app: &AppHandle, groups: Vec<Group>) -> Result<(), String> {
+    if groups.is_empty() {
+        return Err("Nothing to download".into());
+    }
     let m = app.state::<Models>();
     let root = tier1::data_root().ok_or("LOCALAPPDATA is not set")?;
     if m.running.swap(true, Ordering::SeqCst) {
@@ -407,10 +441,13 @@ pub fn start_download(app: &AppHandle, include_parser: bool) -> Result<(), Strin
         let backend = detect_cached(&slot).backend;
         let opts = FetchOptions { cancel: Some(cancel), ..FetchOptions::default() };
         let import = configured_dirs(&root);
-        let r = run_download(&root, &Manifest::embedded(), backend, include_parser, &import, &opts, EMIT_EVERY, &mut |ev| {
+        let r = run_download(&root, &Manifest::embedded(), backend, &groups, &import, &opts, EMIT_EVERY, &mut |ev| {
             let _ = app.emit("models-progress", ev);
         });
         if r.is_ok() {
+            if groups.contains(&Group::Pdfium) {
+                *locked(&PDFIUM_FAILED_AT) = None;
+            }
             if let Some(t) = &worker {
                 t.kick(); // leave models_missing now instead of at the next 30 s poll
             }
@@ -421,9 +458,21 @@ pub fn start_download(app: &AppHandle, include_parser: bool) -> Result<(), Strin
     spawned.map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// `groups`: only these components (a Settings row); otherwise the default set, plus the parser with
+/// `include_parser` (the Setup panel).
 #[tauri::command]
-pub fn models_download(app: AppHandle, include_parser: Option<bool>) -> Result<(), String> {
-    start_download(&app, include_parser.unwrap_or(false))
+pub fn models_download(app: AppHandle, include_parser: Option<bool>, groups: Option<Vec<Group>>) -> Result<(), String> {
+    start_download(&app, pick_groups(include_parser.unwrap_or(false), groups))
+}
+
+fn pick_groups(include_parser: bool, groups: Option<Vec<Group>>) -> Vec<Group> {
+    groups.unwrap_or_else(|| {
+        let mut g = DEFAULT_GROUPS.to_vec();
+        if include_parser {
+            g.push(Group::Parser);
+        }
+        g
+    })
 }
 
 /// Zero-setup first run: when the default Tier 1 set (llama build, EmbeddingGemma-2, pdfium) is
@@ -438,7 +487,7 @@ pub fn auto_download(app: AppHandle) {
         if !needs_download(&plan) {
             return;
         }
-        if let Err(e) = start_download(&app, false) {
+        if let Err(e) = start_download(&app, DEFAULT_GROUPS.to_vec()) {
             eprintln!("winseek: automatic model download not started: {e}");
         }
     });
@@ -527,9 +576,9 @@ mod tests {
     #[test]
     fn tracker_overall_counts_only_missing_items() {
         let items = vec![
-            PlanItem { name: "zip".into(), bytes: None, present: false, optional: false },
-            PlanItem { name: "have".into(), bytes: Some(500), present: true, optional: false },
-            PlanItem { name: "model".into(), bytes: Some(1000), present: false, optional: false },
+            PlanItem { name: "zip".into(), bytes: None, present: false, optional: false, group: Group::Llama },
+            PlanItem { name: "have".into(), bytes: Some(500), present: true, optional: false, group: Group::Embedder },
+            PlanItem { name: "model".into(), bytes: Some(1000), present: false, optional: false, group: Group::Embedder },
         ];
         let mut t = Tracker::new(&items);
         let e = t.update("zip", Progress { downloaded: 50, total: Some(200) });
@@ -634,7 +683,7 @@ mod tests {
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
@@ -649,7 +698,7 @@ mod tests {
         assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model") && evs.iter().any(|e| e.item.ends_with("projector")));
         // already present -> nothing to do (no server left to answer)
         let mut n = 0;
-        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
         assert_eq!(n, 0);
     }
 
@@ -661,7 +710,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
-        let r = run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
+        let r = run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
             if e.downloaded > 0 {
                 f2.store(true, Ordering::SeqCst);
             }
@@ -674,7 +723,7 @@ mod tests {
         assert!(Path::new(&part).is_file());
         // resume: this server ignores Range and restarts, which fetch handles
         flag.store(false, Ordering::SeqCst);
-        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
     }
@@ -692,7 +741,7 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
         let import = vec![src.path().to_path_buf()];
-        run_download(d.path(), &man, Backend::Cpu, false, &import, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &import, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert_eq!((std::fs::read(m).unwrap(), std::fs::read(p).unwrap()), (a, b));
         assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model" && e.downloaded == 4000));
@@ -716,8 +765,49 @@ mod tests {
         let base = serve(vec![], 1);
         let man = test_manifest(&base, b"a", b"b");
         let d = tempfile::tempdir().unwrap();
-        let r = run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| {});
+        let r = run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| {});
         assert!(r.unwrap_err().contains("404"));
+    }
+
+    #[test]
+    fn plan_items_carry_their_group() {
+        let d = tempfile::tempdir().unwrap();
+        let p = build_plan(d.path(), &Manifest::embedded(), &det(Backend::Cuda12), false);
+        let groups: Vec<_> = p.items.iter().map(|i| i.group).collect();
+        use Group::*;
+        assert_eq!(groups, [Llama, Llama, Embedder, Embedder, Pdfium, Parser, Parser]);
+        assert!(p.items.iter().all(|i| i.optional == (i.group == Parser)));
+        assert_eq!(serde_json::to_value(&p.items[4]).unwrap()["group"], "pdfium");
+        assert_eq!(serde_json::from_str::<Vec<Group>>(r#"["embedder","parser"]"#).unwrap(), [Embedder, Parser]);
+    }
+
+    #[test]
+    fn pick_groups_defaults_to_first_run_set() {
+        assert_eq!(pick_groups(false, None), DEFAULT_GROUPS);
+        assert_eq!(pick_groups(true, None), [Group::Llama, Group::Embedder, Group::Pdfium, Group::Parser]);
+        assert_eq!(pick_groups(true, Some(vec![Group::Pdfium])), [Group::Pdfium], "a Settings row fetches only its own part");
+    }
+
+    #[test]
+    fn one_group_alone_and_retry_after_failure() {
+        let (a, b) = (vec![7u8; 1000], vec![9u8; 500]);
+        let d = tempfile::tempdir().unwrap();
+        // first attempt: the server has nothing -> error, nothing installed
+        let down = serve(vec![], 1);
+        let r = run_download(d.path(), &test_manifest(&down, &a, &b), Backend::Cpu, &[Group::Pdfium], &[], &quick(None), Duration::ZERO, &mut |_| {});
+        assert!(r.unwrap_err().contains("404"));
+        // retry (same root, the server is back): only pdfium is fetched, the models stay missing
+        let up = serve(vec![("/pdfium.tgz", pdfium_tgz())], 1);
+        let man = test_manifest(&up, &a, &b);
+        let mut evs = Vec::new();
+        run_download(d.path(), &man, Backend::Cpu, &[Group::Pdfium], &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        assert!(winseek_llama::install::pdfium_path(d.path(), &man.pdfium).is_file());
+        assert!(evs.iter().all(|e| e.item == "PDF engine (pdfium 7881)"), "progress names only the requested part");
+        let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
+        assert!(!m.exists() && !p.exists());
+        let plan = build_plan(d.path(), &man, &det(Backend::Cpu), false);
+        let present: Vec<_> = plan.items.iter().map(|i| (i.group, i.present)).collect();
+        assert_eq!(present, [(Group::Embedder, false), (Group::Embedder, false), (Group::Pdfium, true)]);
     }
 
     #[test]
@@ -741,11 +831,11 @@ mod tests {
             files: vec![file(ModelRole::Model, "pm.gguf", &pm), file(ModelRole::Mmproj, "pp.gguf", &pp)],
         });
         let d = tempfile::tempdir().unwrap();
-        run_download(d.path(), &man, Backend::Cpu, false, &[], &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
         let (m, p) = parser::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert!(!m.exists() && !p.exists(), "the parser is off by default");
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, true, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(d.path(), &man, Backend::Cpu, &[Group::Parser], &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
         assert_eq!(std::fs::read(&m).unwrap(), pm);
         assert_eq!(std::fs::read(&p).unwrap(), pp);
         let last = evs.last().unwrap();

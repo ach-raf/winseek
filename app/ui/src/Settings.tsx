@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, IgnoreList, Profile, StatusModels, Tier1Status } from "./types";
+import type { Backend, IgnoreList, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
+import type { Models } from "./hooks";
+import { rowAction, type RowAction } from "./modelRows";
 import { Bar, useStatusPage } from "./Status";
 import { formatDuration, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
@@ -153,21 +155,59 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
 const engineName = (m: StatusModels) =>
   m.backend === "cpu" ? "the processor" : `${m.gpu ?? "the graphics card"} (${m.backend === "cuda12" ? "CUDA" : "Vulkan"})`;
 
-function ModelLine({ ok, name, detail, children }: { ok: boolean | null; name: string; detail?: string; children: React.ReactNode }) {
+/** One component: installed status, or what can be done about it (download, progress, retry). */
+function ModelLine({ name, detail, act, optional, label, onGet, onCancel, children }: {
+  name: string; detail?: string; act: RowAction;
+  /** Missing is fine (pdfium arrives with the first PDF, the parser is an extra): no warning mark. */
+  optional?: boolean;
+  /** Button verb: "Download" or "Install". */
+  label: string;
+  onGet: () => void; onCancel: () => void; children: React.ReactNode;
+}) {
+  const ok = act.kind === "installed" ? true : optional ? null : false;
+  const size = (b: number | null) => (b != null ? ` · ${formatSize(b)}` : "");
+  const paused = act.kind === "failed" && act.error === "cancelled";
   return (
     <li className={ok === true ? "ok" : ok === false ? "miss" : "opt"}>
       <span className="mi" aria-hidden>{ok === true ? "✓" : ok === false ? "!" : "–"}</span>
       <span className="mn"><b>{name}</b>{detail && <span className="muted"> · {detail}</span>}</span>
-      <span className="ms">{children}</span>
+      <span className="ms">
+        {act.kind === "installed" ? children
+          : act.kind === "downloading" ? (
+            <>
+              <span className="nums">{act.total > 0 ? `${formatSize(act.got)} of ${formatSize(act.total)}` : "Starting…"}</span>
+              <button className="btn quiet sm" onClick={onCancel}>Cancel</button>
+            </>
+          ) : act.kind === "waiting" ? <span className="muted">Waiting for the current download</span>
+          : act.kind === "failed" ? (
+            <button className="btn quiet sm" onClick={onGet}>{paused ? "Resume" : "Retry"}{size(act.bytes)}</button>
+          ) : (
+            <>
+              <span className="muted">{children}</span>
+              <button className="btn quiet sm" onClick={onGet}>{label}{size(act.bytes)}</button>
+            </>
+          )}
+      </span>
+      {act.kind === "downloading" && <div className="ml-sub"><Bar value={act.frac} label={`Downloading ${name}`} /></div>}
+      {act.kind === "failed" && (
+        <div className={"ml-sub " + (paused ? "muted" : "fr-error")} role={paused ? "status" : "alert"}>
+          {paused ? "Download paused. Resume continues where it stopped." : `Download failed: ${act.error}. Retry continues where it stopped.`}
+        </div>
+      )}
     </li>
   );
 }
 
 /** Search by meaning at a glance: what it is doing, how fast, and which models are installed / loaded. */
-function Meaning({ backend, t1, onPause, onSetup }: {
-  backend: Backend; t1: Tier1Status | null; onPause: (p: boolean) => void; onSetup: () => void;
+function Meaning({ backend, t1, models, onPause, onSetup }: {
+  backend: Backend; t1: Tier1Status | null; models: Models; onPause: (p: boolean) => void; onSetup: () => void;
 }) {
-  const [page] = useStatusPage(backend);
+  const [page, , reload] = useStatusPage(backend);
+  const { refreshPlan, running } = models;
+  useEffect(() => { refreshPlan(); }, [refreshPlan]);
+  // A download that ends (or fails) shows its result right away, not at the next status poll.
+  const wasRunning = useRef(running);
+  useEffect(() => { if (wasRunning.current && !running) reload(); wasRunning.current = running; }, [running, reload]);
   const st = page?.tier1;
   const m = page?.models;
   const s = st?.stats ?? t1?.stats;
@@ -185,6 +225,8 @@ function Meaning({ backend, t1, onPause, onSetup }: {
   const embedOk = files.length > 0 && files.every((f) => f.bytes != null && f.bytes === f.expected_bytes);
   const embedSize = files.reduce((a, f) => a + (f.bytes ?? 0), 0);
   const sv = m?.server;
+  const act = (g: ModelGroup, installed: boolean) => rowAction(g, installed, models);
+  const get = (g: ModelGroup) => () => models.start(g === "parser", [g]);
   return (
     <div className="meaning" aria-label="Search by meaning">
       <div className="set-row">
@@ -212,19 +254,23 @@ function Meaning({ backend, t1, onPause, onSetup }: {
       )}
       {m && (
         <ul className="models" aria-label="Models">
-          <ModelLine ok={embedOk} name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}>
+          <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
+                     act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
             {!embedOk ? "Not downloaded"
               : sv?.running ? `Loaded on ${engineName(m)}`
               : `Installed · loads on ${engineName(m)} when there is work`}
           </ModelLine>
-          <ModelLine ok={m.llama_present} name="llama.cpp" detail={m.llama_build}>
+          <ModelLine name="llama.cpp" detail={m.llama_build}
+                     act={act("llama", m.llama_present)} label="Download" onGet={get("llama")} onCancel={models.cancel}>
             {m.llama_present ? `Installed · ${m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU"}` : "Not downloaded"}
           </ModelLine>
-          <ModelLine ok={m.pdfium.present ? true : null} name="PDF reader" detail={`pdfium ${m.pdfium.build}`}>
+          <ModelLine name="PDF reader" detail={`pdfium ${m.pdfium.build}`} optional
+                     act={act("pdfium", m.pdfium.present)} label="Download" onGet={get("pdfium")} onCancel={models.cancel}>
             {m.pdfium.present ? "Installed" : "Downloads when a PDF is found"}
           </ModelLine>
-          <ModelLine ok={m.parser.present ? true : null} name="Document parser" detail={m.parser.model_id}>
-            {!m.parser.present ? "Not installed (optional)"
+          <ModelLine name="Document parser" detail={m.parser.model_id} optional
+                     act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
+            {!m.parser.present ? "Optional"
               : m.parser.server.running ? `Loaded · ${fmt(m.parser.queue.queued)} queued`
               : `Installed · ${fmt(m.parser.queue.queued)} queued`}
           </ModelLine>
@@ -235,8 +281,8 @@ function Meaning({ backend, t1, onPause, onSetup }: {
   );
 }
 
-export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
-  backend: Backend; t1: Tier1Status | null;
+export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
+  backend: Backend; t1: Tier1Status | null; models: Models;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
   onSetup: () => void; onStatus: () => void; onClose: () => void; onError: (e: unknown) => void;
 }) {
@@ -247,7 +293,7 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <h2>Settings</h2>
 
-      <Meaning backend={backend} t1={t1} onPause={onPause} onSetup={onSetup} />
+      <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />
 
       <Folders t1={t1} onChange={onFolders} />
       <Performance backend={backend} onError={onError} />

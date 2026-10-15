@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { Backend, Filter, ModelsPlan, ModelsProgress, SemanticHit, Tier1Status } from "./types";
+import { DEFAULT_GROUPS } from "./modelRows";
+import type { Backend, Filter, ModelGroup, ModelsPlan, ModelsProgress, SemanticHit, Tier1Status } from "./types";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
@@ -23,8 +24,12 @@ export interface Models {
   progress: ModelsProgress | null;
   /** "cancelled" after Cancel (partial files kept), else the failure text, else null. */
   interrupted: string | null;
-  /** `includeParser`: also download the optional document parser. */
-  start(includeParser?: boolean): void;
+  /** Components of the running (or last) download; null when the app started it on its own (first run). */
+  groups: ModelGroup[] | null;
+  /** Bytes received per plan item in this download (Settings rows add these up). */
+  got: Record<string, number>;
+  /** `includeParser`: also download the optional document parser; `groups`: only these components. */
+  start(includeParser?: boolean, groups?: ModelGroup[]): void;
   cancel(): void;
   refreshPlan(): void;
 }
@@ -35,6 +40,8 @@ export function useModels(backend: Backend, onDone: () => void): Models {
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<ModelsProgress | null>(null);
   const [interrupted, setInterrupted] = useState<string | null>(null);
+  const [groups, setGroups] = useState<ModelGroup[] | null>(null);
+  const [got, setGot] = useState<Record<string, number>>({});
   const onDoneRef = useRef(onDone);
   onDoneRef.current = onDone;
 
@@ -46,7 +53,11 @@ export function useModels(backend: Backend, onDone: () => void): Models {
     const offs: (() => void)[] = [];
     let dead = false;
     const keep = (p: Promise<() => void>) => p.then((u) => (dead ? u() : offs.push(u)));
-    keep(backend.onModelsProgress((p) => { setRunning(true); setProgress(p); }));
+    keep(backend.onModelsProgress((p) => {
+      setRunning(true);
+      setProgress(p);
+      setGot((g) => (g[p.item] === p.downloaded ? g : { ...g, [p.item]: p.downloaded }));
+    }));
     keep(backend.onModelsDone((d) => {
       setRunning(false);
       if (d.ok) {
@@ -56,19 +67,23 @@ export function useModels(backend: Backend, onDone: () => void): Models {
         onDoneRef.current();
       } else {
         setInterrupted(d.error ?? "Download failed");
+        refreshPlan(); // parts that did finish show as installed
       }
     }));
     return () => { dead = true; offs.forEach((u) => u()); };
   }, [backend, refreshPlan]);
 
-  const start = useCallback((includeParser?: boolean) => {
+  const start = useCallback((includeParser?: boolean, only?: ModelGroup[]) => {
     setInterrupted(null);
     setRunning(true);
-    backend.modelsDownload(includeParser).catch((e) => { setRunning(false); setInterrupted(errText(e)); });
+    setProgress(null);
+    setGot({});
+    setGroups(only ?? [...DEFAULT_GROUPS, ...(includeParser ? ["parser" as const] : [])]);
+    backend.modelsDownload(includeParser, only).catch((e) => { setRunning(false); setInterrupted(errText(e)); });
   }, [backend]);
   const cancel = useCallback(() => { backend.modelsCancel().catch(() => {}); }, [backend]);
 
-  return { plan, running, progress, interrupted, start, cancel, refreshPlan };
+  return { plan, running, progress, interrupted, groups, got, start, cancel, refreshPlan };
 }
 
 export interface SemanticState {
