@@ -7,11 +7,13 @@
 use std::cmp::{Ordering, Reverse};
 use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+mod recover;
 pub mod relevance;
+pub use recover::{is_corruption_message, Recovery};
 use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 
@@ -518,6 +520,7 @@ pub fn fts_escape(input: &str) -> String {
 pub struct Store {
     conn: Connection,
     dims: usize,
+    meta: IndexMeta,
 }
 
 impl Store {
@@ -537,19 +540,31 @@ impl Store {
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         migrate(&conn)?;
-        conn.execute_batch(
-            "BEGIN;
-             DELETE FROM vectors;
-             DELETE FROM texts;
-             DELETE FROM content;
-             DELETE FROM pending_vecs;
-             DELETE FROM parse_queue;
-             DELETE FROM settings WHERE key = 'parse_route_cursor';
-             DELETE FROM index_meta;
-             UPDATE files SET content_hash = NULL, state = 0, error = NULL;
-             COMMIT;",
-        )?;
+        clear_derived(&conn)?;
         Self::init(conn, meta)
+    }
+
+    /// [`Store::reset`] over this store's own connection. Opening a second connection to the
+    /// same file while this one is live is what [`Store::reset`] would do from a running app,
+    /// and two writers on one WAL file are exactly the setup SQLite's WAL-reset race needs.
+    /// A damaged file is salvaged instead (settings and files kept when readable).
+    pub fn reset_in_place(&mut self, meta: &IndexMeta) -> Result<()> {
+        match self.reset_derived(meta) {
+            Err(e) if e.is_corruption() && self.path().is_some() => self.salvage_in_place(meta),
+            r => r,
+        }
+    }
+
+    fn reset_derived(&mut self, meta: &IndexMeta) -> Result<()> {
+        clear_derived(&self.conn)?;
+        self.conn.execute(
+            "INSERT INTO index_meta(id, model_id, llama_build, quant, image_budget, dims)
+             VALUES (1, ?1, ?2, ?3, ?4, ?5)",
+            params![meta.model_id, meta.llama_build, meta.quant, meta.image_budget, meta.dims],
+        )?;
+        self.dims = meta.dims as usize;
+        self.meta = meta.clone();
+        Ok(())
     }
 
     fn init(conn: Connection, meta: &IndexMeta) -> Result<Store> {
@@ -596,6 +611,7 @@ impl Store {
         Ok(Store {
             conn,
             dims: meta.dims as usize,
+            meta: meta.clone(),
         })
     }
 
@@ -1650,6 +1666,23 @@ fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, pa
     if waiting {
         tx.execute("UPDATE files SET state = ?2 WHERE content_hash = ?1 AND state = ?3", params![hash, STATE_TEXT_ONLY, STATE_DONE])?;
     }
+    Ok(())
+}
+
+/// Everything derived from file content goes; files go back to pending; settings stay.
+fn clear_derived(conn: &Connection) -> Result<()> {
+    conn.execute_batch(
+        "BEGIN;
+         DELETE FROM vectors;
+         DELETE FROM texts;
+         DELETE FROM content;
+         DELETE FROM pending_vecs;
+         DELETE FROM parse_queue;
+         DELETE FROM settings WHERE key = 'parse_route_cursor';
+         DELETE FROM index_meta;
+         UPDATE files SET content_hash = NULL, state = 0, error = NULL;
+         COMMIT;",
+    )?;
     Ok(())
 }
 

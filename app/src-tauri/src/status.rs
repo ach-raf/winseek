@@ -369,9 +369,8 @@ pub async fn rescan_volume(app: AppHandle, letter: String) -> Result<(), String>
 pub async fn tier1_rebuild(h: tauri::State<'_, tier1::Handle>) -> Result<(), String> {
     let t = h.get()?;
     tauri::async_runtime::spawn_blocking(move || {
-        let root = tier1::data_root().ok_or("LOCALAPPDATA is not set")?;
         let meta = embedder::index_meta(&Manifest::embedded().llama.build);
-        t.rebuild_with(|| Store::reset(root.join("tier1.sqlite"), &meta).map_err(|e| format!("reset store: {e}")))
+        t.rebuild_with(|s| s.reset_in_place(&meta).map_err(|e| format!("reset store: {e}")))
     })
     .await
     .map_err(|e| e.to_string())?

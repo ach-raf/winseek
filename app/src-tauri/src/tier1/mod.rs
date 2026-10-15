@@ -29,13 +29,13 @@ pub mod scopes;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde::Serialize;
 use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::{Manifest, Profile, Table};
 use winseek_store::relevance::{self, HUB_PROMPTS};
-use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, ParseCounts, Scopes, Stats, Store};
+use winseek_store::{default_ignore, fts_escape, in_scope_with, Ignore, ParseCounts, Recovery, Scopes, Stats, Store};
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
 use hitbox::HitBox;
@@ -52,6 +52,8 @@ const ST_INDEXING: u8 = 2;
 pub const MODELS_POLL: Duration = Duration::from_secs(30);
 const IDLE_POLL: Duration = Duration::from_secs(1);
 const ERROR_BACKOFF: Duration = Duration::from_secs(30);
+/// Minimum time between two integrity checks of the store after corruption errors.
+const RECOVERY_INTERVAL: Duration = Duration::from_secs(600);
 /// Store setting: the performance profile (`low` | `balanced` | `fast`).
 pub const SETTING_PROFILE: &str = "profile";
 /// On-demand parse results kept in memory (by content hash and page).
@@ -75,6 +77,9 @@ pub struct Tier1 {
     snap: RwLock<Snapshot>,
     gen: AtomicU64,
     last_error: Mutex<Option<String>>,
+    /// When the store was last checked after a corruption error (checks are not repeated sooner
+    /// than [`RECOVERY_INTERVAL`]).
+    last_recovery: Mutex<Option<Instant>>,
     /// Rolling completed-files rate for the status page (fed by the worker loop).
     throughput: Mutex<progress::Throughput>,
     /// Last known embedding-server state (the embedder lock is held for whole passes).
@@ -246,6 +251,7 @@ impl Tier1 {
             snap: RwLock::new(Snapshot { scopes, ignore, index_code, gen: 1 }),
             gen: AtomicU64::new(1),
             last_error: Mutex::new(None),
+            last_recovery: Mutex::new(None),
             throughput: Mutex::new(progress::Throughput::default()),
             runtime: Mutex::new(RuntimeInfo::default()),
             hub: Mutex::new(None),
@@ -264,6 +270,12 @@ impl Tier1 {
         let store = match Store::open(&path, &meta) {
             Ok(s) => s,
             Err(winseek_store::Error::MetaMismatch { .. }) => Store::reset(&path, &meta).map_err(|e| format!("reset store: {e}"))?,
+            // Too damaged to open: keep what is readable, the rest is indexed again.
+            Err(e) if e.is_corruption() => {
+                let (s, backup, lost) = Store::salvage(&path, &meta, &Default::default()).map_err(|e| format!("salvage store: {e}"))?;
+                eprintln!("winseek: tier 1 store was damaged; kept {} and re-indexing {lost:?}", backup.display());
+                s
+            }
             Err(e) => return Err(format!("open store: {e}")),
         };
         let (scopes, defaulted) = scopes::effective(store.get_scopes().map_err(|e| e.to_string())?);
@@ -510,14 +522,17 @@ impl Tier1 {
         lock(&self.doc_cache).iter().find(|(k, _)| k == key).map(|(_, d)| d.clone())
     }
 
-    /// Swap in a freshly reset store (embeddings dropped, files back to pending) and make the
-    /// crawler re-run. `reset` builds the new store; the store lock is held throughout so the
-    /// worker cannot write to the old one meanwhile. Never touches Tier 0.
-    pub fn rebuild_with(&self, reset: impl FnOnce() -> Result<Store, String>) -> Result<(), String> {
-        {
-            let mut store = lock(&self.store);
-            *store = reset()?;
-        }
+    /// Reset the store (embeddings dropped, files back to pending) and make the crawler re-run.
+    /// `reset` works on the live store under its lock, over its own connection: a second
+    /// connection writing the same WAL file is what SQLite's WAL-reset race needs. Never touches
+    /// Tier 0.
+    pub fn rebuild_with(&self, reset: impl FnOnce(&mut Store) -> Result<(), String>) -> Result<(), String> {
+        reset(&mut lock(&self.store))?;
+        self.restart_indexing();
+        Ok(())
+    }
+
+    fn restart_indexing(&self) {
         *lock(&self.last_error) = None;
         lock(&self.throughput).clear();
         {
@@ -525,7 +540,59 @@ impl Tier1 {
             snap.gen = self.gen.fetch_add(1, Ordering::SeqCst) + 1;
         }
         self.kick();
-        Ok(())
+    }
+
+    /// Record a worker error. A corrupt store is repaired ([`Store::recover`]) instead of
+    /// leaving "database disk image is malformed" up for good.
+    fn report_error(&self, msg: String) {
+        if winseek_store::is_corruption_message(&msg) {
+            match self.recover_store() {
+                Some(Ok(r)) if r != Recovery::Healthy => {
+                    eprintln!("winseek: tier 1 store repaired: {r:?}");
+                    self.restart_indexing();
+                    return;
+                }
+                Some(Err(e)) => {
+                    *lock(&self.last_error) =
+                        Some(format!("The search-by-meaning index is damaged and could not be repaired ({e}). Rebuild the index."));
+                    return;
+                }
+                _ => {}
+            }
+        }
+        *lock(&self.last_error) = Some(msg);
+    }
+
+    /// Check and repair the store; `None` when it was checked within [`RECOVERY_INTERVAL`].
+    fn recover_store(&self) -> Option<Result<Recovery, String>> {
+        {
+            let mut last = lock(&self.last_recovery);
+            if last.is_some_and(|t| t.elapsed() < RECOVERY_INTERVAL) {
+                return None;
+            }
+            *last = Some(Instant::now());
+        }
+        let mut store = lock(&self.store);
+        let meta = store.meta().clone();
+        let path = store.path();
+        let placeholder = match Store::open_in_memory(&meta) {
+            Ok(s) => s,
+            Err(e) => return Some(Err(e.to_string())),
+        };
+        let old = std::mem::replace(&mut *store, placeholder);
+        Some(match old.recover() {
+            Ok((s, r)) => {
+                *store = s;
+                Ok(r)
+            }
+            Err(e) => {
+                // Keep using the file as it is rather than an empty in-memory store.
+                if let Some(s) = path.and_then(|p| Store::open(p, &meta).ok()) {
+                    *store = s;
+                }
+                Err(e.to_string())
+            }
+        })
     }
 
     /// The hub direction for relevance calibration ([`relevance`]): computed once per query
@@ -720,7 +787,7 @@ fn worker_loop(t: Arc<Tier1>) {
                     continue;
                 }
                 Err(msg) => {
-                    *lock(&t.last_error) = Some(msg);
+                    t.report_error(msg);
                     std::thread::sleep(ERROR_BACKOFF);
                     continue;
                 }
@@ -751,7 +818,7 @@ fn worker_loop(t: Arc<Tier1>) {
                 std::thread::sleep(ERROR_BACKOFF);
             }
             Err(msg) => {
-                *lock(&t.last_error) = Some(msg);
+                t.report_error(msg);
                 std::thread::sleep(ERROR_BACKOFF);
             }
         }
@@ -965,6 +1032,40 @@ mod tests {
         s.complete(id, &format!("h{n}"), &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: unit(hot) }], &[]).unwrap();
     }
 
+    /// The live failure: SQLite reported "database disk image is malformed" for good. The worker's
+    /// error path now repairs the store (settings kept), clears the error and re-crawls.
+    #[test]
+    fn corruption_error_repairs_the_store() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("tier1.sqlite");
+        {
+            let t = Tier1::new(Store::open(&db, &index_meta("test")).unwrap(), Box::new(Q), Box::new(parser::NoParser), Scopes::default());
+            t.set_scopes(vec![r"C:\Pics".into()], vec![]).unwrap();
+            add_done(&t, 1, r"C:\Pics\cat.jpg", 1);
+        } // closed: checkpointed
+        // Garbage over the vectors root page, as a lost WAL frame leaves it.
+        let (root, size): (i64, i64) = {
+            let c = rusqlite::Connection::open(&db).unwrap();
+            let root = c.query_row("SELECT rootpage FROM sqlite_master WHERE name = 'vectors'", [], |r| r.get(0)).unwrap();
+            (root, c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap())
+        };
+        let mut bytes = std::fs::read(&db).unwrap();
+        bytes[((root - 1) * size) as usize..][..64].fill(0xEE);
+        std::fs::write(&db, bytes).unwrap();
+
+        let t = Tier1::new(Store::open(&db, &index_meta("test")).unwrap(), Box::new(Q), Box::new(parser::NoParser), Scopes::default());
+        let msg = lock(&t.store).max_vector_rowid().unwrap_err().to_string();
+        assert!(winseek_store::is_corruption_message(&msg), "{msg}");
+        let g0 = t.snapshot().gen;
+        t.report_error(msg);
+        assert_eq!(t.status().error, None);
+        assert!(t.snapshot().gen > g0, "the crawler walks the scopes again");
+        let s = lock(&t.store);
+        assert_eq!(s.get_scopes().unwrap().include, vec![r"C:\Pics".to_string()]);
+        assert_eq!((s.stats().unwrap().pending, s.stats().unwrap().vectors), (1, 0));
+        assert!(dir.path().join("tier1.sqlite.corrupt").exists());
+    }
+
     /// Diagnose a stalled crawl: run the real worker passes against a copy of the installed store.
     /// `WINSEEK_DIAG_DB=<copy of tier1.sqlite> cargo test -p winseek-app diag_live -- --ignored --nocapture`
     #[test]
@@ -1159,13 +1260,14 @@ mod tests {
         assert_eq!(lock(&t.store).stats().unwrap().done, 1);
         *lock(&t.last_error) = Some("old".into());
         let g0 = t.snapshot().gen;
-        t.rebuild_with(|| Store::open_in_memory(&index_meta("test")).map_err(|e| e.to_string())).unwrap();
-        assert_eq!(lock(&t.store).stats().unwrap().files, 0);
+        t.rebuild_with(|s| s.reset_in_place(&index_meta("test")).map_err(|e| e.to_string())).unwrap();
+        let st = lock(&t.store).stats().unwrap();
+        assert_eq!((st.done, st.pending, st.vectors), (0, 1, 0)); // the file is kept, its vectors are not
         assert!(t.snapshot().gen > g0); // the crawler sees a new generation and walks the scopes again
         assert_eq!(t.status().error, None);
         // a failing reset leaves the current store alone
         add_done(&t, 2, r"C:\Pics\dog.jpg", 2);
-        assert_eq!(t.rebuild_with(|| Err("boom".into())), Err("boom".to_string()));
+        assert_eq!(t.rebuild_with(|_| Err("boom".into())), Err("boom".to_string()));
         assert_eq!(lock(&t.store).stats().unwrap().done, 1);
     }
 
