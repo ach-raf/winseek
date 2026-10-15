@@ -22,6 +22,34 @@ fn embed_err(msg: impl Into<String>) -> Error {
     Error::Embed(msg.into())
 }
 
+/// Shortest text [`EmbedClient::embed_documents`] keeps halving towards.
+const MIN_SHRINK_CHARS: usize = 64;
+
+/// An HTTP error with the server's own message (llama-server answers `{"error":{"message":..}}`).
+fn http_err(e: ureq::Error) -> Error {
+    match e {
+        ureq::Error::Status(code, resp) => {
+            let body = resp.into_string().unwrap_or_default();
+            let msg = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string))
+                .unwrap_or(body);
+            let msg: String = msg.trim().chars().take(300).collect();
+            if msg.is_empty() {
+                Error::Http(format!("status code {code}"))
+            } else {
+                Error::Http(format!("status code {code}: {msg}"))
+            }
+        }
+        e => Error::Http(e.to_string()),
+    }
+}
+
+/// The server refused this input (too long for its batch / context), as opposed to being down.
+fn rejected(e: &Error) -> bool {
+    matches!(e, Error::Http(m) if m.starts_with("status code 500") || m.starts_with("status code 400"))
+}
+
 pub fn document_input(text: &str) -> String {
     format!("{DOC_PREFIX}{text}")
 }
@@ -133,7 +161,7 @@ impl EmbedClient {
             .set("Authorization", &self.auth())
             .set("Content-Type", "application/json")
             .send_string(&body.to_string())
-            .map_err(|e| Error::Http(e.to_string()))?;
+            .map_err(http_err)?;
         let mut text = String::new();
         resp.into_reader().read_to_string(&mut text)?;
         let v: Value = serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
@@ -141,9 +169,31 @@ impl EmbedClient {
     }
 
     /// Raw (untruncated, unnormalised) document embeddings.
+    ///
+    /// llama-server rejects (HTTP 500) any input longer than its batch, and one such chunk would
+    /// fail the whole request (and so the file). On a rejected batch every text is sent on its own,
+    /// and a text that is still too long is cut in half until it fits.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
         let inputs: Vec<String> = texts.iter().map(|t| document_input(t)).collect();
-        self.post_embeddings(&text_body(&inputs), inputs.len())
+        match self.post_embeddings(&text_body(&inputs), inputs.len()) {
+            Err(e) if texts.len() > 1 && rejected(&e) => texts.iter().map(|t| self.embed_one_document(t)).collect(),
+            Err(e) if rejected(&e) => self.embed_one_document(texts[0]).map(|v| vec![v]),
+            r => r,
+        }
+    }
+
+    fn embed_one_document(&self, text: &str) -> Result<Vec<f32>> {
+        let mut t = text;
+        loop {
+            let input = [document_input(t)];
+            match self.post_embeddings(&text_body(&input), 1) {
+                Err(e) if rejected(&e) && t.chars().count() > MIN_SHRINK_CHARS => {
+                    let half = t.char_indices().nth(t.chars().count() / 2).map_or(t.len(), |(i, _)| i);
+                    t = &t[..half];
+                }
+                r => return r.map(|mut v| v.remove(0)),
+            }
+        }
     }
 
     /// Raw query embeddings.
@@ -165,7 +215,7 @@ impl EmbedClient {
             .get(&format!("{}/props", self.base_url))
             .set("Authorization", &self.auth())
             .call()
-            .map_err(|e| Error::Http(e.to_string()))?;
+            .map_err(http_err)?;
         let mut text = String::new();
         resp.into_reader().read_to_string(&mut text)?;
         let v: Value = serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
@@ -330,5 +380,52 @@ mod tests {
         let c = EmbedClient::new("http://127.0.0.1:1", "k");
         assert!(c.embed_documents(&[]).unwrap().is_empty());
         assert!(c.embed_images_jpeg(&[]).unwrap().is_empty());
+    }
+
+    /// A llama-server stand-in that refuses (500, with its real message) any input longer than
+    /// `max` characters and embeds the rest as `[len]`.
+    fn picky(max: usize) -> String {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        std::thread::spawn(move || loop {
+            let Ok((mut s, _)) = l.accept() else { return };
+            let mut r = BufReader::new(s.try_clone().unwrap());
+            let mut len = 0usize;
+            loop {
+                let mut line = String::new();
+                r.read_line(&mut line).unwrap();
+                if line == "\r\n" || line.is_empty() {
+                    break;
+                }
+                if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                    len = v.trim().parse().unwrap();
+                }
+            }
+            let mut body = vec![0u8; len];
+            r.read_exact(&mut body).unwrap();
+            let v: Value = serde_json::from_slice(&body).unwrap();
+            let inputs: Vec<usize> = v["input"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().chars().count()).collect();
+            let (status, resp) = if inputs.iter().any(|&n| n > max) {
+                ("500 Internal Server Error", r#"{"error":{"code":500,"message":"input is too large to process. increase the physical batch size","type":"server_error"}}"#.to_string())
+            } else {
+                let data: Vec<Value> = inputs.iter().enumerate().map(|(i, &n)| json!({"index": i, "embedding": [n as f32]})).collect();
+                ("200 OK", json!({ "data": data }).to_string())
+            };
+            let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}", resp.len());
+        });
+        url
+    }
+
+    #[test]
+    fn too_long_chunks_are_shrunk_not_fatal() {
+        let c = EmbedClient::new(&picky(DOC_PREFIX.len() + 300), "K");
+        let long = "word ".repeat(400); // 2000 chars
+        let v = c.embed_documents(&["short", &long, "also short"]).unwrap();
+        assert_eq!(v.len(), 3);
+        assert_eq!(v[0], vec![(DOC_PREFIX.len() + 5) as f32]);
+        assert!(v[1][0] as usize <= DOC_PREFIX.len() + 300 && v[1][0] as usize > DOC_PREFIX.len() + 100, "{:?}", v[1]);
+        // the server's message reaches the error text
+        let e = EmbedClient::new(&picky(1), "K").embed_queries(&["x"]).unwrap_err().to_string();
+        assert!(e.contains("500") && e.contains("too large"), "{e}");
     }
 }

@@ -121,6 +121,8 @@ interface Data {
   total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean;
   /** Every row is loaded (a date / size filter was applied here); `partial` = the scan hit its cap. */
   full: boolean; partial: boolean;
+  /** Bumped when pages are filled into `rows` in place (a copy per page would be O(rows loaded)). */
+  ver: number;
 }
 
 export default function App({ backend }: { backend: Backend }) {
@@ -128,7 +130,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [filter, setFilter] = useState<Filter>("all");
   const [sort, setSort] = useState<Sort>("rel");
   const [sel, setSel] = useState(0);
-  const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false });
+  const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
   const [loaded, setLoaded] = useState(false);
   const [status, setStatus] = useState<VolumeStatus[]>([]);
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
@@ -213,7 +215,7 @@ export default function App({ backend }: { backend: Backend }) {
   const overview = !isRecent && sort === "rel" && expand !== "files";
   const ov = useMemo(
     () => buildOverview({ names: data.rows, nameTotal: data.total, sem: semHits, text: parsed.text, expand, isImage: (n) => kindOf(n, false) === "image" }),
-    [data.rows, data.total, semHits, parsed.text, expand],
+    [data.rows, data.ver, data.total, semHits, parsed.text, expand], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -230,19 +232,20 @@ export default function App({ backend }: { backend: Backend }) {
         const hits = await backend.recent(40);
         if (my !== seq.current) return;
         rowsRef.current = hits;
-        setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false });
+        setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else if (hasRanges(parsed)) {
         const r = await scanRanges(backend, nameQ, effFilter, sort, parsed, () => my !== seq.current);
         if (my !== seq.current) return;
         rowsRef.current = r.rows;
-        setData({ total: r.rows.length, rows: r.rows, elapsedMs: r.ms, recent: false, full: true, partial: r.partial });
+        setData({ total: r.rows.length, rows: r.rows, elapsedMs: r.ms, recent: false, full: true, partial: r.partial, ver: 0 });
       } else {
         const r = await backend.search({ query: nameQ, offset: 0, limit: PAGE, sort, filter: effFilter });
         if (my !== seq.current) return;
-        const rows: (Hit | undefined)[] = new Array(r.total).fill(undefined);
-        r.hits.forEach((h, i) => (rows[i] = h));
+        // Only the loaded rows are stored (`data.total` is the length); a one-letter query can match
+        // millions of names and must not allocate a slot for each on every keystroke.
+        const rows: (Hit | undefined)[] = r.hits.slice();
         rowsRef.current = rows;
-        setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false, full: false, partial: false });
+        setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false, full: false, partial: false, ver: 0 });
       }
       setLoaded(true);
       setSel(0);
@@ -259,10 +262,9 @@ export default function App({ backend }: { backend: Backend }) {
       inflight.current.add(p);
       backend.search({ query: nameQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
         if (my !== seq.current) return;
-        const rows = rowsRef.current.slice();
+        const rows = rowsRef.current;
         r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
-        rowsRef.current = rows;
-        setData((d) => ({ ...d, rows }));
+        setData((d) => ({ ...d, ver: d.ver + 1 }));
       }).catch(console.error);
     }
   }, [backend, data.recent, data.full, data.total, nameQ, sort, effFilter]);
@@ -275,7 +277,8 @@ export default function App({ backend }: { backend: Backend }) {
   const fast = counting && !summary; // 250 ms while the first scan is being watched
   const refreshStatus = useCallback(() => {
     backend.status().then((st) => {
-      setStatus(st);
+      // Polled every second: an unchanged answer must not re-render the whole popup.
+      setStatus((prev) => (JSON.stringify(prev) === JSON.stringify(st) ? prev : st));
       if (st.length > 0 && st.every((v) => v.state === "demo")) backend.serviceState().then(setService).catch(() => {});
     }).catch(() => {});
   }, [backend]);
@@ -396,7 +399,6 @@ export default function App({ backend }: { backend: Backend }) {
     rows.splice(i, 1);
     rowsRef.current = rows;
     setData((d) => ({ ...d, rows, total: Math.max(0, d.total - 1) }));
-    setSel((s) => Math.max(0, Math.min(s, rows.length - 1)));
   }, []);
 
   const pushUndo = useCallback((u: Undo, msg: string) => {
@@ -708,7 +710,7 @@ export default function App({ backend }: { backend: Backend }) {
       );
     }
     return out;
-  }, [first, last, data.rows, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
+  }, [first, last, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {

@@ -2,9 +2,17 @@ use crate::source::{Hit, NameSource, SearchResult, VolumeStatus};
 use std::io::Write;
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 
 impl AppState {
+    pub fn new(source: Arc<dyn NameSource>) -> Self {
+        AppState {
+            source: RwLock::new(source),
+            paused: AtomicBool::new(false),
+            latest_search: Arc::default(),
+            search_gate: Arc::default(),
+        }
+    }
     pub fn source(&self) -> Arc<dyn NameSource> {
         self.source.read().unwrap_or_else(|e| e.into_inner()).clone()
     }
@@ -16,49 +24,77 @@ impl AppState {
 pub struct AppState {
     pub source: RwLock<Arc<dyn NameSource>>,
     pub paused: AtomicBool,
+    /// (query, filter, sort) of the newest `search` call. Searches queue on the one searchd
+    /// connection; a queued search for a query the user has already typed past is dropped
+    /// instead of run (typing "report" must not run "r", "re", "rep", ... one after another).
+    latest_search: Arc<Mutex<String>>,
+    search_gate: Arc<Mutex<()>>,
+}
+
+/// Run blocking work off the main thread. A plain (non-async) Tauri command runs *on* it, so a
+/// slow pipe or store call would freeze the whole window, typing included.
+pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
+}
+
+fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 #[tauri::command]
-pub fn search(
+pub async fn search(
     state: tauri::State<'_, AppState>,
     query: String,
     offset: usize,
     limit: usize,
     sort: Option<String>,
     filter: Option<String>,
-) -> SearchResult {
-    state.source().search(
-        &query,
-        filter.as_deref().unwrap_or("all"),
-        offset,
-        limit.min(5000),
-        sort.as_deref().unwrap_or("rel"),
-    )
-}
-
-#[tauri::command]
-pub fn status(state: tauri::State<'_, AppState>) -> Vec<VolumeStatus> {
-    let mut v = state.source().status();
-    if state.paused.load(Ordering::Relaxed) {
-        for s in &mut v {
-            s.state = "paused".into();
+) -> Result<SearchResult, String> {
+    let src = state.source();
+    let filter = filter.unwrap_or_else(|| "all".into());
+    let sort = sort.unwrap_or_else(|| "rel".into());
+    let key = format!("{query}\u{1}{filter}\u{1}{sort}");
+    *lock(&state.latest_search) = key.clone();
+    let (latest, gate) = (state.latest_search.clone(), state.search_gate.clone());
+    blocking(move || {
+        let _turn = lock(&gate);
+        if *lock(&latest) != key {
+            return SearchResult { total: 0, hits: vec![], elapsed_us: 0 }; // superseded: the UI drops it anyway
         }
-    }
-    v
+        src.search(&query, &filter, offset, limit.min(5000), &sort)
+    })
+    .await
 }
 
 #[tauri::command]
-pub fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Vec<Hit> {
-    state.source().recent(limit.min(500))
+pub async fn status(state: tauri::State<'_, AppState>) -> Result<Vec<VolumeStatus>, String> {
+    let src = state.source();
+    let paused = state.paused.load(Ordering::Relaxed);
+    blocking(move || {
+        let mut v = src.status();
+        if paused {
+            for s in &mut v {
+                s.state = "paused".into();
+            }
+        }
+        v
+    })
+    .await
 }
 
 #[tauri::command]
+pub async fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Result<Vec<Hit>, String> {
+    let src = state.source();
+    blocking(move || src.recent(limit.min(500))).await
+}
+
+#[tauri::command(async)]
 pub fn open_path(path: String) -> Result<(), String> {
     // `explorer <path>` opens files with the default handler and folders in Explorer.
     Command::new("explorer.exe").arg(&path).spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn reveal_path(path: String) -> Result<(), String> {
     use std::os::windows::process::CommandExt;
     // raw_arg: explorer wants `/select,"C:\a b\c"` verbatim.

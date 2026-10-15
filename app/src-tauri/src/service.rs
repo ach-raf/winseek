@@ -81,12 +81,12 @@ fn query_state() -> &'static str {
 }
 
 /// `"not_installed" | "stopped" | "starting" | "running" | "stopping" | "unknown"`.
-#[tauri::command]
+#[tauri::command(async)]
 pub fn service_state() -> String {
     query_state().to_string()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn start_service() -> Result<(), String> {
     let h = open_service(SERVICE_START)?.ok_or("Name service is not installed")?;
     match unsafe { StartServiceW(h.0, None) } {
@@ -185,7 +185,7 @@ fn read_accent_bytes() -> Option<Vec<u8>> {
     Some(buf[..len as usize].to_vec())
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn accent_palette() -> Option<Vec<String>> {
     parse_accent_palette(&read_accent_bytes()?)
 }

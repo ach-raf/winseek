@@ -492,3 +492,60 @@ fn snapshot_v1_migrates_as_ntfs() {
     bad.extend_from_slice(&ck.to_le_bytes());
     assert!(Index::from_bytes(&bad).is_err());
 }
+
+/// Incremental refresh (small change sets) must give the same order and ranks as a full rebuild.
+#[test]
+fn incremental_refresh_matches_full_rebuild() {
+    let mut s = 0x2545_F491_4F6C_DD1Du64;
+    let mut rnd = move |n: u64| {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s % n
+    };
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    for d in 0..40u64 {
+        b.push(C, 1000 + d, if d < 5 { 5 } else { 1000 + d % 5 }, &format!("dir{}", d * 7 % 13), true, 0, 0);
+    }
+    for f in 0..2000u64 {
+        b.push(C, 10_000 + f, 1000 + f % 40, &format!("f{}.txt", f * 31 % 997), false, f, f as i64);
+    }
+    let mut ix = b.finish();
+    let mut next = 50_000u64;
+    for round in 0..60 {
+        for _ in 0..1 + rnd(30) {
+            let live: Vec<u32> = ix.search_str("", &SearchOptions::default()).items;
+            match rnd(3) {
+                0 => {
+                    next += 1;
+                    ix.insert(C, next, 1000 + rnd(40), &format!("n{}.dat", rnd(500)), false, 1, 1);
+                }
+                1 if !live.is_empty() => {
+                    let i = live[rnd(live.len() as u64) as usize];
+                    if !ix.is_dir(i) {
+                        ix.remove(i);
+                    }
+                }
+                _ if !live.is_empty() => {
+                    let i = live[rnd(live.len() as u64) as usize];
+                    if !ix.is_dir(i) {
+                        let p = ix.folder_idx(C, 1000 + rnd(40)).unwrap();
+                        ix.rename(i, p, &format!("r{}.bin", rnd(300)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        // a search on the dirty index sees the same thing as after the refresh
+        let dirty = names(&ix, "");
+        ix.refresh();
+        let inc_order = ix.order.clone();
+        let inc_rank: Vec<u32> = (0..ix.parent.len()).map(|r| ix.rank.get(r).copied().unwrap_or(NONE)).collect();
+        assert_eq!(names(&ix, ""), dirty, "round {round}");
+        ix.rebuild_order();
+        assert_eq!(ix.order, inc_order, "round {round}: order");
+        let full_rank: Vec<u32> = (0..ix.parent.len()).map(|r| ix.rank[r]).collect();
+        assert_eq!(full_rank, inc_rank, "round {round}: rank");
+    }
+}

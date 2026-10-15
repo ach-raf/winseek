@@ -180,11 +180,12 @@ pub fn writer_loop(sh: &Shared, rx: Receiver<Msg>) {
 }
 
 fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) {
-    let mut recent: Vec<Hit> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
+    // Created / modified files whose size and mtime are refined by a stat() *after* the write
+    // lock is released: disk (or antivirus) latency must never stall searches.
+    let mut to_stat: Vec<(u32, usize)> = Vec::new();
     {
         let mut ix = sh.index.write().unwrap();
-        let mut budget = STAT_BUDGET;
         let refs = ix.kind_of(vol) == Some(VolKind::Refs);
         for c in changes {
             let mapped;
@@ -195,17 +196,8 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
                 c
             };
             let Some(ev) = apply_change(&mut ix, vol, c) else { continue };
-            if let (Some(i), false, true) = (ev.idx, ev.is_dir, budget > 0) {
-                if let Ok(md) = std::fs::metadata(&ev.path) {
-                    budget -= 1;
-                    let mt = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                    let ft = mt.map_or(0, |d| crate::index_ops::filetime_from_unix_ms(d.as_millis() as i64));
-                    let ft = if ft != 0 { ft } else { ix.mtime(i).unwrap_or(0) };
-                    ix.update_meta(i, md.len(), ft);
-                }
-            }
-            if let (Some(i), true) = (ev.idx, ev.kind != ChangeKind::Deleted) {
-                recent.push(hit_at(&ix, i));
+            if let (Some(i), false, true) = (ev.idx, ev.is_dir, to_stat.len() < STAT_BUDGET) {
+                to_stat.push((i, events.len()));
             }
             events.push(ev);
         }
@@ -214,6 +206,36 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             m.next_usn = cursor.next_usn;
         }
         ix.refresh();
+    }
+    // Only this (writer) thread mutates the index, so the record indices stay valid.
+    let stats: Vec<(u32, Option<(u64, i64)>)> = to_stat
+        .iter()
+        .map(|&(i, e)| {
+            let md = std::fs::metadata(&events[e].path).ok();
+            (i, md.map(|md| {
+                let mt = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                (md.len(), mt.map_or(0, |d| crate::index_ops::filetime_from_unix_ms(d.as_millis() as i64)))
+            }))
+        })
+        .collect();
+    let mut recent: Vec<Hit> = Vec::new();
+    {
+        let mut ix = sh.index.write().unwrap();
+        for (i, st) in stats {
+            if let Some((len, ft)) = st {
+                let ft = if ft != 0 { ft } else { ix.mtime(i).unwrap_or(0) };
+                ix.update_meta(i, len, ft);
+            }
+        }
+        for ev in &events {
+            // (a record created and removed in the same batch has no path any more)
+            if let (Some(i), true) = (ev.idx, ev.kind != ChangeKind::Deleted) {
+                if ix.is_deleted(i) {
+                    continue;
+                }
+                recent.push(hit_at(&ix, i));
+            }
+        }
     }
     publish(sh, recent, &events);
 }

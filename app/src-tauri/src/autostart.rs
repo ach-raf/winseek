@@ -101,12 +101,12 @@ pub fn init_default() {
     }
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn autostart_get() -> bool {
     enabled()
 }
 
-#[tauri::command]
+#[tauri::command(async)]
 pub fn autostart_set(on: bool) -> Result<bool, String> {
     write_value(on)?;
     if let Some(root) = tier1::data_root() {

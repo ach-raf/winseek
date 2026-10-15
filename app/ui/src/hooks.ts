@@ -7,7 +7,7 @@ const errText = (e: unknown) => String(e instanceof Error ? e.message : e).repla
 export function useTier1(backend: Backend, fast: boolean, epoch: number): [Tier1Status | null, () => void] {
   const [st, setSt] = useState<Tier1Status | null>(null);
   const refresh = useCallback(() => {
-    backend.tier1Status().then(setSt).catch(() => {});
+    backend.tier1Status().then((n) => setSt((p) => (JSON.stringify(p) === JSON.stringify(n) ? p : n))).catch(() => {});
   }, [backend]);
   useEffect(() => {
     refresh();

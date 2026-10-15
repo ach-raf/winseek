@@ -800,44 +800,53 @@ pub fn init() -> Handle {
 
 // ---------------------------------------------------------------- Tauri commands
 
+// Every command here runs off the main thread: they take the store lock, which the worker can
+// hold for a while, and a plain (non-async) command would freeze the window meanwhile.
+
 #[tauri::command]
-pub fn tier1_status(h: tauri::State<'_, Handle>) -> StatusDto {
+pub async fn tier1_status(h: tauri::State<'_, Handle>) -> Result<StatusDto, String> {
     match h.get() {
-        Ok(t) => t.status(),
-        Err(e) => StatusDto { state: "unavailable".into(), stats: None, include: vec![], exclude: vec![], error: Some(e), paused_reason: None },
+        Ok(t) => crate::commands::blocking(move || t.status()).await,
+        Err(e) => Ok(StatusDto { state: "unavailable".into(), stats: None, include: vec![], exclude: vec![], error: Some(e), paused_reason: None }),
     }
 }
 
 #[tauri::command]
-pub fn tier1_set_scopes(h: tauri::State<'_, Handle>, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
-    h.get()?.set_scopes(include, exclude)
+pub async fn tier1_set_scopes(h: tauri::State<'_, Handle>, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.set_scopes(include, exclude)).await?
 }
 
 #[tauri::command]
-pub fn tier1_get_ignore(h: tauri::State<'_, Handle>) -> Result<IgnoreDto, String> {
-    h.get()?.get_ignore()
+pub async fn tier1_get_ignore(h: tauri::State<'_, Handle>) -> Result<IgnoreDto, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.get_ignore()).await?
 }
 
 /// `None` resets to the built-in defaults. Returns the saved list.
 #[tauri::command]
-pub fn tier1_set_ignore(h: tauri::State<'_, Handle>, list: Option<Vec<String>>) -> Result<IgnoreDto, String> {
-    h.get()?.set_ignore(list)
+pub async fn tier1_set_ignore(h: tauri::State<'_, Handle>, list: Option<Vec<String>>) -> Result<IgnoreDto, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.set_ignore(list)).await?
 }
 
 #[tauri::command]
-pub fn tier1_get_index_code(h: tauri::State<'_, Handle>) -> Result<bool, String> {
-    Ok(h.get()?.index_code())
+pub async fn tier1_get_index_code(h: tauri::State<'_, Handle>) -> Result<bool, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.index_code()).await
 }
 
 /// Opt in / out of indexing source-code text. Returns the saved value.
 #[tauri::command]
-pub fn tier1_set_index_code(h: tauri::State<'_, Handle>, on: bool) -> Result<bool, String> {
-    h.get()?.set_index_code(on)
+pub async fn tier1_set_index_code(h: tauri::State<'_, Handle>, on: bool) -> Result<bool, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.set_index_code(on)).await?
 }
 
 #[tauri::command]
-pub fn tier1_pause(app: tauri::AppHandle, h: tauri::State<'_, Handle>, paused: bool) -> Result<(), String> {
-    h.get()?.set_paused(paused);
+pub async fn tier1_pause(app: tauri::AppHandle, h: tauri::State<'_, Handle>, paused: bool) -> Result<(), String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.set_paused(paused)).await?;
     crate::watcher::refresh_pause_item(&app);
     Ok(())
 }
@@ -858,8 +867,9 @@ pub async fn parser_present(h: tauri::State<'_, Handle>) -> Result<bool, String>
 
 /// The saved performance profile: `low` | `balanced` | `fast`.
 #[tauri::command]
-pub fn get_profile(h: tauri::State<'_, Handle>) -> Result<String, String> {
-    Ok(h.get()?.profile().as_str().to_string())
+pub async fn get_profile(h: tauri::State<'_, Handle>) -> Result<String, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.profile().as_str().to_string()).await
 }
 
 /// Save and apply a performance profile. Returns what was saved.
@@ -873,8 +883,21 @@ pub async fn set_profile(h: tauri::State<'_, Handle>, profile: String) -> Result
 
 #[tauri::command]
 pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usize) -> Result<SemanticResult, String> {
+    // Only the popup asks, one query at a time: a search still queued behind the embedder when a
+    // newer one arrives is dropped (its answer would be thrown away by the UI anyway).
+    static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static TURN: Mutex<()> = Mutex::new(());
     let t = h.get()?;
-    tauri::async_runtime::spawn_blocking(move || t.semantic_search(&query, k)).await.map_err(|e| e.to_string())?
+    let me = LATEST.fetch_add(1, Ordering::SeqCst) + 1;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _turn = lock(&TURN);
+        if LATEST.load(Ordering::SeqCst) != me {
+            return Ok(SemanticResult { state: "superseded".into(), hits: vec![] });
+        }
+        t.semantic_search(&query, k)
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Temp dir outside `%LOCALAPPDATA%` (paths containing an `appdata` segment are never in scope).

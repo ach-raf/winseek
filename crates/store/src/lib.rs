@@ -1216,19 +1216,16 @@ impl Store {
     }
 
     pub fn stats(&self) -> Result<Stats> {
-        let count = |sql: &str| -> Result<u64> {
-            Ok(self.conn.query_row(sql, [], |r| r.get::<_, i64>(0))? as u64)
-        };
-        let by_state = |s: i64| count(&format!("SELECT COUNT(*) FROM files WHERE state = {s}"));
-        Ok(Stats {
-            files: count("SELECT COUNT(*) FROM files")?,
-            pending: by_state(STATE_PENDING)?,
-            done: by_state(STATE_DONE)?,
-            failed: by_state(STATE_FAILED)?,
-            skipped: by_state(STATE_SKIPPED)?,
-            vectors: count("SELECT COUNT(*) FROM vectors")?,
-            text_only: by_state(STATE_TEXT_ONLY)?,
-        })
+        // One pass over `files` (polled by the UI; was one scan per state).
+        let sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(state = {STATE_PENDING}), 0), COALESCE(SUM(state = {STATE_DONE}), 0), \
+             COALESCE(SUM(state = {STATE_FAILED}), 0), COALESCE(SUM(state = {STATE_SKIPPED}), 0), \
+             COALESCE(SUM(state = {STATE_TEXT_ONLY}), 0), (SELECT COUNT(*) FROM vectors) FROM files"
+        );
+        let n = |r: &rusqlite::Row<'_>, i: usize| r.get::<_, i64>(i).map(|v| v.max(0) as u64);
+        Ok(self.conn.query_row(&sql, [], |r| {
+            Ok(Stats { files: n(r, 0)?, pending: n(r, 1)?, done: n(r, 2)?, failed: n(r, 3)?, skipped: n(r, 4)?, text_only: n(r, 5)?, vectors: n(r, 6)? })
+        })?)
     }
 
     // ------------------------------------------------------------ library

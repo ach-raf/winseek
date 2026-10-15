@@ -16,8 +16,8 @@ mod tier1;
 mod watcher;
 
 use commands::AppState;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, RwLock};
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
 use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -60,10 +60,7 @@ fn main() {
         )
         .manage(models::Models::default())
         .manage(tier1::library::LibState::default())
-        .manage(AppState {
-            source: RwLock::new(pick_source()),
-            paused: AtomicBool::new(false),
-        })
+        .manage(AppState::new(pick_source()))
         .invoke_handler(tauri::generate_handler![
             commands::search,
             commands::status,
@@ -135,10 +132,7 @@ fn main() {
             }
         })
         .setup(move |app| {
-            app.manage(tier1::init());
-            if let Ok(t) = app.state::<tier1::Handle>().get() {
-                tier1::policy::spawn(t); // pause on battery / full-screen, resume by itself
-            }
+            app.manage(tier1::init()); // also starts the battery / full-screen pause policy
             if let Some(w) = popup::window(app.handle()) {
                 popup::apply_backdrop(&w);
             }

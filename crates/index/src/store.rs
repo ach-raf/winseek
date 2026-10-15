@@ -154,6 +154,9 @@ pub struct Index {
     /// slot -> position in `order` (NONE if not searchable); lets scans run in storage order
     pub(crate) rank: Vec<u32>,
     pub(crate) pending: Vec<u32>,
+    /// Records still in `order` that were flagged `STALE` / `DELETED` since the last refresh
+    /// (may hold duplicates); lets [`Index::refresh`] skip whole-index flag passes.
+    pub(crate) touched: Vec<u32>,
     pub(crate) free: Vec<u32>,
     pub(crate) dirty: bool,
     pub(crate) live: usize,
@@ -655,6 +658,7 @@ impl Index {
     fn mark_moved(&mut self, r: u32) {
         if self.flags[r as usize] & F_INORDER != 0 {
             self.flags[r as usize] |= F_STALE;
+            self.touched.push(r);
         }
         self.add_pending(r);
     }
@@ -743,6 +747,9 @@ impl Index {
             self.prev[ru] = NONE;
             self.count_adj(self.vol[ru], self.flags[ru], false);
             self.flags[ru] = (self.flags[ru] & (F_INORDER | F_PENDING)) | F_DELETED;
+            if self.flags[ru] & F_INORDER != 0 {
+                self.touched.push(r);
+            }
             self.live -= 1;
             if self.flags[ru] & (F_INORDER | F_PENDING) == 0 {
                 self.flags[ru] |= F_FREED;
@@ -922,10 +929,148 @@ impl Index {
     }
 
     /// Fold pending mutations into the sorted order and recycle freed slots.
+    ///
+    /// Small change sets (the USN steady state) are spliced in: removed positions come from
+    /// `rank`, insert positions from a binary search, the new order is built by segment
+    /// copies and only ranks from the first changed position on are rewritten. Nothing walks
+    /// every record's flags, so a few hundred changes on a 14M-record index cost one copy of
+    /// `order` plus the rank tail instead of ~0.5 s under the writer lock.
     pub fn refresh(&mut self) {
         if !self.dirty {
             return;
         }
+        let n = self.order.len();
+        if (self.pending.len() + self.touched.len()) * 8 > n + 64 {
+            self.refresh_full();
+            return;
+        }
+        // Positions leaving `order` (renamed/moved: re-added from `pending`; deleted: gone).
+        let mut gone: Vec<usize> = self
+            .touched
+            .iter()
+            .filter(|&&r| self.flags[r as usize] & F_INORDER != 0 && self.flags[r as usize] & (F_DELETED | F_STALE) != 0)
+            .map(|&r| self.rank[r as usize] as usize)
+            .collect();
+        gone.sort_unstable();
+        gone.dedup();
+        let mut add: Vec<u32> = self.pending.iter().copied().filter(|&r| self.flags[r as usize] & F_DELETED == 0).collect();
+        add.sort_unstable_by(|&a, &b| self.cmp_idx(a, b));
+        let ins: Vec<usize> = add.iter().map(|&a| self.insert_pos(a)).collect();
+
+        // Splice: copy runs of `order` between events; an insert goes before the entry at its position.
+        let mut new = Vec::with_capacity(n - gone.len() + add.len());
+        let (mut g, mut k, mut cur) = (0, 0, 0);
+        loop {
+            let next_ins = ins.get(k).copied().unwrap_or(usize::MAX);
+            let next_gone = gone.get(g).copied().unwrap_or(usize::MAX);
+            let e = next_ins.min(next_gone);
+            if e == usize::MAX {
+                break;
+            }
+            new.extend_from_slice(&self.order[cur..e]);
+            cur = e;
+            if next_ins == e {
+                new.push(add[k]);
+                k += 1;
+            } else {
+                cur = e + 1;
+                g += 1;
+            }
+        }
+        new.extend_from_slice(&self.order[cur.min(n)..]);
+        let first = ins.first().copied().unwrap_or(usize::MAX).min(gone.first().copied().unwrap_or(usize::MAX)).min(new.len());
+
+        // Flags, ranks of leavers and the free list: only the records that changed.
+        if self.rank.len() < self.parent.len() {
+            self.rank.resize(self.parent.len(), NONE);
+        }
+        for i in 0..self.touched.len() {
+            let r = self.touched[i] as usize;
+            self.flags[r] &= !(F_INORDER | F_STALE);
+            self.rank[r] = NONE; // a re-added (moved) record gets its new rank below
+        }
+        for i in 0..self.touched.len().max(self.pending.len()) {
+            for r in [self.touched.get(i), self.pending.get(i)].into_iter().flatten().map(|&r| r as usize) {
+                if self.flags[r] & F_DELETED != 0 && self.flags[r] & F_FREED == 0 {
+                    self.flags[r] |= F_FREED;
+                    self.free.push(r as u32);
+                }
+            }
+        }
+        for i in 0..self.pending.len() {
+            let r = self.pending[i] as usize;
+            self.flags[r] &= !F_PENDING;
+            if self.flags[r] & F_DELETED == 0 {
+                self.flags[r] |= F_INORDER;
+            } else {
+                self.rank[r] = NONE;
+            }
+        }
+        Self::write_ranks(&mut self.rank, &new, first);
+        self.order = new;
+        self.pending.clear();
+        self.touched.clear();
+        self.dirty = false;
+        if self.garbage > (self.arena.len() / 4).max(1 << 20) {
+            self.compact_names();
+        }
+    }
+
+    /// Where `a` goes in `order` (number of staying entries that sort before it), skipping
+    /// entries that are leaving (`DELETED` / `STALE`: a stale entry already carries its new name).
+    fn insert_pos(&self, a: u32) -> usize {
+        let gone = |r: u32| self.flags[r as usize] & (F_DELETED | F_STALE) != 0;
+        let (mut lo, mut hi) = (0, self.order.len());
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            let mut m = mid;
+            while m < hi && gone(self.order[m]) {
+                m += 1;
+            }
+            if m == hi {
+                hi = mid; // [mid, hi) is all leaving: any position in it is equivalent to mid
+            } else if self.cmp_idx(self.order[m], a) == Ordering::Less {
+                lo = m + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    /// `rank[order[k]] = k` for `k >= from`, split over threads when the tail is large.
+    fn write_ranks(rank: &mut [u32], order: &[u32], from: usize) {
+        let tail = &order[from.min(order.len())..];
+        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let nt = hw.min(tail.len() / (1 << 18)).max(1);
+        if nt == 1 {
+            for (k, &r) in tail.iter().enumerate() {
+                rank[r as usize] = (from + k) as u32;
+            }
+            return;
+        }
+        struct Ptr(*mut u32);
+        // SAFETY: shared only for disjoint writes (see below).
+        unsafe impl Sync for Ptr {}
+        let (p, len) = (Ptr(rank.as_mut_ptr()), rank.len());
+        let chunk = tail.len().div_ceil(nt);
+        std::thread::scope(|s| {
+            for (c, part) in tail.chunks(chunk).enumerate() {
+                let p = &p;
+                s.spawn(move || {
+                    let base = from + c * chunk;
+                    for (k, &r) in part.iter().enumerate() {
+                        assert!((r as usize) < len);
+                        // SAFETY: `order` holds each record once, so threads write disjoint in-bounds slots.
+                        unsafe { *p.0.add(r as usize) = (base + k) as u32 };
+                    }
+                });
+            }
+        });
+    }
+
+    /// Whole-index refresh, for large change sets.
+    fn refresh_full(&mut self) {
         let new = self.merged();
         for &r in self.order.iter().chain(self.pending.iter()) {
             let f = &mut self.flags[r as usize];
@@ -946,6 +1091,7 @@ impl Index {
         self.rank = self.compute_rank(&new);
         self.order = new;
         self.pending.clear();
+        self.touched.clear();
         self.dirty = false;
         if self.garbage > (self.arena.len() / 4).max(1 << 20) {
             self.compact_names();
@@ -975,6 +1121,7 @@ impl Index {
         self.rank = self.compute_rank(&v);
         self.order = v;
         self.pending.clear();
+        self.touched.clear();
         self.dirty = false;
     }
 
