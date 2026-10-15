@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, IgnoreList, Profile, Tier1Status } from "./types";
+import type { Backend, IgnoreList, Profile, StatusModels, Tier1Status } from "./types";
+import { Bar, useStatusPage } from "./Status";
+import { formatDuration, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -148,6 +150,91 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
   );
 }
 
+const engineName = (m: StatusModels) =>
+  m.backend === "cpu" ? "the processor" : `${m.gpu ?? "the graphics card"} (${m.backend === "cuda12" ? "CUDA" : "Vulkan"})`;
+
+function ModelLine({ ok, name, detail, children }: { ok: boolean | null; name: string; detail?: string; children: React.ReactNode }) {
+  return (
+    <li className={ok === true ? "ok" : ok === false ? "miss" : "opt"}>
+      <span className="mi" aria-hidden>{ok === true ? "✓" : ok === false ? "!" : "–"}</span>
+      <span className="mn"><b>{name}</b>{detail && <span className="muted"> · {detail}</span>}</span>
+      <span className="ms">{children}</span>
+    </li>
+  );
+}
+
+/** Search by meaning at a glance: what it is doing, how fast, and which models are installed / loaded. */
+function Meaning({ backend, t1, onPause, onSetup }: {
+  backend: Backend; t1: Tier1Status | null; onPause: (p: boolean) => void; onSetup: () => void;
+}) {
+  const [page] = useStatusPage(backend);
+  const st = page?.tier1;
+  const m = page?.models;
+  const s = st?.stats ?? t1?.stats;
+  const off = !t1 || t1.state === "models_missing" || t1.state === "unavailable";
+  const pr = st?.paused_reason ?? t1?.paused_reason ?? null;
+  const total = s ? s.done + s.pending + s.text_only : 0;
+  const head = !t1 ? "Loading…"
+    : t1.state === "unavailable" ? `Unavailable: ${t1.error ?? "unknown error"}`
+    : t1.state === "models_missing" ? "Not set up. The model files are not downloaded yet."
+    : pr ? pausedText(pr)
+    : st?.state === "indexing" || t1.state === "indexing" ? "Indexing"
+    : s && s.pending > 0 ? "Waiting for work" : "All caught up";
+  const live = !off && !pr;
+  const files = m?.files ?? [];
+  const embedOk = files.length > 0 && files.every((f) => f.bytes != null && f.bytes === f.expected_bytes);
+  const embedSize = files.reduce((a, f) => a + (f.bytes ?? 0), 0);
+  const sv = m?.server;
+  return (
+    <div className="meaning" aria-label="Search by meaning">
+      <div className="set-row">
+        <div className="fl-title">Search by meaning</div>
+        {off ? (
+          t1?.state === "models_missing" && <button className="btn primary" onClick={onSetup}>Set up…</button>
+        ) : (
+          (pr == null || pr === "user") && (
+            <button className="btn quiet" onClick={() => onPause(pr == null)}>{pr == null ? "Pause indexing" : "Resume indexing"}</button>
+          )
+        )}
+      </div>
+      <div className={"set-state st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</div>
+      {s && total > 0 && (
+        <div className="st-cov">
+          <div className="idx-line">
+            <span className="nums">{fmt(s.done)} of {fmt(total)} files</span>
+            <span className="nums muted">
+              {[st?.rate != null && st.rate > 0 ? formatRate(st.rate) : null,
+                st?.eta_s != null && live ? `about ${formatDuration(st.eta_s)} left` : null].filter(Boolean).join(" · ")}
+            </span>
+          </div>
+          <Bar value={total ? s.done / total : null} label="Files indexed" />
+        </div>
+      )}
+      {m && (
+        <ul className="models" aria-label="Models">
+          <ModelLine ok={embedOk} name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}>
+            {!embedOk ? "Not downloaded"
+              : sv?.running ? `Loaded on ${engineName(m)}`
+              : `Installed · loads on ${engineName(m)} when there is work`}
+          </ModelLine>
+          <ModelLine ok={m.llama_present} name="llama.cpp" detail={m.llama_build}>
+            {m.llama_present ? `Installed · ${m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU"}` : "Not downloaded"}
+          </ModelLine>
+          <ModelLine ok={m.pdfium.present ? true : null} name="PDF reader" detail={`pdfium ${m.pdfium.build}`}>
+            {m.pdfium.present ? "Installed" : "Downloads when a PDF is found"}
+          </ModelLine>
+          <ModelLine ok={m.parser.present ? true : null} name="Document parser" detail={m.parser.model_id}>
+            {!m.parser.present ? "Not installed (optional)"
+              : m.parser.server.running ? `Loaded · ${fmt(m.parser.queue.queued)} queued`
+              : `Installed · ${fmt(m.parser.queue.queued)} queued`}
+          </ModelLine>
+        </ul>
+      )}
+      {st?.error && <div className="fr-error" role="alert">Last error: {st.error}</div>}
+    </div>
+  );
+}
+
 export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, onClose, onError }: {
   backend: Backend; t1: Tier1Status | null;
   onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
@@ -155,33 +242,12 @@ export function Settings({ backend, t1, onFolders, onPause, onSetup, onStatus, o
 }) {
   const root = useRef<HTMLElement>(null);
   useEffect(() => { root.current?.querySelector<HTMLElement>("input, button")?.focus(); }, []);
-  const off = !t1 || t1.state === "models_missing" || t1.state === "unavailable";
-  const s = t1?.stats;
   return (
     <section ref={root} className="firstrun setup settings" aria-label="Settings"
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <h2>Settings</h2>
 
-      <div className="set-row">
-        <div>
-          <div className="fl-title">Search by meaning</div>
-          <div className="set-state">
-            {!t1 ? "Loading…"
-              : t1.state === "unavailable" ? `Unavailable: ${t1.error ?? "unknown error"}`
-              : t1.state === "models_missing" ? "Not set up. The model files are not downloaded yet."
-              : t1.paused_reason ? pausedText(t1.paused_reason)
-              : s ? `${fmt(s.done)} of ${fmt(s.done + s.pending)} files indexed`
-              : "Running"}
-          </div>
-        </div>
-        {off ? (
-          t1?.state === "models_missing" && <button className="btn primary" onClick={onSetup}>Set up…</button>
-        ) : (
-          (t1.paused_reason == null || t1.paused_reason === "user") && (
-            <button className="btn quiet" onClick={() => onPause(t1.paused_reason == null)}>{t1.paused_reason == null ? "Pause indexing" : "Resume indexing"}</button>
-          )
-        )}
-      </div>
+      <Meaning backend={backend} t1={t1} onPause={onPause} onSetup={onSetup} />
 
       <Folders t1={t1} onChange={onFolders} />
       <Performance backend={backend} onError={onError} />

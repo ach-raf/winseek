@@ -46,6 +46,31 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Most threads [`par_map`] uses: a batch is 16 files, and the machine stays usable.
+const MAX_PREP_THREADS: usize = 8;
+
+/// `items.map(f)` on up to [`MAX_PREP_THREADS`] below-normal-priority threads, order kept.
+fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
+    let threads = std::thread::available_parallelism().map_or(1, |n| n.get().saturating_sub(1)).clamp(1, MAX_PREP_THREADS);
+    if items.len() <= 1 || threads == 1 {
+        return items.iter().map(f).collect();
+    }
+    let per = items.len().div_ceil(threads);
+    std::thread::scope(|s| {
+        let f = &f;
+        let parts: Vec<_> = items
+            .chunks(per)
+            .map(|c| {
+                s.spawn(move || {
+                    super::lower_thread_priority();
+                    c.iter().map(f).collect::<Vec<R>>()
+                })
+            })
+            .collect();
+        parts.into_iter().flat_map(|h| h.join().expect("prep thread panicked")).collect()
+    })
+}
+
 /// Per-process state of the pass loop.
 pub struct Processor {
     strikes: HashMap<i64, u32>,
@@ -207,42 +232,67 @@ impl Processor {
         let mut ocr_unavailable = false;
         let mut ocr_ran = false;
 
-        for f in pending {
-            if f.kind != KIND_IMAGE {
-                self.process_text(store, Some(embedder), &f)?;
-                handled += 1;
-                continue;
-            }
+        let (images, others): (Vec<PendingFile>, Vec<PendingFile>) = pending.into_iter().partition(|f| f.kind == KIND_IMAGE);
+        for f in others {
+            self.process_text(store, Some(embedder), &f)?;
+            handled += 1;
+        }
+        // Reading + hashing, then decoding + resizing, run on all cores: one thread per file made the
+        // CPU the bottleneck of photo folders while the GPU waited.
+        let read: Vec<Result<(Vec<u8>, String), String>> = par_map(&images, |f| {
             if f.size > MAX_FILE_BYTES {
-                lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
-                handled += 1;
-                continue;
+                return Err(String::new());
             }
-            let bytes = match std::fs::read(Path::new(&f.path)) {
-                Ok(b) => b,
+            let bytes = std::fs::read(Path::new(&f.path)).map_err(|e| format!("read: {e}"))?;
+            if bytes.len() as u64 > MAX_FILE_BYTES {
+                return Err(String::new());
+            }
+            let hash = sha256_hex(&bytes);
+            Ok((bytes, hash))
+        });
+        let mut todo: Vec<(PendingFile, Vec<u8>, String)> = Vec::new();
+        for (f, r) in images.into_iter().zip(read) {
+            let (bytes, hash) = match r {
+                Ok(x) => x,
+                Err(e) if e.is_empty() => {
+                    lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
+                    handled += 1;
+                    continue;
+                }
                 Err(e) => {
-                    lock(store).fail(f.id, &format!("read: {e}")).map_err(|e| e.to_string())?;
+                    lock(store).fail(f.id, &e).map_err(|e| e.to_string())?;
                     handled += 1;
                     continue;
                 }
             };
-            if bytes.len() as u64 > MAX_FILE_BYTES {
-                lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
-                handled += 1;
-                continue;
-            }
-            let hash = sha256_hex(&bytes);
             let known = lock(store).has_content(&hash).map_err(|e| e.to_string())?;
             if known {
                 lock(store).complete(f.id, &hash, &[], &[]).map_err(|e| e.to_string())?;
                 handled += 1;
                 continue;
             }
-            if let Some(&slot) = by_hash.get(&hash) {
-                prepared.push(Prepared { file: f, hash, slot });
+            todo.push((f, bytes, hash));
+        }
+        // Decode only the first file of each content hash; later ones link to its slot.
+        let first_of: Vec<bool> = {
+            let mut seen = std::collections::HashSet::new();
+            todo.iter().map(|(_, _, h)| seen.insert(h.clone())).collect()
+        };
+        let firsts: Vec<&[u8]> = todo.iter().zip(&first_of).filter(|(_, &first)| first).map(|((_, b, _), _)| b.as_slice()).collect();
+        let mut decoded = par_map(&firsts, |b| prepare_jpeg(b)).into_iter();
+        for ((f, bytes, hash), first) in todo.into_iter().zip(first_of) {
+            if !first {
+                match by_hash.get(&hash) {
+                    Some(&slot) => prepared.push(Prepared { file: f, hash, slot }),
+                    None => {
+                        // its twin could not be decoded either
+                        lock(store).fail(f.id, "decode failed").map_err(|e| e.to_string())?;
+                        handled += 1;
+                    }
+                }
                 continue;
             }
-            match prepare_jpeg(&bytes) {
+            match decoded.next().expect("one decode per first file") {
                 Ok(j) => {
                     if let Some(t) = self.ocr_screenshot(&f.path, &bytes, &mut ocr_unavailable) {
                         ocr_ran = true;

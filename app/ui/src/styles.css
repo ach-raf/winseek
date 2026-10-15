@@ -699,3 +699,17 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .ov-tile.selected { box-shadow: 0 0 0 2.5px var(--accent), 0 4px 12px rgba(0, 0, 0, 0.22); }
 .ov-tile::after { content: ""; position: absolute; inset: 0; border-radius: inherit; box-shadow: inset 0 0 0 1px rgba(0, 0, 0, 0.06); pointer-events: none; }
 .ov-tile.selected::after { box-shadow: inset 0 0 0 2px var(--bg-solid); }
+
+/* ---- Settings: search by meaning card ---- */
+.meaning { display: flex; flex-direction: column; gap: 8px; }
+.meaning .st-cov { max-width: none; }
+.meaning .idx-line { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; }
+.models { list-style: none; margin: 2px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; }
+.models li { display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; align-items: baseline; column-gap: 8px; }
+.models .mi { font-weight: 700; text-align: center; color: var(--fg-3); }
+.models li.ok .mi { color: var(--ok); }
+.models li.miss .mi, .models li.miss .ms { color: var(--warn); }
+.models .mn { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.models .mn b { font-weight: 600; color: var(--fg); }
+.models .ms { color: var(--fg-2); text-align: right; }
+@media (max-width: 620px) { .models li { grid-template-columns: 16px minmax(0, 1fr); } .models .ms { grid-column: 2; text-align: left; } }

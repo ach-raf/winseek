@@ -7,7 +7,7 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 const POLL_MS = 1000;
 
 /** Polls `statusPage` every second while this is mounted and the window is visible. */
-function useStatusPage(backend: Backend): [StatusPage | null, string | null, () => void] {
+export function useStatusPage(backend: Backend): [StatusPage | null, string | null, () => void] {
   const [page, setPage] = useState<StatusPage | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const load = useCallback(() => {
@@ -23,7 +23,7 @@ function useStatusPage(backend: Backend): [StatusPage | null, string | null, () 
   return [page, err, load];
 }
 
-function Bar({ value, label }: { value: number | null; label: string }) {
+export function Bar({ value, label }: { value: number | null; label: string }) {
   const pct = value == null ? 0 : Math.max(0, Math.min(100, value * 100));
   return (
     <div className={"bar" + (value == null ? " indet" : "")} role="progressbar" aria-label={label}

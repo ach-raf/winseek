@@ -965,6 +965,29 @@ mod tests {
         s.complete(id, &format!("h{n}"), &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: unit(hot) }], &[]).unwrap();
     }
 
+    /// Diagnose a stalled crawl: run the real worker passes against a copy of the installed store.
+    /// `WINSEEK_DIAG_DB=<copy of tier1.sqlite> cargo test -p winseek-app diag_live -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diag_live() {
+        let Some(db) = std::env::var_os("WINSEEK_DIAG_DB") else { return };
+        let root = data_root().unwrap();
+        let mut e = LlamaEmbedder::new(root, Manifest::embedded());
+        e.set_profile(Profile::Balanced);
+        let store = Store::open(std::path::Path::new(&db), &e.meta()).unwrap();
+        let store = Mutex::new(store);
+        let emb: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(e));
+        let paused = AtomicBool::new(false);
+        let mut proc = process::Processor::default();
+        for i in 0..6 {
+            let t0 = std::time::Instant::now();
+            let up = proc.run_upgrade_pass(&store, &emb, &paused);
+            let t1 = t0.elapsed();
+            let r = proc.run_pass(&store, &emb, &paused);
+            eprintln!("pass {i}: upgrade {up:?} in {t1:?}; run {r:?} in {:?}; stats {:?}", t0.elapsed(), lock(&store).stats().ok());
+        }
+    }
+
     #[test]
     fn semantic_search_ranks_and_filters_scope() {
         let t = tier(Box::new(Q), &[r"C:\Pics"]);

@@ -13,7 +13,7 @@ export function backendLine(plan: ModelsPlan): string {
 export function pausedText(r: PausedReason): string {
   return r === "user" ? "Paused by you"
     : r === "battery" ? "Paused on battery power. It resumes when you plug in."
-    : "Paused while a full-screen app is running. It resumes afterwards.";
+    : "Paused while a full-screen game or presentation runs. It resumes afterwards.";
 }
 
 function Bar({ value, label }: { value: number | null; label: string }) {
