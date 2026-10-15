@@ -3,7 +3,7 @@ import type { Backend, IgnoreList, ModelGroup, Profile, StatusModels, Tier1Statu
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
-import { formatDuration, formatRate, formatSize } from "./format";
+import { formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -227,11 +227,21 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
   const off = !t1 || t1.state === "models_missing" || t1.state === "unavailable";
   const pr = st?.paused_reason ?? t1?.paused_reason ?? null;
   const total = s ? s.done + s.pending + s.text_only : 0;
+  // Document-parser progress: the enrichment pass that runs once the embed queue is empty.
+  const q = m?.parser.queue;
+  const pTotal = q ? q.queued + q.done + q.failed + q.skipped : 0;
+  const pLeft = q?.queued ?? 0;
+  const pFailed = q?.failed ?? 0;
+  const pRate = m?.parser.rate ?? null;
+  const pEta = m?.parser.eta_s ?? null;
+  const indexing = st?.state === "indexing" || t1?.state === "indexing";
+  const reading = indexing && s != null && s.pending + s.text_only === 0 && pLeft > 0;
   const head = !t1 ? "Loading…"
     : t1.state === "unavailable" ? `Unavailable: ${t1.error ?? "unknown error"}`
     : t1.state === "models_missing" ? "Not set up. The model files are not downloaded yet."
     : pr ? pausedText(pr)
-    : st?.state === "indexing" || t1.state === "indexing" ? "Indexing"
+    : reading ? "Reading documents"
+    : indexing ? "Indexing"
     : s && s.pending > 0 ? "Waiting for work" : "All caught up";
   const live = !off && !pr;
   const files = m?.files ?? [];
@@ -270,6 +280,20 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
             </div>
           </div>
         )}
+        {m?.parser.present && pTotal > 0 && (pLeft > 0 || pRate != null) && (
+          <div className="set-row col">
+            <div className="st-cov">
+              <div className="idx-line">
+                <span className="nums">{fmt(pTotal - pLeft)} of {fmt(pTotal)} pages</span>
+                <span className="nums muted">
+                  {[pRate != null ? formatPages(pRate) : null,
+                    pRate != null && pEta != null && pLeft > 0 && !pr ? `about ${formatDuration(pEta)} left` : null].filter(Boolean).join(" · ")}
+                </span>
+              </div>
+              <Bar value={pTotal ? (pTotal - pLeft) / pTotal : null} label="Pages read by the document parser" />
+            </div>
+          </div>
+        )}
       </div>
       {m && (
         <>
@@ -292,8 +316,9 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
             <ModelLine name="Document parser" detail={m.parser.model_id} optional
                        act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
               {!m.parser.present ? "Optional"
-                : m.parser.server.running ? `Loaded · ${fmt(m.parser.queue.queued)} queued`
-                : `Installed · ${fmt(m.parser.queue.queued)} queued`}
+                : pLeft > 0 ? `${m.parser.server.running ? "Loaded" : "Installed"} · ${fmt(pTotal - pLeft)} parsed · ${fmt(pLeft)} left${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
+                : pTotal > 0 ? `Done · ${fmt(pTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
+                : m.parser.server.running ? "Loaded" : "Installed"}
             </ModelLine>
           </ul>
         </>

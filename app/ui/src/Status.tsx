@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusTier0, StatusTier1, VolumeDetail } from "./types";
-import { formatDuration, formatPercent, formatRate, formatSize } from "./format";
+import { formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -184,8 +184,13 @@ function ParserRows({ p }: { p: StatusParser }) {
             ? `Running${sv.port != null ? ` on port ${sv.port}` : ""}${sv.unload_in_s != null ? ` · frees GPU memory in ${formatDuration(sv.unload_in_s)} if idle` : ""}`
             : `Not running. It starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`}
         </Row>
-        <Row k="Parse queue" title="Images and scanned pages waiting for, done with, or given up on by the document parser">
-          {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.failed)} failed
+        <Row k="Parse queue" title="Images and scanned pages waiting for, finished by, skipped by, or given up on by the document parser">
+          {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.skipped)} skipped · {fmt(q.failed)} failed
+        </Row>
+        <Row k="Parse speed" title="Pages per minute over the last minute, and how long the queue still needs">
+          {p.rate != null
+            ? `${formatPages(p.rate)}${p.eta_s != null && q.queued > 0 ? ` · about ${formatDuration(p.eta_s)} left` : ""}`
+            : "—"}
         </Row>
         <Row k="Profile" title="Performance profile (Settings)">{profileName(p.profile)}</Row>
         <Row k="Parser routing thresholds" title="Which images go to the parser. Tuned = measured on a labelled set of documents and photos.">

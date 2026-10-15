@@ -170,7 +170,11 @@ export interface StatusParser {
   present: boolean;
   files: StatusModelFile[];
   server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
-  queue: { queued: number; done: number; failed: number };
+  queue: { queued: number; done: number; failed: number; skipped: number };
+  /** Pages per second over the last minute of parsing; null when the parser was not recently working. */
+  rate: number | null;
+  /** Seconds until the parse queue drains at that rate; null when idle or unknown. */
+  eta_s: number | null;
   profile: Profile;
   /** Which images go to the parser. Guesses until the evaluation has tuned them. */
   routing: { doc_min: number; doc_margin: number; screenshot_min_chars: number; provisional: boolean };

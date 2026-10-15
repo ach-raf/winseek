@@ -281,7 +281,11 @@ function mockStatusPage(): StatusPage {
           { name: "Infinity-Parser2-Flash.mmproj-q8_0.gguf", role: "mmproj", expected_bytes: 336000000, bytes: parserHave() ? 336000000 : null },
         ],
         server: parserServer(now),
-        queue: parserHave() ? { queued: modelsInstalled ? 3 : 0, done: modelsInstalled ? 41 : 0, failed: 0 } : { queued: 0, done: 0, failed: 0 },
+        queue: parserHave()
+          ? { queued: modelsInstalled ? 3 : 0, done: modelsInstalled ? 41 : 0, failed: 0, skipped: 2 }
+          : { queued: 0, done: 0, failed: 0, skipped: 0 },
+        rate: parserHave() && modelsInstalled ? 0.15 : null,
+        eta_s: parserHave() && modelsInstalled ? 20 : null,
         profile: mockProfile,
         routing: { doc_min: 0.6, doc_margin: 0.04, screenshot_min_chars: 200, provisional: false },
       },

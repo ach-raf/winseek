@@ -78,6 +78,12 @@ export function formatRate(r: number): string {
   return `${r >= 10 ? r.toFixed(0) : r.toFixed(1)} files/s`;
 }
 
+/** Document-parser speed as pages per minute (a page takes seconds, so per-minute reads best). */
+export function formatPages(perSecond: number): string {
+  const perMin = perSecond * 60;
+  return `${perMin >= 10 ? perMin.toFixed(0) : perMin.toFixed(1)} pages/min`;
+}
+
 /** Percentage that never rounds to 0 or 100 unless it really is: 99.97% -> "99.9%", 0.02% -> "0.1%". */
 export function formatPercent(frac: number): string {
   const p = frac * 100;
