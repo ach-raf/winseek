@@ -733,7 +733,15 @@ export default function App({ backend }: { backend: Backend }) {
 
   return (
     <div className="shell">
-      <header className={"searchbar" + (query ? "" : " idle")} data-tauri-drag-region>
+      <header
+        className={"searchbar" + (query ? "" : " idle")}
+        onMouseDown={(e) => {
+          // The bar is the window's drag handle; the input and buttons keep their own behavior.
+          if (e.button !== 0 || (e.target as HTMLElement).closest("input, button")) return;
+          e.preventDefault();
+          backend.movePopup().catch(fail);
+        }}
+      >
         <svg className="glass" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
           <circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" />
         </svg>

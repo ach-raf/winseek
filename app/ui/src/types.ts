@@ -291,6 +291,8 @@ export interface Backend {
   renamePath(path: string, newName: string): Promise<string>;
   showContextMenu(path: string, x: number, y: number): Promise<MenuResult>;
   startDrag(paths: string[]): Promise<string>;
+  /** Start a native window drag from the search bar (popup). */
+  movePopup(): Promise<void>;
   /** Shell icon/thumbnail URL, or null when unavailable (mock) -> SVG glyph. */
   iconUrl(path: string, isDir: boolean, thumb: boolean, size?: number): string | null;
   hide(): Promise<void>;

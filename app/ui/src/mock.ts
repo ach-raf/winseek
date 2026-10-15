@@ -514,6 +514,7 @@ export const mockBackend: Backend = {
   },
   async showContextMenu(path, x, y) { console.info("[mock] context menu", path, x, y); return "cancelled"; },
   async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
+  async movePopup() { console.info("[mock] window drag (no-op in browser)"); },
   iconUrl(path, _isDir, thumb, size) {
     const f = libByPath.get(path);
     return f?.tile && thumb ? tileUrl(f.tile, size && size > 300 ? 512 : 256) : null;

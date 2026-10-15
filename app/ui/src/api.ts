@@ -76,6 +76,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
     onOpenStatus: (cb) => t.event.listen("open-status", cb),
     openLibrary: () => inv("open_library"),
+    movePopup: () => inv("move_popup"),
     libraryImages: () => inv<LibImage[]>("library_images"),
     libraryCollections: () => inv<Collection[]>("library_collections"),
     librarySetCollections: (list) => inv<Collection[]>("library_set_collections", { list }),

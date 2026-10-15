@@ -10,6 +10,8 @@ static SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 static MODAL: AtomicBool = AtomicBool::new(false);
 /// Where the user last dragged the popup (outer top-left), so it reopens there.
 static USER_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
+/// When the current window drag was started, so the blur it triggers does not hide the popup.
+static DRAG_AT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -55,6 +57,14 @@ fn place_on_cursor_monitor(w: &WebviewWindow) {
             )
         });
     let _ = w.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Starts a native window drag from the search bar (UI command). The drag loop can fire a
+/// transient focus loss on Windows, so the time is armed for the blur guard.
+#[tauri::command]
+pub fn start_move(w: WebviewWindow) {
+    DRAG_AT_MS.store(now_ms(), Ordering::Relaxed);
+    let _ = w.start_dragging();
 }
 
 /// Records a drag the user made while the popup was visible.
@@ -117,6 +127,9 @@ impl Drop for ModalGuard {
 /// (the OS may bounce focus while the window is being activated).
 pub fn on_blur(app: &AppHandle) {
     if MODAL.load(Ordering::Relaxed) {
+        return;
+    }
+    if now_ms().saturating_sub(DRAG_AT_MS.load(Ordering::Relaxed)) <= 400 {
         return;
     }
     if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) > 250 {
