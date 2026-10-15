@@ -122,6 +122,7 @@ fn main() {
             if win.label() == popup::LABEL {
                 match ev {
                     WindowEvent::Focused(false) => popup::on_blur(win.app_handle()),
+                    WindowEvent::Moved(pos) => popup::on_moved(win, *pos),
                     // Never destroy the pre-warmed window.
                     WindowEvent::CloseRequested { api, .. } => {
                         api.prevent_close();

@@ -81,7 +81,7 @@ export interface GridLayout {
   gap: number;
 }
 
-export const GRID_PAD = 16;
+export const GRID_PAD = 20;
 
 /** Columns and square cell size for a given width: cells grow to fill the row, never below `minCell`. */
 export function gridCols(width: number, minCell: number, gap: number, pad = GRID_PAD): { cols: number; cell: number } {

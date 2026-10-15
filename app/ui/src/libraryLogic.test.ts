@@ -29,7 +29,7 @@ test("groupByMonth: newest month first, newest item first, rail follows", () => 
 });
 
 test("gridCols fills the width with square cells", () => {
-  assert.deepEqual(gridCols(1000, 160, 8), { cols: 5, cell: 187 });
+  assert.deepEqual(gridCols(1000, 160, 8), { cols: 5, cell: 185 });
   const g = gridCols(300, 160, 8);
   assert.equal(g.cols, 1);
   assert.ok(g.cell >= 32);
@@ -46,7 +46,7 @@ test("layoutGrid: headings, wrapped rows, section offsets", () => {
   assert.equal(L.rows[2].top, 158);
   assert.equal(L.sectionTop[0], 8);
   assert.equal(L.sectionTop[2], 268);
-  assert.equal(L.total, 268 + 40 + 110 + 16);
+  assert.equal(L.total, 268 + 40 + 110 + 20);
   assert.equal(rowOfItem(L, 4)?.top, 158);
   assert.equal(rowOfItem(L, 6)?.section, 2);
   assert.equal(rowOfItem(L, 7), null);

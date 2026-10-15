@@ -1,12 +1,15 @@
 //! Popup window lifecycle: pre-warmed hidden, shown on the monitor under the cursor.
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter, Manager, PhysicalPosition, WebviewWindow};
 
 pub const LABEL: &str = "popup";
 static SHOWN_AT_MS: AtomicU64 = AtomicU64::new(0);
 static MODAL: AtomicBool = AtomicBool::new(false);
+/// Where the user last dragged the popup (outer top-left), so it reopens there.
+static USER_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 
 fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
@@ -16,7 +19,10 @@ pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(LABEL)
 }
 
-fn center_on_cursor_monitor(w: &WebviewWindow) {
+/// Our own reposition right after `show` must not count as a user drag.
+const SETTLE_MS: u64 = 500;
+
+fn place_on_cursor_monitor(w: &WebviewWindow) {
     let Ok(cursor) = w.cursor_position() else { return };
     let mon = w
         .monitor_from_point(cursor.x, cursor.y)
@@ -25,15 +31,47 @@ fn center_on_cursor_monitor(w: &WebviewWindow) {
         .or_else(|| w.primary_monitor().ok().flatten());
     let (Some(mon), Ok(size)) = (mon, w.outer_size()) else { return };
     let (mp, ms) = (mon.position(), mon.size());
-    let x = mp.x + (ms.width as i32 - size.width as i32) / 2;
-    // Spotlight-style: upper third rather than dead center.
-    let y = mp.y + ((ms.height as i32 - size.height as i32) as f64 * 0.28) as i32;
+    let (mw, mh) = (ms.width as i32, ms.height as i32);
+    let (ww, wh) = (size.width as i32, size.height as i32);
+    // A dragged position counts while the window's centre is still on this monitor, clamped so a
+    // resolution change cannot strand the popup off-screen. A different monitor re-centers Spotlight-style.
+    let saved = USER_POS.lock().ok().and_then(|g| *g).filter(|(x, y)| {
+        let (cx, cy) = (x + ww / 2, y + wh / 2);
+        cx >= mp.x && cx < mp.x + mw && cy >= mp.y && cy < mp.y + mh
+    });
+    let (x, y) = saved
+        .map(|(x, y)| {
+            let vis = 120.min(ww);
+            (
+                x.clamp(mp.x + vis - ww, mp.x + mw - vis),
+                y.clamp(mp.y, mp.y + mh - 60),
+            )
+        })
+        .unwrap_or_else(|| {
+            // Spotlight-style: centred horizontally, upper third rather than dead centre.
+            (
+                mp.x + (mw - ww) / 2,
+                mp.y + ((mh - wh) as f64 * 0.28) as i32,
+            )
+        });
     let _ = w.set_position(PhysicalPosition::new(x, y));
+}
+
+/// Records a drag the user made while the popup was visible.
+pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
+    if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS {
+        return;
+    }
+    if w.is_visible().unwrap_or(false) {
+        if let Ok(mut g) = USER_POS.lock() {
+            *g = Some((pos.x, pos.y));
+        }
+    }
 }
 
 pub fn show(app: &AppHandle) {
     let Some(w) = window(app) else { return };
-    center_on_cursor_monitor(&w);
+    place_on_cursor_monitor(&w);
     SHOWN_AT_MS.store(now_ms(), Ordering::Relaxed);
     let _ = w.show();
     let _ = w.set_focus();

@@ -8,8 +8,8 @@ import {
 } from "./libraryLogic";
 
 const MIN_CELL = 150;
-const GAP = 6;
-const HEAD_H = 44;
+const GAP = 8;
+const HEAD_H = 48;
 const THUMB = 256;
 
 export interface GridItem {
