@@ -5,6 +5,7 @@ import { rowAction, type RowAction } from "./modelRows";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
+import logo from "./assets/logo.png";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const lc = (s: string) => s.toLowerCase();
@@ -402,7 +403,7 @@ export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onC
     <section className="firstrun setup settings" aria-label="Settings"
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
       <div className="set-side">
-        <div className="set-brand">winseek</div>
+        <div className="set-brand"><img src={logo} alt="" width={22} height={22} />winseek</div>
         <nav ref={navRef} className="set-nav" aria-label="Settings sections" onKeyDown={navKey}>
           {NAV.map((s) => (
             <button key={s.id} role="tab" aria-selected={section === s.id}
