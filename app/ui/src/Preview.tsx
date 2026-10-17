@@ -22,6 +22,7 @@ export interface PreviewProps {
   boxes?: HitBox[] | null;
   onOpen: () => void;
   onReveal: () => void;
+  onCopyPath: () => void;
 }
 
 /**
@@ -29,7 +30,7 @@ export interface PreviewProps {
  * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
  * dimmed, until the new one arrives so arrowing through results does not flash.
  */
-export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal }: PreviewProps) {
+export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal, onCopyPath }: PreviewProps) {
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -66,6 +67,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
           <div className="pv-name" title={hit.name}>{hit.name}</div>
           <div className="pv-path" title={hit.path}><span className="head">{head}</span><span className="tail">{tail}</span></div>
         </div>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onCopyPath} title="Copy the full path (Ctrl+Shift+C)">Copy path</button>
         <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onReveal} title="Show in Explorer (Ctrl+Enter)">Reveal</button>
         <button className="btn primary pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onOpen} title="Open (Enter)">Open</button>
       </header>

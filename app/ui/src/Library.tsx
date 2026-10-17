@@ -97,6 +97,7 @@ export default function Library({ backend }: { backend: Backend }) {
   const actions: LibActions = useMemo(() => ({
     open: (p) => { backend.openPath(p).catch(fail); },
     reveal: (p) => { backend.revealPath(p).catch(fail); },
+    copy: (p) => { backend.copyPath(p).then(() => flash("Path copied")).catch(fail); },
     menu: (p, x, y) => {
       backend.showContextMenu(p, x, y).then((r) => { if (r === "deleted") trashed([p]); }).catch(fail);
     },
@@ -107,7 +108,7 @@ export default function Library({ backend }: { backend: Backend }) {
         trashed(paths);
       } catch (e) { fail(e); }
     },
-  }), [backend, fail, trashed]);
+  }), [backend, fail, flash, trashed]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {

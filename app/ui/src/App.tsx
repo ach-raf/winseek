@@ -861,7 +861,7 @@ export default function App({ backend }: { backend: Backend }) {
       </div>
       {pvPane && (
         <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes}
-                 onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} />
+                 onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} onCopyPath={() => void act("copy", pv.hit)} />
       )}
       </div>
 

@@ -32,6 +32,8 @@ export interface GallerySection {
 export interface LibActions {
   open(path: string): void;
   reveal(path: string): void;
+  /** Copy the file's full path to the clipboard. */
+  copy(path: string): void;
   menu(path: string, x: number, y: number): void;
   /** Recycle Bin (with the undo toast). Never a hard delete. */
   recycle(paths: string[]): Promise<void>;
@@ -121,6 +123,7 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.ctrlKey && e.key === "Enter") { if (cur) { e.preventDefault(); actions.reveal(cur.path); } return; }
+    if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") { if (cur) { e.preventDefault(); actions.copy(cur.path); } return; }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     switch (e.key) {
       case "ArrowLeft": case "ArrowRight": case "ArrowUp": case "ArrowDown": case "Home": case "End":
@@ -217,7 +220,7 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
       </div>
       {pvOpen && pvItem && (
         <div className="lg-pv">
-          <Preview backend={backend} hit={toHit(pvItem)} query="" onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} />
+          <Preview backend={backend} hit={toHit(pvItem)} query="" onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} onCopyPath={() => actions.copy(pvItem.path)} />
         </div>
       )}
       {rail && railList.length > 0 && (
