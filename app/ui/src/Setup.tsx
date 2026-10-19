@@ -26,7 +26,7 @@ function Bar({ value, label }: { value: number | null; label: string }) {
   );
 }
 
-export function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (include: string[]) => void }) {
+export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; onChange: (include: string[]) => void; onRemove: (path: string) => void }) {
   const [known, setKnown] = useState<string[]>([]); // every folder seen this session, so an unchecked one can be re-checked
   const [text, setText] = useState("");
   const include = t1?.include ?? [];
@@ -44,9 +44,15 @@ export function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (i
     setText("");
     if (!on(p)) onChange([...include, p]);
   };
+  // Removal is final (the backend forgets the folder's indexed files), unlike unchecking,
+  // which keeps both the entry and the data for a quick re-check.
+  const remove = (p: string) => {
+    setKnown((k) => k.filter((x) => x.toLowerCase() !== p.toLowerCase()));
+    onRemove(p);
+  };
   return (
     <div className="folders">
-      <div className="fl-title">Folders to index</div>
+      <div className="fl-title">Folders to index{known.length > 0 ? ` · ${known.length}` : ""}</div>
       <div className="set-group">
         <ul className="fl-list">
           {known.map((p) => (
@@ -55,6 +61,12 @@ export function Folders({ t1, onChange }: { t1: Tier1Status | null; onChange: (i
                 <input type="checkbox" checked={on(p)} onChange={() => toggle(p)} />
                 <span>{p}</span>
               </label>
+              <button className="fl-rm" onClick={() => remove(p)} aria-label={`Remove ${p}`}
+                      title="Remove: stops indexing this folder and forgets the files already indexed">
+                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
             </li>
           ))}
           {known.length === 0 && <li className="none">No folders yet</li>}
@@ -94,9 +106,9 @@ function Indexing({ t1, onPause }: { t1: Tier1Status | null; onPause: (p: boolea
   );
 }
 
-export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
+export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose, primaryRef }: {
   t1: Tier1Status | null; models: Models;
-  onFolders: (include: string[]) => void; onPause: (p: boolean) => void; onClose: () => void;
+  onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void; onClose: () => void;
   primaryRef: React.MutableRefObject<() => void>;
 }) {
   const { plan, running, progress, interrupted } = models;
@@ -120,7 +132,7 @@ export function Setup({ t1, models, onFolders, onPause, onClose, primaryRef }: {
       <p>Find photos by what is in them, like &ldquo;sunset at the beach&rdquo;. Everything runs on this PC; nothing leaves it. Names-only search stays fully available.</p>
 
       <div className={phase === "choose" || phase === "interrupted" || phase === "loading" ? "setup-cols" : undefined}>
-      {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} />}
+      {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} />}
 
       {phase === "loading" && <div className="vols"><Bar value={null} label="Detecting your GPU" /><span className="muted">Detecting your GPU…</span></div>}
 

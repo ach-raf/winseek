@@ -85,6 +85,7 @@ fn main() {
             service::accent_palette,
             tier1::tier1_status,
             tier1::tier1_set_scopes,
+            tier1::tier1_remove_folder,
             tier1::tier1_pause,
             tier1::tier1_get_ignore,
             tier1::tier1_set_ignore,

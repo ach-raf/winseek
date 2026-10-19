@@ -309,6 +309,8 @@ export interface Backend {
   accentPalette(): Promise<string[] | null>;
   tier1Status(): Promise<Tier1Status>;
   tier1SetScopes(include: string[], exclude: string[]): Promise<void>;
+  /** Remove a folder for good: out of the scopes, its indexed files forgotten. Returns how many files were removed. */
+  tier1RemoveFolder(path: string): Promise<number>;
   /** User pause (wins over the automatic battery / full-screen pause). */
   tier1Pause(paused: boolean): Promise<void>;
   tier1GetIgnore(): Promise<IgnoreList>;

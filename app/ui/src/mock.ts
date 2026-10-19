@@ -539,6 +539,12 @@ export const mockBackend: Backend = {
   },
   async tier1Status() { return t1Status(); },
   async tier1SetScopes(inc, exc) { await sleep(30); include = [...inc]; exclude = [...exc]; },
+  async tier1RemoveFolder(path) {
+    await sleep(30);
+    const p = path.trim().replace(/[/\\]+$/, "").toLowerCase();
+    include = include.filter((i) => i.replace(/[/\\]+$/, "").toLowerCase() !== p);
+    return 0; // the mock keeps no per-folder row counts
+  },
   async tier1Pause(p) { userPaused = p; },
   async tier1GetIgnore() { return { list: [...(ignoreList ?? IGNORE_DEFAULTS)], defaults: [...IGNORE_DEFAULTS] }; },
   async tier1SetIgnore(list) {

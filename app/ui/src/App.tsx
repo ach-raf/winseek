@@ -670,6 +670,9 @@ export default function App({ backend }: { backend: Backend }) {
   const setFolders = useCallback((include: string[]) => {
     backend.tier1SetScopes(include, t1?.exclude ?? []).then(refreshT1).catch(fail);
   }, [backend, t1, refreshT1, fail]);
+  const removeFolder = useCallback((path: string) => {
+    backend.tier1RemoveFolder(path).then(refreshT1).catch(fail);
+  }, [backend, refreshT1, fail]);
   const pauseIndexing = useCallback((p: boolean) => { backend.tier1Pause(p).then(refreshT1).catch(fail); }, [backend, refreshT1, fail]);
 
   // ---- render --------------------------------------------------------------
@@ -805,9 +808,9 @@ export default function App({ backend }: { backend: Backend }) {
       </div>
 
       {showPanel && (setupOpen ? (
-        <Setup t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
+        <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
       ) : settingsOpen ? (
-        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onPause={pauseIndexing}
+        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
                   onSetup={openSetup} onClose={closeSettings} onLibrary={openLibrary}
                   section={settingsSection} onSection={setSettingsSection} onError={fail} />
       ) : (

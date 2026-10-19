@@ -1,5 +1,6 @@
 //! Default Tier 1 scopes: the user's Pictures, Documents, Desktop and Downloads folders.
 
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use windows::core::GUID;
@@ -27,6 +28,27 @@ pub fn default_include() -> Vec<String> {
         .filter(|p| p.is_dir())
         .map(|p| p.to_string_lossy().into_owned())
         .collect()
+}
+
+/// A scope root as it is stored and compared: backslash separators, no trailing separator.
+/// Case is kept (paths are user-visible); comparisons fold it.
+pub fn normalize_root(path: &str) -> String {
+    path.trim().trim_matches('"').replace('/', "\\").trim_end_matches('\\').trim_end_matches('/').to_string()
+}
+
+/// Trim every root and drop empty or duplicate (case-insensitive) ones, keeping the first
+/// occurrence. Duplicate roots would otherwise be crawled (and re-embedded) twice.
+pub fn normalize(mut s: Scopes) -> Scopes {
+    let clean = |list: &mut Vec<String>| {
+        let mut seen: HashSet<String> = HashSet::new();
+        list.retain_mut(|p| {
+            *p = normalize_root(p);
+            !p.is_empty() && seen.insert(p.to_ascii_lowercase())
+        });
+    };
+    clean(&mut s.include);
+    clean(&mut s.exclude);
+    s
 }
 
 /// Saved scopes, or the defaults when nothing is saved (empty `include`).
@@ -61,5 +83,15 @@ mod tests {
         let (e, used_default) = effective(Scopes { include: vec![], exclude: vec![r"E:\z".into()] });
         assert!(used_default);
         assert_eq!(e.exclude, vec![r"E:\z".to_string()]);
+    }
+
+    #[test]
+    fn roots_are_trimmed_and_deduplicated() {
+        let s = normalize(Scopes {
+            include: vec![r#" "D:\Photos\ "#.into(), r"D:/photos".into(), r"E:\\".into(), String::new()],
+            exclude: vec![r"D:\Photos\raw/".into(), r"d:\photos\RAW".into()],
+        });
+        assert_eq!(s.include, vec![r"D:\Photos".to_string(), r"E:".to_string()]);
+        assert_eq!(s.exclude, vec![r"D:\Photos\raw".to_string()]);
     }
 }

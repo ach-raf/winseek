@@ -38,6 +38,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     accentPalette: () => inv("accent_palette"),
     tier1Status: () => inv<Tier1Status>("tier1_status"),
     tier1SetScopes: (include, exclude) => inv("tier1_set_scopes", { include, exclude }),
+    tier1RemoveFolder: (path) => inv<number>("tier1_remove_folder", { path }),
     tier1Pause: (paused) => inv("tier1_pause", { paused }),
     tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
     tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),

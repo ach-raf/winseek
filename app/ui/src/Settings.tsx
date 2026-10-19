@@ -378,9 +378,9 @@ const NAV: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
   { id: "status", label: "Status", icon: I.status },
 ];
 
-export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onClose, onLibrary, section, onSection, onError }: {
+export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onLibrary, section, onSection, onError }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
-  onFolders: (include: string[]) => void; onPause: (p: boolean) => void;
+  onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void;
   onSetup: () => void; onClose: () => void; onLibrary: () => void;
   section: SettingsSection; onSection: (s: SettingsSection) => void; onError: (e: unknown) => void;
 }) {
@@ -418,7 +418,7 @@ export function Settings({ backend, t1, models, onFolders, onPause, onSetup, onC
           {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
           {section === "indexing" && (
             <>
-              <Folders t1={t1} onChange={onFolders} />
+              <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} />
               <CodeToggle backend={backend} onError={onError} />
               <IgnoredNames backend={backend} onError={onError} />
             </>

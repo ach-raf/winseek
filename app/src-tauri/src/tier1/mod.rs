@@ -302,7 +302,40 @@ impl Tier1 {
     }
 
     pub fn set_scopes(&self, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
-        let s = Scopes { include, exclude };
+        self.persist_scopes(scopes::normalize(Scopes { include, exclude }))
+    }
+
+    /// Forget a folder: drop it from the include roots and delete its file rows together with the
+    /// vectors/texts only they referenced. Unlike unchecking (which keeps the data so a re-check
+    /// is instant), removal is meant to be final. Returns the number of files forgotten.
+    pub fn remove_folder(&self, path: &str) -> Result<usize, String> {
+        let p = scopes::normalize_root(path);
+        if p.is_empty() {
+            return Err("remove_folder: empty path".into());
+        }
+        let lower = p.to_ascii_lowercase();
+        let snap = self.snapshot();
+        let included = snap.scopes.include.iter().any(|i| scopes::normalize_root(i).to_ascii_lowercase() == lower);
+        if included {
+            let include: Vec<String> =
+                snap.scopes.include.iter().filter(|i| scopes::normalize_root(i).to_ascii_lowercase() != lower).cloned().collect();
+            self.persist_scopes(Scopes { include, exclude: snap.scopes.exclude.clone() })?;
+        }
+        let n = {
+            let mut store = lock(&self.store);
+            let files = store.remove_under(&p).map_err(|e| e.to_string())?;
+            let content = store.gc().map_err(|e| e.to_string())?;
+            eprintln!("winseek: tier 1: removed {p} from the folders ({files} files, {content} content rows forgotten)");
+            files
+        };
+        // If the folder is gone but a nested root is still included, the crawler re-runs and
+        // re-queues whatever is still in scope.
+        Ok(n)
+    }
+
+    /// Save the scopes and make the crawler re-run. The one mutation path for scopes: both
+    /// [`Self::set_scopes`] and [`Self::remove_folder`] go through here.
+    fn persist_scopes(&self, s: Scopes) -> Result<(), String> {
         lock(&self.store).set_scopes(&s).map_err(|e| e.to_string())?;
         let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
         snap.scopes = s;
@@ -894,6 +927,14 @@ pub async fn tier1_set_scopes(h: tauri::State<'_, Handle>, include: Vec<String>,
     crate::commands::blocking(move || t.set_scopes(include, exclude)).await?
 }
 
+/// Remove a folder from indexing for good: out of the scopes, and its indexed files are
+/// forgotten. Returns how many files were removed from the index.
+#[tauri::command]
+pub async fn tier1_remove_folder(h: tauri::State<'_, Handle>, path: String) -> Result<usize, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.remove_folder(&path)).await?
+}
+
 #[tauri::command]
 pub async fn tier1_get_ignore(h: tauri::State<'_, Handle>) -> Result<IgnoreDto, String> {
     let t = h.get()?;
@@ -1223,6 +1264,33 @@ mod tests {
         assert_eq!((st.include, st.exclude), (vec![r"D:\x".to_string()], vec![r"D:\x\y".to_string()]));
         assert!(t.snapshot().gen > g0);
         assert_eq!(lock(&t.store).get_scopes().unwrap().include, vec![r"D:\x".to_string()]);
+    }
+
+    #[test]
+    fn remove_folder_drops_the_scope_and_forgets_its_files() {
+        let t = tier(Box::new(Q), &[r"C:\Pics", r"D:\Docs"]);
+        {
+            let mut s = lock(&t.store);
+            let a = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, r"C:\Pics\cat.jpg", 1, 1, "image").unwrap();
+            s.complete(a, "h1", &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: unit(1) }], &[(0, "a cat picture".into())]).unwrap();
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 2 }, r"D:\Docs\report.pdf", 1, 1, "doc").unwrap();
+            s.complete(id, "h2", &[], &[(0, "the quarterly invoice total".into())]).unwrap();
+        }
+        let g0 = t.snapshot().gen;
+        assert_eq!(t.remove_folder(r"C:\Pics\").unwrap(), 1, "trailing separator is trimmed, the file is gone");
+        assert!(t.snapshot().gen > g0, "the crawler re-runs");
+        let st = t.status();
+        assert_eq!(st.include, vec![r"D:\Docs".to_string()]);
+        assert_eq!(lock(&t.store).get_scopes().unwrap().include, vec![r"D:\Docs".to_string()]);
+        {
+            let s = lock(&t.store);
+            assert_eq!(s.stats().unwrap().files, 1, "only the kept folder's row is left");
+            assert!(s.search_text("invoice", 5).unwrap().len() == 1);
+            assert!(s.search_text("cat", 5).unwrap().is_empty(), "the removed folder's text is forgotten");
+        }
+        // Case-insensitive and idempotent; an unknown path only purges (nothing to purge).
+        assert_eq!(t.remove_folder(r"c:\pics").unwrap(), 0);
+        assert_eq!(t.remove_folder("").unwrap_err(), "remove_folder: empty path");
     }
 
     #[test]
