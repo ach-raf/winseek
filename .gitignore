@@ -9,3 +9,7 @@ node_modules/
 *.gguf
 /models/
 /llama-bin/
+
+# local tooling / caches
+.claude/
+.vite/
