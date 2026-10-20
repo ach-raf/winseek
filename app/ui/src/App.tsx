@@ -707,6 +707,19 @@ export default function App({ backend }: { backend: Backend }) {
         }
       }
       if (matchesKey(e, "Ctrl+Shift+L")) { e.preventDefault(); openStatus(); return; }
+      // Ctrl+Shift+E opens the containing folder WITHOUT selecting (folder rows: the folder
+      // itself); Ctrl+Shift+T opens a terminal there (PRD B4, P1). Launch rows: no-ops.
+      if (matchesKey(e, "Ctrl+Shift+E") || matchesKey(e, "Ctrl+Shift+T")) {
+        e.preventDefault();
+        if (current && !ovItem?.launch) {
+          const dir = current.is_dir || !current.path.includes("\\")
+            ? current.path
+            : current.path.slice(0, current.path.lastIndexOf("\\"));
+          if (matchesKey(e, "Ctrl+Shift+E")) void backend.openPath(dir).then(() => backend.hide()).catch(fail);
+          else void backend.openTerminal(dir).catch(fail);
+        }
+        return;
+      }
       // While the preview is open its keys win: pages, zoom, pan, extract, copy text (PRD B6).
       if (pvOpen && previewApi.current) {
         const api = previewApi.current;

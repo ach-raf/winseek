@@ -88,6 +88,7 @@ fn main() {
             commands::status,
             commands::recent,
             commands::open_path,
+            commands::open_terminal,
             commands::reveal_path,
             commands::copy_path,
             preview::preview_info,

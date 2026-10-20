@@ -369,6 +369,8 @@ export interface Backend {
   showContextMenu(path: string, x: number, y: number): Promise<MenuResult>;
   /** The Windows Properties sheet for one file (modeless; stays up after the popup hides). */
   showProperties(path: string): Promise<void>;
+  /** Windows Terminal in the folder (cmd.exe fallback). */
+  openTerminal(dir: string): Promise<void>;
   startDrag(paths: string[]): Promise<string>;
   /** Start a native window drag from the search bar (popup). */
   movePopup(): Promise<void>;

@@ -590,6 +590,7 @@ export const mockBackend: Backend = {
   },
   async showContextMenu(path, x, y) { console.info("[mock] context menu", path, x, y); return "cancelled"; },
   async showProperties(path) { console.info("[mock] properties", path); },
+  async openTerminal(dir) { console.info("[mock] terminal in", dir); },
   async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
   async movePopup() { console.info("[mock] window drag (no-op in browser)"); },
   // ---- launcher ----

@@ -105,6 +105,20 @@ pub fn reveal_path(path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Windows Terminal in `dir` (Ctrl+Shift+T). `wt.exe` from PATH; a plain `cmd.exe` keeping the
+/// directory when it is not installed. Both are spawned as argv arrays, never a shell string.
+#[tauri::command(async)]
+pub fn open_terminal(dir: String) -> Result<(), String> {
+    match Command::new("wt.exe").args(["-d", &dir]).spawn() {
+        Ok(_) => Ok(()),
+        Err(wt_err) => Command::new("cmd.exe")
+            .args(["/K", "cd", "/d", &dir])
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("no terminal: wt.exe ({wt_err}) and cmd.exe ({e}) both failed")),
+    }
+}
+
 #[tauri::command]
 pub fn copy_path(path: String) -> Result<(), String> {
     // clip.exe accepts UTF-16LE with BOM on stdin.
