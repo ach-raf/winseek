@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { Models } from "./hooks";
 import type { ModelsPlan, PausedReason, Tier1Status } from "./types";
 import { formatSize } from "./format";
+import { trapKey } from "./trap";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -127,7 +128,7 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
 
   return (
     <section ref={root} className="firstrun setup" aria-label="Search by meaning setup"
-             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
+             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else trapKey(e); }}>
       <h2>Want search by meaning?</h2>
       <p>Find photos by what is in them, like &ldquo;sunset at the beach&rdquo;. Everything runs on this PC; nothing leaves it. Names-only search stays fully available.</p>
 

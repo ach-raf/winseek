@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import type { ServiceState, VolumeStatus } from "./types";
+import { trapKey } from "./trap";
 
 export interface Summary { files: number; letters: string[]; secs: number | null }
 
@@ -98,6 +99,7 @@ export function FirstRun({ mode, service, busy, error, rows, summary, onPrimary,
       onKeyDown={(e) => {
         if (mode !== "setup") return;
         if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); if (!busy) onDismiss(); }
+        else trapKey(e);
       }}
     >
       {mode === "counter" ? <Counter rows={rows} summary={summary} onSemantic={onSemantic} /> : (

@@ -6,6 +6,8 @@ import { argsPreview, snippets } from "./agentLogic";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
+import { trapKey } from "./trap";
+import { matches } from "./keymap";
 import logo from "./assets/logo.png";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -631,9 +633,26 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     const next = items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
     next?.focus();
   };
+  // Ctrl+1..7 jump to a section (PRD B8); the section heading takes the focus.
+  const sectionKey = (e: React.KeyboardEvent) => {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+      const at = NAV.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
+      if (at >= 0) {
+        e.preventDefault();
+        e.stopPropagation();
+        onSection(NAV[at].id);
+        requestAnimationFrame(() => {
+          const h = document.querySelector<HTMLElement>(".set-body .fl-title");
+          if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); }
+        });
+        return;
+      }
+    }
+    trapKey(e);
+  };
   return (
     <section className="firstrun setup settings" aria-label="Settings"
-             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } }}>
+             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else sectionKey(e); }}>
       <div className="set-side">
         <div className="set-brand"><img src={logo} alt="" width={22} height={22} />winseek</div>
         <nav ref={navRef} className="set-nav" aria-label="Settings sections" onKeyDown={navKey}>

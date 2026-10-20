@@ -260,7 +260,11 @@ mark { background: none; color: inherit; font-weight: 700; }
 .btn.quiet { color: var(--fg-2); font-weight: 500; }
 .btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .btn:disabled { cursor: default; }
-.btn:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* PRD B8: everything inside panels shows the accent ring when keyboard-focused. */
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .btn .shield { flex: none; }
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: spin 800ms linear infinite; flex: none; }
 .fr-error { color: var(--danger); font-size: 12.5px; max-width: 520px; }
@@ -281,7 +285,7 @@ mark { background: none; color: inherit; font-weight: 700; }
 }
 .switch:has(input:checked) { background: var(--accent); box-shadow: none; }
 .switch:has(input:checked)::after { transform: translateX(16px); }
-.switch:has(input:focus-visible) { outline: 2px solid var(--fg); outline-offset: 2px; }
+.switch:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
 .switch:has(input:disabled) { opacity: 0.5; }
 
 /* ---- first-run panel ---- */
@@ -389,7 +393,7 @@ mark { background: none; color: inherit; font-weight: 700; }
 .set-navitem:hover { background: var(--hover); color: var(--fg); }
 .set-navitem.on { background: var(--sel-bg); color: var(--sel-fg); font-weight: 500; }
 .set-navitem.on svg { opacity: 1; }
-.set-navitem:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.set-navitem:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .set-ver { margin-top: auto; padding: 8px 10px 0; font-size: 11px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 
 .set-detail { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; overflow: hidden; }
@@ -428,7 +432,7 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .set-opt .set-check { opacity: 0; color: var(--accent); flex: none; }
 .set-opt.on .set-check { opacity: 1; }
 .set-opt.on .set-optmain b { font-weight: 600; }
-.set-opt:focus-visible { outline: 2px solid var(--fg); outline-offset: -2px; }
+.set-opt:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .st-head { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--fg-2); }
 .st-head .dot { flex: none; }
 .s-rescanning .dot, .s-warn .dot { background: var(--warn); }
@@ -539,7 +543,7 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .ig-list li.none { background: none; font: 12.5px var(--font); color: var(--fg-3); padding: 0; }
 .ig-x { display: inline-grid; place-items: center; width: 20px; height: 20px; border-radius: 10px; color: var(--fg-3); flex: none; }
 .ig-x:hover { background: var(--hover); color: var(--fg); }
-.ig-x:focus-visible, .gear:focus-visible, .lib-back:focus-visible { outline: 2px solid var(--fg); outline-offset: 1px; }
+.ig-x:focus-visible, .gear:focus-visible, .lib-back:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 /* status section (inside Settings) */
 .st-cols { display: flex; flex-direction: column; gap: 16px; }
