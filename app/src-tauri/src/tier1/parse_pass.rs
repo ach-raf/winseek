@@ -35,6 +35,10 @@ const PARSE_CHUNKS: usize = 8;
 pub const PARSE_LONG_SIDE: u32 = pdf::RENDER_LONG_SIDE;
 /// After the prototype queries failed to embed, wait this long before trying again.
 const PROTO_RETRY: Duration = Duration::from_secs(60);
+/// Pause before the one in-place retry of a page whose parse output was unusable. The server
+/// stays up and the page image is already in memory, so a retry costs one request — the old
+/// behaviour (unload, respawn next pass) paid a 1.3 GB model reload to read the same page again.
+const OUTPUT_RETRY: Duration = Duration::from_secs(3);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -42,6 +46,26 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 
 fn db(e: winseek_store::Error) -> String {
     e.to_string()
+}
+
+/// One in-place retry of a page whose parse failed at the model level (`ParseError::Output`).
+/// Any other failure, a paused worker, or a second unusable answer comes back unchanged.
+fn parse_retry_output(
+    parser: &Mutex<Box<dyn Parser + Send>>,
+    jpeg: &[u8],
+    attempt: Result<Parsed, ParseError>,
+    paused: &AtomicBool,
+    wait: Duration,
+) -> Result<Parsed, ParseError> {
+    if let Err(ParseError::Output(msg)) = &attempt {
+        if paused.load(Ordering::Relaxed) {
+            return attempt;
+        }
+        eprintln!("winseek: tier 1: unusable parse output ({msg}); retrying the page in place in {wait:?}");
+        std::thread::sleep(wait);
+        return lock(parser).parse(jpeg);
+    }
+    attempt
 }
 
 /// What preparing a job's page image came to.
@@ -61,6 +85,8 @@ pub struct ParsePass {
     proto_retry_at: Option<Instant>,
     /// Binds / returns the process-wide pdfium (tests inject a stub).
     pdf_runtime: fn() -> Result<&'static Pdfium, PdfError>,
+    /// Pause before the in-place retry of unusable parse output (tests use 0).
+    output_retry: Duration,
 }
 
 impl Default for ParsePass {
@@ -71,7 +97,14 @@ impl Default for ParsePass {
 
 impl ParsePass {
     pub fn with_ocr(ocr: Box<dyn Ocr>) -> Self {
-        ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime }
+        ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime, output_retry: OUTPUT_RETRY }
+    }
+
+    /// Override the in-place retry pause (tests).
+    #[cfg(test)]
+    fn retry_output_after(mut self, d: Duration) -> Self {
+        self.output_retry = d;
+        self
     }
 
     /// One step of routing or parsing. `Ok(n)` = `n` items of work were done (queued for the parser
@@ -224,14 +257,15 @@ impl ParsePass {
             }
         }
         let Some(((first, first_jpeg), rest)) = pages.split_first() else { return Ok(n) };
-        match parse_phased(parser, embedder, first_jpeg) {
+        let r = parse_retry_output(parser, first_jpeg, parse_phased(parser, embedder, first_jpeg), paused, self.output_retry);
+        match r {
             Ok(parsed) => {
                 finish_job(store, embedder, first, parsed)?;
                 n += 1;
             }
             // Nothing is wrong with the item: the model is missing, or the GPU is still the index model's.
             Err(ParseError::ModelsMissing | ParseError::GpuBusy) => return Ok(n),
-            Err(ParseError::Other(msg)) => {
+            Err(ParseError::Output(msg) | ParseError::Other(msg)) => {
                 bump_attempt(store, parser, first, &msg)?;
                 return Ok(n + 1); // the server was unloaded: stop this pass, it starts fresh next time
             }
@@ -240,7 +274,8 @@ impl ParsePass {
             let jpegs: Vec<&[u8]> = rest.iter().map(|(_, j)| j.as_slice()).collect();
             let results = lock(parser).parse_batch(&jpegs);
             let mut retriable = false;
-            for ((job, _), r) in rest.iter().zip(results) {
+            for ((job, jpeg), r) in rest.iter().zip(results) {
+                let r = parse_retry_output(parser, jpeg, r, paused, self.output_retry);
                 match r {
                     Ok(parsed) => {
                         finish_job(store, embedder, job, parsed)?;
@@ -248,7 +283,7 @@ impl ParsePass {
                     }
                     // The server went away mid-batch (crash / unloaded): the rest stay queued.
                     Err(ParseError::ModelsMissing | ParseError::GpuBusy) => break,
-                    Err(ParseError::Other(msg)) => {
+                    Err(ParseError::Output(msg) | ParseError::Other(msg)) => {
                         if bump_attempt(store, parser, job, &msg)? {
                             retriable = true;
                         }
@@ -593,7 +628,7 @@ mod tests {
             let mut s = e.store.lock().unwrap();
             let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, &path.to_string_lossy(), bytes.len() as u64, 1, "pdf").unwrap();
             let v = |chunk, page: u32| ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!(r#"{{"page":{page}}}"#)), vec: unit(3) };
-            s.complete(id, &hp, &[v(1, 1), v(3, 2)], &[(1, "junk".into()), (3, ARABIC_SENTENCE.repeat(2).into())]).unwrap();
+            s.complete(id, &hp, &[v(1, 1), v(3, 2)], &[(1, "junk".into()), (3, ARABIC_SENTENCE.repeat(2))]).unwrap();
             s.queue_parse(&readable, 0, "doc_image").unwrap();
             s.queue_parse(&junk, 0, "doc_image").unwrap();
             s.queue_parse(&hp, 2, "scanned_pdf").unwrap();
@@ -726,6 +761,40 @@ mod tests {
         assert_eq!(s.stats().unwrap().text_only, 1);
         drop(s);
         assert!(e.doc_calls.load(Ordering::SeqCst) >= 1);
+    }
+
+    #[test]
+    fn unusable_output_is_retried_in_place_without_unloading() {
+        let e = env(true, false);
+        e.add_image("scan.png", 1, unit(0), Some("old"));
+        let mut p = pass_with(None).retry_output_after(Duration::ZERO);
+        e.pass(&mut p); // route
+        // first answer is prose the salvage cannot use, the retry succeeds — no server reload
+        e.script.lock().unwrap().extend([Err(ParseError::Output("output is not JSON and no complete element could be salvaged".into()))]);
+        assert!(e.pass(&mut p));
+        assert_eq!(e.calls.load(Ordering::SeqCst), 2, "initial attempt plus the in-place retry");
+        assert_eq!(e.unloads.load(Ordering::SeqCst), 0, "the server stays up");
+        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
+    }
+
+    #[test]
+    fn persistently_unusable_output_still_counts_attempts_and_fails() {
+        let e = env(true, false);
+        e.add_image("scan.png", 1, unit(0), Some("old"));
+        let mut p = pass_with(None).retry_output_after(Duration::ZERO);
+        e.pass(&mut p); // route
+        // every pass: one unusable answer, an equally unusable retry, then the attempt is counted
+        for _ in 0..3 {
+            let errs: Vec<_> = (0..2).map(|_| Err(ParseError::Output("no usable elements".into()))).collect();
+            e.script.lock().unwrap().extend(errs);
+        }
+        for i in 1..=3 {
+            assert!(e.pass(&mut p), "attempt {i} counts as progress");
+        }
+        assert_eq!(e.calls.load(Ordering::SeqCst), 6, "two tries per pass");
+        assert_eq!(e.unloads.load(Ordering::SeqCst), 2, "the first two attempts drop the server, the last one is final");
+        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 0, failed: 1, skipped: 0 });
+        assert!(!e.pass(&mut p));
     }
 
     #[test]

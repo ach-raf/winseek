@@ -31,6 +31,10 @@ pub enum ParseError {
     ModelsMissing,
     /// The embedding index server holds the GPU: the caller releases it and retries.
     GpuBusy,
+    /// The server answered but the output could not be used ("output is not JSON" and the
+    /// like): a property of this page's answer, not of the server — worth a same-server retry.
+    Output(String),
+    /// Anything else (spawn failed, HTTP error): the server itself is in a bad state.
     Other(String),
 }
 
@@ -39,12 +43,21 @@ impl fmt::Display for ParseError {
         match self {
             ParseError::ModelsMissing => write!(f, "document parser not installed"),
             ParseError::GpuBusy => write!(f, "GPU is busy with the index model"),
-            ParseError::Other(m) => write!(f, "{m}"),
+            ParseError::Output(m) | ParseError::Other(m) => write!(f, "{m}"),
         }
     }
 }
 
 impl std::error::Error for ParseError {}
+
+/// Model-output problems (`Error::Parse`) get their own variant so the parse pass can retry
+/// them in place; transport/spawn failures stay `Other`.
+fn classify(e: winseek_llama::Error) -> ParseError {
+    match e {
+        winseek_llama::Error::Parse(m) => ParseError::Output(m),
+        other => ParseError::Other(other.to_string()),
+    }
+}
 
 pub trait Parser {
     /// The model files and a llama build are on disk (cheap check, no spawning).
@@ -184,7 +197,7 @@ impl Parser for LlamaParser {
         }
         self.ensure()?;
         self.reaper.touch();
-        let r = self.running.as_ref().expect("started").client.parse_image_jpeg(jpeg).map_err(|e| ParseError::Other(e.to_string()));
+        let r = self.running.as_ref().expect("started").client.parse_image_jpeg(jpeg).map_err(classify);
         self.reaper.touch(); // a 2.5 s page must not count as idle time
         r
     }
@@ -200,7 +213,7 @@ impl Parser for LlamaParser {
         self.reaper.touch();
         let out = self.running.as_ref().expect("started").client.parse_image_jpegs(jpegs);
         self.reaper.touch();
-        out.into_iter().map(|r| r.map_err(|e| ParseError::Other(e.to_string()))).collect()
+        out.into_iter().map(|r| r.map_err(classify)).collect()
     }
 
     fn tick_idle(&mut self) {
