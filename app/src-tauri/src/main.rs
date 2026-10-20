@@ -1,5 +1,6 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod agent;
 mod autostart;
 mod commands;
 mod launch;
@@ -62,8 +63,14 @@ fn main() {
         .manage(models::Models::default())
         .manage(tier1::library::LibState::default())
         .manage(launch::Launcher::new())
+        .manage(Arc::new(agent::AgentState::load()))
         .manage(AppState::new(pick_source()))
         .invoke_handler(tauri::generate_handler![
+            agent::agent_get_config,
+            agent::agent_set_config,
+            agent::agent_log,
+            agent::agent_clear_log,
+            agent::agent_mcp_path,
             commands::search,
             commands::status,
             commands::recent,
@@ -152,6 +159,7 @@ fn main() {
         })
         .setup(move |app| {
             app.manage(tier1::init()); // also starts the battery / full-screen pause policy
+            agent::server::spawn(app.handle().clone());
             if let Some(w) = popup::window(app.handle()) {
                 popup::apply_backdrop(&w);
             }
