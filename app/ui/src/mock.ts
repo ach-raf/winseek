@@ -1,7 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import type { Backend, Collection, DupGroup, Filter, Hit, LibImage, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { Backend, Collection, DupGroup, Filter, Hit, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -40,6 +40,11 @@ for (const f of LIB) {
   DB.push({ name: f.name, lower: f.name.toLowerCase(), path: f.path, dir: false, size: f.size, mtime: f.mtime, kind: f.kind });
 }
 const livePaths = () => new Set(DB.map((e) => e.path));
+
+// A portable app without a Start-menu entry, so the launcher's portable-app promotion is visible.
+for (const [name, size] of [["mpv.exe", 52e6], ["mpv.conf", 812], ["mpv-2.dll", 2.4e6]] as [string, number][]) {
+  DB.push({ name, lower: name.toLowerCase(), path: `D:\\tools\\mpv\\${name}`, dir: false, size, mtime: Date.now() - 8e9, kind: name.endsWith(".exe") ? 0 : 5 });
+}
 let collections: Collection[] = [
   { name: "Receipts", query: "a photo of a paper receipt or invoice", threshold: 0.64 },
   { name: "Whiteboards", query: "a whiteboard with handwritten notes and diagrams", threshold: 0.61 },
@@ -465,6 +470,59 @@ async function mockPreview(path: string): Promise<PreviewInfo> {
   return base;
 }
 
+// ---- launcher (browser twin of launch:: in src-tauri): a small catalog + a simple scorer ----
+const CONFIRM_CMDS = new Set(["restart", "shutdown", "signout", "empty_bin"]);
+const launchItem = (id: string, kind: LaunchKind, title: string, subtitle: string, target: LaunchTarget, keywords: string[] = [], icon: string | null = null, admin_ok = false): LaunchItem =>
+  ({ id, kind, title, subtitle, keywords, target, icon, admin_ok });
+const LAUNCH_CATALOG: LaunchItem[] = [
+  launchItem("app:mpv", "app", "mpv", "Start menu", { t: "path", path: "C:\\Program Files\\mpv\\mpv.exe", args: null }, ["mpv"], null, true),
+  launchItem("app:vsc", "app", "Visual Studio Code", "Start menu", { t: "path", path: "C:\\Program Files\\Microsoft VS Code\\Code.exe", args: null }, ["code", "vscode"], null, true),
+  launchItem("app:calc", "app", "Calculator", "Store app", { t: "aumid", aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", path: null }, ["calc"]),
+  launchItem("app:firefox", "app", "Firefox", "Start menu", { t: "path", path: "C:\\Program Files\\Mozilla Firefox\\firefox.exe", args: null }, ["firefox"], null, true),
+  launchItem("app:uninstall-firefox", "app", "Uninstall Firefox", "Start menu", { t: "path", path: "C:\\Program Files\\Mozilla Firefox\\uninstall\\helper.exe", args: null }, ["uninstall"], null, true),
+  launchItem("set:ms-settings:bluetooth", "setting", "Bluetooth & devices", "Settings › Devices", { t: "uri", uri: "ms-settings:bluetooth" }, ["bt", "devices"], "\uE8F2"),
+  launchItem("set:ms-settings:display", "setting", "Display", "Settings › System", { t: "uri", uri: "ms-settings:display" }, ["resolution", "scale"], "\uE7F4"),
+  launchItem("set:ms-settings:nightlight", "setting", "Night light", "Settings › System", { t: "uri", uri: "ms-settings:nightlight" }, ["blue light", "warm"], "\uE706"),
+  launchItem("set:ms-settings:colors", "setting", "Colors", "Settings › Personalization", { t: "uri", uri: "ms-settings:colors" }, ["dark mode", "light mode", "theme", "accent"], "\uE790"),
+  launchItem("set:ms-settings:appsfeatures", "setting", "Apps & features", "Settings › Apps", { t: "uri", uri: "ms-settings:appsfeatures" }, ["uninstall", "programs"], "\uE71D"),
+  launchItem("cmd:lock", "command", "Lock", "Locks this PC", { t: "cmd", name: "lock" }, ["lock screen"]),
+  launchItem("cmd:shutdown", "command", "Shut down", "Shuts this PC down", { t: "cmd", name: "shutdown" }, ["power off", "turn off"]),
+];
+const launchCfg: LaunchCfg = { apps: true, settings: true, commands: true, portable: true, path: false, hide_uninstallers: true, folders: [], hidden: [] };
+const launchHist = new Map<string, number>();
+/** Simple stand-in for the Rust matcher: exact > prefix > word-start > acronym > substring. */
+function scoreLaunch(text: string, it: LaunchItem): number {
+  const q = text.trim().toLowerCase();
+  if (!q) return 0;
+  let best = 0;
+  const cands: [string, number][] = [[it.title.toLowerCase(), 100], ...it.keywords.map((k) => [k.toLowerCase(), 90] as [string, number])];
+  const initials = it.title.split(/[\s&]+/).map((w) => w[0]).join("").toLowerCase();
+  for (const [c, w] of cands) {
+    let s = 0;
+    if (c === q) s = 190;
+    else if (c.startsWith(q)) s = 160;
+    else if (initials.startsWith(q) && q.length > 1) s = 150;
+    else if (c.split(/[\s&-]+/).some((wd) => wd.startsWith(q))) s = 140;
+    else if (c.includes(q)) s = 100;
+    if (s) best = Math.max(best, (s * w) / 100);
+  }
+  return Math.round(best);
+}
+const launchBoost = (query: string, id: string) => {
+  const q = query.trim().toLowerCase().slice(0, 16);
+  let best = 0;
+  for (const [key, count] of launchHist) {
+    const [prefix, picked] = key.split("\u{1}");
+    if (picked === id && q.startsWith(prefix)) best = Math.max(best, Math.min(160, count * 60));
+  }
+  return best;
+};
+const uninstallerish = (it: LaunchItem) => {
+  const exe = it.target.t === "path" ? it.target.path : "";
+  return /uninstall/i.test(it.title) || /unins/i.test(exe);
+};
+const launchCbs = new Set<() => void>();
+
 export const mockBackend: Backend = {
   async search({ query, offset, limit, sort, filter }) {
     const t0 = performance.now();
@@ -526,6 +584,61 @@ export const mockBackend: Backend = {
   async showContextMenu(path, x, y) { console.info("[mock] context menu", path, x, y); return "cancelled"; },
   async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
   async movePopup() { console.info("[mock] window drag (no-op in browser)"); },
+  // ---- launcher ----
+  async launchSearch(query, limit): Promise<LaunchHit[]> {
+    await sleep(2);
+    const items = LAUNCH_CATALOG.filter((it) => {
+      if (it.kind === "app" && !launchCfg.apps) return false;
+      if (it.kind === "setting" && !launchCfg.settings) return false;
+      if (it.kind === "command" && !launchCfg.commands) return false;
+      if (launchCfg.hidden.includes(it.id)) return false;
+      if (launchCfg.hide_uninstallers && uninstallerish(it)) return false;
+      return true;
+    });
+    return items
+      .map((item) => ({ item, score: scoreLaunch(query, item) + launchBoost(query, item.id), ranges: [], confirm: false }))
+      .filter((h) => h.score > 0)
+      .map((h) => (h.item.kind === "command" && h.item.target.t === "cmd" ? { ...h, confirm: CONFIRM_CMDS.has(h.item.target.name) } : h))
+      .sort((a, b) => b.score - a.score || a.item.title.localeCompare(b.item.title))
+      .slice(0, limit);
+  },
+  async launchRun(id, query) {
+    const it = LAUNCH_CATALOG.find((i) => i.id === id);
+    console.info("[mock] launch", id, it?.title);
+    const q = query.trim().toLowerCase().slice(0, 16);
+    for (let n = 1; n <= q.length; n++) {
+      const key = `${q.slice(0, n)}\u{1}${id}`;
+      launchHist.set(key, (launchHist.get(key) ?? 0) + 1);
+    }
+  },
+  async launchRecord(id, query) { await mockBackend.launchRun(id, query, false); },
+  async launchReveal(id) { console.info("[mock] launch reveal", id); },
+  async launchCopy(id) {
+    const it = LAUNCH_CATALOG.find((i) => i.id === id);
+    if (!it) return;
+    const target = it.target.t === "aumid" ? it.target.aumid : it.target.t === "uri" ? it.target.uri : it.target.t === "path" ? it.target.path : it.target.t === "exec" ? [it.target.exe, ...it.target.args].join(" ") : id;
+    try { await navigator.clipboard.writeText(target); } catch { /* headless */ }
+    console.info("[mock] launch copy", target);
+  },
+  async launchHide(id) { if (!launchCfg.hidden.includes(id)) launchCfg.hidden.push(id); launchCbs.forEach((f) => f()); },
+  async launchUnhide(id) { launchCfg.hidden = launchCfg.hidden.filter((h) => h !== id); launchCbs.forEach((f) => f()); },
+  async launchReindex() { console.info("[mock] launch reindex"); launchCbs.forEach((f) => f()); },
+  async launchGetConfig() { return { ...launchCfg, hidden: [...launchCfg.hidden], folders: [...launchCfg.folders] }; },
+  async launchSetConfig(cfg) {
+    Object.assign(launchCfg, cfg, { hidden: [...cfg.hidden], folders: [...cfg.folders] });
+    launchCbs.forEach((f) => f());
+    return mockBackend.launchGetConfig();
+  },
+  async launchClearHistory() { launchHist.clear(); },
+  async launchCounts() {
+    return {
+      apps: LAUNCH_CATALOG.filter((i) => i.kind === "app" && !(launchCfg.hide_uninstallers && uninstallerish(i))).length,
+      settings: LAUNCH_CATALOG.filter((i) => i.kind === "setting").length,
+      commands: LAUNCH_CATALOG.filter((i) => i.kind === "command").length,
+    };
+  },
+  async onLaunchCatalogChanged(cb) { launchCbs.add(cb); return () => { launchCbs.delete(cb); }; },
+  appIconUrl() { return null; }, // the mock has no shell: icons fall back to the glyph/initial
   iconUrl(path, _isDir, thumb, size) {
     const f = libByPath.get(path);
     return f?.tile && thumb ? tileUrl(f.tile, size && size > 300 ? 512 : 256) : null;

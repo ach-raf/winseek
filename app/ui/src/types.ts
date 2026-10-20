@@ -245,6 +245,50 @@ export type Sort = "rel" | "name" | "size" | "date";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";
 
+// ---- launcher (apps, Windows settings, system commands — mirrors launch::item serde shapes) ----
+export type LaunchKind = "app" | "setting" | "command";
+export type LaunchTarget =
+  | { t: "aumid"; aumid: string; path: string | null }
+  | { t: "path"; path: string; args: string | null }
+  | { t: "uri"; uri: string }
+  | { t: "exec"; exe: string; args: string[] }
+  | { t: "cmd"; name: string };
+export interface LaunchItem {
+  id: string;
+  kind: LaunchKind;
+  title: string;
+  subtitle: string;
+  keywords: string[];
+  target: LaunchTarget;
+  /** Settings glyph (Segoe Fluent Icons char) when there is no file icon. */
+  icon: string | null;
+  admin_ok: boolean;
+}
+export interface LaunchHit {
+  item: LaunchItem;
+  score: number;
+  /** Char ranges into the title for highlighting. */
+  ranges: [number, number][];
+  /** Needs the second-Enter confirmation (shutdown / restart / sign out / empty bin). */
+  confirm: boolean;
+}
+export interface LaunchCfg {
+  apps: boolean;
+  settings: boolean;
+  commands: boolean;
+  /** Portable exes promoted from the file index (UI-side rule). */
+  portable: boolean;
+  path: boolean;
+  hide_uninstallers: boolean;
+  folders: string[];
+  hidden: string[];
+}
+export interface LaunchCounts {
+  apps: number;
+  settings: number;
+  commands: number;
+}
+
 // ---- library window ----
 export interface LibImage {
   path: string;
@@ -360,6 +404,25 @@ export interface Backend {
   openLibrary(): Promise<void>;
   /** Back from the library: show the popup again. */
   openPopup(): Promise<void>;
+  // ---- launcher ----
+  launchSearch(query: string, limit: number): Promise<LaunchHit[]>;
+  launchRun(id: string, query: string, admin: boolean): Promise<void>;
+  /** Record a pick the UI handled itself (winseek Settings / Library). */
+  launchRecord(id: string, query: string): Promise<void>;
+  launchReveal(id: string): Promise<void>;
+  launchCopy(id: string): Promise<void>;
+  launchHide(id: string): Promise<void>;
+  launchUnhide(id: string): Promise<void>;
+  launchReindex(): Promise<void>;
+  launchGetConfig(): Promise<LaunchCfg>;
+  /** Saves; the backend re-enumerates on its own when a source changed. */
+  launchSetConfig(cfg: LaunchCfg): Promise<LaunchCfg>;
+  launchClearHistory(): Promise<void>;
+  launchCounts(): Promise<LaunchCounts>;
+  /** Fired after a background re-enumeration swapped the catalog. */
+  onLaunchCatalogChanged(cb: () => void): Promise<() => void>;
+  /** Shell icon URL for a store / start-menu app id. */
+  appIconUrl(aumid: string, size: number): string | null;
   /** Every indexed image, newest first. */
   libraryImages(): Promise<LibImage[]>;
   libraryCollections(): Promise<Collection[]>;

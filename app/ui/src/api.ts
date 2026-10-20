@@ -1,4 +1,4 @@
-import type { Backend, Collection, DupGroup, Hit, HitBox, IgnoreList, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, Collection, DupGroup, Hit, HitBox, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -80,6 +80,20 @@ function tauriBackend(t: TauriGlobal): Backend {
     openLibrary: () => inv("open_library"),
     openPopup: () => inv("open_popup"),
     movePopup: () => inv("move_popup"),
+    launchSearch: (query, limit) => inv<LaunchHit[]>("launch_search", { query, limit }),
+    launchRun: (id, query, admin) => inv("launch_run", { id, query, admin }),
+    launchRecord: (id, query) => inv("launch_record", { id, query }),
+    launchReveal: (id) => inv("launch_reveal", { id }),
+    launchCopy: (id) => inv("launch_copy", { id }),
+    launchHide: (id) => inv("launch_hide", { id }),
+    launchUnhide: (id) => inv("launch_unhide", { id }),
+    launchReindex: () => inv("launch_reindex"),
+    launchGetConfig: () => inv<LaunchCfg>("launch_get_config"),
+    launchSetConfig: (cfg) => inv<LaunchCfg>("launch_set_config", { cfg }),
+    launchClearHistory: () => inv("launch_clear_history"),
+    launchCounts: () => inv<LaunchCounts>("launch_counts"),
+    onLaunchCatalogChanged: (cb) => t.event.listen("launch-catalog-changed", cb),
+    appIconUrl: (aumid, size) => `http://wsicon.localhost/?a=${encodeURIComponent(aumid)}&s=${size}`,
     libraryImages: () => inv<LibImage[]>("library_images"),
     libraryCollections: () => inv<Collection[]>("library_collections"),
     librarySetCollections: (list) => inv<Collection[]>("library_set_collections", { list }),
