@@ -29,6 +29,8 @@ const PER_PATH_EXT: &[&str] = &["exe", "ico", "lnk", "url", "cur", "ani", "msc",
 
 struct Job {
     path: String,
+    /// Store/Start-menu app id — icon fetched through `shell:AppsFolder\<aumid>` (launcher).
+    aumid: Option<String>,
     is_dir: bool,
     size: u32,
     thumb: bool,
@@ -51,9 +53,12 @@ fn pool() -> &'static Sender<Job> {
                         Ok(g) => g.recv(),
                         Err(_) => return,
                     };
-                    let Ok(job) = job else { return };
-                    let png = render(&job.path, job.is_dir, job.size, job.thumb);
-                    job.responder.respond(response(png));
+                let Ok(job) = job else { return };
+                let png = match &job.aumid {
+                    Some(aumid) => render_aumid(aumid, job.size),
+                    None => render(&job.path, job.is_dir, job.size, job.thumb),
+                };
+                job.responder.respond(response(png));
                 }
             });
         }
@@ -102,13 +107,16 @@ pub(crate) fn query_param(q: &str, key: &str) -> Option<String> {
 
 pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
     let q = req.uri().query().unwrap_or("");
-    let Some(path) = query_param(q, "p").filter(|p| !p.is_empty()) else {
+    let size = query_param(q, "s").and_then(|s| s.parse::<u32>().ok()).unwrap_or(32).clamp(16, 1024);
+    let job = if let Some(aumid) = query_param(q, "a").filter(|a| !a.is_empty()) {
+        Job { path: String::new(), aumid: Some(aumid), is_dir: false, size, thumb: false, responder }
+    } else if let Some(path) = query_param(q, "p").filter(|p| !p.is_empty()) {
+        let is_dir = query_param(q, "d").as_deref() == Some("1");
+        let thumb = query_param(q, "t").as_deref() == Some("1");
+        Job { path, aumid: None, is_dir, size, thumb, responder }
+    } else {
         return responder.respond(response(None));
     };
-    let is_dir = query_param(q, "d").as_deref() == Some("1");
-    let thumb = query_param(q, "t").as_deref() == Some("1");
-    let size = query_param(q, "s").and_then(|s| s.parse::<u32>().ok()).unwrap_or(32).clamp(16, 1024);
-    let job = Job { path, is_dir, size, thumb, responder };
     if let Err(e) = pool().send(job) {
         e.0.responder.respond(response(None));
     }
@@ -136,6 +144,25 @@ pub(super) fn render(path: &str, is_dir: bool, size: u32, thumb: bool) -> Option
     let png = Arc::new(png);
     if size > 256 {
         return Some(png); // preview-sized renders are one-offs; keep the cache small
+    }
+    let mut g = CACHE.lock().ok()?;
+    let c = g.get_or_insert_with(HashMap::new);
+    if c.len() >= CACHE_CAP {
+        c.clear();
+    }
+    c.insert(key, png.clone());
+    Some(png)
+}
+
+/// Cached PNG for a shell app id (Store or Start-menu entry), via `shell:AppsFolder\<aumid>`.
+pub(super) fn render_aumid(aumid: &str, size: u32) -> Option<Arc<Vec<u8>>> {
+    let key = format!("a:{aumid}:{size}");
+    if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.get(&key)) {
+        return Some(hit.clone());
+    }
+    let png = Arc::new(path_icon_png(&format!("shell:AppsFolder\\{aumid}"), size, false)?);
+    if size > 256 {
+        return Some(png);
     }
     let mut g = CACHE.lock().ok()?;
     let c = g.get_or_insert_with(HashMap::new);
@@ -368,5 +395,27 @@ mod tests {
         assert_eq!(query_param(q, "s").unwrap(), "40");
         assert_eq!(percent_decode("100%"), "100%");
         assert_eq!(percent_decode("a%2"), "a%2");
+    }
+
+    /// The launcher's icon URLs carry an AUMID (percent-encoded, `!` inside).
+    #[test]
+    fn aumid_query_param() {
+        let aumid = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
+        let url = format!("a={}&s=48", aumid.replace('!', "%21"));
+        assert_eq!(query_param(&url, "a").unwrap(), aumid);
+        assert_eq!(query_param(&url, "s").unwrap(), "48");
+        assert_eq!(query_param("s=32", "a"), None);
+    }
+
+    /// Live check (manual): renders Calculator's shell icon to a non-empty PNG.
+    #[test]
+    #[ignore]
+    fn calculator_aumid_icon_renders() {
+        let _c = ComGuard::init();
+        let png = render_aumid("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", 32).expect("icon");
+        let (w, h, alpha) = check_png(&png);
+        assert!(w >= 16 && h >= 16 && alpha);
+        let cached = render_aumid("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", 32).expect("cached");
+        assert_eq!(png, cached);
     }
 }
