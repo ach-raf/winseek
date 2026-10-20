@@ -1,9 +1,10 @@
-import type { Hit, SemanticHit } from "./types";
+import type { Hit, LaunchHit, SemanticHit } from "./types";
+import { pickTop } from "./launchLogic.ts";
 
 /** Spotlight-style result overview: a Top Hit, then a few rows per section with "Show all". */
-export type SectionId = "top" | "files" | "images" | "docs";
+export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs";
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
-export type Expand = null | "files" | "images" | "docs";
+export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
 
 export interface OvItem {
   key: string;
@@ -15,6 +16,8 @@ export interface OvItem {
   nameIdx?: number;
   /** Column inside the image grid. */
   col?: number;
+  /** The launcher hit behind this row (apps, settings pages, system commands). */
+  launch?: LaunchHit;
 }
 
 export interface OvSection {
@@ -32,6 +35,9 @@ const GRID_ROWS = 2;
 const FILES_WITH_MEANING = 4;
 const FILES_ALONE = 8;
 const DOCS = 4;
+const APPS = 4;
+const SETTINGS = 4;
+const COMMANDS = 3;
 
 export const baseName = (path: string) => path.slice(path.lastIndexOf("\\") + 1);
 const stem = (name: string) => { const d = name.lastIndexOf("."); return (d > 0 ? name.slice(0, d) : name).toLowerCase(); };
@@ -46,23 +52,86 @@ export function strongName(name: string, text: string): boolean {
   return s === q || s.startsWith(q) || name.toLowerCase() === q;
 }
 
+/** A display Hit for a launch row (icon / title rendering shares the file-row plumbing). */
+export function launchHit(h: LaunchHit): Hit {
+  const t = h.item.target;
+  const path = t.t === "path" ? t.path : t.t === "aumid" ? (t.path ?? `shell:AppsFolder\\${t.aumid}`) : t.t === "uri" ? t.uri : t.t === "exec" ? t.exe : `winseek:${t.name}`;
+  return { name: h.item.title, path, is_dir: false, size: null, mtime: null };
+}
+
+/** The target path a launch item resolves to (dedupes it against file rows). */
+export const launchPath = (h: LaunchHit): string | null => {
+  const t = h.item.target;
+  return t.t === "path" ? t.path : t.t === "aumid" ? t.path : null;
+};
+
 export function buildOverview(opts: {
   names: (Hit | undefined)[]; nameTotal: number; sem: SemanticHit[]; text: string; expand: Expand;
   /** File name -> is a picture (format.kindOf; passed in so this module has no imports). */
   isImage: (name: string) => boolean;
+  /** Launcher hits (apps, settings, commands), best first. */
+  launch?: LaunchHit[];
+  /** Portable exes promoted from the name index (PRD R9). */
+  portable?: Hit[];
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
+  const launch = opts.launch ?? [];
+  const portable = opts.portable ?? [];
   const sections: OvSection[] = [];
   const shownPaths = new Set<string>();
   const k = (p: string) => p.toLowerCase();
 
-  // Top Hit: an obvious name match; otherwise the best meaning hit when nothing matches by name.
+  // Top Hit: the best launcher item over TOP_MIN (history folded into its score), else an
+  // obvious name match, else the best meaning hit when nothing matches by name.
   let top: OvItem | null = null;
-  const n0 = names[0];
+  const picked = pickTop(launch, names, text, portable);
   if (!expand) {
-    if (n0 && strongName(n0.name, text)) top = { key: "n0", section: "top", hit: n0, nameIdx: 0 };
-    else if (nameTotal === 0 && sem.length) top = { key: "s:" + sem[0].path, section: "top", hit: semHit(sem[0]), sem: sem[0] };
-    if (top) { sections.push({ id: "top", title: "Top Hit", items: [top], total: 1, more: false }); shownPaths.add(k(top.hit.path)); }
+    if (picked.launch) {
+      top = { key: "l:" + picked.launch.item.id, section: "top", hit: launchHit(picked.launch), launch: picked.launch };
+    } else if (picked.file) {
+      top = { key: "n0", section: "top", hit: picked.file, nameIdx: picked.nameIdx };
+    } else if (names[0] === undefined && nameTotal === 0 && sem.length) {
+      top = { key: "s:" + sem[0].path, section: "top", hit: semHit(sem[0]), sem: sem[0] };
+    }
+    if (top) {
+      sections.push({ id: "top", title: "Top Hit", items: [top], total: 1, more: false });
+      shownPaths.add(k(top.hit.path));
+      const resolved = top.launch ? launchPath(top.launch) : null;
+      if (resolved) shownPaths.add(k(resolved)); // the same exe is not listed again under Files
+    }
+  }
+
+  // Apps: catalog apps first, then the portable exes (they open as normal files).
+  if (!expand || expand === "apps") {
+    const catApps = launch.filter((h) => h.item.kind === "app");
+    const items: OvItem[] = catApps.map((h): OvItem => ({ key: "l:" + h.item.id, section: "apps", hit: launchHit(h), launch: h }));
+    if (expand === null || expand === "apps") {
+      for (const h of portable) {
+        const idx = names.findIndex((n) => n === h);
+        items.push({ key: "p:" + h.path, section: "apps", hit: h, nameIdx: idx >= 0 ? idx : undefined });
+      }
+    }
+    const total = items.length;
+    if (items.length) {
+      const shown = expand ? items : items.slice(0, APPS);
+      sections.push({ id: "apps", title: "Apps", items: shown, total, more: !expand && total > shown.length });
+    }
+  }
+
+  if (!expand || expand === "settings") {
+    const list = launch.filter((h) => h.item.kind === "setting");
+    if (list.length) {
+      const shown = expand ? list : list.slice(0, SETTINGS);
+      sections.push({ id: "settings", title: "Settings", items: shown.map((h): OvItem => ({ key: "l:" + h.item.id, section: "settings", hit: launchHit(h), launch: h })), total: list.length, more: !expand && list.length > shown.length });
+    }
+  }
+
+  if (!expand) {
+    const list = launch.filter((h) => h.item.kind === "command");
+    if (list.length) {
+      const shown = list.slice(0, COMMANDS);
+      sections.push({ id: "commands", title: "Commands", items: shown.map((h): OvItem => ({ key: "l:" + h.item.id, section: "commands", hit: launchHit(h), launch: h })), total: list.length, more: list.length > shown.length });
+    }
   }
 
   const rest = sem.filter((h) => !shownPaths.has(k(h.path)));
@@ -73,13 +142,14 @@ export function buildOverview(opts: {
   if (!expand) {
     const cap = hasMeaning ? FILES_WITH_MEANING : FILES_ALONE;
     const items: OvItem[] = [];
-    for (let i = top?.nameIdx === 0 ? 1 : 0; i < names.length && items.length < cap; i++) {
+    for (let i = 0; i < names.length && items.length < cap; i++) {
       const h = names[i];
       if (!h) break;
+      if (shownPaths.has(k(h.path))) continue; // the Top Hit (file or resolved app exe) is not repeated
       items.push({ key: "n" + i, section: "files", hit: h, nameIdx: i });
       shownPaths.add(k(h.path));
     }
-    const total = nameTotal - (top?.nameIdx === 0 ? 1 : 0);
+    const total = nameTotal - (top?.nameIdx !== undefined ? 1 : 0);
     if (items.length) sections.push({ id: "files", title: "Files", items, total, more: total > items.length });
   }
 

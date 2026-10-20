@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Filter, Hit, HitBox, ServiceState, Sort, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, HitBox, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -8,6 +8,7 @@ import { Preview } from "./Preview";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, ovMove, type Expand, type OvItem } from "./overviewLogic";
+import { portableApps } from "./launchLogic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
@@ -114,7 +115,7 @@ const Row = memo(function Row({
   );
 });
 
-type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] };
+type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] } | { kind: "unhide"; id: string };
 
 interface Data {
   total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean;
@@ -157,6 +158,13 @@ export default function App({ backend }: { backend: Backend }) {
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("meaning");
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
+  // Launcher (apps / settings / commands): hits per keystroke, the armed confirm row, the
+  // in-app context menu, and the launcher config (the portable-exes toggle lives in it).
+  const [launch, setLaunch] = useState<LaunchHit[]>([]);
+  const [launchVer, setLaunchVer] = useState(0);
+  const [lcfg, setLcfg] = useState<LaunchCfg | null>(null);
+  const [armed, setArmed] = useState<string | null>(null);
+  const [launchMenu, setLaunchMenu] = useState<{ hit: LaunchHit; x: number; y: number } | null>(null);
   const t0 = useRef<number | null>(null);
   const sawScan = useRef(false);
   const showPanelRef = useRef(false);
@@ -212,9 +220,13 @@ export default function App({ backend }: { backend: Backend }) {
   const [expand, setExpand] = useState<Expand>(null);
   useEffect(() => { setExpand(null); }, [query, filter]);
   const overview = !isRecent && sort === "rel" && expand !== "files";
+  const portable = useMemo(
+    () => (lcfg?.portable === false ? [] : portableApps(data.rows.filter((h): h is Hit => !!h), parsed.text, launch)),
+    [lcfg, data.rows, data.ver, parsed.text, launch], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const ov = useMemo(
-    () => buildOverview({ names: data.rows, nameTotal: data.total, sem: semHits, text: parsed.text, expand, isImage: (n) => kindOf(n, false) === "image" }),
-    [data.rows, data.ver, data.total, semHits, parsed.text, expand], // eslint-disable-line react-hooks/exhaustive-deps
+    () => buildOverview({ names: data.rows, nameTotal: data.total, sem: semHits, text: parsed.text, expand, isImage: (n) => kindOf(n, false) === "image", launch, portable }),
+    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launch, portable], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -343,6 +355,24 @@ export default function App({ backend }: { backend: Backend }) {
     return () => ro.disconnect();
   }, []);
 
+  // ---- launcher data --------------------------------------------------------
+  const launchSeq = useRef(0);
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.launchGetConfig().then((c) => { if (!dead) setLcfg(c); }).catch(console.error);
+    backend.onLaunchCatalogChanged(() => {
+      setLaunchVer((v) => v + 1);
+      backend.launchGetConfig().then(setLcfg).catch(() => {});
+    }).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend]);
+  useEffect(() => {
+    const text = parsed.text;
+    if (!text.trim()) { setLaunch([]); return; }
+    const my = ++launchSeq.current;
+    backend.launchSearch(text, 30).then((hits) => { if (my === launchSeq.current) setLaunch(hits); }).catch(console.error);
+  }, [backend, parsed.text, launchVer]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // ---- actions -------------------------------------------------------------
   const flash = useCallback((msg: string, undo = false, ms = undo ? 5000 : 1600) => {
     setToast({ msg, undo });
@@ -373,15 +403,17 @@ export default function App({ backend }: { backend: Backend }) {
   const boxesRef = useRef(curBoxes);
   boxesRef.current = curBoxes;
   // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
+  // Launch rows (apps / settings / commands) have no preview: the pane stays empty for them.
+  const isLaunchSel = !!(overview && ovItem?.launch);
   const pvShown = useRef(false);
   useEffect(() => {
     const c = currentRef.current;
-    if (!c) { pvShown.current = false; setPv(null); return; }
+    if (!c || isLaunchSel) { pvShown.current = false; setPv(null); return; }
     const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, boxes: boxesRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
-  }, [curKey]);
+  }, [curKey, isLaunchSel]);
   useEffect(() => { navigated.current = false; }, [query]);
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
@@ -392,6 +424,36 @@ export default function App({ backend }: { backend: Backend }) {
       await backend.hide();
     } catch (e) { fail(e); }
   }, [backend, flash, fail]);
+
+  const armTimer = useRef<number | undefined>(undefined);
+  const armConfirm = useCallback((id: string) => {
+    window.clearTimeout(armTimer.current);
+    setArmed(id);
+    armTimer.current = window.setTimeout(() => setArmed(null), 4000);
+  }, []);
+  useEffect(() => { setArmed(null); }, [oselKey, query]); // selection / query change disarms
+
+  const launchAct = useCallback(async (h: LaunchHit, mode: "open" | "reveal" | "copy" | "admin") => {
+    const id = h.item.id;
+    const q = parsed.text;
+    try {
+      // The winseek panels are handled here; the backend only records the pick.
+      if (id === "cmd:winseek_settings") {
+        void backend.launchRecord(id, q);
+        setSetupOpen(false);
+        setSettingsOpen(true);
+        refreshT1();
+        await backend.hide();
+        return;
+      }
+      if (id === "cmd:winseek_library") { void backend.launchRecord(id, q); openLibrary(); return; }
+      if (mode === "copy") { await backend.launchCopy(id); flash("Target copied"); return; }
+      if (mode === "reveal") { await backend.launchReveal(id); await backend.hide(); return; }
+      if (h.confirm && armed !== id) { armConfirm(id); return; } // second Enter confirms
+      await backend.launchRun(id, q, mode === "admin");
+      await backend.hide();
+    } catch (e) { fail(e); }
+  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, refreshT1]);
 
   const removeRow = useCallback((i: number) => {
     const rows = rowsRef.current.slice();
@@ -442,6 +504,10 @@ export default function App({ backend }: { backend: Backend }) {
       if (u.kind === "rename") {
         await backend.renamePath(u.newPath, u.oldName);
         flash("Rename undone");
+      } else if (u.kind === "unhide") {
+        await backend.launchUnhide(u.id);
+        setLaunchVer((v) => v + 1);
+        flash("Back in the results");
       } else {
         const n = await backend.restoreRecycled(u.paths);
         flash(n > 0 ? "Restored" : "Nothing to restore");
@@ -449,6 +515,14 @@ export default function App({ backend }: { backend: Backend }) {
       setEpoch((e) => e + 1); // re-run the search to refresh the list
     } catch (e) { fail(e); }
   }, [backend, flash, fail]);
+
+  const hideLaunch = useCallback((h: LaunchHit) => {
+    setLaunchMenu(null);
+    void backend.launchHide(h.item.id).then(() => {
+      setLaunch((prev) => prev.filter((x) => x.item.id !== h.item.id));
+      pushUndo({ kind: "unhide", id: h.item.id }, "Hidden from results");
+    }).catch(fail);
+  }, [backend, pushUndo, fail]);
 
   const openMenu = useCallback(async (i: number, x: number, y: number) => {
     const h = rowsRef.current[i];
@@ -522,6 +596,7 @@ export default function App({ backend }: { backend: Backend }) {
           const sr = ovRef.current?.querySelector('[data-sel="1"]')?.getBoundingClientRect();
           if (!sr) return;
           const x = sr.left + Math.min(120, sr.width / 2), y = sr.top + sr.height / 2;
+          if (ovItem?.launch) { setLaunchMenu({ hit: ovItem.launch, x, y }); return; }
           if (curIdx !== undefined) void openMenu(curIdx, x, y); else void openSemMenu(current.path, x, y);
           return;
         }
@@ -552,7 +627,8 @@ export default function App({ backend }: { backend: Backend }) {
         case "End": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(selCount - 1); } break;
         case " ":
           // Space closes Quick Look; it opens it when it cannot be a typed space (empty box, or after arrowing
-          // through the results). Ctrl+Space always toggles.
+          // through the results). Launch rows have no preview: Space is a no-op there.
+          if (ovItem?.launch) break;
           if (pvOpen) { e.preventDefault(); setPvOpen(false); }
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
             e.preventDefault(); setPvOpen(true);
@@ -567,10 +643,15 @@ export default function App({ backend }: { backend: Backend }) {
             if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
             e.preventDefault(); primaryRef.current(); break;
           }
-          e.preventDefault(); void act(e.ctrlKey ? "reveal" : "open", current); break;
+          e.preventDefault();
+          if (ovItem?.launch) { void launchAct(ovItem.launch, e.ctrlKey && e.shiftKey ? "admin" : e.ctrlKey ? "reveal" : "open"); break; }
+          void act(e.ctrlKey ? "reveal" : "open", current);
+          break;
         case "Escape":
           e.preventDefault();
-          if (pvOpen) setPvOpen(false);
+          if (armed) setArmed(null);
+          else if (launchMenu) setLaunchMenu(null);
+          else if (pvOpen) setPvOpen(false);
           else if (expand && !setupOpenRef.current) setExpand(null);
           else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
@@ -582,7 +663,7 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         }
         case "c": case "C":
-          if (e.ctrlKey && e.shiftKey) { e.preventDefault(); void act("copy", current); }
+          if (e.ctrlKey && e.shiftKey) { e.preventDefault(); if (ovItem?.launch) void launchAct(ovItem.launch, "copy"); else void act("copy", current); }
           else if (e.ctrlKey && !hasSelection && current) {
             e.preventDefault();
             backend.copyFiles([current.path]).then(() => flash("File copied")).catch(fail);
@@ -590,10 +671,10 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         case "F2":
           e.preventDefault();
-          if (current && curIdx !== undefined) setRenaming(true);
+          if (current && curIdx !== undefined && !ovItem?.launch) setRenaming(true);
           break;
         case "Delete":
-          if (atEnd && current) {
+          if (atEnd && current && !ovItem?.launch) { // launch rows: nothing to delete
             e.preventDefault();
             if (curIdx !== undefined) void doRecycle(curIdx);
             else backend.recycle([current.path]).then(() => { pushUndo({ kind: "recycle", paths: [current.path] }, "Moved to Recycle Bin"); setEpoch((x) => x + 1); }).catch(fail);
@@ -616,7 +697,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -718,18 +799,24 @@ export default function App({ backend }: { backend: Backend }) {
       if (suppressClick.current) { suppressClick.current = false; return; }
       ovGo(i); refocus();
     },
-    onOpen: (i) => { if (!suppressClick.current) void act("open", ov.flat[i]?.hit); },
+    onOpen: (i) => {
+      if (suppressClick.current) return;
+      const it = ov.flat[i];
+      if (it?.launch) { void launchAct(it.launch, "open"); return; }
+      void act("open", it?.hit);
+    },
     onMenu: (i, e) => {
       e.preventDefault();
       const it = ov.flat[i];
       if (!it) return;
       ovGo(i);
+      if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY }); return; }
       if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
     },
-    onDown: (i, e) => { const it = ov.flat[i]; if (it) onRowDown(e, it.hit); },
+    onDown: (i, e) => { const it = ov.flat[i]; if (it && !it.launch) onRowDown(e, it.hit); }, // launch rows do not drag
     onRenameCommit: (i, n) => { const idx = ov.flat[i]?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
     onRenameCancel: () => { setRenaming(false); refocus(); },
-  }), [ov.flat, ovGo, act, openMenu, openSemMenu, onRowDown, doRename, refocus]);
+  }), [ov.flat, ovGo, act, launchAct, openMenu, openSemMenu, onRowDown, doRename, refocus]);
   const showList = !overview;
   const waitingSem = overview && sem.query !== parsed.text.trim() && parsed.text.trim().length >= 2 && !!t1 && t1.state !== "unavailable";
   const pvPane = !showPanel && !!pv && !!current;
@@ -849,7 +936,7 @@ export default function App({ backend }: { backend: Backend }) {
 
       {!showPanel && overview && (ov.flat.length > 0 ? (
         <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}
-                  handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} />
+                  handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} armed={armed} />
       ) : loaded && !waitingSem ? (
         <div className="empty">
           <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
@@ -867,6 +954,29 @@ export default function App({ backend }: { backend: Backend }) {
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} onCopyPath={() => void act("copy", pv.hit)} />
       )}
       </div>
+
+      {launchMenu && (
+        <div className="ctx-overlay" onMouseDown={() => setLaunchMenu(null)}
+             onContextMenu={(e) => { e.preventDefault(); setLaunchMenu(null); }}>
+          <div className="ctx-menu" style={{ left: launchMenu.x, top: launchMenu.y }} role="menu" aria-label="Launcher actions"
+               onMouseDown={(e) => e.stopPropagation()}>
+            <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "open"); }}>Open</button>
+            {launchMenu.hit.item.kind === "app" && launchMenu.hit.item.admin_ok && (
+              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "admin"); }}>Run as administrator</button>
+            )}
+            {launchMenu.hit.item.kind === "app" && (
+              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "reveal"); }}>Open file location</button>
+            )}
+            {launchMenu.hit.item.kind === "setting" && (
+              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "copy"); }}>Copy link</button>
+            )}
+            {launchMenu.hit.item.kind === "app" && (
+              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "copy"); }}>Copy target</button>
+            )}
+            <button role="menuitem" onClick={() => hideLaunch(launchMenu.hit)}>Hide from results</button>
+          </div>
+        </div>
+      )}
 
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>

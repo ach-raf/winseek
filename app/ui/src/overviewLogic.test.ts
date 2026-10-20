@@ -60,3 +60,66 @@ test("ovMove walks rows, the grid by rows and tiles, and jumps sections", () => 
   assert.equal(ovMove(flat, 11, "down"), 11);
   assert.equal(ovMove([], 3, "down"), 0);
 });
+
+import { launchHit as lhitIgnore } from "./overviewLogic.ts";
+// ---- launcher sections ----
+import type { LaunchHit, LaunchItem } from "./types.ts";
+const mkLaunch = (id: string, kind: LaunchItem["kind"], title: string, score: number, target: LaunchItem["target"] = { t: "path", path: `C:\\apps\\${id}.exe`, args: null }): LaunchHit =>
+  ({ item: { id, kind, title, subtitle: "test", keywords: [], target, icon: null, admin_ok: true }, score, ranges: [], confirm: false });
+const app = (id: string, title: string, score: number, target?: LaunchItem["target"]) => mkLaunch(id, "app", title, score, target);
+const setting = (id: string, title: string, score: number, uri: string) => mkLaunch(id, "setting", title, score, { t: "uri", uri });
+
+test("launcher: mpv with only portable files -> portable mpv.exe is Top Hit and in Apps, mpv.conf stays in Files", () => {
+  const names = [hit("mpv.conf"), { ...hit("mpv.exe"), path: "D:\\tools\\mpv\\mpv.exe" }, hit("mpv-2.dll")];
+  const r = buildOverview({ names, nameTotal: 3, sem: [], text: "mpv", expand: null, isImage, portable: [names[1]] });
+  assert.equal(r.sections[0].id, "top");
+  assert.equal(r.sections[0].items[0].hit.name, "mpv.exe");
+  assert.ok(r.sections.some((s) => s.id === "apps" && s.items.some((i) => i.hit.name === "mpv.exe")));
+  const files = r.sections.find((s) => s.id === "files");
+  assert.deepEqual(files?.items.map((i) => i.hit.name), ["mpv.conf", "mpv-2.dll"]);
+});
+
+test("launcher: a catalog app covering the same path leaves one Apps row", () => {
+  const exe = { ...hit("mpv.exe"), path: "D:\\tools\\mpv\\mpv.exe" };
+  const names = [exe];
+  const launch = [app("app:mpv", "mpv", 180, { t: "aumid", aumid: "x!App", path: "D:\\tools\\mpv\\mpv.exe" })];
+  const r = buildOverview({ names, nameTotal: 1, sem: [], text: "mpv", expand: null, isImage, launch, portable: [] });
+  // The portable list was already deduped upstream (portableApps drops covered exes); here the
+  // catalog row is the only app.
+  assert.equal(r.sections.find((s) => s.id === "apps")?.items.length, 1);
+});
+
+test("launcher: a settings hit over TOP_MIN beats a strong file for Top Hit", () => {
+  const launch = [setting("set:ms-settings:bluetooth", "Bluetooth & devices", 178, "ms-settings:bluetooth")];
+  const r = buildOverview({ names: [hit("bluetooth_driver.zip")], nameTotal: 1, sem: [], text: "bluetooth", expand: null, isImage, launch });
+  assert.equal(r.sections[0].id, "top");
+  assert.equal(r.sections[0].items[0].launch?.item.id, "set:ms-settings:bluetooth");
+});
+
+test("launcher: section order Top, Apps, Settings, Commands, Files; ovMove walks it", () => {
+  const launch = [app("app:1", "App one", 170), setting("set:1", "Display", 160, "ms-settings:display"), mkLaunch("cmd:lock", "command", "Lock", 155, { t: "cmd", name: "lock" })];
+  const r = buildOverview({ names: [hit("apply.txt")], nameTotal: 1, sem: [], text: "app", expand: null, isImage, launch });
+  assert.deepEqual(r.sections.map((s) => s.id), ["top", "apps", "settings", "commands", "files"]);
+  const flat = r.flat;
+  assert.equal(ovMove(flat, 0, "down"), 1);
+  assert.equal(ovMove(flat, 1, "next"), 2, "apps -> settings");
+  assert.equal(ovMove(flat, 2, "next"), 3, "settings -> commands");
+  assert.equal(ovMove(flat, 3, "next"), 4, "commands -> files");
+});
+
+test("launcher: the apps filter shows only apps, no Files section", () => {
+  const launch = [app("app:1", "App one", 170)];
+  const portable = [hit("tool.exe")];
+  const r = buildOverview({ names: [hit("apply.txt")], nameTotal: 1, sem: [], text: "app", expand: "apps", isImage, launch, portable });
+  assert.deepEqual(r.sections.map((s) => s.id), ["apps"]);
+  assert.equal(r.sections[0].items.length, 2, "catalog app + portable exe");
+});
+
+test("launcher: a launch Top Hit's resolved exe is not listed again under Files", () => {
+  const exe = { ...hit("mpv.exe"), path: "D:\\tools\\mpv\\mpv.exe" };
+  const launch = [app("app:mpv", "mpv", 180, { t: "aumid", aumid: "x!App", path: "D:\\tools\\mpv\\mpv.exe" })];
+  const r = buildOverview({ names: [exe, hit("mpv.conf")], nameTotal: 2, sem: [], text: "mpv", expand: null, isImage, launch });
+  assert.equal(r.sections[0].items[0].launch?.item.id, "app:mpv");
+  const files = r.sections.find((s) => s.id === "files");
+  assert.ok(!files?.items.some((i) => i.hit.path === "D:\\tools\\mpv\\mpv.exe"));
+});

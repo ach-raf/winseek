@@ -806,6 +806,35 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .ov-row.top .ficon img { width: 32px; height: 32px; }
 .ov-row.top .ov-name { font: 600 15px/1.2 var(--font-display); letter-spacing: -0.01em; }
 
+/* Launcher rows (apps / settings / commands) */
+.ov-row.launch .glyph {
+  flex: none; width: 28px; height: 28px; border-radius: 7px; display: grid; place-items: center;
+  font-family: "Segoe Fluent Icons", "Segoe MDL2 Assets"; font-size: 16px; color: var(--fg-2);
+  background: var(--chip);
+}
+.ov-row.launch .glyph.svg { background: none; }
+.ov-row.launch .glyph svg { width: 22px; height: 22px; }
+.ov-row.launch .kind-chip {
+  flex: none; font-size: 10.5px; line-height: 1; padding: 3px 7px; border-radius: 99px;
+  background: var(--chip); color: var(--fg-3);
+}
+.ov-row.top.launch .glyph { width: 42px; height: 42px; border-radius: 10px; font-size: 22px; }
+.ov-row.armed { background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.ov-row.armed .ov-sub { color: var(--fg); font-weight: 500; }
+
+/* In-app context menu for launch rows */
+.ctx-overlay { position: fixed; inset: 0; z-index: 60; }
+.ctx-menu {
+  position: fixed; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
+  background: var(--bg-solid); border: 1px solid var(--line);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.22);
+  display: flex; flex-direction: column;
+}
+.ctx-menu button {
+  text-align: left; font-size: 12.5px; padding: 7px 10px; border-radius: 6px; color: var(--fg);
+}
+.ctx-menu button:hover { background: var(--hover); }
+
 .ov-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 6px; padding: 2px 4px 4px; }
 .ov-tile {
   position: relative; aspect-ratio: 1; border-radius: 8px; overflow: hidden; background: var(--chip);
