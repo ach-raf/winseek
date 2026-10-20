@@ -216,7 +216,7 @@ fn split_command(command: &str) -> (String, Vec<String>) {
 }
 
 /// Expand the %windir% / %systemroot% macros (case-insensitive, ASCII so byte offsets match).
-fn expand_root(token: &str) -> String {
+pub(crate) fn expand_root(token: &str) -> String {
     let root = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let low = token.to_lowercase();
     if low.starts_with("%systemroot%") {
