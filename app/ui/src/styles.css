@@ -263,6 +263,8 @@ mark { background: none; color: inherit; font-weight: 700; }
 .btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 /* PRD B8: everything inside panels shows the accent ring when keyboard-focused. */
 input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+/* the searchbar input is always focused; the caret is its indicator, a ring would sit there permanently */
+.searchbar input:focus-visible { outline: 0; }
 .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 [role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 .btn .shield { flex: none; }
