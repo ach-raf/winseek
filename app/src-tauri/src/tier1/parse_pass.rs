@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use pdfium_render::prelude::Pdfium;
 use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::Parsed;
-use winseek_store::{ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS, SETTING_PARSE_ROUTE_CURSOR};
+use winseek_store::{ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS, SETTING_PARSE_GATE_REEVAL, SETTING_PARSE_ROUTE_CURSOR};
 
 use super::chunk;
 use super::embedder::Embedder;
@@ -87,11 +87,42 @@ impl ParsePass {
         if paused.load(Ordering::Relaxed) || !lock(parser).present() {
             return Ok(0);
         }
+        self.reeval_stale(store)?;
         let routed = self.route_pass(store, embedder, paused)?;
         if routed > 0 {
             return Ok(routed);
         }
         self.parse_jobs(store, embedder, parser, paused)
+    }
+
+    // ------------------------------------------------------------ stale queue entries
+
+    /// One-time re-check of queue entries queued under an older routing gate: an item whose
+    /// stored text already reads well by the current OCR-quality gate leaves the queue
+    /// (`ocr_ok`, OCR text kept) instead of waiting for a parse that would only replace good
+    /// text. Guarded by a store setting so it runs once per store; every step is an idempotent
+    /// update, so an aborted run simply repeats on the next pass.
+    fn reeval_stale(&mut self, store: &Mutex<Store>) -> Result<(), String> {
+        if lock(store).get_setting(SETTING_PARSE_GATE_REEVAL).map_err(db)?.is_some() {
+            return Ok(());
+        }
+        let jobs = lock(store).queued_all().map_err(db)?;
+        let mut dropped = 0usize;
+        for (hash, page) in &jobs {
+            let text = lock(store).page_text(hash, *page).map_err(db)?;
+            if !text.trim().is_empty() && !ocr_looks_poor(&text) {
+                lock(store).skip_parse(hash, *page, "ocr_ok").map_err(db)?;
+                dropped += 1;
+            }
+        }
+        lock(store).set_setting(SETTING_PARSE_GATE_REEVAL, Some("1")).map_err(db)?;
+        if !jobs.is_empty() {
+            eprintln!(
+                "winseek: tier 1: re-checked {} queued item(s) against the current OCR gate; {dropped} already have readable text and left the queue",
+                jobs.len()
+            );
+        }
+        Ok(())
     }
 
     // ------------------------------------------------------------ routing
@@ -546,6 +577,43 @@ mod tests {
         assert!(!e.pass(&mut p));
         assert_eq!(e.cursor(), None, "the images are looked at once the embedder works");
         assert!(p.proto_retry_at.is_some(), "and not retried every second");
+    }
+
+    #[test]
+    fn stale_queue_entries_with_readable_text_leave_the_queue_once() {
+        let e = env(true, false);
+        let readable = e.add_image("a.png", 1, unit(0), Some(&ARABIC_SENTENCE.repeat(2)));
+        let junk = e.add_image("b.png", 2, unit(0), Some(&"·-\\|/ *_—".repeat(40)));
+        // a scanned PDF whose page 2 was queued although its own text reads fine (page 1 is junk)
+        let bytes = png(40, 30, 3);
+        let path = e.dir.path().join("scan.pdf");
+        std::fs::write(&path, &bytes).unwrap();
+        let hp = sha256_hex(&bytes);
+        {
+            let mut s = e.store.lock().unwrap();
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, &path.to_string_lossy(), bytes.len() as u64, 1, "pdf").unwrap();
+            let v = |chunk, page: u32| ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!(r#"{{"page":{page}}}"#)), vec: unit(3) };
+            s.complete(id, &hp, &[v(1, 1), v(3, 2)], &[(1, "junk".into()), (3, ARABIC_SENTENCE.repeat(2).into())]).unwrap();
+            s.queue_parse(&readable, 0, "doc_image").unwrap();
+            s.queue_parse(&junk, 0, "doc_image").unwrap();
+            s.queue_parse(&hp, 2, "scanned_pdf").unwrap();
+            s.queue_parse(&hp, 1, "scanned_pdf").unwrap();
+        }
+        let mut p = pass_with(None);
+        p.reeval_stale(&e.store).unwrap();
+        assert_eq!(e.counts(), ParseCounts { queued: 2, done: 0, failed: 0, skipped: 2 }, "the readable image and the readable PDF page left");
+        {
+            let s = e.store.lock().unwrap();
+            assert!(s.next_parse(10).unwrap().iter().all(|j| j.hash == junk || (j.hash == hp && j.page == 1)), "junk text still waits");
+            assert_eq!(s.texts_of(&readable).unwrap()[0].1, ARABIC_SENTENCE.repeat(2), "the kept item's text is untouched");
+            assert!(s.get_setting(SETTING_PARSE_GATE_REEVAL).unwrap().is_some(), "the re-check is marked done");
+        }
+        // the next pass does not repeat the walk (the setting short-circuits it)
+        e.store.lock().unwrap().skip_parse(&junk, 0, "empty").unwrap();
+        e.store.lock().unwrap().skip_parse(&hp, 1, "empty").unwrap();
+        assert_eq!(e.queued().len(), 0);
+        assert_eq!(p.reeval_stale(&e.store).unwrap(), ());
+        assert_eq!(e.counts().skipped, 4, "nothing changed the second time");
     }
 
     #[test]

@@ -229,6 +229,9 @@ pub const PARSE_REASONS: [&str; 3] = ["scanned_pdf", "doc_image", "screenshot"];
 pub const MAX_PARSE_ATTEMPTS: u32 = 3;
 /// Settings key: rowid of `vectors` the document-image route pass has scanned up to.
 pub const SETTING_PARSE_ROUTE_CURSOR: &str = "parse_route_cursor";
+/// Settings key: set once queue entries queued under an older routing gate have been re-checked
+/// against the current one (`parse_pass::reeval_stale`).
+pub const SETTING_PARSE_GATE_REEVAL: &str = "parse_gate_reeval_v1";
 
 /// One queued item for the document parser. `page` 0 is a standalone image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1449,6 +1452,32 @@ impl Store {
         Ok(self.conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM vectors", [], |r| r.get(0))?)
     }
 
+    /// Every still-waiting `(hash, page)` pair, for the one-time routing-gate re-check.
+    pub fn queued_all(&self) -> Result<Vec<(String, u32)>> {
+        let mut st = self.conn.prepare_cached("SELECT hash, page FROM parse_queue WHERE state = ?1")?;
+        let rows = st.query_map([STATE_PENDING], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u32)))?;
+        Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// The stored text belonging to one page: chunk texts whose chunk's locator carries that
+    /// `page` (locator on the vector, or on the pending vector while the embedding is owed).
+    /// `page` 0 means a standalone image's chunks, whose locator has no page. Empty when the
+    /// item has no text for that page.
+    pub fn page_text(&self, hash: &str, page: u32) -> Result<String> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT t.body FROM texts t
+             LEFT JOIN vectors v ON v.hash = t.hash AND v.chunk = t.chunk
+             LEFT JOIN pending_vecs p ON p.hash = t.hash AND p.chunk = t.chunk
+             WHERE t.hash = ?1
+               AND (CASE WHEN ?2 = 0
+                    THEN COALESCE(json_extract(v.locator, '$.page'), json_extract(p.locator, '$.page')) IS NULL
+                    ELSE COALESCE(json_extract(v.locator, '$.page'), json_extract(p.locator, '$.page')) = ?2 END)
+             ORDER BY CAST(t.chunk AS INTEGER)",
+        )?;
+        let rows = st.query_map(params![hash, page], |r| r.get::<_, String>(0))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?.join("\n"))
+    }
+
     // ------------------------------------------------------------ settings
 
     /// Free-form string setting (`None` when unset).
@@ -2469,6 +2498,51 @@ mod tests {
         s.finish_parse("hn", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
         assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 1, failed: 1, skipped: 1 }, "only the dead one is still queued");
         assert!(s.next_parse(10).unwrap().is_empty());
+    }
+
+    #[test]
+    fn queued_all_lists_waiting_items_only() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert!(s.queued_all().unwrap().is_empty());
+        s.queue_parse("ha", 0, "doc_image").unwrap();
+        s.queue_parse("hb", 3, "scanned_pdf").unwrap();
+        s.queue_parse("hb", 0, "doc_image").unwrap();
+        s.skip_parse("hb", 3, "ocr_ok").unwrap();
+        s.fail_parse("hb", 0, "boom").unwrap();
+        s.queue_parse("hc", 0, "doc_image").unwrap();
+        s.finish_parse("hc", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        let mut got = s.queued_all().unwrap();
+        got.sort();
+        assert_eq!(got, vec![("ha".into(), 0)]);
+    }
+
+    #[test]
+    fn page_text_takes_the_chunks_of_that_page() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let id = s.upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf").unwrap();
+        // page 1: OCR text with its vector; page 2: text whose vector is still owed
+        let v = |chunk, page: u32, vec| ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!(r#"{{"page":{page}}}"#)), vec };
+        s.complete(id, "hs", &[v(1, 1, cvv()), v(3, 2, cvv())], &[(1, "page one words".into()), (3, "page two words".into())]).unwrap();
+        assert_eq!(s.page_text("hs", 1).unwrap(), "page one words");
+        assert_eq!(s.page_text("hs", 2).unwrap(), "page two words", "owed vector's locator counts");
+        assert_eq!(s.page_text("hs", 0).unwrap(), "", "no standalone chunks");
+        assert_eq!(s.page_text("hs", 7).unwrap(), "");
+        assert_eq!(s.page_text("missing", 1).unwrap(), "");
+        // a text-only file: the vector is owed, its locator lives in pending_vecs
+        let oid = s.upsert_file(&key(3), r"C:\p\notes.pdf", 10, 1, "pdf").unwrap();
+        let pend = [PendingVec { chunk: 5, kind: VecKind::Text, locator: Some(r#"{"page":7}"#.into()) }];
+        s.complete_text_only(oid, "hn", &pend, &[(5, "page seven".into())]).unwrap();
+        assert_eq!(s.page_text("hn", 7).unwrap(), "page seven", "pending_vecs fallback");
+        // a parsed page-0 image: its chunks carry no page key, so page 0 finds them
+        let img = s.upsert_file(&key(2), r"C:\p\shot.png", 10, 1, "image").unwrap();
+        let noloc = ChunkVec { chunk: 0, kind: VecKind::Text, locator: Some(r#"{"ocr":{"w":1}}"#.into()), vec: cvv() };
+        s.complete(img, "hi", &[noloc], &[(0, "standalone ocr text".into())]).unwrap();
+        assert_eq!(s.page_text("hi", 0).unwrap(), "standalone ocr text");
+        assert_eq!(s.page_text("hi", 1).unwrap(), "");
+    }
+
+    fn cvv() -> Vec<f32> {
+        vec![1., 0., 0., 0.]
     }
 
     #[test]
