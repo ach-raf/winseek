@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, HitBox, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
-import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
+import { backspaceDropsChip, hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -8,7 +8,7 @@ import { Settings, type SettingsSection } from "./Settings";
 import { Preview } from "./Preview";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
-import { buildOverview, ovMove, type Expand, type OvItem } from "./overviewLogic";
+import { buildOverview, expandable, ovMove, type Expand, type OvItem } from "./overviewLogic";
 import { portableApps, launchForFilter } from "./launchLogic";
 import { combos, matches as matchesKey } from "./keymap";
 import { footerHints, HintChip, Shortcuts, tooltip, type RowKind } from "./Shortcuts";
@@ -402,6 +402,8 @@ export default function App({ backend }: { backend: Backend }) {
   }, [flash]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
   const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
+  /** Settings opened straight on the Status section (tray item, Ctrl+Shift+L). */
+  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); setSettingsSection("status"); refreshT1(); }, [refreshT1]);
 
   const semSel = ovItem?.sem;
   const current: Hit | undefined = overview ? ovItem?.hit : data.rows[sel];
@@ -624,6 +626,34 @@ export default function App({ backend }: { backend: Backend }) {
       const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir)); };
       // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
       if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
+      // Alt combos (physical-key matching, so Alt+1 works on AZERTY) must preventDefault:
+      // WebView2 otherwise beeps or moves focus to the menu bar.
+      if (e.altKey && !e.ctrlKey && !e.metaKey) {
+        const fi = FILTERS.findIndex((_, i) => matchesKey(e, `Alt+${i + 1}`));
+        if (fi >= 0) {
+          e.preventDefault();
+          const k = parsed.chips.find((c) => c.type === "kind");
+          if (k) dropChip(k.key); // a filter key overrides the kind found in the text (like the tab click)
+          setFilter(FILTERS[fi].id);
+          inputRef.current?.focus();
+          return;
+        }
+        if (matchesKey(e, "Alt+S")) {
+          e.preventDefault();
+          setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length].id);
+          inputRef.current?.focus();
+          return;
+        }
+        if (matchesKey(e, "Alt+Right")) { e.preventDefault(); const ex = expandable(ovItem); if (ex) setExpand(ex); return; }
+        if (matchesKey(e, "Alt+Left")) { e.preventDefault(); setExpand(null); return; }
+        if (matchesKey(e, "Alt+Enter")) {
+          e.preventDefault();
+          // Launch rows have nothing to show properties of (like Space today).
+          if (!ovItem?.launch && current) backend.showProperties(current.path).catch(fail);
+          return;
+        }
+      }
+      if (matchesKey(e, "Ctrl+Shift+L")) { e.preventDefault(); openStatus(); return; }
       if (overview && !e.altKey && !e.shiftKey) {
         // Ctrl+arrows / PageUp / PageDown jump between sections; left / right walk the image grid once the
         // keyboard is in the results (before that they move the caret in the search box).
@@ -680,6 +710,15 @@ export default function App({ backend }: { backend: Backend }) {
           else if (expand && !setupOpenRef.current) setExpand(null);
           else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
+        case "Backspace": {
+          // Remove the last filter chip only at caret 0 with no selection (same path as the chip's ×).
+          const atStart = inInput && inp!.selectionStart === 0 && inp!.selectionEnd === 0;
+          if (backspaceDropsChip(atStart, hasSelection, parsed.chips.length)) {
+            e.preventDefault();
+            dropChip(parsed.chips[parsed.chips.length - 1].key);
+          }
+          break;
+        }
         case "Tab": {
           if (showPanelRef.current) break; // let focus move into the panel buttons
           e.preventDefault();
@@ -688,7 +727,16 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         }
         case "c": case "C":
-          if (e.ctrlKey && e.shiftKey) { e.preventDefault(); if (ovItem?.launch) void launchAct(ovItem.launch, "copy"); else void act("copy", current); }
+          if (e.ctrlKey && e.altKey && !e.shiftKey) {
+            // Copy the file NAME only (Ctrl+Shift+C stays "copy full path"). Launch rows: no-op.
+            e.preventDefault();
+            if (current && !ovItem?.launch) {
+              const dot = current.name.lastIndexOf(".");
+              const base = current.is_dir || dot <= 0 ? current.name : current.name.slice(0, dot);
+              backend.copyTextHtml(base).then(() => flash("Name copied")).catch(fail);
+            }
+          }
+          else if (e.ctrlKey && e.shiftKey) { e.preventDefault(); if (ovItem?.launch) void launchAct(ovItem.launch, "copy"); else void act("copy", current); }
           else if (e.ctrlKey && !hasSelection && current) {
             e.preventDefault();
             backend.copyFiles([current.path]).then(() => flash("File copied")).catch(fail);
@@ -722,7 +770,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -767,7 +815,6 @@ export default function App({ backend }: { backend: Backend }) {
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
   const openSettings = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
   const closeSettings = useCallback(() => { setSettingsOpen(false); refocus(); }, [refocus]);
-  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); setSettingsSection("status"); refreshT1(); }, [refreshT1]);
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.onOpenStatus(openStatus).then((u) => (dead ? u() : (off = u)));

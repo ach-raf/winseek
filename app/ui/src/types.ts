@@ -361,6 +361,8 @@ export interface Backend {
   restoreRecycled(paths: string[]): Promise<number>;
   renamePath(path: string, newName: string): Promise<string>;
   showContextMenu(path: string, x: number, y: number): Promise<MenuResult>;
+  /** The Windows Properties sheet for one file (modeless; stays up after the popup hides). */
+  showProperties(path: string): Promise<void>;
   startDrag(paths: string[]): Promise<string>;
   /** Start a native window drag from the search bar (popup). */
   movePopup(): Promise<void>;

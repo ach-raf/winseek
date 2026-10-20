@@ -123,3 +123,16 @@ test("launcher: a launch Top Hit's resolved exe is not listed again under Files"
   const files = r.sections.find((s) => s.id === "files");
   assert.ok(!files?.items.some((i) => i.hit.path === "D:\\tools\\mpv\\mpv.exe"));
 });
+
+test("expandable maps sections to their Show-all view", async () => {
+  const { expandable } = await import("./overviewLogic.ts");
+  const item = (section: string) => ({ key: "k", section, hit: { name: "x", path: "C:/x", is_dir: false, size: null, mtime: null } });
+  assert.equal(expandable(item("files") as never), "files");
+  assert.equal(expandable(item("images") as never), "images");
+  assert.equal(expandable(item("apps") as never), "apps");
+  assert.equal(expandable(item("settings") as never), "settings");
+  assert.equal(expandable(item("docs") as never), "docs");
+  assert.equal(expandable(item("top") as never), null, "the Top Hit has no Show all");
+  assert.equal(expandable(item("commands") as never), null, "commands have no Show all");
+  assert.equal(expandable(undefined), null);
+});

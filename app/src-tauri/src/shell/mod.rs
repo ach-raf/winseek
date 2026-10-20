@@ -12,7 +12,7 @@ use tauri::{AppHandle, WebviewWindow};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName};
+use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName, SHObjectProperties, SHOP_FILEPATH};
 
 /// Per-thread COM STA init; uninitialises on drop only if this call initialised it.
 pub(crate) struct ComGuard(bool);
@@ -123,6 +123,24 @@ pub async fn start_drag(app: AppHandle, paths: Vec<String>) -> Result<String, St
         let (hwnd, _) = popup_hwnd(&app)?;
         let _modal = crate::popup::ModalGuard::new();
         drag::start(hwnd, &paths)
+    })
+}
+
+/// The Windows Properties sheet for `path`. It is modeless and lives on the calling thread's
+/// message loop, so it must be opened on the main thread — a worker thread would close it
+/// the moment the call returns (PRD B3).
+#[tauri::command]
+pub async fn show_properties(app: AppHandle, window: WebviewWindow, path: String) -> Result<(), String> {
+    on_main(&app, move || {
+        let hwnd = window_hwnd(&window)?;
+        let w = crate::shell::wide(&path);
+        // SAFETY: NUL-terminated name; the sheet stays up on this thread's message pump.
+        let ok = unsafe { SHObjectProperties(Some(hwnd), SHOP_FILEPATH, PCWSTR(w.as_ptr()), PCWSTR::null()) };
+        if ok.as_bool() {
+            Ok(())
+        } else {
+            Err(format!("Cannot open Properties for {path}"))
+        }
     })
 }
 

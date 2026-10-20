@@ -6,6 +6,15 @@ export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "im
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
 export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
 
+/** The section Alt+Right can expand for this item; null when there is no "Show all"
+ *  (the Top Hit and the system commands never have one). */
+export function expandable(item: OvItem | undefined): Expand {
+  switch (item?.section) {
+    case "files": case "images": case "docs": case "apps": case "settings": return item.section;
+    default: return null;
+  }
+}
+
 export interface OvItem {
   key: string;
   section: SectionId;

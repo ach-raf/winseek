@@ -256,6 +256,12 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
 }
 
 interface Item { is_dir: boolean; size: number | null; mtime: number | null }
+/** Backspace removes the last filter chip only when the caret sits at position 0 with no
+ *  selection — anywhere else it must keep editing the text (PRD B4). */
+export function backspaceDropsChip(caretAtStart: boolean, hasSelection: boolean, chips: number): boolean {
+  return caretAtStart && !hasSelection && chips > 0;
+}
+
 /** The date and size parts of a parse (kind / ext are handled by the name index and by kindMatches). */
 export function matchesRanges(p: Pick<Parsed, "date" | "size">, h: Item): boolean {
   if (p.date && (h.mtime === null || h.mtime < p.date.from || h.mtime >= p.date.to)) return false;

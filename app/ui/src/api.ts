@@ -27,6 +27,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     restoreRecycled: (paths) => inv("restore_recycled", { paths }),
     renamePath: (path, newName) => inv("rename_path", { path, newName }),
     showContextMenu: (path, x, y) => inv("show_context_menu", { path, x, y }),
+    showProperties: (path) => inv("show_properties", { path }),
     startDrag: (paths) => inv("start_drag", { paths }),
     iconUrl: (path, isDir, thumb, size) =>
       `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${size ?? (thumb ? 40 : 32)}&t=${thumb ? 1 : 0}`,

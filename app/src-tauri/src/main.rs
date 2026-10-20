@@ -86,6 +86,7 @@ fn main() {
             shell::restore_recycled,
             shell::rename_path,
             shell::show_context_menu,
+            shell::show_properties,
             shell::start_drag,
             popup::move_popup,
             popup::open_popup,

@@ -111,3 +111,11 @@ test("range matching", () => {
   assert.ok(!matchesRanges(p, { is_dir: false, size: 200 * 1048576, mtime: at(2026, 1, 1) }));
   assert.ok(!matchesRanges(p, { is_dir: true, size: null, mtime: mid }));
 });
+
+test("backspaceDropsChip only at caret 0, no selection, chips present", async () => {
+  const { backspaceDropsChip } = await import("./filters.ts");
+  assert.equal(backspaceDropsChip(true, false, 2), true);
+  assert.equal(backspaceDropsChip(false, false, 2), false, "caret elsewhere: edit the text");
+  assert.equal(backspaceDropsChip(true, true, 2), false, "a selection must survive");
+  assert.equal(backspaceDropsChip(true, false, 0), false, "no chips: nothing to remove");
+});
