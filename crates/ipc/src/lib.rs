@@ -6,11 +6,14 @@
 //! Note: pipe handles are synchronous, so reads and writes on one connection
 //! are serialised by the OS. Use a dedicated connection for `Subscribe`.
 
+#[cfg(windows)]
+pub mod agent;
 pub mod frame;
 #[cfg(windows)]
 pub mod pipe;
 pub mod proto;
 
+pub use agent::{AgentRequest, AgentResponse};
 pub use frame::{read_frame, read_message, write_frame, write_message, MAX_FRAME};
 pub use proto::*;
 
