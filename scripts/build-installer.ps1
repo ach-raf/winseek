@@ -36,6 +36,9 @@ if (-not $SkipNpm) {
 Step 'cargo build --release -p searchd'
 Run 'cargo' @('build', '--release', '-p', 'searchd') $Root
 
+Step 'cargo build --release -p winseek-mcp'
+Run 'cargo' @('build', '--release', '-p', 'winseek-mcp') $Root
+
 Step 'tauri build (UI + app + NSIS installer)'
 Run 'npx.cmd' @('tauri', 'build', '--bundles', 'nsis') $App
 

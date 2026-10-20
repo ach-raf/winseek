@@ -86,6 +86,18 @@ Windows OCR handles readable screenshots, but scanned pages need more. When extr
 
 The parser is a small generative model: strong on documents, weak on complex charts and rotated tables. Pages it can't read confidently are skipped, not hallucinated into the index.
 
+## Use winseek from AI agents
+
+winseek ships a small MCP server (`winseek-mcp.exe`, strictly read-only) that any MCP client can use: name search over every drive with type/date/size filters, search by meaning, reading text out of PDFs and Office files, apps & Settings lookup, index status and the library queries. It never opens, launches, renames or deletes anything — agents get what winseek *knows*; actions stay with their own tools and with you.
+
+Turn it on in winseek → Settings › Agents (off by default), then connect Claude Code:
+
+```
+claude mcp add winseek -- "C:\Program Files\winseek\winseek-mcp.exe"
+```
+
+Claude Desktop / Cursor / VS Code / Codex snippets are copy-ready in the same Settings section, and every agent call shows up in the activity log there.
+
 ## Privacy
 
 Nothing leaves your machine. The index, the models and every query stay local; llama-server children bind to 127.0.0.1 with a random per-launch key; there is no telemetry, no account, and no network call except the one-time model download you trigger from Settings. The name service never reads file contents, and the content worker runs as your user — so files you can't read, winseek can't either.

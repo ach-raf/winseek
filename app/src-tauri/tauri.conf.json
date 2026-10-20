@@ -44,7 +44,8 @@
     "publisher": "winseek",
     "shortDescription": "Instant file name search + search by meaning",
     "resources": {
-      "../../target/release/searchd.exe": "searchd.exe"
+      "../../target/release/searchd.exe": "searchd.exe",
+      "../../target/release/winseek-mcp.exe": "winseek-mcp.exe"
     },
     "windows": {
       "nsis": {
