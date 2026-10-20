@@ -10,6 +10,7 @@ import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, expandable, ovMove, type Expand, type OvItem } from "./overviewLogic";
 import { portableApps, launchForFilter } from "./launchLogic";
+import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { footerHints, HintChip, Shortcuts, tooltip, type RowKind } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
@@ -181,6 +182,16 @@ export default function App({ backend }: { backend: Backend }) {
   const ovRef = useRef<HTMLDivElement>(null);
 
   const inputRef = useRef<HTMLInputElement>(null);
+  // Search history (Alt+Up / Alt+Down): loaded once, appended when the user acts on a result.
+  const hist = useRef<string[]>(qh.load());
+  const histAt = useRef(-1); // -1 = the live input
+  const recordQuery = useCallback(() => {
+    const q = inputRef.current?.value ?? "";
+    if (!q.trim()) return;
+    hist.current = qh.push(hist.current, q);
+    histAt.current = -1;
+    qh.save(hist.current);
+  }, []);
   const listRef = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
   const inflight = useRef(new Set<number>());
@@ -438,12 +449,13 @@ export default function App({ backend }: { backend: Backend }) {
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
     if (!h) return;
+    recordQuery();
     try {
       if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
       if (kind === "open") await backend.openPath(h.path); else await backend.revealPath(h.path);
       await backend.hide();
     } catch (e) { fail(e); }
-  }, [backend, flash, fail]);
+  }, [backend, flash, fail, recordQuery]);
 
   const armTimer = useRef<number | undefined>(undefined);
   const armConfirm = useCallback((id: string) => {
@@ -456,6 +468,7 @@ export default function App({ backend }: { backend: Backend }) {
   const launchAct = useCallback(async (h: LaunchHit, mode: "open" | "reveal" | "copy" | "admin") => {
     const id = h.item.id;
     const q = parsed.text;
+    recordQuery();
     try {
       // The winseek panels are handled here; the backend only records the pick.
       if (id === "cmd:winseek_settings") {
@@ -473,7 +486,7 @@ export default function App({ backend }: { backend: Backend }) {
       await backend.launchRun(id, q, mode === "admin");
       await backend.hide();
     } catch (e) { fail(e); }
-  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, refreshT1]);
+  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, refreshT1, recordQuery]);
 
   const removeRow = useCallback((i: number) => {
     const rows = rowsRef.current.slice();
@@ -646,6 +659,15 @@ export default function App({ backend }: { backend: Backend }) {
         }
         if (matchesKey(e, "Alt+Right")) { e.preventDefault(); const ex = expandable(ovItem); if (ex) setExpand(ex); return; }
         if (matchesKey(e, "Alt+Left")) { e.preventDefault(); setExpand(null); return; }
+        if (matchesKey(e, "Alt+Up") || matchesKey(e, "Alt+Down")) {
+          e.preventDefault();
+          const dir: -1 | 1 = matchesKey(e, "Alt+Up") ? -1 : 1;
+          const r = qh.step(hist.current, histAt.current, inp?.value ?? "", dir);
+          histAt.current = r.at;
+          setQuery(r.q);
+          inputRef.current?.focus();
+          return;
+        }
         if (matchesKey(e, "Alt+Enter")) {
           e.preventDefault();
           // Launch rows have nothing to show properties of (like Space today).
@@ -681,7 +703,7 @@ export default function App({ backend }: { backend: Backend }) {
           if (ovItem?.launch) break;
           if (pvOpen) { e.preventDefault(); setPvOpen(false); }
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
-            e.preventDefault(); setPvOpen(true);
+            e.preventDefault(); setPvOpen(true); recordQuery();
           }
           break;
         case "Enter":
@@ -770,7 +792,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -916,7 +938,7 @@ export default function App({ backend }: { backend: Backend }) {
         <input
           ref={inputRef}
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => { histAt.current = -1; setQuery(e.target.value); }}
           placeholder="Search files and folders"
           spellCheck={false}
           autoComplete="off"
