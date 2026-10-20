@@ -817,7 +817,7 @@ export const mockBackend: Backend = {
   async onSetQuery() { return () => {}; },
   async agentMcpPath(): Promise<McpPath> {
     await sleep(10);
-    return { path: "C:\Program Files\winseek\winseek-mcp.exe", exists: true };
+    return { path: "C:\\Program Files\\winseek\\winseek-mcp.exe", exists: true };
   },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
