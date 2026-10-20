@@ -5,7 +5,7 @@ import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings, type SettingsSection } from "./Settings";
-import { Preview } from "./Preview";
+import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
@@ -189,6 +189,7 @@ export default function App({ backend }: { backend: Backend }) {
   const setupOpenRef = useRef(false);
   const setupPrimaryRef = useRef<() => void>(() => {});
   const ovRef = useRef<HTMLDivElement>(null);
+  const previewApi = useRef<PreviewApi | null>(null); // the open preview's keyboard surface
 
   const inputRef = useRef<HTMLInputElement>(null);
   // Search history (Alt+Up / Alt+Down): loaded once, appended when the user acts on a result.
@@ -686,6 +687,25 @@ export default function App({ backend }: { backend: Backend }) {
         }
       }
       if (matchesKey(e, "Ctrl+Shift+L")) { e.preventDefault(); openStatus(); return; }
+      // While the preview is open its keys win: pages, zoom, pan, extract, copy text (PRD B6).
+      if (pvOpen && previewApi.current) {
+        const api = previewApi.current;
+        const routes: [string, () => void][] = [
+          ["Ctrl+PgDn", () => api.page(1)],
+          ["Ctrl+PgUp", () => api.page(-1)],
+          ["Ctrl+=", () => api.zoom(1.25)],
+          ["Ctrl+-", () => api.zoom(0.8)],
+          ["Ctrl+0", () => api.fit()],
+          ["Ctrl+E", () => api.extract()],
+          ["Ctrl+Shift+X", () => api.copyText()],
+        ];
+        const r = routes.find(([c]) => matchesKey(e, c));
+        if (r) { e.preventDefault(); r[1](); return; }
+        if (e.altKey && e.shiftKey && !e.ctrlKey) {
+          const d = e.key === "ArrowLeft" ? [-1, 0] : e.key === "ArrowRight" ? [1, 0] : e.key === "ArrowUp" ? [0, -1] : e.key === "ArrowDown" ? [0, 1] : null;
+          if (d) { e.preventDefault(); api.pan(d[0], d[1]); return; }
+        }
+      }
       if (overview && !e.altKey && !e.shiftKey) {
         // Ctrl+arrows / PageUp / PageDown jump between sections; left / right walk the image grid once the
         // keyboard is in the results (before that they move the caret in the search box).
@@ -802,7 +822,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1060,7 +1080,7 @@ export default function App({ backend }: { backend: Backend }) {
       )}
       </div>
       {pvPane && (
-        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes}
+        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes} apiRef={previewApi}
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} onCopyPath={() => void act("copy", pv.hit)} />
       )}
       </div>

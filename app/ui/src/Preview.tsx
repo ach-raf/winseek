@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
@@ -8,6 +8,22 @@ import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
+
+/** What the popup's global key handler may drive while the preview is open (PRD B6). */
+export interface PreviewApi {
+  /** +1 next PDF page, -1 previous. */
+  page: (d: number) => void;
+  /** Zoom about the centre (e.g. 1.25 in, 0.8 out). */
+  zoom: (factor: number) => void;
+  /** Fit; again -> 100 %. */
+  fit: () => void;
+  /** Pan by fractions of the stage (Alt+Shift+arrows). */
+  pan: (dx: number, dy: number) => void;
+  /** The Extract text / parse action. */
+  extract: () => void;
+  /** Copy the extracted text. */
+  copyText: () => void;
+}
 
 export interface PreviewProps {
   backend: Backend;
@@ -25,6 +41,8 @@ export interface PreviewProps {
   onOpen: () => void;
   onReveal: () => void;
   onCopyPath: () => void;
+  /** The popup registers keys into this ref while the preview is open. */
+  apiRef?: { current: PreviewApi | null };
 }
 
 /**
@@ -32,7 +50,22 @@ export interface PreviewProps {
  * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
  * dimmed, until the new one arrives so arrowing through results does not flash.
  */
-export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal, onCopyPath }: PreviewProps) {
+export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal, onCopyPath, apiRef }: PreviewProps) {
+  // Children (PDF view, image stage, parse bar) contribute their piece of the keyboard API.
+  const apiParts = useRef<Partial<PreviewApi>>({});
+  const registerApi = useCallback((patch: Partial<PreviewApi>) => { apiParts.current = { ...apiParts.current, ...patch }; }, []);
+  useEffect(() => {
+    if (!apiRef) return;
+    apiRef.current = {
+      page: (d) => apiParts.current.page?.(d),
+      zoom: (f) => apiParts.current.zoom?.(f),
+      fit: () => apiParts.current.fit?.(),
+      pan: (dx, dy) => apiParts.current.pan?.(dx, dy),
+      extract: () => apiParts.current.extract?.(),
+      copyText: () => apiParts.current.copyText?.(),
+    };
+    return () => { if (apiRef) apiRef.current = null; };
+  }, [apiRef]);
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -81,13 +114,13 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
           <div className="pv-msg" role="alert">{err}</div>
         ) : info ? (
           <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
-                boxes={boxes ?? null} onPage={setPdfPage} />
+                boxes={boxes ?? null} onPage={setPdfPage} registerApi={registerApi} />
         ) : (
           <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
         )}
       </div>
       {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
-        <ParseBar backend={backend} path={shown.path} available={parser}
+        <ParseBar backend={backend} path={shown.path} available={parser} registerApi={registerApi}
                   page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
       )}
       {shown && <Facts info={shown} />}
@@ -123,12 +156,13 @@ function Facts({ info }: { info: PreviewInfo }) {
   );
 }
 
-function Body({ backend, info, query, start, page, boxes, onPage }: {
+function Body({ backend, info, query, start, page, boxes, onPage, registerApi }: {
   backend: Backend; info: PreviewInfo; query: string; start?: number; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
+  registerApi: (patch: Partial<PreviewApi>) => void;
 }) {
   switch (info.kind) {
-    case "pdf": return <PdfView backend={backend} info={info} query={query} page={page} boxes={boxes} onPage={onPage} />;
-    case "image": return <ImageView info={info} boxes={boxes} />;
+    case "pdf": return <PdfView backend={backend} info={info} query={query} page={page} boxes={boxes} onPage={onPage} registerApi={registerApi} />;
+    case "image": return <ImageView info={info} boxes={boxes} registerApi={registerApi} />;
     case "video": case "audio": return <MediaView info={info} start={start} />;
     // A document (docx / xlsx / pptx / ODF / RTF) reads exactly like a text file.
     case "text": case "document": return <TextView info={info} query={query} />;
@@ -138,7 +172,7 @@ function Body({ backend, info, query, start, page, boxes, onPage }: {
 
 // ---- images: fit, wheel zoom, drag pan, double-click 1:1 ------------------------------------------------------
 
-function ImageView({ info, boxes }: { info: PreviewInfo; boxes: HitBox[] | null }) {
+function ImageView({ info, boxes, registerApi }: { info: PreviewInfo; boxes: HitBox[] | null; registerApi: (patch: Partial<PreviewApi>) => void }) {
   const meta = info.image;
   const [useThumb, setUseThumb] = useState(!!meta?.thumb);
   const [dead, setDead] = useState(false);
@@ -147,7 +181,7 @@ function ImageView({ info, boxes }: { info: PreviewInfo; boxes: HitBox[] | null 
   if (!src || dead) return <OtherView info={info} note="This image cannot be shown here." />;
   return (
     <ImageStage
-      key={src} src={src} name={info.name} boxes={drawn}
+      key={src} src={src} name={info.name} boxes={drawn} registerApi={registerApi}
       dims={!useThumb && meta?.width && meta.height ? { w: meta.width, h: meta.height } : null}
       note={useThumb ? "Shell thumbnail" : null}
       onError={() => { if (!useThumb && info.thumb) setUseThumb(true); else setDead(true); }}
@@ -155,8 +189,9 @@ function ImageView({ info, boxes }: { info: PreviewInfo; boxes: HitBox[] | null 
   );
 }
 
-function ImageStage({ src, name, dims, note, boxes, onError }: {
+function ImageStage({ src, name, dims, note, boxes, onError, registerApi }: {
   src: string; name: string; dims: { w: number; h: number } | null; note: string | null; boxes: HitBox[]; onError: () => void;
+  registerApi?: (patch: Partial<PreviewApi>) => void;
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -185,6 +220,30 @@ function ImageStage({ src, name, dims, note, boxes, onError }: {
     measure();
     return () => ro.disconnect();
   }, []);
+
+  // Keyboard zoom / pan (Ctrl+= / Ctrl+- / Ctrl+0 / Alt+Shift+arrows) reuse the wheel maths:
+  // zoom about the stage centre (px = py = 0), pan by 10 % of the stage, clamped like a drag.
+  useEffect(() => {
+    if (!registerApi) return;
+    registerApi({
+      zoom: (factor) => {
+        const { cur, fit, box, nat } = latest.current;
+        if (!nat) return;
+        apply(zoomAt(cur, factor, 0, 0, fit, box.w, box.h, nat.w, nat.h), fit);
+      },
+      fit: () => {
+        const { cur, fit, nat } = latest.current;
+        if (!nat) return;
+        apply(toggleActual(cur, fit), fit);
+      },
+      pan: (dx, dy) => {
+        const { cur, fit, box, nat } = latest.current;
+        if (!nat || cur.s <= fit + 1e-6) return; // nothing to pan while the whole image is visible
+        apply(clampView({ s: cur.s, tx: cur.tx + dx * box.w * 0.1, ty: cur.ty + dy * box.h * 0.1 }, box.w, box.h, nat.w, nat.h), fit);
+      },
+    });
+    return () => registerApi({ zoom: undefined, fit: undefined, pan: undefined });
+  }, [registerApi]);
 
   useEffect(() => {
     const el = stage.current;
@@ -246,12 +305,17 @@ function ImageStage({ src, name, dims, note, boxes, onError }: {
 
 // ---- PDF: the page rendered by pdfium, prev / next ---------------------------------------------------------
 
-function PdfView({ backend, info, query, page, boxes, onPage }: {
+function PdfView({ backend, info, query, page, boxes, onPage, registerApi }: {
   backend: Backend; info: PreviewInfo; query: string; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
+  registerApi: (patch: Partial<PreviewApi>) => void;
 }) {
   const pages = info.pdf?.pages ?? null;
   const [n, setN] = useState(() => clampPage(page ?? 1, pages));
   useEffect(() => { onPage(n); }, [n, onPage]);
+  useEffect(() => {
+    registerApi({ page: (d) => setN((cur) => clampPage(cur + d, pages)) });
+    return () => registerApi({ page: undefined });
+  }, [registerApi, pages]);
   // The highlight belongs to the page the hit is on; other pages are drawn clean. Stored boxes
   // (OCR text, parser output) cover scanned pages; a text-layer PDF stores none, so the pane
   // asks pdfium for the query words' boxes live.
@@ -316,7 +380,7 @@ function PdfView({ backend, info, query, page, boxes, onPage }: {
         {err ? (
           <div className="pv-msg" role="alert">{err}</div>
         ) : url ? (
-          <ImageStage key={url} src={url} name={`${info.name}, page ${n}`} dims={null} note={null} boxes={drawn} onError={() => setErr("This page cannot be shown.")} />
+          <ImageStage key={url} src={url} name={`${info.name}, page ${n}`} dims={null} note={null} boxes={drawn} onError={() => setErr("This page cannot be shown.")} registerApi={registerApi} />
         ) : (
           <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
         )}
@@ -327,7 +391,9 @@ function PdfView({ backend, info, query, page, boxes, onPage }: {
 
 // ---- on-demand document parser: extract text, copy a table, copy as Markdown ----------------------------------
 
-function ParseBar({ backend, path, page, available }: { backend: Backend; path: string; page: number | null; available: boolean }) {
+function ParseBar({ backend, path, page, available, registerApi }: {
+  backend: Backend; path: string; page: number | null; available: boolean; registerApi: (patch: Partial<PreviewApi>) => void;
+}) {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
@@ -378,6 +444,12 @@ function ParseBar({ backend, path, page, available }: { backend: Backend; path: 
     catch (e) { setMsg({ text: errText(e), bad: true }); }
   };
   const extract = async () => { const d = await load(); if (d) { setPick(false); setPanel(true); } };
+  // Ctrl+E runs the extract action; Ctrl+Shift+X copies what the panel shows (PRD B6).
+  // Re-registered every render: the closures must see the current doc / copy helpers.
+  useEffect(() => {
+    registerApi({ extract: () => void extract(), copyText: () => { if (doc) void copy(doc.markdown, null, "Text"); } });
+    return () => registerApi({ extract: undefined, copyText: undefined });
+  });
   const copyTable = async () => {
     const d = await load();
     if (!d) return;

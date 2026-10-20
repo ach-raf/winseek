@@ -107,3 +107,30 @@ test("double click toggles fit and 1:1", () => {
   assert.deepEqual(toggleActual({ s: 1, tx: 3, ty: 4 }, 0.5), { s: 0.5, tx: 0, ty: 0 });
   assert.deepEqual(toggleActual({ s: 1, tx: 0, ty: 0 }, 1), { s: 1, tx: 0, ty: 0 });
 });
+
+test("keyboard zoom about the centre keeps the centre point fixed", async () => {
+  const { clampView, fitScale, zoomAt } = await import("./previewLogic.ts");
+  const [cw, ch, iw, ih] = [400, 300, 800, 600];
+  const fit = fitScale(cw, ch, iw, ih);
+  const v0 = clampView({ s: 1, tx: 150, ty: 40 }, cw, ch, iw, ih);
+  const z = zoomAt(v0, 1.25, 0, 0, fit, cw, ch, iw, ih);
+  // the IMAGE point under the stage centre (iw/2 - tx/s) is the same before and after
+  const pt = (v: { s: number; tx: number }) => iw / 2 - v.tx / v.s;
+  assert.ok(Math.abs(pt(v0) - pt(z)) < 1e-9, `${pt(v0)} vs ${pt(z)}`);
+  assert.equal(z.s, 1.25);
+});
+
+test("pan step is a fraction of the stage and clamps like a drag", async () => {
+  const { clampView, fitScale } = await import("./previewLogic.ts");
+  const [cw, ch, iw, ih] = [400, 300, 800, 600];
+  const s = 2; // zoomed in; limits are +/- (800*2 - 400)/2 = 600 and +/- (600*2 - 300)/2 = 450
+  const pan = (tx: number, ty: number, dx: number, dy: number) =>
+    clampView({ s, tx: tx + dx * cw * 0.1, ty: ty + dy * ch * 0.1 }, cw, ch, iw, ih);
+  // +10 % right / -10 % up from an interior view: moves, no clamp
+  assert.deepEqual(pan(100, 100, 1, -1), { s, tx: 140, ty: 70 });
+  // from the right edge, another +10 % stays clamped
+  assert.deepEqual(pan(600, 0, 1, 0), { s, tx: 600, ty: 0 });
+  // zoomed out to fit: nothing to pan, recentred
+  const fitted = clampView({ s: fitScale(cw, ch, iw, ih), tx: 500, ty: 500 }, cw, ch, iw, ih);
+  assert.deepEqual([fitted.tx, fitted.ty], [0, 0]);
+});
