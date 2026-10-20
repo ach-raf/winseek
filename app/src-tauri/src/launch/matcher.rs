@@ -8,7 +8,7 @@
 //!
 //! Char folding is 1:1, so folded indices stay valid for the original string (highlight ranges).
 
-use super::item::LaunchItem;
+use super::item::{Kind, LaunchItem, Target};
 
 /// Accept threshold, Flow's default QuerySearchPrecision.
 pub const PRECISION: u32 = 50;
@@ -283,6 +283,11 @@ pub fn score_item(query: &str, item: &LaunchItem) -> Option<Match> {
     }
     if full_acronym {
         m.score += 60;
+    }
+    // Legacy Control Panel / Task pages rank below the modern ms-settings page for the same
+    // query: the Settings page is the destination, the .cpl is the fallback row (PRD §1).
+    if item.kind == Kind::Setting && matches!(item.target, Target::Exec { .. }) {
+        m.score = m.score.saturating_sub(15);
     }
     Some(m)
 }

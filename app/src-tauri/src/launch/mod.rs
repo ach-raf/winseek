@@ -3,3 +3,4 @@
 
 pub mod item;
 pub mod matcher;
+pub mod settings;
