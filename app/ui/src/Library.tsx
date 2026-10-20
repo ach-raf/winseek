@@ -8,6 +8,8 @@ import { useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { groupByMonth } from "./libraryLogic";
 import { tooltip } from "./Shortcuts";
+import { combos, matches } from "./keymap";
+import { Shortcuts } from "./Shortcuts";
 
 type Tab = "timeline" | "collections" | "cleanup";
 const TABS: { id: Tab; label: string }[] = [
@@ -44,6 +46,7 @@ export default function Library({ backend }: { backend: Backend }) {
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
+  const [cheat, setCheat] = useState(false); // F1 / Ctrl+/
 
   const embedded = t1?.stats?.done ?? 0;
   const gen = useSettled(embedded, 20000);
@@ -114,6 +117,19 @@ export default function Library({ backend }: { backend: Backend }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
+      if (combos("library.cheatsheet").some((c) => matches(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
+      if (cheat && e.key === "Escape") { e.preventDefault(); setCheat(false); return; }
+      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+        const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
+        if (ti >= 0) { e.preventDefault(); setTab(TABS[ti].id); return; }
+      }
+      // Back to the search — unless a collection editor or a text field owns the key.
+      if (e.key === "Escape" || matches(e, "Alt+Left")) {
+        if (t?.closest?.(".co-form") || (t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) return;
+        e.preventDefault();
+        goBack();
+        return;
+      }
       if (e.ctrlKey && !e.shiftKey && e.key.toLowerCase() === "z" && undoRef.current && !(t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) {
         e.preventDefault();
         void doUndo();
@@ -121,7 +137,14 @@ export default function Library({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo]);
+  }, [doUndo, goBack, cheat]);
+
+  // A tab switch puts the keyboard on the tab's main list (gallery, collections, cleanup groups).
+  useEffect(() => {
+    requestAnimationFrame(() => {
+      document.querySelector<HTMLElement>(".lib-body [tabindex='0']")?.focus({ preventScroll: true });
+    });
+  }, [tab]);
 
   const visible = useMemo(() => (images ?? []).filter((i) => !hidden.has(i.path)), [images, hidden]);
   const sections: GallerySection[] = useMemo(
@@ -176,6 +199,7 @@ export default function Library({ backend }: { backend: Backend }) {
         )}
         {tab === "cleanup" && <Cleanup backend={backend} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} />}
       </main>
+      {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
       {toast && (
         <div className="lib-toast" role="status">
           {toast.msg}

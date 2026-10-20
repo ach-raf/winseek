@@ -451,6 +451,8 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .agent-log li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
 .agent-log li.none { color: var(--fg-3); }
 .agent-log .dot { width: 6px; height: 6px; align-self: center; }
+.gd-strip:focus-within .gd-card.kbf { outline: 2px solid var(--accent); outline-offset: -2px; }
+
 .agent-log code { flex: none; }
 .agent-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .agent-err { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

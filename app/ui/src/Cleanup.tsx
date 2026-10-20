@@ -258,15 +258,36 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
     try { await actions.recycle(doomed.map((d) => d.path)); } finally { setBusy(false); }
   };
 
+  // The review strip is a keyboard surface too (Tab reaches it from the group list): arrows move,
+  // Space flips the focused file between keep and recycle, Delete does what the big button does.
+  const [ci, setCi] = useState(() => Math.min(1, members.length - 1)); // start on the first compare card
+  useEffect(() => { setCi((i) => Math.max(0, Math.min(i, members.length - 1))); }, [members.length]);
+  const stripKey = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") { e.preventDefault(); setCi((i) => Math.min(cand.length - 1, i + 1)); }
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") { e.preventDefault(); setCi((i) => Math.max(0, i - 1)); }
+    else if (e.key === " ") {
+      e.preventDefault();
+      const c = cand[ci];
+      if (c && ci !== keep) toggle(c.path);
+    } else if (e.key === "Enter" && cand[ci]) {
+      e.preventDefault();
+      actions.open(cand[ci].path);
+    } else if (e.key === "Delete") {
+      e.preventDefault();
+      void go();
+    }
+  };
+
   return (
     <section className="gd">
       <div className="gd-cmp">
         <Pane backend={backend} c={cand[keep]} role="Keep" badge={keep === auto ? "Suggested" : "Your choice"} other={cand[other]} actions={actions} />
         {other >= 0 && <Pane backend={backend} c={cand[other]} role="Compare" badge={extraKeep.has(cand[other].path) ? "Kept too" : "To Recycle Bin"} other={cand[keep]} actions={actions} />}
       </div>
-      <div className="gd-strip" role="list">
+      <div className="gd-strip" role="list" tabIndex={0} onKeyDown={stripKey} aria-label="Files in this group">
         {cand.map((c, i) => (
-          <div key={c.path} role="listitem" className={"gd-card" + (i === keep ? " keep" : i === other ? " cmp" : "")} onClick={() => { if (i !== keep) setBPath(c.path); }}>
+          <div key={c.path} role="listitem" className={"gd-card" + (i === keep ? " keep" : i === other ? " cmp" : "") + (i === ci ? " kbf" : "")}
+               onClick={() => { setCi(i); if (i !== keep) setBPath(c.path); }}>
             <GrThumb backend={backend} m={c} size={192} cls="gd-th" />
             <div className="gd-cn" title={c.path}>{baseName(c.path)}</div>
             <div className="gd-cf">{formatSize(c.size)}{c.width && c.height ? ` · ${c.width}×${c.height}` : ""}</div>

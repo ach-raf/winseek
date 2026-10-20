@@ -145,11 +145,42 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     if (await save(list.filter((c) => c.name !== sel.name))) { setSelName(null); setConfirmDel(false); }
   };
 
+  const newCollection = () => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD }); setFormErr(null); };
+  const editCollection = (c: Collection) => { setDraft({ orig: c.name, name: c.name, query: c.query, threshold: c.threshold }); setFormErr(null); };
+
+  const listRef = useRef<HTMLDivElement>(null);
+  // The collection list is a keyboard widget: arrows select, Enter jumps to its photos,
+  // Ctrl+N / F2 / Delete are the buttons (Delete uses the same two-step confirm).
+  const onListKey = (e: React.KeyboardEvent) => {
+    if (!list?.length) return;
+    const at = Math.max(0, list.findIndex((c) => c.name === selName));
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      const n = (at + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
+      setSelName(list[n].name);
+      setDraft(null);
+      requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus());
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      document.querySelector<HTMLElement>(".co-grid [role='grid']")?.focus({ preventScroll: true });
+    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "KeyN") {
+      e.preventDefault();
+      newCollection();
+    } else if (e.key === "F2") {
+      e.preventDefault();
+      if (sel) editCollection(sel);
+    } else if (e.key === "Delete") {
+      e.preventDefault();
+      if (!sel) return;
+      if (confirmDel) void del(); else setConfirmDel(true);
+    }
+  };
+
   const embedded = t1?.stats?.done;
   return (
     <div className="co">
       <aside className="co-side">
-        <div className="co-list" role="listbox" aria-label="Smart collections">
+        <div className="co-list" role="listbox" aria-label="Smart collections" ref={listRef} tabIndex={0} onKeyDown={onListKey}>
           {list?.map((c) => {
             const n = count(c);
             return (
@@ -160,13 +191,14 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
             );
           })}
         </div>
-        <button className="btn quiet co-new" onClick={() => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD }); setFormErr(null); }}>+ New collection</button>
+        <button className="btn quiet co-new" onClick={newCollection}>+ New collection</button>
         <p className="co-note">Each collection is a saved search by meaning. {embedded !== undefined && `${embedded.toLocaleString("en-US")} photos understood so far; collections refresh as indexing goes on.`}</p>
       </aside>
 
       <section className="co-main">
         {draft ? (
-          <form className="co-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}>
+          <form className="co-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}
+                onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setDraft(null); setFormErr(null); } }}>
             <h2>{draft.orig ? "Edit collection" : "New collection"}</h2>
             <label>Name<input autoFocus value={draft.name} maxLength={60} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Receipts" /></label>
             {!(draft.orig && list?.find((c) => c.name === draft.orig)?.rule) && (
@@ -197,7 +229,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
                 </label>
               )}
               <div className="co-btns">
-                <button className="btn quiet" onClick={() => { setDraft({ orig: sel.name, name: sel.name, query: sel.query, threshold: sel.threshold }); setFormErr(null); }}>Edit</button>
+                <button className="btn quiet" onClick={() => editCollection(sel)}>Edit</button>
                 {confirmDel ? (
                   <>
                     <button className="btn primary" onClick={() => void del()}>Delete collection</button>
