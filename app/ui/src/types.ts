@@ -240,7 +240,9 @@ export interface PreviewInfo {
   /** Large shell thumbnail / icon URL. */
   thumb: string | null;
 }
-export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders" | "apps";
+/** "settings" is a launcher-only scope (the name index is not searched); "apps" filters the name
+ *  index to exe/msi AND keeps the launcher's app rows. */
+export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
 export type Sort = "rel" | "name" | "size" | "date";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isHelperExe, pickTop, portableApps, TOP_MIN } from "./launchLogic.ts";
+import { isHelperExe, launchForFilter, pickTop, portableApps, TOP_MIN } from "./launchLogic.ts";
 import type { Hit, LaunchHit, LaunchItem } from "./types.ts";
 
 const hit = (path: string): Hit => {
@@ -8,8 +8,8 @@ const hit = (path: string): Hit => {
   return { name, path, is_dir: false, size: 100, mtime: 1700000000000 };
 };
 
-const launchHit = (id: string, title: string, score: number, target: LaunchItem["target"] = { t: "path", path: `C:\\apps\\${id}.exe`, args: null }): LaunchHit => ({
-  item: { id, kind: "app", title, subtitle: "test", keywords: [], target, icon: null, admin_ok: true },
+const launchHit = (id: string, title: string, score: number, target: LaunchItem["target"] = { t: "path", path: `C:\\apps\\${id}.exe`, args: null }, kind: LaunchItem["kind"] = "app"): LaunchHit => ({
+  item: { id, kind, title, subtitle: "test", keywords: [], target, icon: null, admin_ok: true },
   score,
   ranges: [],
   confirm: false,
@@ -55,4 +55,18 @@ test("no launch hit at all: file rule decides", () => {
   assert.equal(top.file?.name, "mpv.conf");
   assert.equal(top.nameIdx, 0);
   assert.ok(TOP_MIN > 0);
+});
+
+test("launcher rows follow the type filter: a folders search keeps none, apps keeps only apps", () => {
+  const items = [
+    launchHit("app:mpv", "mpv", 200),
+    launchHit("set:bt", "Bluetooth & devices", 178, { t: "uri", uri: "ms-settings:bluetooth" }, "setting"),
+    launchHit("cmd:lock", "Lock", 90, { t: "cmd", name: "lock" }, "command"),
+  ];
+  assert.equal(launchForFilter(items, "all").length, 3);
+  assert.deepEqual(launchForFilter(items, "folders"), []); // no settings page in the Top Hit slot
+  assert.deepEqual(launchForFilter(items, "images"), []);
+  assert.deepEqual(launchForFilter(items, "apps").map((h) => h.item.id), ["app:mpv"]);
+  // settings scope: the overview shows only the settings pages, so it needs the full list
+  assert.equal(launchForFilter(items, "settings").length, 3);
 });

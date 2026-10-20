@@ -9,7 +9,7 @@ import { Preview } from "./Preview";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, ovMove, type Expand, type OvItem } from "./overviewLogic";
-import { portableApps } from "./launchLogic";
+import { portableApps, launchForFilter } from "./launchLogic";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
@@ -21,6 +21,8 @@ const OVERSCAN = 6;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
+  { id: "apps", label: "Apps" },
+  { id: "settings", label: "Settings" }, // launcher-only scope: no name-index rows
   { id: "images", label: "Images" },
   { id: "docs", label: "Docs" },
   { id: "video", label: "Video" },
@@ -195,8 +197,9 @@ export default function App({ backend }: { backend: Backend }) {
   const parsed = useMemo(() => parseQuery(query, { off }), [query, off]);
   useEffect(() => { if (!query.trim()) setOff((o) => (o.size ? new Set() : o)); }, [query]);
   const nameQ = nameQuery(parsed);
-  // "settings" is a launcher-only scope, not a name-index filter.
+  // "settings" is a launcher-only scope, not a name-index filter — via the word in the query or the tab.
   const effFilter: Filter = parsed.kind && parsed.kind !== "settings" ? parsed.kind : filter;
+  const settingsScope = parsed.kind === "settings" || filter === "settings";
   const rangeKey = JSON.stringify([parsed.date, parsed.size]);
   const chipLabels = useMemo(() => parsed.chips.map((c) => c.label), [parsed]);
   const dropChip = useCallback((key: string) => {
@@ -222,18 +225,23 @@ export default function App({ backend }: { backend: Backend }) {
   const [expand, setExpand] = useState<Expand>(null);
   useEffect(() => { setExpand(null); }, [query, filter]);
   const overview = !isRecent && sort === "rel" && expand !== "files";
-  const settingsOnly = parsed.kind === "settings";
-  const calcResult = useMemo(() => (settingsOnly || expand ? null : calc(parsed.text)), [parsed.text, settingsOnly, expand]);
+  // The calculator Top Hit belongs to "all" only — a type filter means "show me that kind of file".
+  const calcResult = useMemo(() => (settingsScope || expand || effFilter !== "all" ? null : calc(parsed.text)), [parsed.text, settingsScope, expand, effFilter]);
+  // Launcher rows follow the type filter (a Folders search must not put a settings page in the Top Hit slot).
+  const launchSel = useMemo(
+    () => launchForFilter(launch, settingsScope ? "settings" : effFilter),
+    [launch, settingsScope, effFilter], // eslint-disable-line react-hooks/exhaustive-deps
+  );
   const portable = useMemo(
     () => (lcfg?.portable === false ? [] : portableApps(data.rows.filter((h): h is Hit => !!h), parsed.text, launch)),
     [lcfg, data.rows, data.ver, parsed.text, launch], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const ov = useMemo(
     () => buildOverview({
-      names: settingsOnly ? [] : data.rows, nameTotal: settingsOnly ? 0 : data.total, sem: semHits, text: parsed.text,
-      expand: settingsOnly ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch, portable, calc: calcResult ?? undefined,
+      names: settingsScope ? [] : data.rows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
+      expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
     }),
-    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launch, portable, calcResult, settingsOnly], // eslint-disable-line react-hooks/exhaustive-deps
+    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);

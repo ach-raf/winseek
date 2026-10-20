@@ -1,4 +1,4 @@
-import type { Hit, LaunchHit } from "./types";
+import type { Filter, Hit, LaunchHit } from "./types";
 
 // Pure helpers for the launcher integration (PRD R9 + §4.1). No imports besides types so the
 // rules stay unit-testable — App.tsx feeds it name hits + launch hits per keystroke.
@@ -76,6 +76,19 @@ export function portableApps(names: Hit[], text: string, launch: LaunchHit[]): H
 
 /** A launch item scores this high (after its history boost) to take the Top Hit slot. */
 export const TOP_MIN = 150;
+
+/**
+ * Which launcher hits belong in the overview for the active type filter. A file-type filter
+ * (Folders, Images, …) means the user asked for files of that kind, so launcher rows — the
+ * Top Hit pick included — stand down; "apps" keeps only the app rows; "all" keeps everything;
+ * "settings" is the launcher-only scope, where the overview renders just the settings pages
+ * (the expand="settings" pass does that filtering) and needs the full list.
+ */
+export function launchForFilter(launch: LaunchHit[], filter: Filter): LaunchHit[] {
+  if (filter === "all" || filter === "settings") return launch;
+  if (filter === "apps") return launch.filter((h) => h.item.kind === "app");
+  return [];
+}
 
 export interface TopPick {
   launch?: LaunchHit;
