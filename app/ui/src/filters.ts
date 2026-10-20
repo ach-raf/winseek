@@ -6,7 +6,7 @@
 // Every recognised phrase becomes a chip; the rest is the free text. A chip the user removed (its key is in
 // `off`) is not a filter any more and its words go back to being plain search text.
 
-export type KindId = "images" | "docs" | "video" | "audio" | "folders" | "apps";
+export type KindId = "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
 export type ChipType = "kind" | "ext" | "date" | "size";
 
 export interface Chip {
@@ -43,9 +43,10 @@ const KIND_WORDS: Record<string, KindId> = {
   folder: "folders", folders: "folders", directory: "folders", directories: "folders",
   app: "apps", apps: "apps", application: "apps", applications: "apps", program: "apps", programs: "apps",
   installer: "apps", installers: "apps",
+  setting: "settings", settings: "settings",
 };
 const KIND_LABEL: Record<KindId, string> = {
-  images: "Images", docs: "Docs", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps",
+  images: "Images", docs: "Docs", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps", settings: "Settings",
 };
 const EXT_WORDS = new Set([
   "pdf", "docx", "xlsx", "pptx", "csv", "txt", "md", "png", "jpg", "jpeg", "gif", "heic", "mp4", "mkv", "mp3", "flac", "wav", "zip", "exe", "msi",

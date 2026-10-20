@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, HitBox, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
+import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings, type SettingsSection } from "./Settings";
@@ -194,7 +195,8 @@ export default function App({ backend }: { backend: Backend }) {
   const parsed = useMemo(() => parseQuery(query, { off }), [query, off]);
   useEffect(() => { if (!query.trim()) setOff((o) => (o.size ? new Set() : o)); }, [query]);
   const nameQ = nameQuery(parsed);
-  const effFilter: Filter = parsed.kind ?? filter;
+  // "settings" is a launcher-only scope, not a name-index filter.
+  const effFilter: Filter = parsed.kind && parsed.kind !== "settings" ? parsed.kind : filter;
   const rangeKey = JSON.stringify([parsed.date, parsed.size]);
   const chipLabels = useMemo(() => parsed.chips.map((c) => c.label), [parsed]);
   const dropChip = useCallback((key: string) => {
@@ -220,13 +222,18 @@ export default function App({ backend }: { backend: Backend }) {
   const [expand, setExpand] = useState<Expand>(null);
   useEffect(() => { setExpand(null); }, [query, filter]);
   const overview = !isRecent && sort === "rel" && expand !== "files";
+  const settingsOnly = parsed.kind === "settings";
+  const calcResult = useMemo(() => (settingsOnly || expand ? null : calc(parsed.text)), [parsed.text, settingsOnly, expand]);
   const portable = useMemo(
     () => (lcfg?.portable === false ? [] : portableApps(data.rows.filter((h): h is Hit => !!h), parsed.text, launch)),
     [lcfg, data.rows, data.ver, parsed.text, launch], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const ov = useMemo(
-    () => buildOverview({ names: data.rows, nameTotal: data.total, sem: semHits, text: parsed.text, expand, isImage: (n) => kindOf(n, false) === "image", launch, portable }),
-    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launch, portable], // eslint-disable-line react-hooks/exhaustive-deps
+    () => buildOverview({
+      names: settingsOnly ? [] : data.rows, nameTotal: settingsOnly ? 0 : data.total, sem: semHits, text: parsed.text,
+      expand: settingsOnly ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch, portable, calc: calcResult ?? undefined,
+    }),
+    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launch, portable, calcResult, settingsOnly], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -644,6 +651,10 @@ export default function App({ backend }: { backend: Backend }) {
             e.preventDefault(); primaryRef.current(); break;
           }
           e.preventDefault();
+          if (ovItem?.calc !== undefined) { // calculator Top Hit: Enter copies the result
+            void backend.copyTextHtml(ovItem.calc).then(() => backend.hide()).catch(fail);
+            break;
+          }
           if (ovItem?.launch) { void launchAct(ovItem.launch, e.ctrlKey && e.shiftKey ? "admin" : e.ctrlKey ? "reveal" : "open"); break; }
           void act(e.ctrlKey ? "reveal" : "open", current);
           break;

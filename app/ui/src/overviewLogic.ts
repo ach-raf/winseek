@@ -18,6 +18,8 @@ export interface OvItem {
   col?: number;
   /** The launcher hit behind this row (apps, settings pages, system commands). */
   launch?: LaunchHit;
+  /** The calculator Top Hit carries the result string (Enter copies it). */
+  calc?: string;
 }
 
 export interface OvSection {
@@ -73,6 +75,8 @@ export function buildOverview(opts: {
   launch?: LaunchHit[];
   /** Portable exes promoted from the name index (PRD R9). */
   portable?: Hit[];
+  /** When the query is pure arithmetic, the calculator result takes the Top Hit slot. */
+  calc?: string;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
   const launch = opts.launch ?? [];
@@ -81,27 +85,37 @@ export function buildOverview(opts: {
   const shownPaths = new Set<string>();
   const k = (p: string) => p.toLowerCase();
 
-  // Top Hit: the best launcher item over TOP_MIN (history folded into its score), else an
-  // obvious name match, else the best meaning hit when nothing matches by name.
+  // Top Hit: a pure-arithmetic query shows "= result"; else the best launcher item over
+  // TOP_MIN (history folded into its score), else an obvious name match, else the best
+  // meaning hit when nothing matches by name.
   let top: OvItem | null = null;
-  const picked = pickTop(launch, names, text, portable);
-  if (!expand) {
-    if (picked.launch) {
-      top = { key: "l:" + picked.launch.item.id, section: "top", hit: launchHit(picked.launch), launch: picked.launch };
-    } else if (picked.file) {
-      top = { key: "n0", section: "top", hit: picked.file, nameIdx: picked.nameIdx };
-    } else if (names[0] === undefined && nameTotal === 0 && sem.length) {
-      top = { key: "s:" + sem[0].path, section: "top", hit: semHit(sem[0]), sem: sem[0] };
-    }
-    if (top) {
-      sections.push({ id: "top", title: "Top Hit", items: [top], total: 1, more: false });
-      shownPaths.add(k(top.hit.path));
-      const resolved = top.launch ? launchPath(top.launch) : null;
-      if (resolved) shownPaths.add(k(resolved)); // the same exe is not listed again under Files
+  if (!expand && opts.calc !== undefined) {
+    const item: LaunchHit = {
+      item: { id: "calc", kind: "command", title: `= ${opts.calc}`, subtitle: "Press Enter to copy", keywords: [], target: { t: "cmd", name: "calc" }, icon: null, admin_ok: false },
+      score: 0, ranges: [], confirm: false,
+    };
+    top = { key: "calc", section: "top", hit: { name: `= ${opts.calc}`, path: "winseek:calc", is_dir: false, size: null, mtime: null }, launch: item, calc: opts.calc };
+  } else {
+    const picked = pickTop(launch, names, text, portable);
+    if (!expand) {
+      if (picked.launch) {
+        top = { key: "l:" + picked.launch.item.id, section: "top", hit: launchHit(picked.launch), launch: picked.launch };
+      } else if (picked.file) {
+        top = { key: "n0", section: "top", hit: picked.file, nameIdx: picked.nameIdx };
+      } else if (names[0] === undefined && nameTotal === 0 && sem.length) {
+        top = { key: "s:" + sem[0].path, section: "top", hit: semHit(sem[0]), sem: sem[0] };
+      }
     }
   }
+  if (top) {
+    sections.push({ id: "top", title: "Top Hit", items: [top], total: 1, more: false });
+    shownPaths.add(k(top.hit.path));
+    const resolved = top.launch ? launchPath(top.launch) : null;
+    if (resolved) shownPaths.add(k(resolved)); // the same exe is not listed again under Files
+  }
 
-  // Apps: catalog apps first, then the portable exes (they open as normal files).
+  // Apps: catalog apps first, then the portable exes (they open as normal files). Every app
+  // row's real file is kept out of the Files section below (shownPaths).
   if (!expand || expand === "apps") {
     const catApps = launch.filter((h) => h.item.kind === "app");
     const items: OvItem[] = catApps.map((h): OvItem => ({ key: "l:" + h.item.id, section: "apps", hit: launchHit(h), launch: h }));
@@ -114,6 +128,13 @@ export function buildOverview(opts: {
     const total = items.length;
     if (items.length) {
       const shown = expand ? items : items.slice(0, APPS);
+      for (const it of shown) {
+        shownPaths.add(k(it.hit.path));
+        if (it.launch) {
+          const resolved = launchPath(it.launch);
+          if (resolved) shownPaths.add(k(resolved));
+        }
+      }
       sections.push({ id: "apps", title: "Apps", items: shown, total, more: !expand && total > shown.length });
     }
   }

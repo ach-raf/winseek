@@ -84,6 +84,7 @@ function CommandIcon({ name }: { name: string }) {
     open_bin: <><path d="M3 6h18" /><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" /><path d="M5 6v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V6" /></>,
     winseek_settings: <><circle cx="12" cy="12" r="3" /><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3 1a7 7 0 0 0-2-1.2L14.2 3h-4l-.4 2.5a7 7 0 0 0-2 1.2l-2.3-1-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-1a7 7 0 0 0 2 1.2l.4 2.4h4l.4-2.4a7 7 0 0 0 2-1.2l2.3 1 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z" /></>,
     winseek_library: <><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18" /><path d="m8 13 2.5 2.5L8 18" /></>,
+    calc: <><path d="M5 7h14" /><path d="m8 12 8 6M16 12l-8 6" /></>,
   }[name] ?? <><circle cx="12" cy="12" r="9" /><path d="M12 8v4" /><path d="M12 16h.01" /></>;
   return (
     <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -135,7 +136,7 @@ const Row = memo(function Row({ it, i, sel, query, backend, h, renaming, armed }
           <div className="ov-name"><Highlight text={item.title} query={query} ranges={l.ranges} /></div>
           <div className="ov-sub">{isArmed ? `Press Enter again to ${confirmVerb(l)}` : item.subtitle}</div>
         </div>
-        <span className="kind-chip">{LAUNCH_CHIP[item.kind]}</span>
+        <span className="kind-chip">{it.calc !== undefined ? "Calculator" : LAUNCH_CHIP[item.kind]}</span>
       </div>
     );
   }

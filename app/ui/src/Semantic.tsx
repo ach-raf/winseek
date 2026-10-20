@@ -6,7 +6,7 @@ export const baseName = (path: string) => path.slice(path.lastIndexOf("\\") + 1)
 const key = (path: string) => path.toLowerCase();
 export { key as pathKey };
 
-const KIND_OF: Record<KindId, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null };
+const KIND_OF: Record<KindId, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null, settings: null };
 
 /** Do the parsed chips let this meaning hit through? Date / size only count when the hit carries them. */
 export function semAccepts(h: SemanticHit, p: Parsed): boolean {

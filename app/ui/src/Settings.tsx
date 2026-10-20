@@ -451,7 +451,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
             {cfg.folders.length === 0 && <li className="none">No extra folders</li>}
           </ul>
           <div className="fl-add">
-            <input value={folderText} placeholder="C:\\tools" spellCheck={false} aria-label="Folder to scan for programs"
+            <input value={folderText} placeholder={"C:" + String.fromCharCode(92) + "tools"} spellCheck={false} aria-label="Folder to scan for programs"
                    onChange={(e) => setFolderText(e.target.value)}
                    onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }} />
             <button className="btn secondary" onClick={addFolder}>Add</button>
