@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, IgnoreList, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
+import type { Backend, IgnoreList, LaunchCfg, LaunchCounts, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
@@ -360,11 +360,12 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
   );
 }
 
-export type SettingsSection = "meaning" | "indexing" | "performance" | "general" | "status";
+export type SettingsSection = "meaning" | "indexing" | "launcher" | "performance" | "general" | "status";
 
 const I = {
   meaning: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden><path d="M12 3.5c.65 4.1 2.75 6.2 6.9 6.9-4.15.7-6.25 2.8-6.9 6.9-.65-4.1-2.75-6.2-6.9-6.9 4.15-.7 6.25-2.8 6.9-6.9z" /><path d="M18.5 15.5c.3 1.9 1.3 2.9 3.2 3.2-1.9.3-2.9 1.3-3.2 3.2-.3-1.9-1.3-2.9-3.2-3.2 1.9-.3 2.9-1.3 3.2-3.2z" transform="scale(0.72) translate(7.2 6.6)" /></svg>,
   indexing: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>,
+  launcher: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><path d="M17 13.5v7M13.5 17h7" /></svg>,
   performance: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4.5 18a8.5 8.5 0 1 1 15 0" /><path d="m12 14 3.6-4.6" /><circle cx="12" cy="14.2" r="1.3" fill="currentColor" stroke="none" /></svg>,
   general: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden><path d="M4 8h8M17.5 8H20M4 16h3M12.5 16H20" /><circle cx="15" cy="8" r="2.2" /><circle cx="10" cy="16" r="2.2" /></svg>,
   status: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12h4l2.5-6.5 4 13L16.5 12H21" /></svg>,
@@ -373,10 +374,129 @@ const I = {
 const NAV: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
   { id: "meaning", label: "Search by meaning", icon: I.meaning },
   { id: "indexing", label: "Indexing", icon: I.indexing },
+  { id: "launcher", label: "Launcher", icon: I.launcher },
   { id: "performance", label: "Performance", icon: I.performance },
   { id: "general", label: "General", icon: I.general },
   { id: "status", label: "Status", icon: I.status },
 ];
+
+/** Launcher (apps / settings / commands) switches, extra program folders, hidden items, counts. */
+function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [cfg, setCfg] = useState<LaunchCfg | null>(null);
+  const [counts, setCounts] = useState<LaunchCounts | null>(null);
+  const [scanning, setScanning] = useState(false);
+  const [folderText, setFolderText] = useState("");
+  const reload = useCallback(() => {
+    backend.launchGetConfig().then(setCfg).catch(onError);
+    backend.launchCounts().then(setCounts).catch(onError);
+  }, [backend, onError]);
+  useEffect(() => {
+    let off: (() => void) | undefined;
+    reload();
+    backend.onLaunchCatalogChanged(() => {
+      setScanning(false);
+      reload();
+    }).then((u) => (off = u));
+    return () => off?.();
+  }, [backend, reload]);
+  if (!cfg) return <div className="vols"><span className="muted">Loading…</span></div>;
+  const save = (patch: Partial<LaunchCfg>) => {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    backend.launchSetConfig(next).then(setCfg).catch((e) => { onError(e); reload(); });
+  };
+  const addFolder = () => {
+    const p = folderText.trim().replace(/^"(.*)"$/, "$1").replace(/[\\/]+$/, "");
+    if (!p || cfg.folders.some((x) => lc(x) === lc(p))) return;
+    setFolderText("");
+    save({ folders: [...cfg.folders, p] });
+  };
+  const toggles: [keyof LaunchCfg, string, string][] = [
+    ["apps", "Installed apps", "Start menu programs and Store apps, searchable by name, acronym or exe name."],
+    ["settings", "Windows settings", "Settings pages and Control Panel items, opened straight from the box."],
+    ["commands", "System commands", "Lock, sleep, restart, shut down, sign out, and the Recycle Bin."],
+    ["portable", "Portable apps from the file index", "An .exe in your indexed folders whose name matches what you type joins the Apps section."],
+    ["path", "Search PATH folders", "Also list executables from the directories on PATH. Off: it is a long, noisy list."],
+    ["hide_uninstallers", "Hide uninstallers", "Installer and uninstaller entries never show up as apps."],
+  ];
+  return (
+    <>
+      <div className="set-sec">
+        <div className="fl-title">What the search box finds</div>
+        <div className="set-group">
+          {toggles.map(([key, title, hint]) => (
+            <div className="set-row" key={key}>
+              <span className="set-optmain">
+                <b>{title}</b>
+                <span className="muted">{hint}</span>
+              </span>
+              <Switch checked={!!cfg[key]} onChange={(v) => save({ [key]: v })} label={title} />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="set-sec">
+        <div className="fl-title">Extra program folders</div>
+        <div className="set-group">
+          <ul className="fl-list">
+            {cfg.folders.map((p) => (
+              <li key={p}>
+                <label title={p}><span>{p}</span></label>
+                <button className="fl-rm" onClick={() => save({ folders: cfg.folders.filter((x) => x !== p) })} aria-label={`Remove ${p}`}>
+                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><path d="M18 6 6 18M6 6l12 12" /></svg>
+                </button>
+              </li>
+            ))}
+            {cfg.folders.length === 0 && <li className="none">No extra folders</li>}
+          </ul>
+          <div className="fl-add">
+            <input value={folderText} placeholder="C:\\tools" spellCheck={false} aria-label="Folder to scan for programs"
+                   onChange={(e) => setFolderText(e.target.value)}
+                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }} />
+            <button className="btn secondary" onClick={addFolder}>Add</button>
+          </div>
+          <span className="muted set-note">Programs here are scanned up to four levels deep. Installing or removing apps re-scans automatically.</span>
+        </div>
+      </div>
+
+      <div className="set-sec">
+        <div className="fl-title">Catalog</div>
+        <div className="set-group">
+          <div className="set-row">
+            <span className="set-optmain">
+              <b>{counts ? `${fmt(counts.apps)} apps · ${fmt(counts.settings)} settings · ${fmt(counts.commands)} commands` : "Counting…"}</b>
+              <span className="muted">The catalog lives in memory and refreshes on its own when the Start menu changes.</span>
+            </span>
+            <button className="btn secondary" disabled={scanning} onClick={() => { setScanning(true); backend.launchReindex(); }}>
+              {scanning ? "Scanning…" : "Re-scan apps"}
+            </button>
+          </div>
+          {cfg.hidden.length > 0 && (
+            <>
+              <div className="fl-title" style={{ marginTop: 10 }}>Hidden items · {cfg.hidden.length}</div>
+              <ul className="fl-list">
+                {cfg.hidden.map((id) => (
+                  <li key={id}>
+                    <label title={id}><span>{id}</span></label>
+                    <button className="btn secondary" onClick={() => save({ hidden: cfg.hidden.filter((x) => x !== id) })}>Unhide</button>
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+          <div className="set-row">
+            <span className="set-optmain">
+              <b>Usage history</b>
+              <span className="muted">Results you pick get a boost next time. Clearing forgets that, not the catalog.</span>
+            </span>
+            <button className="btn secondary" onClick={() => backend.launchClearHistory().catch(onError)}>Clear usage history</button>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
 
 export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onLibrary, section, onSection, onError }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
@@ -423,6 +543,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
               <IgnoredNames backend={backend} onError={onError} />
             </>
           )}
+          {section === "launcher" && <LauncherSection backend={backend} onError={onError} />}
           {section === "performance" && <Performance backend={backend} onError={onError} />}
           {section === "general" && (
             <>
