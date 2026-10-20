@@ -6,6 +6,7 @@ import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings, type SettingsSection } from "./Settings";
 import { Preview } from "./Preview";
+import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, expandable, ovMove, type Expand, type OvItem } from "./overviewLogic";
@@ -172,6 +173,14 @@ export default function App({ backend }: { backend: Backend }) {
   const [lcfg, setLcfg] = useState<LaunchCfg | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
   const [launchMenu, setLaunchMenu] = useState<{ hit: LaunchHit; x: number; y: number } | null>(null);
+  const [menuIdx, setMenuIdx] = useState(0); // roving focus in the launcher menu
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    setMenuIdx(0);
+    // Opening with the keyboard must not steal the caret: focus the first item, the search box
+    // gets it back when the menu closes (the global Esc handler calls refocus()).
+    requestAnimationFrame(() => menuRef.current?.querySelector<HTMLElement>("[role=menuitem]")?.focus());
+  }, [launchMenu]);
   const t0 = useRef<number | null>(null);
   const sawScan = useRef(false);
   const showPanelRef = useRef(false);
@@ -618,6 +627,7 @@ export default function App({ backend }: { backend: Backend }) {
     const onKey = (e: KeyboardEvent) => {
       if (renaming) return;
       if ((e.target as HTMLElement | null)?.closest?.(".setup")) return; // the setup panel's own inputs / buttons
+      if (launchMenu && e.key !== "Escape") return; // the launcher menu owns the keyboard (B5)
       const inp = inputRef.current;
       const inInput = !!inp && document.activeElement === inp;
       const hasSelection = inInput && inp!.selectionStart !== inp!.selectionEnd;
@@ -792,7 +802,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1055,28 +1065,13 @@ export default function App({ backend }: { backend: Backend }) {
       )}
       </div>
 
-      {launchMenu && (
-        <div className="ctx-overlay" onMouseDown={() => setLaunchMenu(null)}
-             onContextMenu={(e) => { e.preventDefault(); setLaunchMenu(null); }}>
-          <div className="ctx-menu" style={{ left: launchMenu.x, top: launchMenu.y }} role="menu" aria-label="Launcher actions"
-               onMouseDown={(e) => e.stopPropagation()}>
-            <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "open"); }}>Open</button>
-            {launchMenu.hit.item.kind === "app" && launchMenu.hit.item.admin_ok && (
-              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "admin"); }}>Run as administrator</button>
-            )}
-            {launchMenu.hit.item.kind === "app" && (
-              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "reveal"); }}>Open file location</button>
-            )}
-            {launchMenu.hit.item.kind === "setting" && (
-              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "copy"); }}>Copy link</button>
-            )}
-            {launchMenu.hit.item.kind === "app" && (
-              <button role="menuitem" onClick={() => { setLaunchMenu(null); void launchAct(launchMenu.hit, "copy"); }}>Copy target</button>
-            )}
-            <button role="menuitem" onClick={() => hideLaunch(launchMenu.hit)}>Hide from results</button>
-          </div>
-        </div>
-      )}
+      {launchMenu && <LaunchMenu
+        menu={{ hit: launchMenu.hit, x: launchMenu.x, y: launchMenu.y }} idx={menuIdx} setIdx={setMenuIdx}
+        listRef={menuRef}
+        onRun={(mode) => { setLaunchMenu(null); void launchAct(launchMenu.hit, mode); }}
+        onHide={() => hideLaunch(launchMenu.hit)}
+        onClose={() => { setLaunchMenu(null); refocus(); }}
+      />}
 
       {cheat && <Shortcuts scope="popup" onClose={() => setCheat(false)} />}
 
