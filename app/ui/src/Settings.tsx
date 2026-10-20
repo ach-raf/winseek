@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentConfig, AgentLogEntry, Backend, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
+import { eventToCombo } from "./hotkeyLogic";
 import { Folders, pausedText } from "./Setup";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
@@ -472,6 +473,86 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
   );
 }
 
+const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
+
+const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optional: boolean }[] = [
+  { which: "popup", label: "Show / hide winseek", blurb: "The one way in, so it must keep working. Combine Ctrl, Alt, Shift or Win with a key (F13-F24 also work alone).", optional: false },
+  { which: "library", label: "Open the Library", blurb: "A second global shortcut, straight to the photos.", optional: true },
+  { which: "clipboard", label: "Search with the clipboard text", blurb: "Shows winseek with whatever you copied as the query.", optional: true },
+];
+
+/** Settings › General › Shortcuts: the three global hotkeys, each with a press-to-record field
+ *  (PRD B9). Recording never swallows keys: every press is captured, Esc cancels, Backspace
+ *  clears the optional ones, Save applies. */
+function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [hk, setHk] = useState<Hotkeys | null>(null);
+  const [rec, setRec] = useState<{ which: keyof Hotkeys; combo: string | null } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.hotkeysGet().then(setHk).catch(onError);
+    backend.onHotkeysChanged((h) => setHk(h)).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend, onError]);
+  const save = async () => {
+    if (!rec) return;
+    try {
+      setHk(await backend.hotkeysSet(rec.which, rec.combo));
+      setErr(null);
+      setRec(null);
+    } catch (e) {
+      setErr(errText(e));
+      setRec(null);
+      backend.hotkeysGet().then(setHk).catch(onError);
+    }
+  };
+  return (
+    <div className="set-group">
+      {HOTKEY_ROWS.map((row) => {
+        const bound = hk?.[row.which] ?? null;
+        const recording = rec?.which === row.which;
+        return (
+          <div className="set-row" key={row.which}>
+            <span className="set-optmain">
+              <b>{row.label}</b>
+              <span className="muted">{row.blurb}</span>
+              {recording ? (
+                <span className="hk-line">
+                  <span className="hk-rec" tabIndex={0} autoFocus role="textbox" aria-label="Press a shortcut"
+                        onBlur={() => setRec(null)}
+                        onKeyDown={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (e.key === "Escape") { setRec(null); return; }
+                          if (e.key === "Backspace") { if (row.optional) setRec({ which: row.which, combo: null }); return; }
+                          const c = eventToCombo(e);
+                          if (c) setRec({ which: row.which, combo: c });
+                        }}>
+                    {rec.combo ?? "Press a shortcut… (Esc cancels)"}
+                  </span>
+                  <button className="btn primary sm" onMouseDown={(e) => e.preventDefault()} onClick={() => void save()}>Save</button>
+                  <button className="btn quiet sm" onClick={() => setRec(null)}>Cancel</button>
+                </span>
+              ) : (
+                <span className="hk-line">
+                  {bound ? <kbd className="hk-cur">{bound}</kbd> : <span className="muted">None</span>}
+                  <button className="btn quiet sm" onMouseDown={(e) => e.preventDefault()} onClick={() => { setErr(null); setRec({ which: row.which, combo: null }); }}>
+                    {bound ? "Change" : "Set"}
+                  </button>
+                  {row.optional && bound && (
+                    <button className="btn quiet sm" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
+                  )}
+                </span>
+              )}
+            </span>
+          </div>
+        );
+      })}
+      {err && <div className="fr-error set-row" role="alert" style={{ paddingTop: 0 }}>{err}</div>}
+    </div>
+  );
+}
+
 export type SettingsSection = "meaning" | "indexing" | "launcher" | "agents" | "performance" | "general" | "status";
 
 const I = {
@@ -680,6 +761,10 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "general" && (
             <>
               <AutostartToggle backend={backend} onError={onError} />
+              <div className="set-sec">
+                <div className="fl-title">Shortcuts</div>
+                <ShortcutsBlock backend={backend} onError={onError} />
+              </div>
               <div className="set-sec">
                 <div className="fl-title">Library</div>
                 <div className="set-group">

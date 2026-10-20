@@ -129,6 +129,11 @@ pub async fn start_drag(app: AppHandle, paths: Vec<String>) -> Result<String, St
 /// The Windows Properties sheet for `path`. It is modeless and lives on the calling thread's
 /// message loop, so it must be opened on the main thread — a worker thread would close it
 /// the moment the call returns (PRD B3).
+/// The plain-text clipboard contents, if any (for the clipboard hotkey).
+pub fn clipboard_text(hwnd: HWND) -> Option<String> {
+    clipboard::read_text(hwnd)
+}
+
 #[tauri::command]
 pub async fn show_properties(app: AppHandle, window: WebviewWindow, path: String) -> Result<(), String> {
     on_main(&app, move || {

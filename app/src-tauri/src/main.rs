@@ -3,6 +3,7 @@
 mod agent;
 mod autostart;
 mod commands;
+mod hotkeys;
 mod launch;
 mod libwindow;
 mod models;
@@ -24,7 +25,7 @@ use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::ShortcutState;
 
 /// Prefer the real index (searchd); fall back to generated demo data when it is not running.
 fn pick_source() -> Arc<dyn source::NameSource> {
@@ -38,8 +39,6 @@ fn pick_source() -> Arc<dyn source::NameSource> {
 }
 
 fn main() {
-    let hotkey = Shortcut::new(Some(Modifiers::ALT), Code::Space);
-
     // Started from the Run key at login: stay in the tray. Any other launch (Start menu, installer,
     // a second double-click) shows the popup.
     let autostarted = std::env::args().any(|a| a == autostart::ARG);
@@ -53,9 +52,23 @@ fn main() {
         }))
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
-                .with_handler(move |app, sc, ev| {
-                    if *sc == hotkey && ev.state() == ShortcutState::Pressed {
+                // The handler reads the CURRENT bindings, never a captured constant: Settings can
+                // rebind while the app runs (PRD RB4).
+                .with_handler(|app, sc, ev| {
+                    if ev.state() != ShortcutState::Pressed {
+                        return;
+                    }
+                    let Some(b) = app.try_state::<hotkeys::Hotkeys>() else { return };
+                    let combo = hotkeys::combo(sc);
+                    let b = b.current();
+                    if b.popup.as_deref() == Some(combo.as_str()) {
                         popup::toggle(app);
+                    } else if b.library.as_deref() == Some(combo.as_str()) {
+                        if let Err(e) = libwindow::open(app) {
+                            eprintln!("winseek: could not open the library: {e}");
+                        }
+                    } else if b.clipboard.as_deref() == Some(combo.as_str()) {
+                        hotkeys::show_with_clipboard(app);
                     }
                 })
                 .build(),
@@ -125,6 +138,8 @@ fn main() {
             models::models_cancel,
             autostart::autostart_get,
             autostart::autostart_set,
+            hotkeys::hotkeys_get,
+            hotkeys::hotkeys_set,
             launch::launch_search,
             launch::launch_run,
             launch::launch_record,
@@ -161,13 +176,10 @@ fn main() {
         .setup(move |app| {
             app.manage(tier1::init()); // also starts the battery / full-screen pause policy
             agent::server::spawn(app.handle().clone());
+            hotkeys::init(app.handle()); // registers the (possibly rebound) global hotkeys
             if let Some(w) = popup::window(app.handle()) {
                 popup::apply_backdrop(&w);
             }
-            if let Err(e) = app.global_shortcut().register(hotkey) {
-                eprintln!("winseek: could not register Alt+Space: {e}");
-            }
-
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));
@@ -175,8 +187,9 @@ fn main() {
             let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app).items(&[&show, &library, &pause, &status, &quit]).build()?;
+            let popup_combo = app.state::<hotkeys::Hotkeys>().current().popup.unwrap_or_default();
             let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
-                .tooltip("winseek (Alt+Space)")
+                .tooltip(format!("winseek ({})", if popup_combo.is_empty() { "no hotkey".into() } else { popup_combo }))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, ev| match ev.id().as_ref() {

@@ -285,6 +285,12 @@ export interface LaunchCfg {
   folders: string[];
   hidden: string[];
 }
+/** The rebindable global hotkeys; each a canonical combo ("Ctrl+Alt+Space") or null. */
+export interface Hotkeys {
+  popup: string | null;
+  library: string | null;
+  clipboard: string | null;
+}
 /** Agent access: strictly read-only, so the only switch is on/off plus which contents may be read. */
 export interface AgentConfig {
   enabled: boolean;
@@ -475,4 +481,13 @@ export interface Backend {
   agentClearLog(): Promise<void>;
   /** Where winseek-mcp.exe lives next to the app (exists=false in dev builds). */
   agentMcpPath(): Promise<McpPath>;
+  // ---- global hotkeys (rebindable) ----
+  hotkeysGet(): Promise<Hotkeys>;
+  /** Registers the new combination (or unbinds with null); rejects with a user-facing message
+   *  when another app owns it — the previous shortcut keeps working. */
+  hotkeysSet(which: "popup" | "library" | "clipboard", combo: string | null): Promise<Hotkeys>;
+  /** Fired after any binding changed (also from another window). */
+  onHotkeysChanged(cb: (h: Hotkeys) => void): Promise<() => void>;
+  /** The clipboard hotkey shows the popup with the clipboard text as the query. */
+  onSetQuery(cb: (p: { query: string }) => void): Promise<() => void>;
 }

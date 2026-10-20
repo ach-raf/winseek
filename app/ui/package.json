@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts"
+    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts src/hotkeyLogic.test.ts"
   },
   "dependencies": {
     "react": "^19.0.0",

@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Filter, Hit, HitBox, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
+import type { Backend, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { backspaceDropsChip, hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
@@ -164,6 +164,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("meaning");
   const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
+  const [hotkeyBindings, setHotkeyBindings] = useState<Record<string, string>>({});
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   // Launcher (apps / settings / commands): hits per keystroke, the armed confirm row, the
@@ -384,6 +385,25 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend]);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // The cheat sheet shows the CURRENT global hotkey, not the default (PRD RB2).
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    const set = (h: Hotkeys) => setHotkeyBindings(h.popup ? { "global.toggle": h.popup } : {});
+    backend.hotkeysGet().then(set).catch(() => {});
+    backend.onHotkeysChanged(set).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend]);
+
+  // The clipboard hotkey: the app shows the popup, we fill the box (PRD B9, P1).
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.onSetQuery(({ query }) => {
+      setQuery(query);
+      requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
+    }).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend]);
 
   useLayoutEffect(() => {
     const el = listRef.current;
@@ -1093,7 +1113,7 @@ export default function App({ backend }: { backend: Backend }) {
         onClose={() => { setLaunchMenu(null); refocus(); }}
       />}
 
-      {cheat && <Shortcuts scope="popup" onClose={() => setCheat(false)} />}
+      {cheat && <Shortcuts scope="popup" bindings={hotkeyBindings} onClose={() => setCheat(false)} />}
 
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>

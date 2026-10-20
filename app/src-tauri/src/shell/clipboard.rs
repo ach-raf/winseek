@@ -56,6 +56,34 @@ pub(super) fn open_clipboard(hwnd: HWND) -> Result<(), String> {
     Err(format!("clipboard busy: {last}"))
 }
 
+/// The plain-text clipboard contents, if any (the clipboard hotkey shows it as the query).
+pub(super) fn read_text(hwnd: HWND) -> Option<String> {
+    use windows::Win32::System::DataExchange::{GetClipboardData, CloseClipboard};
+    use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
+    const CF_UNICODETEXT: u32 = 13;
+    open_clipboard(hwnd).ok()?;
+    // SAFETY: plain Win32 sequence; the lock is released before the clipboard is closed.
+    let out = unsafe {
+        let h = GetClipboardData(CF_UNICODETEXT).ok().map(|h| HGLOBAL(h.0));
+        let text = h.and_then(|h| {
+            let p = GlobalLock(h) as *const u16;
+            if p.is_null() {
+                return None;
+            }
+            let mut n = 0usize;
+            while *p.add(n) != 0 {
+                n += 1;
+            }
+            let s = String::from_utf16_lossy(std::slice::from_raw_parts(p, n));
+            let _ = GlobalUnlock(h);
+            Some(s)
+        });
+        let _ = CloseClipboard();
+        text
+    };
+    out.filter(|t| !t.is_empty())
+}
+
 pub(super) fn copy_files(hwnd: HWND, paths: &[String]) -> Result<(), String> {
     if paths.is_empty() {
         return Err("no paths".into());

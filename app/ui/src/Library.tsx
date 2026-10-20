@@ -47,6 +47,13 @@ export default function Library({ backend }: { backend: Backend }) {
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
   const [cheat, setCheat] = useState(false); // F1 / Ctrl+/
+  const [popupHk, setPopupHk] = useState<string | null>(null);
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.hotkeysGet().then((h) => setPopupHk(h.popup)).catch(() => {});
+    backend.onHotkeysChanged((h) => setPopupHk(h.popup)).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend]);
 
   const embedded = t1?.stats?.done ?? 0;
   const gen = useSettled(embedded, 20000);
@@ -178,7 +185,7 @@ export default function Library({ backend }: { backend: Backend }) {
   return (
     <div className="lib">
       <header className="lib-top">
-        <button className="lib-back" onClick={goBack} title={tooltip("library.back")} aria-label="Back to search">
+        <button className="lib-back" onClick={goBack} title={popupHk ? `Back to search (${popupHk})` : tooltip("library.back")} aria-label="Back to search">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
         </button>
         <h1>Library</h1>

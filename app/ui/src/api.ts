@@ -1,4 +1,4 @@
-import type { Backend, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -83,6 +83,10 @@ function tauriBackend(t: TauriGlobal): Backend {
     agentLog: (limit) => inv<AgentLogEntry[]>("agent_log", { limit }),
     agentClearLog: () => inv("agent_clear_log"),
     agentMcpPath: () => inv<McpPath>("agent_mcp_path"),
+    hotkeysGet: () => inv<Hotkeys>("hotkeys_get"),
+    hotkeysSet: (which, combo) => inv<Hotkeys>("hotkeys_set", { which, combo }),
+    onHotkeysChanged: (cb) => t.event.listen<Hotkeys>("hotkeys-changed", (e) => cb(e.payload)),
+    onSetQuery: (cb) => t.event.listen<{ query: string }>("set-query", (e) => cb(e.payload)),
     openLibrary: () => inv("open_library"),
     openPopup: () => inv("open_popup"),
     movePopup: () => inv("move_popup"),
