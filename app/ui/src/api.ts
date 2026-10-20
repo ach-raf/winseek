@@ -1,4 +1,4 @@
-import type { Backend, Collection, DupGroup, Hit, HitBox, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -77,6 +77,11 @@ function tauriBackend(t: TauriGlobal): Backend {
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
     onOpenStatus: (cb) => t.event.listen("open-status", cb),
+    agentGetConfig: () => inv<AgentConfig>("agent_get_config"),
+    agentSetConfig: (cfg) => inv<AgentConfig>("agent_set_config", { cfg }),
+    agentLog: (limit) => inv<AgentLogEntry[]>("agent_log", { limit }),
+    agentClearLog: () => inv("agent_clear_log"),
+    agentMcpPath: () => inv<McpPath>("agent_mcp_path"),
     openLibrary: () => inv("open_library"),
     openPopup: () => inv("open_popup"),
     movePopup: () => inv("move_popup"),

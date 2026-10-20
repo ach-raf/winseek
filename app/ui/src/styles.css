@@ -434,6 +434,27 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .s-rescanning .dot, .s-warn .dot { background: var(--warn); }
 .s-error .dot { background: var(--danger); }
 
+/* agents section: scope segmented control, connect snippets, activity log */
+.set-seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.set-segbtn {
+  font: inherit; font-size: 12px; color: var(--fg-2); background: transparent; border: 0;
+  padding: 5px 10px; cursor: pointer;
+}
+.set-segbtn + .set-segbtn { border-left: 1px solid var(--line); }
+.set-segbtn.on { background: var(--chip); color: var(--fg); font-weight: 500; }
+.set-segbtn:disabled { opacity: 0.45; cursor: default; }
+.agent-snip {
+  display: block; padding: 7px 10px; border-radius: 8px; background: var(--chip);
+  white-space: pre-wrap; word-break: break-all; max-height: 88px; overflow: auto;
+}
+.agent-log { list-style: none; margin: 0; padding: 2px 14px 8px; display: flex; flex-direction: column; gap: 3px; }
+.agent-log li { display: flex; align-items: baseline; gap: 8px; font-size: 12px; min-width: 0; }
+.agent-log li.none { color: var(--fg-3); }
+.agent-log .dot { width: 6px; height: 6px; align-self: center; }
+.agent-log code { flex: none; }
+.agent-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.agent-err { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .folders { display: flex; flex-direction: column; gap: 8px; }
 .folders .set-group { padding: 1px 0; }
 .fl-list {

@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, IgnoreList, LaunchCfg, LaunchCounts, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
+import { argsPreview, snippets } from "./agentLogic";
 import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
-import { formatDuration, formatPages, formatRate, formatSize } from "./format";
+import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { Folders, pausedText } from "./Setup";
 import logo from "./assets/logo.png";
 
@@ -360,12 +361,122 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
   );
 }
 
-export type SettingsSection = "meaning" | "indexing" | "launcher" | "performance" | "general" | "status";
+/** Settings › Agents: the one read-only switch, content scope, copy-ready connect lines and
+ *  the activity log (PRD A6). */
+function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [cfg, setCfg] = useState<AgentConfig | null>(null);
+  const [mcp, setMcp] = useState<McpPath | null>(null);
+  const [log, setLog] = useState<AgentLogEntry[] | null>(null);
+  const reload = useCallback(() => {
+    backend.agentGetConfig().then(setCfg).catch(onError);
+    backend.agentMcpPath().then(setMcp).catch(onError);
+    backend.agentLog(50).then(setLog).catch(onError);
+  }, [backend, onError]);
+  // The log moves while an agent works; refresh while the section is on screen.
+  useEffect(() => {
+    reload();
+    const t = setInterval(reload, 3000);
+    return () => clearInterval(t);
+  }, [reload]);
+  const change = (patch: Partial<AgentConfig>) => {
+    if (!cfg) return;
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    backend.agentSetConfig(next).then(setCfg).catch((e) => { onError(e); reload(); });
+  };
+  const snip = mcp ? snippets(mcp.path) : null;
+  const copy = (text: string) => backend.copyTextHtml(text).catch(onError);
+  const rows: [string, string][] = snip
+    ? [["Claude Code", snip.claudeCode], ["Claude Desktop / Cursor", snip.desktop], ["VS Code (.vscode/mcp.json)", snip.vscode], ["Codex (~/.codex/config.toml)", snip.codex]]
+    : [];
+  return (
+    <>
+      <div className="set-sec">
+        <div className="fl-title">Agent access</div>
+        <div className="set-group">
+          <div className="set-row">
+            <span className="set-optmain">
+              <b>Let AI agents search with winseek</b>
+              <span className="muted">Read-only: agents can search and read, never open, change or delete anything. Every call is logged below.</span>
+            </span>
+            <Switch checked={!!cfg?.enabled} disabled={cfg === null} onChange={(v) => change({ enabled: v })} label="Let AI agents search with winseek" />
+          </div>
+          <div className="set-row" role="radiogroup" aria-label="What agents may read">
+            <span className="set-optmain">
+              <b>Let agents read file contents</b>
+              <span className="muted">Applies to reading text, parsing documents and photo details. Name search is always on.</span>
+            </span>
+            <span className="set-seg" role="presentation">
+              <button role="radio" aria-checked={cfg?.content === "indexed"} disabled={!cfg?.enabled}
+                      className={"set-segbtn" + (cfg?.content === "indexed" ? " on" : "")} onClick={() => change({ content: "indexed" })}>
+                Indexed folders only
+              </button>
+              <button role="radio" aria-checked={cfg?.content === "any"} disabled={!cfg?.enabled}
+                      className={"set-segbtn" + (cfg?.content === "any" ? " on" : "")} onClick={() => change({ content: "any" })}>
+                Any file I can open
+              </button>
+            </span>
+          </div>
+        </div>
+      </div>
+
+      <div className="set-sec">
+        <div className="fl-title">Connect an agent</div>
+        <div className="set-group">
+          {mcp && !mcp.exists && (
+            <div className="set-row"><span className="muted">winseek-mcp.exe is not installed next to the app yet (dev build). The snippets below still show where it will live.</span></div>
+          )}
+          {rows.map(([label, text]) => (
+            <div className="set-row col" key={label}>
+              <div className="idx-line">
+                <b>{label}</b>
+                <button className="btn quiet sm" onClick={() => copy(text)}>Copy</button>
+              </div>
+              <code className="agent-snip" title={text}>{text}</code>
+            </div>
+          ))}
+          {!snip && <div className="set-row"><span className="muted">Loading…</span></div>}
+        </div>
+      </div>
+
+      <div className="set-sec">
+        <div className="fl-title">Activity</div>
+        <div className="set-group">
+          <div className="set-row">
+            <span className="set-optmain">
+              <b>Last 50 calls</b>
+              <span className="muted">Who called what, and whether it worked. Paths are shown; file contents never are.</span>
+            </span>
+            <button className="btn secondary" onClick={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0}>
+              Clear log
+            </button>
+          </div>
+          <ul className="agent-log" aria-label="Agent activity">
+            {(log ?? []).slice().reverse().map((e, i) => (
+              <li key={`${e.ts_ms}-${i}`} title={e.error ?? undefined}>
+                <span className={"dot " + (e.ok ? "s-live" : "s-warn")} aria-hidden />
+                <span className="nums muted">{formatDate(e.ts_ms)}</span>
+                <span className="nums">{e.client}</span>
+                <code>{e.tool}</code>
+                <span className="muted agent-args">{argsPreview(e.args)}</span>
+                {!e.ok && <span className="fr-error agent-err">{e.error}</span>}
+              </li>
+            ))}
+            {log && log.length === 0 && <li className="none">No agent calls yet</li>}
+          </ul>
+        </div>
+      </div>
+    </>
+  );
+}
+
+export type SettingsSection = "meaning" | "indexing" | "launcher" | "agents" | "performance" | "general" | "status";
 
 const I = {
   meaning: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden><path d="M12 3.5c.65 4.1 2.75 6.2 6.9 6.9-4.15.7-6.25 2.8-6.9 6.9-.65-4.1-2.75-6.2-6.9-6.9 4.15-.7 6.25-2.8 6.9-6.9z" /><path d="M18.5 15.5c.3 1.9 1.3 2.9 3.2 3.2-1.9.3-2.9 1.3-3.2 3.2-.3-1.9-1.3-2.9-3.2-3.2 1.9-.3 2.9-1.3 3.2-3.2z" transform="scale(0.72) translate(7.2 6.6)" /></svg>,
   indexing: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>,
   launcher: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><path d="M17 13.5v7M13.5 17h7" /></svg>,
+  agents: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3" /><circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="15" cy="18" r="2" /></svg>,
   performance: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4.5 18a8.5 8.5 0 1 1 15 0" /><path d="m12 14 3.6-4.6" /><circle cx="12" cy="14.2" r="1.3" fill="currentColor" stroke="none" /></svg>,
   general: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden><path d="M4 8h8M17.5 8H20M4 16h3M12.5 16H20" /><circle cx="15" cy="8" r="2.2" /><circle cx="10" cy="16" r="2.2" /></svg>,
   status: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12h4l2.5-6.5 4 13L16.5 12H21" /></svg>,
@@ -375,6 +486,7 @@ const NAV: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
   { id: "meaning", label: "Search by meaning", icon: I.meaning },
   { id: "indexing", label: "Indexing", icon: I.indexing },
   { id: "launcher", label: "Launcher", icon: I.launcher },
+  { id: "agents", label: "Agents", icon: I.agents },
   { id: "performance", label: "Performance", icon: I.performance },
   { id: "general", label: "General", icon: I.general },
   { id: "status", label: "Status", icon: I.status },
@@ -544,6 +656,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
             </>
           )}
           {section === "launcher" && <LauncherSection backend={backend} onError={onError} />}
+          {section === "agents" && <AgentsSection backend={backend} onError={onError} />}
           {section === "performance" && <Performance backend={backend} onError={onError} />}
           {section === "general" && (
             <>

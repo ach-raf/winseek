@@ -1,7 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import type { Backend, Collection, DupGroup, Filter, Hit, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -489,6 +489,12 @@ const LAUNCH_CATALOG: LaunchItem[] = [
   launchItem("cmd:shutdown", "command", "Shut down", "Shuts this PC down", { t: "cmd", name: "shutdown" }, ["power off", "turn off"]),
 ];
 const launchCfg: LaunchCfg = { apps: true, settings: true, commands: true, portable: true, path: false, hide_uninstallers: true, folders: [], hidden: [] };
+let agentCfg: AgentConfig = { enabled: false, content: "indexed" };
+let agentLogRows: AgentLogEntry[] = [
+  { ts_ms: Date.now() - 42_000, client: "claude-code", tool: "search_files", args: { query: "invoice", type: "docs", modified_after: "this_month" }, ok: true, count: 12, ms: 34 },
+  { ts_ms: Date.now() - 30_000, client: "claude-code", tool: "read_text", args: { path: "C:\Users\User\Documents\invoice.pdf", max_chars: 20000 }, ok: true, ms: 210 },
+  { ts_ms: Date.now() - 12_000, client: "cursor", tool: "search_by_meaning", args: { query: "screenshot of the login error" }, ok: false, error: "Agent access is off. Turn it on in winseek Settings › Agents.", ms: 2 },
+];
 const launchHist = new Map<string, number>();
 /** Simple stand-in for the Rust matcher: exact > prefix > word-start > acronym > substring. */
 function scoreLaunch(text: string, it: LaunchItem): number {
@@ -786,6 +792,21 @@ export const mockBackend: Backend = {
   },
   async autostartGet() { return autostart; },
   async autostartSet(on) { await sleep(30); autostart = on; return autostart; },
+  async agentGetConfig(): Promise<AgentConfig> { await sleep(15); return { ...agentCfg }; },
+  async agentSetConfig(cfg): Promise<AgentConfig> {
+    await sleep(30);
+    agentCfg = { ...cfg };
+    return { ...agentCfg };
+  },
+  async agentLog(limit): Promise<AgentLogEntry[]> {
+    await sleep(15);
+    return agentLogRows.slice(-limit);
+  },
+  async agentClearLog() { await sleep(20); agentLogRows = []; },
+  async agentMcpPath(): Promise<McpPath> {
+    await sleep(10);
+    return { path: "C:\Program Files\winseek\winseek-mcp.exe", exists: true };
+  },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment
     const items: ModelsPlan["items"] = [

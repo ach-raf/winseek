@@ -285,6 +285,27 @@ export interface LaunchCfg {
   folders: string[];
   hidden: string[];
 }
+/** Agent access: strictly read-only, so the only switch is on/off plus which contents may be read. */
+export interface AgentConfig {
+  enabled: boolean;
+  /** "indexed": only the "Search by meaning" folders; "any": every file winseek can open. */
+  content: "indexed" | "any";
+}
+/** One agent call in the activity log (paths intact, long text args already cut). */
+export interface AgentLogEntry {
+  ts_ms: number;
+  client: string;
+  tool: string;
+  args: Record<string, unknown>;
+  ok: boolean;
+  count?: number;
+  error?: string;
+  ms: number;
+}
+export interface McpPath {
+  path: string;
+  exists: boolean;
+}
 export interface LaunchCounts {
   apps: number;
   settings: number;
@@ -443,4 +464,13 @@ export interface Backend {
   libraryDims(paths: string[]): Promise<([number, number] | null)[]>;
   /** The tray's "Status" item asks the popup to show the status page. */
   onOpenStatus(cb: () => void): Promise<() => void>;
+  // ---- agents (strictly read-only MCP access) ----
+  agentGetConfig(): Promise<AgentConfig>;
+  /** Saves and applies without a restart. */
+  agentSetConfig(cfg: AgentConfig): Promise<AgentConfig>;
+  /** The last `limit` calls, oldest last. */
+  agentLog(limit: number): Promise<AgentLogEntry[]>;
+  agentClearLog(): Promise<void>;
+  /** Where winseek-mcp.exe lives next to the app (exists=false in dev builds). */
+  agentMcpPath(): Promise<McpPath>;
 }
