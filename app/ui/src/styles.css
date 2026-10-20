@@ -779,8 +779,14 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .ov-count { font-weight: 400; text-transform: none; letter-spacing: 0; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 .ov-more { font: 500 12px/1 var(--font); color: var(--accent); padding: 4px 6px; margin-right: -6px; border-radius: 5px; }
 .ov-more:hover { background: var(--hover); }
-.ov-back { display: grid; place-items: center; width: 20px; height: 20px; border-radius: 5px; color: var(--fg-2); margin-left: -4px; }
+.ov-back {
+  flex: 1; min-width: 0; min-height: 22px; display: inline-flex; align-items: center; gap: 6px;
+  align-self: stretch; padding: 0 8px 0 2px; margin-left: -2px;
+  border-radius: 6px; color: var(--fg-2); font: inherit; text-align: left;
+}
+.ov-back svg { flex: none; }
 .ov-back:hover { background: var(--hover); color: var(--fg); }
+.ov-back:hover .ov-title, .ov-back:hover .ov-count { color: inherit; }
 
 .ov-row {
   display: flex; align-items: center; gap: 10px; height: 44px; padding: 0 10px; border-radius: var(--radius);

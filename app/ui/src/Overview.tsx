@@ -196,10 +196,14 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, ha
         return (
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
             <div className="ov-head">
-              {expanded && <button className="ov-back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onBack} aria-label="Back to all results">
-                <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
-              </button>}
-              <span className="ov-title">{s.title}{expanded && <span className="ov-count">{s.total}</span>}</span>
+              {expanded ? (
+                <button className="ov-back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onBack} aria-label={`Back to all results from ${s.title}`}>
+                  <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+                  <span className="ov-title">{s.title}<span className="ov-count">{s.total}</span></span>
+                </button>
+              ) : (
+                <span className="ov-title">{s.title}</span>
+              )}
               {s.more && (
                 <button className="ov-more" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => onExpand(s.id)}>
                   Show all{s.total > s.items.length ? ` ${s.total.toLocaleString("en-US")}` : ""}

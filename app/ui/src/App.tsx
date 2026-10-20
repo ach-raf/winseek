@@ -935,10 +935,10 @@ export default function App({ backend }: { backend: Backend }) {
         <div className="section">
           {expand === "files" ? (
             <button className="ov-back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => setExpand(null)} aria-label="Back to all results">
-              <svg viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
+              <span className="ov-title">Files <span className="ov-count">{data.total.toLocaleString("en-US")}</span></span>
             </button>
-          ) : null}
-          {expand === "files" ? <>Files <span className="ov-count">{data.total.toLocaleString("en-US")}</span></> : heading}
+          ) : heading}
         </div>
       )}
 
