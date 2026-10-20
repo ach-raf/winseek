@@ -20,6 +20,8 @@ use pdfium_render::prelude::*;
 use winseek_llama::install::pdfium_path;
 use winseek_llama::Manifest;
 
+use super::hitbox::HitBox;
+
 /// Pages read per document; later pages are ignored.
 pub const MAX_PAGES: usize = 300;
 /// Larger files are skipped (`too_large`).
@@ -217,6 +219,69 @@ pub fn render_page_png(pdfium: &Pdfium, path: &Path, page: u32, width: u32) -> R
     Ok(out)
 }
 
+// ---------------------------------------------------------------- boxes
+
+/// Most line boxes kept for one page (a huge match would rather lose its tail than stall the pane).
+const MAX_BOXES: usize = 400;
+/// Most occurrences of one term searched per page.
+const MAX_HITS_PER_TERM: usize = 200;
+
+/// Where `terms` occur on one page's text layer, as fractions 0-1 of the page (top-left origin),
+/// one box per matching line (pdfium splits a match into per-line rects itself). Text-layer PDFs
+/// store no boxes in their chunk locators (unlike OCR text and parser output), so the preview
+/// asks for these live.
+pub fn page_word_boxes(pdfium: &Pdfium, path: &Path, page: u32, terms: &[String]) -> Result<Vec<HitBox>, PdfError> {
+    let doc = pdfium.load_pdf_from_file(path, None).map_err(map_load)?;
+    let pages = doc.pages();
+    let n = pages.len() as u32;
+    if page == 0 || page > n {
+        return Err(PdfError::Failed(format!("page {page} of {n}")));
+    }
+    let p = pages.get((page - 1) as i32).map_err(|e| PdfError::Failed(format!("page: {e:?}")))?;
+    let text = p.text().map_err(|e| PdfError::Failed(format!("text: {e:?}")))?;
+    let (w, h) = (p.width().value.max(1.0), p.height().value.max(1.0));
+
+    // Every occurrence of every term as line rectangles in page points (bottom-left origin).
+    let mut rects: Vec<PdfRect> = Vec::new();
+    'terms: for term in terms {
+        let Ok(search) = text.search(term, &PdfSearchOptions::new()) else { continue };
+        for _ in 0..MAX_HITS_PER_TERM {
+            let Some(segs) = search.find_next() else { break };
+            for i in 0..segs.len() {
+                match segs.get(i).map(|s| s.bounds()) {
+                    Ok(r) if rects.len() < MAX_BOXES => rects.push(r),
+                    Ok(_) => break 'terms,
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    // Two terms can hit the same line: group by vertical overlap and union each group.
+    let mut lines: Vec<(f32, f32, f32, f32)> = Vec::new(); // left, top, right, bottom (page points)
+    for r in rects {
+        let (l, t, r, b) = (r.left().value, r.top().value, r.right().value, r.bottom().value);
+        if r <= l || t <= b {
+            continue;
+        }
+        let cy = (t + b) / 2.0;
+        let ch = t - b;
+        match lines.iter_mut().find(|(_, lt, _, lb)| cy <= *lt + ch * 0.5 && cy >= *lb - ch * 0.5) {
+            Some((ll, lt, lr, lb)) => {
+                *ll = ll.min(l);
+                *lt = lt.max(t);
+                *lr = lr.max(r);
+                *lb = lb.min(b);
+            }
+            None => lines.push((l, t, r, b)),
+        }
+    }
+    let frac = |v: f32, total: f32| (v / total).clamp(0.0, 1.0);
+    Ok(lines
+        .into_iter()
+        .map(|(l, t, r, b)| HitBox { x: frac(l, w), y: frac(h - t, h), w: frac(r - l, w), h: frac(t - b, h) })
+        .collect())
+}
+
 // ---------------------------------------------------------------- tests
 
 #[cfg(test)]
@@ -361,5 +426,25 @@ mod tests {
         assert!(render_page_png(p, &path, 3, 400).is_err());
         assert!(render_page_png(p, &path, 0, 400).is_err());
         assert_eq!(page_count(p, &dir.path().join("none.pdf")), None);
+    }
+
+    #[test]
+    fn word_boxes_land_on_the_page() {
+        let Some(p) = pdfium() else { return };
+        let dir = crate::tier1::test_tmp();
+        let path = dir.path().join("words.pdf");
+        std::fs::write(&path, make_pdf(p, &[Some("The quick brown fox jumps over the lazy dog.")])).unwrap();
+        let in01 = |b: HitBox| b.x > 0.0 && b.x + b.w < 1.0 && b.y > 0.0 && b.y + b.h < 1.0 && b.w > 0.0 && b.h > 0.0;
+        let fox = page_word_boxes(p, &path, 1, &["fox".into()]).unwrap();
+        assert_eq!(fox.len(), 1, "{fox:?}");
+        assert!(in01(fox[0]), "{fox:?}");
+        // no match: no boxes
+        assert!(page_word_boxes(p, &path, 1, &["zebra".into()]).unwrap().is_empty());
+        // two terms of the same line merge into one box that spans both
+        let both = page_word_boxes(p, &path, 1, &["quick".into(), "dog".into()]).unwrap();
+        assert_eq!(both.len(), 1, "{both:?}");
+        assert!(both[0].w > fox[0].w, "merged {both:?} vs single {fox:?}");
+        // page out of range is an error, not a panic
+        assert!(page_word_boxes(p, &path, 9, &["fox".into()]).is_err());
     }
 }

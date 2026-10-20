@@ -125,10 +125,11 @@ function Body({ backend, info, query, start, page, boxes, onPage }: {
   backend: Backend; info: PreviewInfo; query: string; start?: number; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
 }) {
   switch (info.kind) {
-    case "pdf": return <PdfView backend={backend} info={info} page={page} boxes={boxes} onPage={onPage} />;
+    case "pdf": return <PdfView backend={backend} info={info} query={query} page={page} boxes={boxes} onPage={onPage} />;
     case "image": return <ImageView info={info} boxes={boxes} />;
     case "video": case "audio": return <MediaView info={info} start={start} />;
-    case "text": return <TextView info={info} query={query} />;
+    // A document (docx / xlsx / pptx / ODF / RTF) reads exactly like a text file.
+    case "text": case "document": return <TextView info={info} query={query} />;
     default: return <OtherView info={info} />;
   }
 }
@@ -243,14 +244,31 @@ function ImageStage({ src, name, dims, note, boxes, onError }: {
 
 // ---- PDF: the page rendered by pdfium, prev / next ---------------------------------------------------------
 
-function PdfView({ backend, info, page, boxes, onPage }: {
-  backend: Backend; info: PreviewInfo; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
+function PdfView({ backend, info, query, page, boxes, onPage }: {
+  backend: Backend; info: PreviewInfo; query: string; page: number | null; boxes: HitBox[] | null; onPage: (n: number) => void;
 }) {
   const pages = info.pdf?.pages ?? null;
   const [n, setN] = useState(() => clampPage(page ?? 1, pages));
   useEffect(() => { onPage(n); }, [n, onPage]);
-  // The highlight belongs to the page the hit is on; other pages are drawn clean.
-  const drawn = useMemo(() => boxesForView(boxes, page, n), [boxes, page, n]);
+  // The highlight belongs to the page the hit is on; other pages are drawn clean. Stored boxes
+  // (OCR text, parser output) cover scanned pages; a text-layer PDF stores none, so the pane
+  // asks pdfium for the query words' boxes live.
+  const stored = useMemo(() => boxesForView(boxes, page, n), [boxes, page, n]);
+  const [fetched, setFetched] = useState<HitBox[] | null>(null);
+  const wantBoxes = page !== null && n === page && stored.length === 0 && previewTerms(query).length > 0;
+  useEffect(() => {
+    if (!wantBoxes) {
+      setFetched(null);
+      return;
+    }
+    let live = true;
+    backend.previewPdfBoxes(info.path, n, query).then(
+      (b) => { if (live) setFetched(b); },
+      () => { if (live) setFetched(null); },
+    );
+    return () => { live = false; };
+  }, [backend, info.path, n, wantBoxes, query]);
+  const drawn = wantBoxes && fetched && fetched.length > 0 ? fetched : stored;
   const [url, setUrl] = useState<string | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -461,7 +479,7 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
     <div className="pv-text" ref={box}>
       {hits > 0 && <div className="pv-hits">{hits >= 2000 ? "2000+" : hits} match{hits === 1 ? "" : "es"}</div>}
       <pre>{segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</pre>
-      {t.truncated && <div className="pv-trunc">Showing the first 256 KB</div>}
+      {t.truncated && <div className="pv-trunc">Showing the beginning of the file</div>}
     </div>
   );
 }

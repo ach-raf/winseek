@@ -133,6 +133,17 @@ impl Out {
     }
 }
 
+/// Extensions whose text [`extract_file`] reads as structured documents (the OOXML / ODF / RTF
+/// branches, not the plain-text fallback). The Space preview offers the same files a document
+/// text view, so the two stay in step through [`is_document_ext`].
+pub const DOCUMENT_EXTS: &[&str] =
+    &["docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx", "potx", "odt", "ott", "ods", "ots", "odp", "otp", "rtf"];
+
+/// Whether `ext` (lowercase) is a structured-document format the extractor reads.
+pub fn is_document_ext(ext: &str) -> bool {
+    DOCUMENT_EXTS.contains(&ext)
+}
+
 fn ext_of(path: &str) -> String {
     let name = path.rsplit(['\\', '/']).next().unwrap_or(path);
     match name.rfind('.') {
@@ -966,6 +977,23 @@ pub(crate) mod tests {
         }
         let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
         assert_eq!(extract_file("enc.docx", &ole), Err(ExtractError::Skip("legacy_office")));
+    }
+
+    /// The preview's document list must name exactly the extensions that run a structured reader:
+    /// garbage bytes reach the zip readers (Failed), not the plain-text fallback, and RTF decodes.
+    #[test]
+    fn document_exts_are_the_structured_readers() {
+        for ext in DOCUMENT_EXTS {
+            if *ext == "rtf" {
+                assert_eq!(extract_file(&format!("f.{ext}"), b"{\\rtf1 hi}").unwrap().text, "hi", "{ext}");
+                continue;
+            }
+            assert!(matches!(extract_file(&format!("f.{ext}"), b"garbage bytes"), Err(ExtractError::Failed(_))), "{ext}");
+        }
+        assert!(is_document_ext("pptx"));
+        assert!(!is_document_ext("PPTX"), "the caller lower-cases first");
+        assert!(!is_document_ext("doc"), "legacy Office is not previewable as text");
+        assert!(!is_document_ext("txt"));
     }
 
     #[test]

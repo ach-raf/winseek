@@ -7,6 +7,7 @@
 
 use crate::shell::icons::query_param;
 use crate::textdec::decode_text;
+use crate::tier1::hitbox::HitBox;
 use crate::tier1::pdf;
 use serde::Serialize;
 use std::borrow::Cow;
@@ -33,6 +34,8 @@ pub enum Kind {
     Video,
     Audio,
     Text,
+    /// A structured document (docx / xlsx / pptx / ODF / RTF) shown as its extracted text.
+    Document,
     /// Shown page by page through pdfium (`preview_pdf_page`).
     Pdf,
     Folder,
@@ -66,6 +69,8 @@ pub fn classify(ext: &str) -> Kind {
         Kind::Audio
     } else if TEXT.contains(&e) {
         Kind::Text
+    } else if crate::tier1::extract::is_document_ext(e) {
+        Kind::Document
     } else if e == "pdf" {
         Kind::Pdf
     } else {
@@ -166,6 +171,24 @@ fn read_text(path: &Path, size: u64) -> Option<TextInfo> {
     Some(TextInfo { content, truncated, encoding })
 }
 
+/// The extractor's text for a structured document (docx / xlsx / pptx / ODF / RTF).
+/// `None` = show the plain card instead; every skip or failure is logged, never silent.
+fn read_document(path: &Path) -> Option<TextInfo> {
+    let md = std::fs::metadata(path).ok()?;
+    if md.len() > crate::tier1::extract::MAX_FILE_BYTES {
+        eprintln!("winseek: preview: {} is too large for a document text view", path.display());
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    match crate::tier1::extract::extract_file(&path.to_string_lossy(), &bytes) {
+        Ok(doc) => Some(TextInfo { content: doc.text, truncated: doc.truncated, encoding: "UTF-8" }),
+        Err(e) => {
+            eprintln!("winseek: preview: no document text for {}: {e:?}", path.display());
+            None
+        }
+    }
+}
+
 // ---- images ---------------------------------------------------------------
 
 fn ascii(e: &exif::Exif, tag: exif::Tag) -> Option<String> {
@@ -245,6 +268,12 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
             text = read_text(p, md.len());
             if text.is_none() {
                 kind = Kind::Other; // binary content under a text extension
+            }
+        }
+        Kind::Document => {
+            text = read_document(p);
+            if text.is_none() {
+                kind = Kind::Other; // too large / corrupt / no text: the plain card, logged
             }
         }
         _ => {}
@@ -358,6 +387,31 @@ pub async fn preview_info(path: String) -> Result<PreviewInfo, String> {
     tauri::async_runtime::spawn_blocking(move || read_info(&path)).await.map_err(|e| e.to_string())?
 }
 
+/// Boxes (fractions 0-1, top-left origin) of the query words' occurrences on one PDF page's text
+/// layer, one per matching line. Text-layer PDFs carry no highlight boxes in their chunk locators
+/// (unlike OCR text and parser output), so the pane asks for them live when a hit has none.
+/// Runs on a worker thread like [`preview_info`].
+#[tauri::command]
+pub async fn preview_pdf_boxes(path: String, page: u32, query: String) -> Result<Vec<HitBox>, String> {
+    tauri::async_runtime::spawn_blocking(move || pdf_boxes(&path, page, &query)).await.map_err(|e| e.to_string())?
+}
+
+fn pdf_boxes(path: &str, page: u32, query: &str) -> Result<Vec<HitBox>, String> {
+    let terms = crate::tier1::hitbox::query_terms(query);
+    if terms.is_empty() {
+        return Ok(vec![]);
+    }
+    if ext_of(path) != "pdf" {
+        return Err("Not a PDF file".into());
+    }
+    let md = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
+    if md.len() > pdf::MAX_FILE_BYTES {
+        return Err("The file is too large to read.".into());
+    }
+    let rt = pdf::runtime().map_err(|e| e.to_string())?;
+    pdf::page_word_boxes(rt, Path::new(path), page, &terms).map_err(|e| e.to_string())
+}
+
 // ---- wsfile: protocol ---------------------------------------------------------
 
 /// `Range: bytes=a-b | a- | -n` against a file of `len` bytes -> inclusive (start, end), clipped to `CHUNK_MAX`.
@@ -465,10 +519,31 @@ mod tests {
         assert_eq!(classify("mkv"), Kind::Video);
         assert_eq!(classify("flac"), Kind::Audio);
         assert_eq!(classify("rs"), Kind::Text);
+        assert_eq!(classify("docx"), Kind::Document);
+        assert_eq!(classify("odp"), Kind::Document);
         assert_eq!(classify("pdf"), Kind::Pdf);
-        assert_eq!(classify("docx"), Kind::Other);
+        assert_eq!(classify("doc"), Kind::Other, "legacy Office has no text view");
         assert_eq!(classify(""), Kind::Other);
         assert_eq!(ext_of(r"C:\a\B.JPG"), "jpg");
+    }
+
+    /// A Word file previews as its extracted text; a corrupt one falls back to the plain card.
+    #[test]
+    fn documents_preview_as_their_text() {
+        let dir = tempfile::tempdir().unwrap();
+        let doc = dir.path().join("a.docx");
+        std::fs::write(&doc, crate::tier1::extract::tests::docx()).unwrap();
+        let info = read_info(&doc.to_string_lossy()).unwrap();
+        assert_eq!(info.kind, Kind::Document);
+        let t = info.text.expect("document text");
+        assert!(t.content.contains("Quarterly report"), "{:?}", t.content);
+        assert_eq!(t.encoding, "UTF-8");
+
+        let bad = dir.path().join("bad.docx");
+        std::fs::write(&bad, b"not a zip at all").unwrap();
+        let info = read_info(&bad.to_string_lossy()).unwrap();
+        assert_eq!(info.kind, Kind::Other, "unreadable: the plain card");
+        assert!(info.text.is_none());
     }
 
     #[test]

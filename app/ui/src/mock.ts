@@ -329,6 +329,7 @@ const PV_IMG = ["jpg", "jpeg", "png", "gif", "webp", "bmp", "heic"];
 const PV_VIDEO = ["mp4", "mkv", "mov", "avi", "webm"];
 const PV_AUDIO = ["mp3", "flac", "wav", "m4a", "ogg"];
 const PV_TEXT = ["txt", "md", "log", "json", "rs", "py", "ts", "toml", "csv"];
+const PV_DOC = ["docx", "xlsx", "pptx", "odt", "ods", "odp", "rtf"];
 const PV_PAGES = (path: string) => 3 + Math.floor(hash01(path + "pages") * 14); // 3..16 pages
 // Words per page that the mock "text layer" contains, so a semantic / text hit can name the page it is on.
 const PDF_LINES = [
@@ -455,6 +456,12 @@ async function mockPreview(path: string): Promise<PreviewInfo> {
     return { ...base, kind: "pdf", pdf: { pages: engine && !/locked|secret/i.test(e.name) ? PV_PAGES(path) : null, engine } };
   }
   if (PV_TEXT.includes(ext)) return { ...base, kind: "text", text: { content: sampleText(e.name, ext), truncated: false, encoding: "UTF-8" } };
+  if (PV_DOC.includes(ext)) {
+    const content =
+      `Document text (mock ${ext.toUpperCase()}): the words you search for are highlighted here, like in a text file.\n\n` +
+      PDF_LINES.join("\n");
+    return { ...base, kind: "document", text: { content, truncated: false, encoding: "UTF-8" } };
+  }
   return base;
 }
 
@@ -631,6 +638,17 @@ export const mockBackend: Backend = {
   },
   async getProfile() { await sleep(20); return mockProfile; },
   async setProfile(profile) { await sleep(40); mockProfile = profile; return mockProfile; },
+  async previewPdfBoxes(path, page, query) {
+    await sleep(30);
+    const e = DB.find((x) => x.path === path);
+    if (!e) throw new Error("File not found");
+    const terms = query.toLowerCase().split(/[^a-z0-9]+/).filter((t) => t.length > 1);
+    // Same coordinates as svgPdfPage draws its lines (page 595x842, line i baseline 150+i*34).
+    return PDF_LINES.flatMap((t, i) => {
+      if (pdfPage(path, i) !== page || !terms.some((q) => t.toLowerCase().includes(q))) return [];
+      return [{ x: 50 / 595, y: (150 + i * 34 - 14) / 842, w: (40 + t.length * 7) / 595, h: 20 / 842 }];
+    });
+  },
   async previewPdfPage(path, page, width) {
     await sleep(60 + Math.random() * 80);
     const e = DB.find((x) => x.path === path);

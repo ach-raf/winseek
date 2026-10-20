@@ -70,6 +70,7 @@ fn main() {
             commands::copy_path,
             preview::preview_info,
             preview::preview_pdf_page,
+            preview::preview_pdf_boxes,
             shell::copy_files,
             shell::copy_text_html,
             shell::recycle,

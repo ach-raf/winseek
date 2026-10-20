@@ -1,4 +1,4 @@
-import type { Backend, Collection, DupGroup, Hit, IgnoreList, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, Collection, DupGroup, Hit, HitBox, IgnoreList, LibImage, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -59,6 +59,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     copyTextHtml: (text, html) => inv("copy_text_html", { text, html: html ?? null }),
     getProfile: () => inv<Profile>("get_profile"),
     setProfile: (profile) => inv<Profile>("set_profile", { profile }),
+    previewPdfBoxes: (path, page, query) => inv<HitBox[]>("preview_pdf_boxes", { path, page, query }),
     previewPdfPage: async (path, page, width) => {
       // The command answers with raw bytes (an ArrayBuffer), not a JSON number array.
       const bytes = await inv<ArrayBuffer | number[]>("preview_pdf_page", { path, page, width });

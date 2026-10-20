@@ -197,7 +197,7 @@ export interface StatusPage {
   tier1: StatusTier1;
   models: StatusModels;
 }
-export type PreviewKind = "image" | "video" | "audio" | "text" | "pdf" | "folder" | "other";
+export type PreviewKind = "image" | "video" | "audio" | "text" | "document" | "pdf" | "folder" | "other";
 export interface PreviewExif {
   /** "2024-05-03 14:22:10" */
   date: string | null;
@@ -334,6 +334,8 @@ export interface Backend {
   setProfile(profile: Profile): Promise<Profile>;
   /** One PDF page (1-based) rendered about `width` px wide; PNG (or SVG in the mock) as a Blob. */
   previewPdfPage(path: string, page: number, width: number): Promise<Blob>;
+  /** Where the query words sit on one PDF page's text layer (fractions 0-1), for hits with no stored boxes. */
+  previewPdfBoxes(path: string, page: number, query: string): Promise<HitBox[]>;
   /** Everything the status page shows. Never rejects because searchd is down (tier0.source says so). */
   statusPage(): Promise<StatusPage>;
   /** Ask searchd to rebuild one volume's name index. */
