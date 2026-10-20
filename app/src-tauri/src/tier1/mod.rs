@@ -302,7 +302,7 @@ impl Tier1 {
     }
 
     pub fn set_scopes(&self, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
-        self.persist_scopes(scopes::normalize(Scopes { include, exclude }))
+        self.persist_scopes(scopes::normalize(Scopes { include, exclude, ..Default::default() }))
     }
 
     /// Forget a folder: drop it from the include roots and delete its file rows together with the
@@ -319,7 +319,7 @@ impl Tier1 {
         if included {
             let include: Vec<String> =
                 snap.scopes.include.iter().filter(|i| scopes::normalize_root(i).to_ascii_lowercase() != lower).cloned().collect();
-            self.persist_scopes(Scopes { include, exclude: snap.scopes.exclude.clone() })?;
+            self.persist_scopes(Scopes { include, exclude: snap.scopes.exclude.clone(), ..Default::default() })?;
         }
         let n = {
             let mut store = lock(&self.store);
@@ -334,8 +334,11 @@ impl Tier1 {
     }
 
     /// Save the scopes and make the crawler re-run. The one mutation path for scopes: both
-    /// [`Self::set_scopes`] and [`Self::remove_folder`] go through here.
-    fn persist_scopes(&self, s: Scopes) -> Result<(), String> {
+    /// [`Self::set_scopes`] and [`Self::remove_folder`] go through here. Any save means the
+    /// user has configured the list, so an empty one is respected on restart (see
+    /// [`scopes::effective`]) instead of falling back to the defaults.
+    fn persist_scopes(&self, mut s: Scopes) -> Result<(), String> {
+        s.configured = true;
         lock(&self.store).set_scopes(&s).map_err(|e| e.to_string())?;
         let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
         snap.scopes = s;
@@ -1074,7 +1077,7 @@ mod tests {
 
     fn tier_with(e: Box<dyn Embedder + Send>, p: Box<dyn Parser + Send>, include: &[&str]) -> Arc<Tier1> {
         let store = Store::open_in_memory(&index_meta("test")).unwrap();
-        Tier1::new(store, e, p, Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
+        Tier1::new(store, e, p, Scopes { include: include.iter().map(|s| s.to_string()).collect(), ..Default::default() })
     }
 
     fn add_done(t: &Tier1, n: u64, path: &str, hot: usize) {
@@ -1291,6 +1294,25 @@ mod tests {
         // Case-insensitive and idempotent; an unknown path only purges (nothing to purge).
         assert_eq!(t.remove_folder(r"c:\pics").unwrap(), 0);
         assert_eq!(t.remove_folder("").unwrap_err(), "remove_folder: empty path");
+    }
+
+    /// Removing the LAST folder must survive a restart: the saved list is configured, so the
+    /// defaults (Pictures/Documents/Desktop/Downloads) must not resurrect (`scopes::effective`).
+    #[test]
+    fn removing_every_folder_survives_a_restart() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        let dir = test_tmp();
+        let img = image::RgbImage::from_pixel(8, 8, image::Rgb([1, 2, 3]));
+        img.save(dir.path().join("only.png")).unwrap();
+        t.set_scopes(vec![dir.path().to_string_lossy().into_owned()], vec![]).unwrap();
+        assert_eq!(t.remove_folder(&dir.path().to_string_lossy()).unwrap(), 0, "nothing indexed yet, scope still drops");
+        let saved = lock(&t.store).get_scopes().unwrap();
+        assert!(saved.include.is_empty() && saved.configured, "the empty list is saved as configured: {saved:?}");
+        let (effective, defaulted) = scopes::effective(saved);
+        assert!(!defaulted, "the defaults must not resurrect");
+        assert!(effective.include.is_empty());
+        // And the crawler acts on it: the snapshot scopes are the empty list too.
+        assert!(t.snapshot().scopes.include.is_empty());
     }
 
     #[test]

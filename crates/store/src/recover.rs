@@ -326,7 +326,7 @@ mod tests {
     /// One embedded image, one text-only document, a scope setting.
     fn populate(p: &Path) {
         let mut s = Store::open(p, &meta()).unwrap();
-        s.set_scopes(&Scopes { include: vec![r"C:\docs".into()], exclude: vec![] }).unwrap();
+        s.set_scopes(&Scopes { include: vec![r"C:\docs".into()], exclude: vec![], ..Default::default() }).unwrap();
         let a = s.upsert_file(&key(1), r"C:\docs\a.jpg", 10, 1, "image").unwrap();
         let v = ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec![1., 0., 0., 0.] };
         s.complete(a, "ha", &[v], &[(0, "sunset over the harbour".into())]).unwrap();

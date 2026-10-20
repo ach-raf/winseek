@@ -202,7 +202,7 @@ pub fn run(t: Arc<Tier1>) {
 pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
     let snap = t.snapshot();
     let recrawl = |dir: &str| {
-        let sub = Scopes { include: vec![dir.to_string()], exclude: snap.scopes.exclude.clone() };
+        let sub = Scopes { include: vec![dir.to_string()], exclude: snap.scopes.exclude.clone(), ..Default::default() };
         // The moved-in folder must itself be inside the real scopes (map_change checked that).
         crawl(&t.store, &sub, &snap.ignore, snap.index_code, &|| false);
     };
@@ -237,7 +237,7 @@ mod tests {
     use winseek_store::{FileKey, IndexMeta};
 
     fn scopes() -> Scopes {
-        Scopes { include: vec![r"C:\Pics".into()], exclude: vec![r"C:\Pics\private".into()] }
+        Scopes { include: vec![r"C:\Pics".into()], exclude: vec![r"C:\Pics\private".into()], ..Default::default() }
     }
 
     fn map(kind: ChangeKind, path: &str, old: Option<&str>, dir: bool) -> Vec<StoreOp> {

@@ -392,6 +392,11 @@ pub struct Scopes {
     pub include: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// The user has saved a folder list at least once. Without it an empty `include` is
+    /// indistinguishable from "never configured", and the defaults would resurrect after
+    /// removing the last folder.
+    #[serde(default)]
+    pub configured: bool,
 }
 
 // ---------------------------------------------------------------- scopes
@@ -1797,6 +1802,7 @@ mod tests {
             s.set_scopes(&Scopes {
                 include: vec![r"C:\a".into()],
                 exclude: vec![],
+                ..Default::default()
             })
             .unwrap();
         }
@@ -2147,6 +2153,7 @@ mod tests {
         let sc = Scopes {
             include: vec![r"C:\Users\a".into(), "D:/Photos/".into()],
             exclude: vec![r"C:\Users\a\Private".into()],
+            ..Default::default()
         };
         assert!(in_scope(&sc, r"C:\Users\a"));
         assert!(in_scope(&sc, r"c:\users\A\Docs\x.pdf"));
@@ -2163,6 +2170,7 @@ mod tests {
         let root = Scopes {
             include: vec![r"C:\".into()],
             exclude: vec![],
+            ..Default::default()
         };
         assert!(in_scope(&root, r"C:\anything\x"));
         assert!(!in_scope(&root, r"D:\x"));
@@ -2170,7 +2178,7 @@ mod tests {
 
     #[test]
     fn default_ignore_covers_dev_junk() {
-        let sc = Scopes { include: vec![r"C:\u\Documents".into()], exclude: vec![] };
+        let sc = Scopes { include: vec![r"C:\u\Documents".into()], exclude: vec![], ..Default::default() };
         for junk in [
             r"proj\node_modules\x.png",
             r"proj\.venv\Lib\x.png",
@@ -2197,11 +2205,11 @@ mod tests {
         assert!(in_scope(&sc, r"C:\u\Documents\Targets 2025\x.png"), "whole names only");
         assert!(in_scope(&sc, r"C:\u\Documents\builder\x.png"));
         // the include root's own segments are exempt
-        let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![] };
+        let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![], ..Default::default() };
         assert!(in_scope(&root, r"D:\build\photos\x.jpg"));
         assert!(!in_scope(&root, r"D:\build\photos\out\x.jpg"));
         // a projects library: sources in, build output and environments out
-        let lib = Scopes { include: vec![r"D:\Projects".into()], exclude: vec![] };
+        let lib = Scopes { include: vec![r"D:\Projects".into()], exclude: vec![], ..Default::default() };
         assert!(in_scope(&lib, r"D:\Projects\winseek\docs\shot.png"));
         assert!(!in_scope(&lib, r"D:\Projects\winseek\target\debug\x.png"));
         assert!(!in_scope(&lib, r"D:\Projects\winseek\app\ui\node_modules\x.png"));
@@ -2210,7 +2218,7 @@ mod tests {
 
     #[test]
     fn custom_ignore_and_globs() {
-        let sc = Scopes { include: vec![r"C:\p".into()], exclude: vec![] };
+        let sc = Scopes { include: vec![r"C:\p".into()], exclude: vec![], ..Default::default() };
         let ig = Ignore::new(&["Raw*", "?tmp", " /Secret\\ ", ""]);
         assert!(!in_scope_with(&sc, &ig, r"C:\p\RAWs\x.jpg"));
         assert!(!in_scope_with(&sc, &ig, r"C:\p\xtmp\x.jpg"));
@@ -2241,10 +2249,15 @@ mod tests {
         let sc = Scopes {
             include: vec!["C:\\a".into()],
             exclude: vec!["C:\\a\\b".into()],
+            configured: true,
         };
         s.set_scopes(&sc).unwrap();
         s.set_scopes(&sc).unwrap();
-        assert_eq!(s.get_scopes().unwrap(), sc);
+        assert_eq!(s.get_scopes().unwrap(), sc, "including the configured marker");
+        // An old store row without the field reads as never-configured.
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        s.set_setting("scopes", Some(r#"{"include":["C:\\a"],"exclude":[]}"#)).unwrap();
+        assert_eq!(s.get_scopes().unwrap(), Scopes { include: vec!["C:\\a".into()], exclude: vec![], configured: false });
     }
 
     #[test]

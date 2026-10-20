@@ -492,7 +492,7 @@ mod tests {
 
     fn tier(include: &[&str]) -> Arc<Tier1> {
         let store = Store::open_in_memory(&index_meta("test")).unwrap();
-        Tier1::new(store, Box::new(Q), Box::new(crate::tier1::parser::NoParser), Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![] })
+        Tier1::new(store, Box::new(Q), Box::new(crate::tier1::parser::NoParser), Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![], ..Default::default() })
     }
 
     fn add(t: &Tier1, n: u64, path: &str, size: u64, mtime: i64, hash: &str, vec: Vec<f32>) {

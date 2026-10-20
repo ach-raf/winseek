@@ -51,10 +51,11 @@ pub fn normalize(mut s: Scopes) -> Scopes {
     s
 }
 
-/// Saved scopes, or the defaults when nothing is saved (empty `include`).
+/// Saved scopes, or the defaults when nothing is saved (empty, never-configured `include`).
+/// A configured empty list — every folder removed — is respected as "nothing is in scope".
 pub fn effective(saved: Scopes) -> (Scopes, bool) {
-    if saved.include.is_empty() {
-        (Scopes { include: default_include(), exclude: saved.exclude }, true)
+    if saved.include.is_empty() && !saved.configured {
+        (Scopes { include: default_include(), exclude: saved.exclude, configured: false }, true)
     } else {
         (saved, false)
     }
@@ -78,11 +79,19 @@ mod tests {
 
     #[test]
     fn saved_scopes_win() {
-        let s = Scopes { include: vec![r"D:\x".into()], exclude: vec![r"D:\x\y".into()] };
+        let s = Scopes { include: vec![r"D:\x".into()], exclude: vec![r"D:\x\y".into()], configured: true };
         assert_eq!(effective(s.clone()), (s, false));
-        let (e, used_default) = effective(Scopes { include: vec![], exclude: vec![r"E:\z".into()] });
+        let (e, used_default) = effective(Scopes { include: vec![], exclude: vec![r"E:\z".into()], configured: false });
         assert!(used_default);
         assert_eq!(e.exclude, vec![r"E:\z".to_string()]);
+    }
+
+    /// The 2026-10-19 live bug: after removing every folder the defaults resurrected on
+    /// restart, because an empty list looked like "never configured".
+    #[test]
+    fn an_empty_list_that_was_configured_is_respected() {
+        let s = Scopes { include: vec![], exclude: vec![], configured: true };
+        assert_eq!(effective(s.clone()), (s, false));
     }
 
     #[test]
@@ -90,6 +99,7 @@ mod tests {
         let s = normalize(Scopes {
             include: vec![r#" "D:\Photos\ "#.into(), r"D:/photos".into(), r"E:\\".into(), String::new()],
             exclude: vec![r"D:\Photos\raw/".into(), r"d:\photos\RAW".into()],
+            ..Default::default()
         });
         assert_eq!(s.include, vec![r"D:\Photos".to_string(), r"E:".to_string()]);
         assert_eq!(s.exclude, vec![r"D:\Photos\raw".to_string()]);

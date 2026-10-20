@@ -196,6 +196,7 @@ mod tests {
         let scopes = Scopes {
             include: vec![r.to_string_lossy().into_owned()],
             exclude: vec![r.join("skip").to_string_lossy().into_owned()],
+            ..Default::default()
         };
         let s = store();
         let st = crawl(&s, &scopes, &Ignore::defaults(), false, &|| false);
@@ -245,7 +246,7 @@ mod tests {
             fs::create_dir_all(p.parent().unwrap()).unwrap();
             fs::write(p, c).unwrap();
         }
-        let scopes = Scopes { include: vec![r.to_string_lossy().into_owned()], exclude: vec![] };
+        let scopes = Scopes { include: vec![r.to_string_lossy().into_owned()], exclude: vec![], ..Default::default() };
         let rel = |s: &Mutex<Store>| -> Vec<String> {
             paths(s).into_iter().map(|p| p.strip_prefix(&*r.to_string_lossy()).unwrap().trim_start_matches('\\').to_string()).collect()
         };
@@ -267,7 +268,7 @@ mod tests {
     fn crawl_stops_on_request() {
         let d = crate::tier1::test_tmp();
         fs::write(d.path().join("a.jpg"), b"x").unwrap();
-        let scopes = Scopes { include: vec![d.path().to_string_lossy().into_owned()], exclude: vec![] };
+        let scopes = Scopes { include: vec![d.path().to_string_lossy().into_owned()], ..Default::default() };
         let s = store();
         assert_eq!(crawl(&s, &scopes, &Ignore::defaults(), false, &|| true).upserted, 0);
     }
