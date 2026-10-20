@@ -21,24 +21,64 @@ pub struct Match {
 }
 
 /// Score one query against one candidate string: acronym pass first, then fuzzy.
+/// The catalog search uses `score_item_with`; this standalone form backs the tests and the
+/// task-list contract (worked scoring numbers are pinned against it).
+#[allow(dead_code)]
 pub fn score(query: &str, candidate: &str) -> Option<Match> {
     score_inner(query, candidate).map(|(m, _)| m)
 }
 
+/// A query folded once per keystroke — `search()` scores ~1500 items per call, so the query
+/// must not be re-folded per item.
+#[derive(Clone)]
+pub struct Prepared {
+    pub chars: Vec<char>,
+}
+
+pub fn prepare(query: &str) -> Prepared {
+    Prepared { chars: query.trim().chars().map(fold_char).collect() }
+}
+
 /// Like `score`, but also reports whether an acronym match covered every group (title bonus).
 fn score_inner(query: &str, candidate: &str) -> Option<(Match, bool)> {
-    let query = query.trim();
-    if query.is_empty() || candidate.is_empty() {
+    if query.trim().is_empty() || candidate.is_empty() {
         return None;
     }
-    let q: Vec<char> = fold(query).chars().collect();
-    let orig: Vec<char> = candidate.chars().collect();
-    let c: Vec<char> = fold(candidate).chars().collect();
+    score_prepared(&prepare(query).chars, candidate)
+}
 
-    if let Some(m) = acronym(&q, &c, &orig) {
-        return Some(m);
+fn score_prepared(q: &[char], candidate: &str) -> Option<(Match, bool)> {
+    let mut scorer = Scorer::default();
+    scorer.score(q, candidate)
+}
+
+/// Reusable per-candidate scratch so a catalog search does not allocate per item.
+#[derive(Default)]
+pub(crate) struct Scorer {
+    orig: Vec<char>,
+    folded: Vec<char>,
+}
+
+impl Scorer {
+    pub(crate) fn score(&mut self, q: &[char], candidate: &str) -> Option<(Match, bool)> {
+        if q.is_empty() || candidate.is_empty() {
+            return None;
+        }
+        self.orig.clear();
+        self.orig.extend(candidate.chars());
+        self.folded.clear();
+        self.folded.extend(self.orig.iter().map(|&ch| fold_char(ch)));
+        // Prune before scoring: neither pass can match without the query's first char in the
+        // candidate (fuzzy needs it to start the first token, acronym needs it on a group).
+        let q0 = q[0];
+        if !self.folded.contains(&q0) {
+            return None;
+        }
+        if let Some(m) = acronym(q, &self.folded, &self.orig) {
+            return Some(m);
+        }
+        fuzzy(q, &self.folded)
     }
-    fuzzy(&q, &c)
 }
 
 /// Lowercase + strip Latin diacritics, one char in / one char out.
@@ -261,10 +301,23 @@ fn ranges(mut idx: Vec<usize>) -> Vec<(usize, usize)> {
 
 /// Best of title (x1.0) and keywords (x0.9, ranges cleared), plus the title bonuses the
 /// Top-Hit threshold depends on: exact +50, title prefix +25, full-title acronym +60.
+/// Task-list tests pin their worked numbers against this entry point.
+#[allow(dead_code)]
 pub fn score_item(query: &str, item: &LaunchItem) -> Option<Match> {
-    let mut best = score_inner(query, &item.title);
+    score_item_prepared(&prepare(query), item)
+}
+
+/// The hot path from `search`: same scoring, query folded once for the whole catalog.
+#[allow(dead_code)]
+pub fn score_item_prepared(q: &Prepared, item: &LaunchItem) -> Option<Match> {
+    score_item_with(&mut Scorer::default(), q, item)
+}
+
+/// `search` passes one shared Scorer through the whole catalog (no per-item allocation).
+pub(crate) fn score_item_with(s: &mut Scorer, q: &Prepared, item: &LaunchItem) -> Option<Match> {
+    let mut best = s.score(&q.chars, &item.title);
     for kw in &item.keywords {
-        if let Some((mut m, _)) = score_inner(query, kw) {
+        if let Some((mut m, _)) = s.score(&q.chars, kw) {
             m.score *= 9; // keywords weigh 0.9
             m.score /= 10;
             m.ranges.clear(); // keyword hits must not highlight the title
@@ -274,11 +327,11 @@ pub fn score_item(query: &str, item: &LaunchItem) -> Option<Match> {
         }
     }
     let (mut m, full_acronym) = best?;
-    let fq = fold(query);
-    let ft = fold(&item.title);
-    if ft == fq {
+    let fq = &q.chars;
+    let ft: Vec<char> = item.title.chars().map(fold_char).collect();
+    if ft == *fq {
         m.score += 50;
-    } else if ft.starts_with(&fq) {
+    } else if ft.starts_with(fq.as_slice()) {
         m.score += 25;
     }
     if full_acronym {

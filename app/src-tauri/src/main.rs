@@ -2,8 +2,6 @@
 
 mod autostart;
 mod commands;
-// Wired into the Tauri state + handler in the launcher state task; pure parts are test-only until then.
-#[allow(dead_code)]
 mod launch;
 mod libwindow;
 mod models;
@@ -63,6 +61,7 @@ fn main() {
         )
         .manage(models::Models::default())
         .manage(tier1::library::LibState::default())
+        .manage(launch::Launcher::new())
         .manage(AppState::new(pick_source()))
         .invoke_handler(tauri::generate_handler![
             commands::search,
@@ -117,7 +116,19 @@ fn main() {
             models::models_download,
             models::models_cancel,
             autostart::autostart_get,
-            autostart::autostart_set
+            autostart::autostart_set,
+            launch::launch_search,
+            launch::launch_run,
+            launch::launch_record,
+            launch::launch_reindex,
+            launch::launch_get_config,
+            launch::launch_set_config,
+            launch::launch_hide,
+            launch::launch_unhide,
+            launch::launch_clear_history,
+            launch::launch_counts,
+            launch::launch_copy,
+            launch::launch_reveal
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {
             shell::icons::handle(req, responder)
@@ -202,6 +213,7 @@ fn main() {
             }
             tray.build(app)?;
             watcher::spawn(app.handle().clone());
+            launch::Launcher::start_background(app.handle().clone());
             autostart::init_default();
             models::auto_download(app.handle().clone());
             if !autostarted {
