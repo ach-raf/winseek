@@ -2,6 +2,9 @@
 
 mod autostart;
 mod commands;
+// Wired into the Tauri state + handler in the launcher state task; pure parts are test-only until then.
+#[allow(dead_code)]
+mod launch;
 mod libwindow;
 mod models;
 mod pipe_source;
