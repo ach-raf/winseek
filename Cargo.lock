@@ -5151,6 +5151,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "winseek-mcp"
+version = "0.2.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "winseek-ipc",
+]
+
+[[package]]
 name = "winseek-ntfs"
 version = "0.2.0"
 

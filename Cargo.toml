@@ -10,6 +10,7 @@ members = [
     "crates/llama",
     "tools/eval",
     "searchd",
+    "mcp",
     "app/src-tauri",
 ]
 

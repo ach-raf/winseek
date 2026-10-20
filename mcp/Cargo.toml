@@ -1,0 +1,15 @@
+[package]
+name = "winseek-mcp"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "winseek MCP stdio shim: forwards agent requests to the winseek app"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+winseek-ipc = { path = "../crates/ipc" }
+
+[[bin]]
+name = "winseek-mcp"
+path = "src/main.rs"
