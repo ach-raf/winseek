@@ -4,6 +4,8 @@ import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
 import { boxesForView, boxRect, clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { combos, hint } from "./keymap";
+import { tooltip } from "./Shortcuts";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
@@ -67,9 +69,9 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
           <div className="pv-name" title={hit.name}>{hit.name}</div>
           <div className="pv-path" title={hit.path}><span className="head">{head}</span><span className="tail">{tail}</span></div>
         </div>
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onCopyPath} title="Copy the full path (Ctrl+Shift+C)">Copy path</button>
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onReveal} title="Show in Explorer (Ctrl+Enter)">Reveal</button>
-        <button className="btn primary pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onOpen} title="Open (Enter)">Open</button>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onReveal} title={tooltip("preview.reveal")}>Reveal</button>
+        <button className="btn primary pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onOpen} title={tooltip("preview.open")}>Open</button>
       </header>
       {snippet && (
         <div className="pv-snip" title="Text found inside the file"><Snippet text={snippet} /></div>
@@ -306,9 +308,9 @@ function PdfView({ backend, info, query, page, boxes, onPage }: {
   return (
     <div className="pv-pdf">
       <div className="pv-pdfbar">
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n <= 1} onClick={() => go(-1)} aria-label="Previous page" title="Previous page">‹</button>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n <= 1} onClick={() => go(-1)} aria-label="Previous page" title={`Previous page (${combos("preview.page")[1] ?? ""})`}>‹</button>
         <span className="pv-pageno" aria-live="polite">Page {n} of {pages}</span>
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n >= pages} onClick={() => go(1)} aria-label="Next page" title="Next page">›</button>
+        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={n >= pages} onClick={() => go(1)} aria-label="Next page" title={`Next page (${hint("preview.page")})`}>›</button>
       </div>
       <div className={"pv-pdfpage" + (loading ? " stale" : "")} ref={box}>
         {err ? (
@@ -393,7 +395,7 @@ function ParseBar({ backend, path, page, available }: { backend: Backend; path: 
   return (
     <div className="pv-parse">
       <div className="pv-parse-bar">
-        {btn("Extract text", extract, "Read the text on this page with the document parser")}
+        {btn("Extract text", extract, `Read the text on this page with the document parser (${hint("preview.extract")})`)}
         {btn("Copy table", copyTable, "Copy the table on this page, ready to paste into a spreadsheet")}
         {btn("Copy as Markdown", copyMarkdown, "Copy the whole page as Markdown")}
         {busy && <span className="pv-parse-state"><span className="spin" aria-hidden /> Reading the page…</span>}

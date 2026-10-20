@@ -455,6 +455,27 @@ button.set-opt { width: 100%; text-align: left; font: inherit; color: inherit; }
 .agent-args { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .agent-err { flex: none; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* F1 cheat sheet: one overlay, groups in columns, kbd chips */
+.cheat-overlay {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
+}
+.cheat {
+  width: min(760px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - 48px));
+  display: flex; flex-direction: column;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
+  box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
+}
+.cheat-head { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
+.cheat-head .muted { margin-right: auto; font-size: 12px; }
+.cheat-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px 24px; padding: 10px 16px 16px; overflow: auto; }
+.cheat-cols h3 { margin: 10px 0 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--fg-3); }
+.cheat-cols ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.cheat-cols li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; min-width: 0; }
+.cheat-keys { flex: none; display: inline-flex; gap: 3px; min-width: 74px; }
+.cheat-label { color: var(--fg-2); min-width: 0; }
+
 .folders { display: flex; flex-direction: column; gap: 8px; }
 .folders .set-group { padding: 1px 0; }
 .fl-list {

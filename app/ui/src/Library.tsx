@@ -7,6 +7,7 @@ import { baseName } from "./Semantic";
 import { useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { groupByMonth } from "./libraryLogic";
+import { tooltip } from "./Shortcuts";
 
 type Tab = "timeline" | "collections" | "cleanup";
 const TABS: { id: Tab; label: string }[] = [
@@ -154,7 +155,7 @@ export default function Library({ backend }: { backend: Backend }) {
   return (
     <div className="lib">
       <header className="lib-top">
-        <button className="lib-back" onClick={goBack} title="Back to search (Alt+Space)" aria-label="Back to search">
+        <button className="lib-back" onClick={goBack} title={tooltip("library.back")} aria-label="Back to search">
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
         </button>
         <h1>Library</h1>

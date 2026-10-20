@@ -10,6 +10,8 @@ import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, ovMove, type Expand, type OvItem } from "./overviewLogic";
 import { portableApps, launchForFilter } from "./launchLogic";
+import { combos, matches as matchesKey } from "./keymap";
+import { footerHints, HintChip, Shortcuts, tooltip, type RowKind } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { applyAccent } from "./accent";
 import { FileIcon } from "./FileIcon";
@@ -159,6 +161,7 @@ export default function App({ backend }: { backend: Backend }) {
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsSection, setSettingsSection] = useState<SettingsSection>("meaning");
+  const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
   const [hintOff, setHintOff] = useState(false);
   const [summary, setSummary] = useState<Summary | null>(null);
   // Launcher (apps / settings / commands): hits per keystroke, the armed confirm row, the
@@ -619,6 +622,8 @@ export default function App({ backend }: { backend: Backend }) {
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
       const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir)); };
+      // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
+      if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (overview && !e.altKey && !e.shiftKey) {
         // Ctrl+arrows / PageUp / PageDown jump between sections; left / right walk the image grid once the
         // keyboard is in the results (before that they move the caret in the search box).
@@ -668,7 +673,8 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         case "Escape":
           e.preventDefault();
-          if (armed) setArmed(null);
+          if (cheat) setCheat(false);
+          else if (armed) setArmed(null);
           else if (launchMenu) setLaunchMenu(null);
           else if (pvOpen) setPvOpen(false);
           else if (expand && !setupOpenRef.current) setExpand(null);
@@ -716,7 +722,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -837,6 +843,12 @@ export default function App({ backend }: { backend: Backend }) {
     onRenameCancel: () => { setRenaming(false); refocus(); },
   }), [ov.flat, ovGo, act, launchAct, openMenu, openSemMenu, onRowDown, doRename, refocus]);
   const showList = !overview;
+  const rowKind: RowKind =
+    pvOpen ? "preview"
+    : ovItem?.calc !== undefined ? "calc"
+    : ovItem?.launch ? (({ app: "app", setting: "setting", command: "command" } as const)[ovItem.launch.item.kind])
+    : current?.is_dir ? "folder"
+    : current ? "file" : "file";
   const waitingSem = overview && sem.query !== parsed.text.trim() && parsed.text.trim().length >= 2 && !!t1 && t1.state !== "unavailable";
   const pvPane = !showPanel && !!pv && !!current;
 
@@ -900,12 +912,12 @@ export default function App({ backend }: { backend: Backend }) {
           ))}
         </div>
         <span className="spacer" />
-        <button className="sort" tabIndex={-1} title="Change sort order"
+        <button className="sort" tabIndex={-1} title={tooltip("popup.sort")}
                 onClick={() => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); }}>
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
-        <button className="gear" tabIndex={-1} title="Settings (Ctrl+,)" aria-label="Settings" onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
+        <button className="gear" tabIndex={-1} title={tooltip("popup.settings")} aria-label="Settings" onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.66 0-1.25.4-1.51 1z" />
@@ -997,6 +1009,8 @@ export default function App({ backend }: { backend: Backend }) {
         </div>
       )}
 
+      {cheat && <Shortcuts scope="popup" onClose={() => setCheat(false)} />}
+
       <footer className="footer">
         <span className={"status s-" + state}><i className="dot" />{statusText}</span>
         {models.running && (
@@ -1020,20 +1034,10 @@ export default function App({ backend }: { backend: Backend }) {
         )}
         <span className="spacer" />
         <span className="hints">
-          {pvOpen ? (
-            <>
-              <span><kbd>Space</kbd> Close</span>
-              <span><kbd>↑↓</kbd> Next</span>
-              <span><kbd>↵</kbd> Open</span>
-            </>
-          ) : (
-            <>
-              <span><kbd>↵</kbd> Open</span>
-              <span><kbd>Space</kbd> Quick Look</span>
-              <span><kbd>Ctrl ↵</kbd> Show in folder</span>
-            </>
-          )}
-          <button className="lib-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={openLibrary} title="Photos by month, smart collections, clean up (Ctrl+L)">Library</button>
+          {(pvOpen ? footerHints("preview") : footerHints(rowKind)).map(([id, verb]) => (
+            <HintChip key={id + verb} id={id} verb={verb} />
+          ))}
+          <button className="lib-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={openLibrary} title={tooltip("popup.library")}>Library</button>
         </span>
       </footer>
     </div>
