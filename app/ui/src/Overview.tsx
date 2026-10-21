@@ -119,13 +119,16 @@ const Row = memo(function Row({ it, i, sel, query, backend, h, renaming, armed }
   if (l) {
     const item = l.item;
     const isArmed = armed === item.id;
+    // Apps and settings have no preview to select for, so one click launches them.
+    // Commands (and the calc Top Hit) keep select-then-open: their open is confirm-gated or copies.
+    const oneClick = it.calc === undefined && (item.kind === "app" || item.kind === "setting");
     const icon = item.target.t === "aumid"
       ? backend.appIconUrl(item.target.aumid, it.section === "top" ? 96 : 32)
       : item.target.t === "path" ? backend.iconUrl(item.target.path, false, false, it.section === "top" ? 96 : undefined) : null;
     return (
       <div className={"ov-row launch" + (it.section === "top" ? " top" : "") + (sel ? " selected" : "") + (isArmed ? " armed" : "")}
            role="option" aria-selected={sel} data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}
-           onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
+           onClick={() => (oneClick ? h.onOpen(i) : h.onSelect(i))} onDoubleClick={() => h.onOpen(i)}
            onContextMenu={(e) => h.onMenu(i, e)}>
         {item.icon
           ? <span className="glyph" aria-hidden>{item.icon}</span>
