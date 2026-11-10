@@ -83,9 +83,11 @@ pub fn show(app: &AppHandle) {
     let Some(w) = window(app) else { return };
     place_on_cursor_monitor(&w);
     SHOWN_AT_MS.store(now_ms(), Ordering::Relaxed);
+    // Tell the UI first: the (already-running, hidden) page focuses its input while the OS is still
+    // mapping the window, so the caret is live the moment the first frame appears.
+    let _ = app.emit_to(LABEL, "popup-shown", ());
     let _ = w.show();
     let _ = w.set_focus();
-    let _ = app.emit("popup-shown", ());
 }
 
 pub fn hide(app: &AppHandle) {

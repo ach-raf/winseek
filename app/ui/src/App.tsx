@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { backspaceDropsChip, hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { calc } from "./calc.ts";
@@ -377,9 +377,13 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     let off: (() => void) | undefined;
     backend.onShown(() => {
-      setEpoch((e) => e + 1);
+      // Focus FIRST and synchronously: a hidden webview pauses rAF until it paints, so waiting for a
+      // frame drops the first keystrokes. The refetch (epoch) is a low-priority transition behind it.
+      inputRef.current?.focus();
+      inputRef.current?.select();
+      startTransition(() => setEpoch((e) => e + 1));
       if (summaryRef.current) setCounting(false); // the "indexed N files" line is one-shot
-      requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
+      requestAnimationFrame(() => { inputRef.current?.focus(); });
     }).then((u) => (off = u));
     return () => off?.();
   }, [backend]);
