@@ -1,0 +1,36 @@
+/* ===== full-window shell (v4): sidebar, top bar, window controls. Shared by the full view and the library window. ===== */
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.warn { background: var(--warn); }
+.sp { flex: 1; }
+.side { width: 216px; flex: none; background: var(--bg2); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; gap: 2px; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-size: 16px; font-weight: 700; letter-spacing: -.02em; }
+.logo { width: 24px; height: 24px; border-radius: 7px; background: var(--acc); color: var(--acc-ink); display: grid; place-items: center; }
+.nv { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--fg2); text-align: left; width: 100%; }
+.nv svg { width: 18px; height: 18px; color: var(--fg3); }
+.nv:hover { background: var(--bg3); }
+.nv.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.06); }
+.nv.on svg { color: var(--fg); }
+.nv i { margin-left: auto; font-style: normal; font-size: 12px; color: var(--fg3); font-weight: 400; }
+.nlab { padding: 16px 10px 6px; font-size: 12px; font-weight: 600; color: var(--fg3); }
+.side .idx { margin: 0 2px 8px; padding: 12px; border-radius: 12px; background: var(--bg); box-shadow: 0 0 0 1px var(--line); font-size: 12.5px; color: var(--fg2); display: grid; gap: 8px; max-width: none; }
+.idx .h { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--fg); }
+.idx .d { display: grid; grid-template-columns: 20px 1fr 44px; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg3); }
+.idx .d b { color: var(--fg2); font-weight: 600; }
+.idx .d span { text-align: right; font-variant-numeric: tabular-nums; }
+.meter { height: 5px; border-radius: 3px; background: var(--bg3); overflow: hidden; }
+.meter i { display: block; height: 100%; width: calc(var(--u) * 100%); border-radius: 3px; background: var(--fg3); }
+@media (prefers-color-scheme: dark) {
+  .nv.on { background: var(--bg3); box-shadow: none; }
+  .side .idx { background: var(--bg3); box-shadow: none; }
+  .idx .meter { background: var(--bg); }
+}
+.main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.tbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 18px; }
+.tbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+.tbar .hsub { font-size: 13px; color: var(--fg3); margin-left: 4px; }
+.tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 12px 0 14px; border-radius: 11px; background: var(--bg2); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.tbar .field:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
+.wc { display: flex; margin-left: 6px; }
+.wc button { width: 40px; height: 32px; display: grid; place-items: center; color: var(--fg3); border-radius: 6px; }
+.wc button:hover { background: var(--bg3); color: var(--fg); }
+.page-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 22px 90px; position: relative; }

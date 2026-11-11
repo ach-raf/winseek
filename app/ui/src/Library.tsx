@@ -1,22 +1,22 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, LibImage } from "./types";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import type { Backend, LibImage, VolumeStatus } from "./types";
 import { Gallery, type GallerySection, type LibActions } from "./Gallery";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
+import { Sidebar, type Page } from "./Sidebar";
 import { baseName } from "./Semantic";
 import { useTier1 } from "./hooks";
-import { applyAccent } from "./accent";
 import { groupByMonth } from "./libraryLogic";
-import { tooltip } from "./Shortcuts";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
 
-type Tab = "timeline" | "collections" | "cleanup";
-const TABS: { id: Tab; label: string }[] = [
-  { id: "timeline", label: "Timeline" },
-  { id: "collections", label: "Collections" },
-  { id: "cleanup", label: "Clean up" },
-];
+export type LibTab = "timeline" | "collections" | "cleanup";
+const TABS: LibTab[] = ["timeline", "collections", "cleanup"];
+const TITLES: Record<LibTab, string> = { timeline: "Timeline", collections: "Collections", cleanup: "Clean up" };
+const SUBS: Record<Exclude<LibTab, "timeline">, string> = {
+  collections: "Describe what you want, winseek keeps it filled",
+  cleanup: "Nothing is deleted until you say so",
+};
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
@@ -32,11 +32,24 @@ function useSettled<T>(value: T, ms: number): T {
   return v;
 }
 
-export default function Library({ backend }: { backend: Backend }) {
-  const [tab, setTab] = useState<Tab>(() => {
+export interface LibraryProps {
+  backend: Backend;
+  /** Rendered inside the full-window shell (the parent provides the Sidebar and the tab). */
+  embedded?: boolean;
+  /** Controlled tab when `embedded`. */
+  tab?: LibTab;
+  /** Window controls, shown at the right end of the top bar. */
+  chrome?: ReactNode;
+  /** Esc / Alt+Left (embedded). */
+  onBack?: () => void;
+}
+
+export default function Library({ backend, embedded = false, tab: tabProp, chrome, onBack }: LibraryProps) {
+  const [ownTab, setOwnTab] = useState<LibTab>(() => {
     const t = new URLSearchParams(location.search).get("tab");
-    return TABS.some((x) => x.id === t) ? (t as Tab) : "timeline";
+    return TABS.includes(t as LibTab) ? (t as LibTab) : "timeline";
   });
+  const tab: LibTab = embedded ? (tabProp ?? "timeline") : ownTab;
   const [epoch, setEpoch] = useState(0); // bumped after an undo: every list is read again
   const [t1] = useTier1(backend, false, epoch);
   const [images, setImages] = useState<LibImage[] | null>(null);
@@ -47,25 +60,27 @@ export default function Library({ backend }: { backend: Backend }) {
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
   const [cheat, setCheat] = useState(false); // F1 / Ctrl+/
-  const [popupHk, setPopupHk] = useState<string | null>(null);
-  useEffect(() => {
-    let off: (() => void) | undefined, dead = false;
-    backend.hotkeysGet().then((h) => setPopupHk(h.popup)).catch(() => {});
-    backend.onHotkeysChanged((h) => setPopupHk(h.popup)).then((u) => (dead ? u() : (off = u)));
-    return () => { dead = true; off?.(); };
-  }, [backend]);
+  const [status, setStatus] = useState<VolumeStatus[]>([]);
 
-  const embedded = t1?.stats?.done ?? 0;
-  const gen = useSettled(embedded, 20000);
+  const done = t1?.stats?.done ?? 0;
+  const gen = useSettled(done, 20000);
 
   useEffect(() => {
+    if (embedded) return;
     document.title = "winseek Library";
-    const dark = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => backend.accentPalette().then((p) => applyAccent(p, dark.matches)).catch(() => {});
-    apply();
-    dark.addEventListener("change", apply);
-    return () => dark.removeEventListener("change", apply);
-  }, [backend]);
+  }, [embedded]);
+
+  // The standalone window has its own sidebar, so it reads the volume status itself (shallow-compared).
+  useEffect(() => {
+    if (embedded) return;
+    let live = true;
+    const poll = () => backend.status().then((st) => {
+      if (live) setStatus((prev) => (JSON.stringify(prev) === JSON.stringify(st) ? prev : st));
+    }).catch(() => {});
+    poll();
+    const t = window.setInterval(poll, 2000);
+    return () => { live = false; window.clearInterval(t); };
+  }, [backend, embedded]);
 
   useEffect(() => {
     let live = true;
@@ -80,10 +95,11 @@ export default function Library({ backend }: { backend: Backend }) {
   }, []);
   const fail = useCallback((e: unknown) => flash(errText(e), false, 4500), [flash]);
 
-  // Back to the popup: it shows first, then this window hides — the mirror of openLibrary in the popup.
+  // Back to the search: embedded, the parent switches page; standalone, the popup shows first, then this window hides.
   const goBack = useCallback(() => {
+    if (embedded) { onBack?.(); return; }
     backend.openPopup().then(() => backend.hide()).catch(fail);
-  }, [backend, fail]);
+  }, [backend, embedded, onBack, fail]);
 
   const trashed = useCallback((paths: string[]) => {
     setHidden((h) => { const n = new Set(h); paths.forEach((p) => n.add(p)); return n; });
@@ -126,13 +142,13 @@ export default function Library({ backend }: { backend: Backend }) {
       const t = e.target as HTMLElement | null;
       if (combos("library.cheatsheet").some((c) => matches(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (cheat && e.key === "Escape") { e.preventDefault(); setCheat(false); return; }
-      if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+      if (!embedded && e.ctrlKey && !e.shiftKey && !e.altKey) {
         const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
-        if (ti >= 0) { e.preventDefault(); setTab(TABS[ti].id); return; }
+        if (ti >= 0) { e.preventDefault(); setOwnTab(TABS[ti]); return; }
       }
-      // Back to the search — unless a collection editor or a text field owns the key.
+      // Back to the search — unless something inside (preview, collection, drill-in, form, text field) owns the key.
       if (e.key === "Escape" || matches(e, "Alt+Left")) {
-        if (t?.closest?.(".co-form") || (t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) return;
+        if (e.defaultPrevented || t?.closest?.(".co-form") || (t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) return;
         e.preventDefault();
         goBack();
         return;
@@ -144,12 +160,12 @@ export default function Library({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo, goBack, cheat]);
+  }, [doUndo, goBack, cheat, embedded]);
 
-  // A tab switch puts the keyboard on the tab's main list (gallery, collections, cleanup groups).
+  // A tab switch puts the keyboard on the tab's main widget (gallery, first collection, cleanup list).
   useEffect(() => {
     requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(".lib-body [tabindex='0']")?.focus({ preventScroll: true });
+      document.querySelector<HTMLElement>(".lib-body [data-autofocus], .lib-body [tabindex='0']")?.focus({ preventScroll: true });
     });
   }, [tab]);
 
@@ -162,18 +178,6 @@ export default function Library({ backend }: { backend: Backend }) {
     [visible],
   );
 
-  const status = (() => {
-    if (!t1) return "";
-    const s = t1.stats;
-    switch (t1.state) {
-      case "unavailable": return "Photo index unavailable";
-      case "models_missing": return "Search by meaning is off";
-      case "indexing": return s ? `Indexing · ${s.done.toLocaleString("en-US")} of ${(s.done + s.pending).toLocaleString("en-US")} photos` : "Indexing";
-      case "paused": return `Paused · ${(s?.done ?? 0).toLocaleString("en-US")} photos indexed`;
-      default: return s ? `${s.done.toLocaleString("en-US")} photos indexed` : "";
-    }
-  })();
-
   const emptyTimeline = images === null
     ? <><span className="spin" aria-label="Loading" /></>
     : loadErr
@@ -182,23 +186,23 @@ export default function Library({ backend }: { backend: Backend }) {
         ? <><strong>Nothing indexed yet</strong><span>Photos appear here once search by meaning is set up (Ctrl+, in the popup).</span></>
         : <><strong>No photos indexed yet</strong><span>Pictures, Desktop and Downloads are indexed in the background; they show up as they are read.</span></>;
 
-  return (
-    <div className="lib">
-      <header className="lib-top">
-        <button className="lib-back" onClick={goBack} title={popupHk ? `Back to search (${popupHk})` : tooltip("library.back")} aria-label="Back to search">
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
-        </button>
-        <h1>Library</h1>
-        <nav className="lib-tabs" role="tablist">
-          <div className="seg">
-            {TABS.map((t) => (
-              <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>
-            ))}
-          </div>
-        </nav>
-        <span className="spacer" />
-        <span className={"lib-status s-" + (t1?.state ?? "idle")}><i className="dot" />{status}</span>
-      </header>
+  const sub = tab === "timeline"
+    ? (images === null ? "" : `${visible.length.toLocaleString("en-US")} photos and videos`)
+    : SUBS[tab];
+
+  const onPage = (p: Page) => {
+    if ((TABS as string[]).includes(p)) setOwnTab(p as LibTab);
+    else goBack(); // "search" and (for now) "settings" go back to the popup
+  };
+
+  const main = (
+    <div className="lib-main">
+      <div className="tbar">
+        <h1>{TITLES[tab]}</h1>
+        {sub && <span className="hsub">{sub}</span>}
+        <span className="sp" />
+        {chrome}
+      </div>
       <main className="lib-body">
         {tab === "timeline" && <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} />}
         {tab === "collections" && (
@@ -213,6 +217,14 @@ export default function Library({ backend }: { backend: Backend }) {
           {toast.undo && <> · <button className="undo" onClick={() => void doUndo()}>Undo</button></>}
         </div>
       )}
+    </div>
+  );
+
+  if (embedded) return main;
+  return (
+    <div className="lib">
+      <Sidebar page={tab} onPage={onPage} status={status} />
+      <div className="main-col">{main}</div>
     </div>
   );
 }

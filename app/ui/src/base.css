@@ -1,0 +1,140 @@
+/* ===== winseek v4 design tokens — source of truth: docs/redesign/winseek-redesign.html =====
+   Light + dark follow the OS. Accent is the fixed blue (#2f7cf6, white ink). */
+:root {
+  color-scheme: light dark;
+  --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-display: var(--font);
+  --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
+
+  --acc: #2f7cf6; --acc-ink: #ffffff;
+  --bg: #ffffff; --bg2: #f5f6f8; --bg3: #eceef2; --line: #e7e9ee;
+  --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
+  --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
+  --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
+  --paper: #ffffff; --paper-line: #cfd3db; --fold: #e3e6ec;
+  --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
+  --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
+  --radius: 8px; --radius-lg: 14px;
+  --lcol: 348px; --setside: 200px;
+  --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1b1c21; --bg2: #151619; --bg3: #282a31; --line: #2d2f37;
+    --fg: #f3f4f6; --fg2: #b3b7c1; --fg3: #7b808c;
+    --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
+    --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
+    --mark: transparent; --mark-fg: var(--acc);
+    --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
+    --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+  }
+}
+/* Legacy names still used by not-yet-ported rules; they alias the v4 tokens. Do not add new uses. */
+:root {
+  --bg-solid: var(--bg); --fg-2: var(--fg2); --fg-3: var(--fg3);
+  --accent: var(--acc); --accent-fg: var(--acc-ink);
+  --hover: color-mix(in oklab, var(--fg) 6%, transparent);
+  --select: var(--sel); --chip: var(--bg3); --kbd-bg: var(--bg3); --group: var(--bg2); --pane: var(--bg2);
+  --sel-bg: var(--sel); --sel-fg: var(--fg);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; }
+body {
+  background: transparent;
+  color: var(--fg);
+  font: 400 14px/1.4 var(--font);
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+  user-select: none;
+  cursor: default;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default; }
+svg { flex: none; }
+kbd {
+  font: 500 11px/1 var(--font);
+  min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center;
+  border-radius: 5px; background: var(--bg3); color: var(--fg2);
+}
+mark { background: var(--mark); color: var(--mark-fg); border-radius: 3px; font-weight: 600; }
+::selection { background: color-mix(in srgb, var(--acc) 32%, transparent); }
+
+.shell {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg);
+  color: var(--fg);
+  border-radius: 14px;
+  overflow: hidden;
+  animation: pop 180ms var(--ease);
+}
+/* Browser preview (dev only): stand-in desktop behind the framed window */
+html.web body {
+  display: grid; place-items: center;
+  background: #20242c radial-gradient(circle at 30% 20%, #3a4150, #181b21);
+}
+html.web #root { width: 780px; height: 560px; flex: none; }
+html.web .shell { box-shadow: var(--shadow); }
+/* ---- scrollable lists share one overlay scrollbar ---- */
+.list, .ov, .set-body { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.list::-webkit-scrollbar, .ov::-webkit-scrollbar, .set-body::-webkit-scrollbar, .lg-scroll::-webkit-scrollbar { width: 10px; }
+.list::-webkit-scrollbar-thumb, .ov::-webkit-scrollbar-thumb, .set-body::-webkit-scrollbar-thumb,
+.lg-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
+.list::-webkit-scrollbar-thumb:hover, .ov::-webkit-scrollbar-thumb:hover, .set-body::-webkit-scrollbar-thumb:hover,
+.lg-scroll::-webkit-scrollbar-thumb:hover { background: var(--fg-3); background-clip: content-box; border: 3px solid transparent; }
+/* ---- buttons ---- */
+.btn {
+  display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px;
+  border-radius: 6px; font-weight: 600; font-size: 13px; border: 1px solid transparent;
+}
+.btn.primary { background: var(--accent); color: var(--accent-fg); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--accent-fg)); }
+.btn.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, var(--accent-fg)); }
+.btn.primary:disabled { opacity: 0.75; }
+.btn.secondary { color: var(--fg); font-weight: 500; background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
+.btn.secondary:hover:not(:disabled) { background: var(--hover); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent); }
+.btn.secondary:active:not(:disabled) { background: color-mix(in srgb, var(--hover) 60%, var(--fg) 8%); }
+.btn.quiet { color: var(--fg-2); font-weight: 500; }
+.btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
+.btn:disabled { cursor: default; }
+.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* PRD B8: everything inside panels shows the accent ring when keyboard-focused. */
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+/* the searchbar input is always focused; the caret is its indicator, a ring would sit there permanently */
+.searchbar input:focus-visible { outline: 0; }
+.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+[role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.btn .shield { flex: none; }
+.spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: spin 800ms linear infinite; flex: none; }
+.fr-error { color: var(--danger); font-size: 12.5px; max-width: 520px; }
+
+/* iOS-style switch: a plain checkbox styled in place */
+.switch {
+  position: relative; flex: none; display: inline-block;
+  width: 40px; height: 24px; border-radius: 12px;
+  background: var(--chip); box-shadow: inset 0 0 0 1px var(--line);
+  transition: background 180ms var(--ease), box-shadow 180ms var(--ease);
+}
+.switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
+.switch::after {
+  content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
+  transition: transform 200ms var(--ease);
+}
+.switch:has(input:checked) { background: var(--accent); box-shadow: none; }
+.switch:has(input:checked)::after { transform: translateX(16px); }
+.switch:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:has(input:disabled) { opacity: 0.5; }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+@keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }
+@keyframes grow { from { transform: scaleY(0.3); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+.list[hidden] { display: none; }

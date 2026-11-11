@@ -138,3 +138,55 @@ export function tableLabel(index: number, tsv: string): string {
   const s = (n: number) => (n === 1 ? "" : "s");
   return rows.length ? `Table ${index + 1}: ${rows.length} row${s(rows.length)} × ${cols} column${s(cols)}` : `Table ${index + 1}`;
 }
+
+// ---- pane header: kind label, breadcrumbs, drive -----------------------------------------------------------
+
+const KIND_WORD: Record<string, string> = {
+  image: "Image", video: "Video", audio: "Audio", pdf: "PDF document", document: "Document", text: "Text file", folder: "Folder",
+};
+
+/** "PDF document", "Image", "Folder", "ZIP file" ... Falls back to the extension, then "File". */
+export function kindLabel(kind: string | null | undefined, ext: string, isDir: boolean): string {
+  if (isDir || kind === "folder") return "Folder";
+  if (kind && KIND_WORD[kind]) return KIND_WORD[kind];
+  const e = ext.replace(/^\./, "").trim();
+  return e ? `${e.toUpperCase()} file` : "File";
+}
+
+/** Extension of a file name without the dot ("" when none). */
+export function extOf(name: string): string {
+  const i = name.lastIndexOf(".");
+  return i > 0 && i < name.length - 1 ? name.slice(i + 1) : "";
+}
+
+/**
+ * Breadcrumb parts of the folder holding a hit (the folder itself for a folder hit). The home folder prefix
+ * (`C:\Users\name`) is dropped; a hit directly in the home folder yields ["Home"].
+ */
+export function crumbParts(path: string, isDir: boolean): string[] {
+  let p = path.replace(/[\\/]+$/, "");
+  if (!isDir) {
+    const i = Math.max(p.lastIndexOf("\\"), p.lastIndexOf("/"));
+    p = i >= 0 ? p.slice(0, i) : "";
+  }
+  const home = p.match(/^[A-Za-z]:[\\/]+Users[\\/]+[^\\/]+/i);
+  if (home) {
+    const rest = p.slice(home[0].length);
+    const parts = rest.split(/[\\/]+/).filter(Boolean);
+    return parts.length ? parts : ["Home"];
+  }
+  const parts = p.split(/[\\/]+/).filter(Boolean);
+  return parts.length ? parts : [path];
+}
+
+/** "C:" for "C:\a\b", "" when the path has no drive letter. */
+export function driveOf(path: string): string {
+  const m = path.match(/^([A-Za-z]:)/);
+  return m ? m[1].toUpperCase() : "";
+}
+
+/** Scale at which the image covers the whole stage (like object-fit: cover), capped so tiny images are not blown up. */
+export function coverScale(cw: number, ch: number, iw: number, ih: number, max = 3): number {
+  if (iw <= 0 || ih <= 0 || cw <= 0 || ch <= 0) return 1;
+  return Math.min(max, Math.max(cw / iw, ch / ih));
+}

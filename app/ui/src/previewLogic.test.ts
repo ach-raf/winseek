@@ -134,3 +134,22 @@ test("pan step is a fraction of the stage and clamps like a drag", async () => {
   const fitted = clampView({ s: fitScale(cw, ch, iw, ih), tx: 500, ty: 500 }, cw, ch, iw, ih);
   assert.deepEqual([fitted.tx, fitted.ty], [0, 0]);
 });
+
+test("kindLabel, crumbParts, driveOf, coverScale", async () => {
+  const m = await import("./previewLogic.ts");
+  assert.equal(m.kindLabel("pdf", "pdf", false), "PDF document");
+  assert.equal(m.kindLabel("other", "zip", false), "ZIP file");
+  assert.equal(m.kindLabel(null, "", true), "Folder");
+  assert.equal(m.kindLabel("other", "", false), "File");
+  assert.equal(m.extOf("a.b.txt"), "txt");
+  assert.equal(m.extOf(".gitignore"), "");
+  const bs = String.fromCharCode(92);
+  const P = (...a: string[]) => a.join(bs);
+  assert.deepEqual(m.crumbParts(P("C:", "Users", "jo", "Documents", "Taxes", "a.pdf"), false), ["Documents", "Taxes"]);
+  assert.deepEqual(m.crumbParts(P("C:", "Users", "jo", "a.pdf"), false), ["Home"]);
+  assert.deepEqual(m.crumbParts(P("D:", "Work", "Proj"), true), ["D:", "Work", "Proj"]);
+  assert.equal(m.driveOf(P("d:", "x")), "D:");
+  assert.equal(m.driveOf(P("", "", "srv", "share")), "");
+  assert.equal(m.coverScale(400, 300, 800, 600), 0.5);
+  assert.equal(m.coverScale(400, 300, 40, 30), 3);
+});

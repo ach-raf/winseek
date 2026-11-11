@@ -4,40 +4,14 @@ import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { baseName } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
-import { pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
+import { freedBytes, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
+import { IChevL, ICheck } from "./icons";
 
-type Mode = "exact" | "similar" | "large";
+type View = "home" | "exact" | "similar" | "large";
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const NEAR_THRESHOLD = 0.95;
 const BIG_N = 200;
-
-export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
-  backend: Backend;
-  hidden: ReadonlySet<string>;
-  actions: LibActions;
-  epoch: number;
-  /** Bumps when new embeddings arrived. */
-  gen: number;
-  onError: (e: unknown) => void;
-}) {
-  const [mode, setMode] = useState<Mode>("exact");
-  return (
-    <div className="cl">
-      <div className="cl-modes" role="tablist" aria-label="Clean up">
-        <div className="seg">
-          {([["exact", "Exact duplicates"], ["similar", "Similar photos"], ["large", "Large files"]] as [Mode, string][]).map(([id, label]) => (
-            <button key={id} role="tab" aria-selected={mode === id} className={mode === id ? "on" : ""} onClick={() => setMode(id)}>{label}</button>
-          ))}
-        </div>
-      </div>
-      <div className="cl-body">
-        {mode === "exact" && <Exact backend={backend} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={onError} />}
-        {mode === "similar" && <Similar backend={backend} hidden={hidden} actions={actions} epoch={epoch} onError={onError} />}
-        {mode === "large" && <Large backend={backend} hidden={hidden} actions={actions} epoch={epoch} onError={onError} />}
-      </div>
-    </div>
-  );
-}
+const HOME_ROWS = 6;
 
 /** Groups minus what was recycled this session; a group with fewer than two files left disappears. */
 function visibleGroups(groups: DupGroup[], hidden: ReadonlySet<string>): DupGroup[] {
@@ -51,31 +25,289 @@ function visibleGroups(groups: DupGroup[], hidden: ReadonlySet<string>): DupGrou
   return out;
 }
 
-// ---- exact duplicates ---------------------------------------------------------------------------------------
+const dirName = (p: string) => {
+  const parts = p.split(/[\\/]/).filter(Boolean);
+  return parts.length >= 2 ? parts[parts.length - 2] : parts[0] ?? "";
+};
 
-function Exact({ backend, hidden, actions, epoch, gen, onError }: {
-  backend: Backend; hidden: ReadonlySet<string>; actions: LibActions; epoch: number; gen: number; onError: (e: unknown) => void;
+export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
+  backend: Backend;
+  hidden: ReadonlySet<string>;
+  actions: LibActions;
+  epoch: number;
+  /** Bumps when new embeddings arrived. */
+  gen: number;
+  onError: (e: unknown) => void;
 }) {
+  const [view, setView] = useState<View>("home");
+  const [openGroup, setOpenGroup] = useState<string | null>(null);
   const [groups, setGroups] = useState<DupGroup[] | null>(null);
+  const [files, setFiles] = useState<Hit[] | null>(null);
+
   useEffect(() => {
     let live = true;
     backend.libraryDupGroups().then((g) => { if (live) setGroups(g); }).catch((e) => { if (live) { setGroups([]); onError(e); } });
     return () => { live = false; };
   }, [backend, epoch, gen, onError]);
+  useEffect(() => {
+    let live = true;
+    backend.libraryBigFiles(BIG_N).then((r) => { if (live) setFiles(r); }).catch((e) => { if (live) { setFiles([]); onError(e); } });
+    return () => { live = false; };
+  }, [backend, epoch, onError]);
+
   const vis = useMemo(() => (groups ? visibleGroups(groups, hidden) : null), [groups, hidden]);
+  const rows = useMemo(() => (files ? files.filter((f) => !hidden.has(f.path)) : null), [files, hidden]);
+
+  // Esc inside a drill-in goes back to the overview (the window-level handler in Library yields to a handled key).
+  useEffect(() => {
+    if (view === "home") return;
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.defaultPrevented || (t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) return;
+      if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) { e.preventDefault(); setView("home"); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [view]);
+
+  const home = () => setView("home");
+  const bar = (title: string, summary: string, extra?: React.ReactNode) => (
+    <div className="cl-sub">
+      <button className="btn sm" onClick={home} title="Back to Clean up (Esc)"><IChevL size={14} />Clean up</button>
+      <b>{title}</b>
+      <span className="cl-sumtxt">{summary}</span>
+      <span className="sp" />
+      {extra}
+    </div>
+  );
+
+  if (view === "exact") {
+    return (
+      <div className="cl">
+        <GroupReview
+          backend={backend} groups={vis} actions={actions} kind="exact" initialId={openGroup}
+          header={(g) => bar("Duplicates", `${g.length.toLocaleString("en-US")} group${g.length === 1 ? "" : "s"} of identical files · ${formatSize(totalReclaimable(g))} can be freed`)}
+          empty={<><strong>No exact duplicates</strong><span>Files with identical content show up here, once they are indexed.</span></>}
+          emptyBar={bar("Duplicates", "")}
+        />
+      </div>
+    );
+  }
+  if (view === "similar") {
+    return <div className="cl"><Similar backend={backend} hidden={hidden} actions={actions} epoch={epoch} onError={onError} bar={bar} /></div>;
+  }
+  if (view === "large") {
+    return <div className="cl"><Large backend={backend} rows={rows} actions={actions} bar={bar} /></div>;
+  }
   return (
-    <GroupReview
-      backend={backend} groups={vis} actions={actions} kind="exact"
-      summary={(g) => `${g.length.toLocaleString("en-US")} group${g.length === 1 ? "" : "s"} of identical files · ${formatSize(totalReclaimable(g))} can be freed`}
-      empty={<><strong>No exact duplicates</strong><span>Files with identical content show up here, once they are indexed.</span></>}
+    <Home
+      backend={backend} groups={vis} rows={rows} actions={actions}
+      onReview={(id) => { setOpenGroup(id); setView("exact"); }}
+      onSimilar={() => setView("similar")}
+      onLarge={() => setView("large")}
     />
+  );
+}
+
+// ---- overview: summary, two cards, floating selection bar ---------------------------------------------------
+
+interface PickRow {
+  key: string;
+  name: string;
+  sub: string;
+  right: string;
+  icon: React.ReactNode;
+  path: string;
+}
+
+function Home({ backend, groups, rows, actions, onReview, onSimilar, onLarge }: {
+  backend: Backend;
+  groups: DupGroup[] | null;
+  rows: Hit[] | null;
+  actions: LibActions;
+  onReview: (id: string) => void;
+  onSimilar: () => void;
+  onLarge: () => void;
+}) {
+  const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+
+  const dupInfo = useMemo(() => {
+    const m = new Map<string, { keep: number; doomed: string[]; freed: number }>();
+    for (const g of groups ?? []) {
+      const keep = pickKeeper(g.members.map((x) => ({ ...x, width: dimCache.get(x.path)?.[0] ?? null, height: dimCache.get(x.path)?.[1] ?? null })));
+      m.set(g.id, {
+        keep,
+        doomed: g.members.filter((_, i) => i !== keep).map((x) => x.path),
+        freed: freedBytes(g.members, keep),
+      });
+    }
+    return m;
+  }, [groups]);
+
+  const dupRows: PickRow[] = useMemo(() => (groups ?? []).slice(0, HOME_ROWS).map((g) => {
+    const info = dupInfo.get(g.id)!;
+    const keeper = g.members[info.keep];
+    const others = Array.from(new Set(g.members.filter((_, i) => i !== info.keep).map((x) => dirName(x.path)))).slice(0, 2);
+    return {
+      key: "d:" + g.id,
+      name: baseName(keeper.path),
+      sub: others.length ? `Also in ${others.join(" and ")}` : "Identical copies",
+      right: `${g.members.length} copies · ${formatSize(Math.max(...g.members.map((x) => x.size)))}`,
+      icon: <GrThumb backend={backend} m={keeper} size={96} cls="ic" />,
+      path: keeper.path,
+    };
+  }), [groups, dupInfo, backend]);
+
+  const bigRows: PickRow[] = useMemo(() => (rows ?? []).slice(0, HOME_ROWS).map((f) => ({
+    key: "b:" + f.path,
+    name: f.name,
+    sub: `${f.mtime ? `Modified ${formatDate(f.mtime)} · ` : ""}${dirName(f.path)}`,
+    right: formatSize(f.size),
+    icon: <span className="ic"><FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} /></span>,
+    path: f.path,
+  })), [rows, backend]);
+
+  // What a pick means: a duplicates row = everything but the kept copy; a large-file row = that file.
+  const live = useMemo(() => {
+    const paths: string[] = [];
+    let freed = 0, n = 0;
+    for (const g of groups ?? []) {
+      if (!picked.has("d:" + g.id)) continue;
+      const i = dupInfo.get(g.id)!;
+      paths.push(...i.doomed);
+      freed += i.freed;
+      n++;
+    }
+    for (const f of rows ?? []) {
+      if (!picked.has("b:" + f.path)) continue;
+      paths.push(f.path);
+      freed += f.size ?? 0;
+      n++;
+    }
+    return { paths, freed, n };
+  }, [picked, groups, rows, dupInfo]);
+
+  const toggle = useCallback((key: string) => setPicked((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; }), []);
+
+  const go = async () => {
+    if (live.paths.length === 0) return;
+    setBusy(true);
+    try { await actions.recycle(live.paths); } finally { setBusy(false); }
+  };
+
+  const reclaim = groups ? totalReclaimable(groups) : null;
+  const bigTotal = rows ? rows.reduce((a, f) => a + (f.size ?? 0), 0) : null;
+  const num = (n: number | null) => (n === null ? "…" : formatSize(n));
+
+  return (
+    <div className="cl">
+      <div className="page-body">
+        <div className="sum">
+          <div className="card hl"><small>You can free up</small><b>{reclaim === null || bigTotal === null ? "…" : formatSize(reclaim + bigTotal)}</b></div>
+          <div className="card"><small>Duplicate files</small><b>{num(reclaim)}</b></div>
+          <div className="card"><small>Large files you don't open</small><b>{num(bigTotal)}</b></div>
+        </div>
+        <div className="two">
+          <section className="card">
+            <h4>Duplicates<span>Keeps the original</span></h4>
+            {groups === null ? <div className="cl-none"><span className="spin" aria-label="Loading" /></div>
+              : dupRows.length === 0 ? <div className="cl-none">No exact duplicates. Identical files show up here once they are indexed.</div>
+              : (
+                <PickList
+                  label="Duplicate groups" rows={dupRows} picked={picked} autoFocus
+                  onToggle={toggle}
+                  onOpen={(r) => onReview(r.key.slice(2))}
+                  onDelete={(r) => { const i = dupInfo.get(r.key.slice(2)); if (i) void actions.recycle(i.doomed); }}
+                />
+              )}
+            <div className="cl-foot">
+              {groups !== null && groups.length > 0 && <button className="btn sm" onClick={() => onReview(groups[0].id)}>Review {groups.length.toLocaleString("en-US")} group{groups.length === 1 ? "" : "s"}</button>}
+              <button className="btn sm" onClick={onSimilar}>Find similar photos</button>
+            </div>
+          </section>
+          <section className="card">
+            <h4>Large and untouched<span>Biggest first</span></h4>
+            {rows === null ? <div className="cl-none"><span className="spin" aria-label="Loading" /></div>
+              : bigRows.length === 0 ? <div className="cl-none">No large files to show. The list comes from the name service; it may not be running.</div>
+              : (
+                <PickList
+                  label="Large files" rows={bigRows} picked={picked}
+                  onToggle={toggle}
+                  onOpen={(r) => actions.open(r.path)}
+                  onDelete={(r) => void actions.recycle([r.path])}
+                  onMenu={(r, x, y) => actions.menu(r.path, x, y)}
+                />
+              )}
+            <div className="cl-foot">
+              {rows !== null && rows.length > HOME_ROWS && <button className="btn sm" onClick={onLarge}>See all {rows.length.toLocaleString("en-US")}</button>}
+              {rows !== null && rows.length > 0 && rows.length <= HOME_ROWS && <button className="btn sm" onClick={onLarge}>Open list</button>}
+            </div>
+          </section>
+        </div>
+      </div>
+      {live.n > 0 && (
+        <div className="selbar" role="region" aria-label="Selection">
+          <span>{live.n} selected · frees <b>{formatSize(live.freed)}</b></span>
+          <button className="btn" disabled={busy} onClick={() => void go()}>Move to Recycle Bin</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A keyboard list of check rows: arrows move, Space picks, Enter opens, Delete recycles the focused row. */
+function PickList({ rows, picked, onToggle, onOpen, onDelete, onMenu, label, autoFocus }: {
+  rows: PickRow[];
+  picked: ReadonlySet<string>;
+  onToggle: (key: string) => void;
+  onOpen: (r: PickRow) => void;
+  onDelete: (r: PickRow) => void;
+  onMenu?: (r: PickRow, x: number, y: number) => void;
+  label: string;
+  autoFocus?: boolean;
+}) {
+  const [act, setAct] = useState(0);
+  const i = Math.min(act, rows.length - 1);
+  const onKey = (e: React.KeyboardEvent) => {
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
+    const r = rows[i];
+    if (e.key === "ArrowDown") { e.preventDefault(); setAct(Math.min(rows.length - 1, i + 1)); }
+    else if (e.key === "ArrowUp") { e.preventDefault(); setAct(Math.max(0, i - 1)); }
+    else if (e.key === "Home") { e.preventDefault(); setAct(0); }
+    else if (e.key === "End") { e.preventDefault(); setAct(rows.length - 1); }
+    else if (e.key === " " && r) { e.preventDefault(); onToggle(r.key); }
+    else if (e.key === "Enter" && r) { e.preventDefault(); onOpen(r); }
+    else if (e.key === "Delete" && r) { e.preventDefault(); onDelete(r); }
+  };
+  return (
+    <div className="pl" role="listbox" aria-multiselectable="true" aria-label={label} tabIndex={0} data-autofocus={autoFocus ? "" : undefined} onKeyDown={onKey}>
+      {rows.map((r, k) => {
+        const on = picked.has(r.key);
+        return (
+          <div
+            key={r.key} role="option" aria-selected={on}
+            className={"crow" + (k === i ? " cur" : "")}
+            onClick={() => { setAct(k); onToggle(r.key); }}
+            onDoubleClick={() => onOpen(r)}
+            onContextMenu={onMenu ? (e) => { e.preventDefault(); setAct(k); onMenu(r, e.clientX, e.clientY); } : undefined}
+          >
+            <span className={"ck" + (on ? " on" : "")}><ICheck /></span>
+            {r.icon}
+            <div className="cn"><div className="n" title={r.path}>{r.name}</div><small>{r.sub}</small></div>
+            <small>{r.right}</small>
+          </div>
+        );
+      })}
+    </div>
   );
 }
 
 // ---- near-duplicates (background scan) ----------------------------------------------------------------------
 
-function Similar({ backend, hidden, actions, epoch, onError }: {
+function Similar({ backend, hidden, actions, epoch, onError, bar }: {
   backend: Backend; hidden: ReadonlySet<string>; actions: LibActions; epoch: number; onError: (e: unknown) => void;
+  bar: (title: string, summary: string, extra?: React.ReactNode) => React.ReactNode;
 }) {
   const [near, setNear] = useState<NearState | null>(null);
   const started = useRef(false);
@@ -111,23 +343,30 @@ function Similar({ backend, hidden, actions, epoch, onError }: {
 
   if (!near || near.state === "running") {
     return (
-      <div className="lg-empty cl-progress" role="status">
-        <strong>Looking for similar photos…</strong>
-        <div className="cl-bar"><i style={{ width: `${pct}%` }} /></div>
-        <span>{near && near.total > 0 ? `${near.done.toLocaleString("en-US")} of ${near.total.toLocaleString("en-US")} photos compared` : "Starting…"} · runs in the background</span>
-      </div>
+      <>
+        {bar("Similar photos", "")}
+        <div className="lg-empty cl-progress" role="status">
+          <strong>Looking for similar photos…</strong>
+          <div className="cl-bar"><i style={{ width: `${pct}%` }} /></div>
+          <span>{near && near.total > 0 ? `${near.done.toLocaleString("en-US")} of ${near.total.toLocaleString("en-US")} photos compared` : "Starting…"} · runs in the background</span>
+        </div>
+      </>
     );
   }
   if (near.state === "error") {
     return (
-      <div className="lg-empty"><strong>The scan stopped</strong><span>{near.error}</span><button className="btn primary" onClick={start}>Try again</button></div>
+      <>
+        {bar("Similar photos", "")}
+        <div className="lg-empty"><strong>The scan stopped</strong><span>{near.error}</span><button className="btn pri" onClick={start}>Try again</button></div>
+      </>
     );
   }
+  const rescan = <button className="btn sm" onClick={start} title="Scan again with the latest embeddings">Rescan</button>;
   return (
     <GroupReview
-      backend={backend} groups={vis} actions={actions} kind="near"
-      summary={(g) => `${g.length.toLocaleString("en-US")} group${g.length === 1 ? "" : "s"} of near-identical photos · cosine ≥ ${NEAR_THRESHOLD}`}
-      extra={<button className="btn quiet" onClick={start} title="Scan again with the latest embeddings">Rescan</button>}
+      backend={backend} groups={vis} actions={actions} kind="near" initialId={null}
+      header={(g) => bar("Similar photos", `${g.length.toLocaleString("en-US")} group${g.length === 1 ? "" : "s"} of near-identical photos · cosine ≥ ${NEAR_THRESHOLD}`, rescan)}
+      emptyBar={bar("Similar photos", "", rescan)}
       empty={<><strong>No similar photos found</strong><span>Bursts and re-saved copies show up here once photos are indexed.</span></>}
     />
   );
@@ -137,16 +376,17 @@ function Similar({ backend, hidden, actions, epoch, onError }: {
 
 const GROUP_H = 76;
 
-function GroupReview({ backend, groups, actions, kind, summary, empty, extra }: {
+function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, initialId }: {
   backend: Backend;
   groups: DupGroup[] | null;
   actions: LibActions;
   kind: "exact" | "near";
-  summary: (g: DupGroup[]) => string;
+  header: (g: DupGroup[]) => React.ReactNode;
+  emptyBar: React.ReactNode;
   empty: React.ReactNode;
-  extra?: React.ReactNode;
+  initialId: string | null;
 }) {
-  const [selId, setSelId] = useState<string | null>(null);
+  const [selId, setSelId] = useState<string | null>(initialId);
   const [top, setTop] = useState(0);
   const [h, setH] = useState(500);
   const list = useRef<HTMLDivElement>(null);
@@ -158,10 +398,21 @@ function GroupReview({ backend, groups, actions, kind, summary, empty, extra }: 
     ro.observe(el);
     setH(el.clientHeight);
     return () => ro.disconnect();
-  }, [groups === null]);
+  }, [groups === null || groups.length === 0]);
 
-  if (groups === null) return <div className="lg-empty"><span className="spin" aria-label="Loading" /></div>;
-  if (groups.length === 0) return <div className="lg-empty">{empty}{extra}</div>;
+  // Arriving with a group picked on the overview: scroll it into view once.
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (jumped.current || !groups || !initialId) return;
+    const n = groups.findIndex((g) => g.id === initialId);
+    if (n < 0) return;
+    jumped.current = true;
+    const el = list.current;
+    if (el) el.scrollTop = Math.max(0, n * GROUP_H - GROUP_H);
+  }, [groups, initialId]);
+
+  if (groups === null) return <>{emptyBar}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
+  if (groups.length === 0) return <>{emptyBar}<div className="lg-empty">{empty}</div></>;
 
   const idx = Math.max(0, groups.findIndex((g) => g.id === selId));
   const sel = groups[idx];
@@ -180,31 +431,33 @@ function GroupReview({ backend, groups, actions, kind, summary, empty, extra }: 
   };
 
   return (
-    <div className="gr">
-      <aside className="gr-side">
-        <div className="gr-sum"><span>{summary(groups)}</span>{extra}</div>
-        <div className="gr-list" ref={list} tabIndex={0} onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label="Groups">
-          <div style={{ height: groups.length * GROUP_H, position: "relative" }}>
-            {groups.slice(from, to).map((g, k) => {
-              const i = from + k;
-              return (
-                <button key={g.id} role="option" aria-selected={i === idx} className={"gr-item" + (i === idx ? " on" : "")} style={{ top: i * GROUP_H, height: GROUP_H }} tabIndex={-1} onClick={() => setSelId(g.id)}>
-                  <span className="gr-thumbs">
-                    {g.members.slice(0, 4).map((m) => <GrThumb key={m.path} backend={backend} m={m} size={96} cls="gr-t" />)}
-                    {g.members.length > 4 && <em>+{g.members.length - 4}</em>}
-                  </span>
-                  <span className="gr-meta">
-                    <b>{g.members.length} {kind === "exact" ? "copies" : "similar photos"}</b>
-                    <span>{formatSize(g.reclaimable)} to free · {baseName(g.members[0].path)}</span>
-                  </span>
-                </button>
-              );
-            })}
+    <>
+      {header(groups)}
+      <div className="gr">
+        <aside className="gr-side">
+          <div className="gr-list" ref={list} tabIndex={0} data-autofocus onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label="Groups">
+            <div style={{ height: groups.length * GROUP_H, position: "relative" }}>
+              {groups.slice(from, to).map((g, k) => {
+                const i = from + k;
+                return (
+                  <button key={g.id} role="option" aria-selected={i === idx} className={"gr-item" + (i === idx ? " on" : "")} style={{ top: i * GROUP_H, height: GROUP_H }} tabIndex={-1} onClick={() => setSelId(g.id)}>
+                    <span className="gr-thumbs">
+                      {g.members.slice(0, 4).map((m) => <GrThumb key={m.path} backend={backend} m={m} size={96} cls="gr-t" />)}
+                      {g.members.length > 4 && <em>+{g.members.length - 4}</em>}
+                    </span>
+                    <span className="gr-meta">
+                      <b>{g.members.length} {kind === "exact" ? "copies" : "similar photos"}</b>
+                      <span>{formatSize(g.reclaimable)} to free · {baseName(g.members[0].path)}</span>
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
           </div>
-        </div>
-      </aside>
-      <GroupDetail key={sel.id} backend={backend} group={sel} kind={kind} actions={actions} />
-    </div>
+        </aside>
+        <GroupDetail key={sel.id} backend={backend} group={sel} kind={kind} actions={actions} />
+      </div>
+    </>
   );
 }
 
@@ -305,8 +558,8 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
       </div>
       <footer className="gd-bar">
         <span>Suggested keep: largest resolution, then newest, then shortest path.</span>
-        <span className="spacer" />
-        <button className="btn primary" disabled={busy || doomed.length === 0} onClick={() => void go()}>
+        <span className="sp" />
+        <button className="btn pri" disabled={busy || doomed.length === 0} onClick={() => void go()}>
           Move {doomed.length} to Recycle Bin{doomed.length ? ` · frees ${formatSize(freed)}` : ""}
         </button>
       </footer>
@@ -337,34 +590,27 @@ function Pane({ backend, c, role, badge, other, actions }: {
           <span className={newer ? "better" : ""}>{formatDate(c.mtime)}</span>
         </div>
         <div className="gd-btns">
-          <button className="btn quiet" onClick={() => actions.open(c.path)}>Open</button>
-          <button className="btn quiet" onClick={() => actions.reveal(c.path)}>Reveal</button>
+          <button className="btn sm" onClick={() => actions.open(c.path)}>Open</button>
+          <button className="btn sm" onClick={() => actions.reveal(c.path)}>Reveal</button>
         </div>
       </div>
     </figure>
   );
 }
 
-// ---- large files ---------------------------------------------------------------------------------------------
+// ---- large files (full list) ----------------------------------------------------------------------------------
 
-const BIG_H = 54;
+const BIG_H = 58;
 
-function Large({ backend, hidden, actions, epoch, onError }: {
-  backend: Backend; hidden: ReadonlySet<string>; actions: LibActions; epoch: number; onError: (e: unknown) => void;
+function Large({ backend, rows, actions, bar }: {
+  backend: Backend; rows: Hit[] | null; actions: LibActions;
+  bar: (title: string, summary: string, extra?: React.ReactNode) => React.ReactNode;
 }) {
-  const [files, setFiles] = useState<Hit[] | null>(null);
   const [sel, setSel] = useState(0);
   const [top, setTop] = useState(0);
   const [h, setH] = useState(500);
   const box = useRef<HTMLDivElement>(null);
 
-  useEffect(() => {
-    let live = true;
-    backend.libraryBigFiles(BIG_N).then((r) => { if (live) setFiles(r); }).catch((e) => { if (live) { setFiles([]); onError(e); } });
-    return () => { live = false; };
-  }, [backend, epoch, onError]);
-
-  const rows = useMemo(() => (files ?? []).filter((f) => !hidden.has(f.path)), [files, hidden]);
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -372,23 +618,24 @@ function Large({ backend, hidden, actions, epoch, onError }: {
     ro.observe(el);
     setH(el.clientHeight);
     return () => ro.disconnect();
-  }, [files === null]);
-  useEffect(() => { setSel((s) => Math.max(0, Math.min(s, rows.length - 1))); }, [rows.length]);
+  }, [rows === null || rows.length === 0]);
+  const n = rows?.length ?? 0;
+  useEffect(() => { setSel((s) => Math.max(0, Math.min(s, n - 1))); }, [n]);
 
-  if (files === null) return <div className="lg-empty"><span className="spin" aria-label="Loading" /></div>;
+  if (rows === null) return <>{bar("Large and untouched", "")}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
   if (rows.length === 0) {
-    return <div className="lg-empty"><strong>No large files to show</strong><span>The list comes from the name service; it may not be running.</span></div>;
+    return <>{bar("Large and untouched", "")}<div className="lg-empty"><strong>No large files to show</strong><span>The list comes from the name service; it may not be running.</span></div></>;
   }
   const total = rows.reduce((a, f) => a + (f.size ?? 0), 0);
   const [from, to] = uniformRange(rows.length, BIG_H, top, h);
   const cur = rows[sel];
 
-  const select = (n: number) => {
-    setSel(n);
+  const select = (i: number) => {
+    setSel(i);
     const el = box.current;
     if (!el) return;
-    if (n * BIG_H < el.scrollTop) el.scrollTop = n * BIG_H;
-    else if ((n + 1) * BIG_H > el.scrollTop + el.clientHeight) el.scrollTop = (n + 1) * BIG_H - el.clientHeight;
+    if (i * BIG_H < el.scrollTop) el.scrollTop = i * BIG_H;
+    else if ((i + 1) * BIG_H > el.scrollTop + el.clientHeight) el.scrollTop = (i + 1) * BIG_H - el.clientHeight;
   };
   const onKey = (e: React.KeyboardEvent) => {
     if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); select(Math.max(0, Math.min(rows.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)))); }
@@ -397,28 +644,30 @@ function Large({ backend, hidden, actions, epoch, onError }: {
   };
 
   return (
-    <div className="bg">
-      <div className="gr-sum"><span>The {rows.length} largest files in your profile · {formatSize(total)} together</span></div>
-      <div className="bg-list" ref={box} tabIndex={0} onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label="Large files">
-        <div style={{ height: rows.length * BIG_H, position: "relative" }}>
-          {rows.slice(from, to).map((f, k) => {
-            const i = from + k;
-            const { head, tail } = splitDir(f.path);
-            return (
-              <div key={f.path} role="option" aria-selected={i === sel} className={"bg-row" + (i === sel ? " on" : "")} style={{ top: i * BIG_H, height: BIG_H }}
-                   onClick={() => setSel(i)} onDoubleClick={() => actions.open(f.path)}
-                   onContextMenu={(e) => { e.preventDefault(); setSel(i); actions.menu(f.path, e.clientX, e.clientY); }}>
-                <FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} />
-                <span className="bg-name"><b title={f.name}>{f.name}</b><span className="bg-path" title={f.path}>{head}{tail}</span></span>
-                <span className="bg-size">{formatSize(f.size)}</span>
-                <span className="bg-date">{formatDate(f.mtime)}</span>
-                <button className="btn quiet bg-b" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.reveal(f.path); }}>Reveal</button>
-                <button className="btn quiet bg-b" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.recycle([f.path]); }}>Recycle</button>
-              </div>
-            );
-          })}
+    <>
+      {bar("Large and untouched", `The ${rows.length} largest files in your profile · ${formatSize(total)} together`)}
+      <div className="bg">
+        <div className="bg-list" ref={box} tabIndex={0} data-autofocus onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label="Large files">
+          <div style={{ height: rows.length * BIG_H, position: "relative" }}>
+            {rows.slice(from, to).map((f, k) => {
+              const i = from + k;
+              const { head, tail } = splitDir(f.path);
+              return (
+                <div key={f.path} role="option" aria-selected={i === sel} className={"bg-row" + (i === sel ? " on" : "")} style={{ top: i * BIG_H, height: BIG_H }}
+                     onClick={() => setSel(i)} onDoubleClick={() => actions.open(f.path)}
+                     onContextMenu={(e) => { e.preventDefault(); setSel(i); actions.menu(f.path, e.clientX, e.clientY); }}>
+                  <span className="ic"><FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} /></span>
+                  <span className="bg-name"><b title={f.name}>{f.name}</b><span className="bg-path" title={f.path}>{head}{tail}</span></span>
+                  <span className="bg-size">{formatSize(f.size)}</span>
+                  <span className="bg-date">{formatDate(f.mtime)}</span>
+                  <button className="btn sm" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.reveal(f.path); }}>Reveal</button>
+                  <button className="btn sm" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.recycle([f.path]); }}>Recycle</button>
+                </div>
+              );
+            })}
+          </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }

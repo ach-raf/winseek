@@ -3,6 +3,7 @@ import type { Models } from "./hooks";
 import type { ModelsPlan, PausedReason, Tier1Status } from "./types";
 import { formatSize } from "./format";
 import { trapKey } from "./trap";
+import { Grp, Row, XIcon } from "./settingsUi";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -52,34 +53,31 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
     onRemove(p);
   };
   return (
-    <div className="folders">
-      <div className="fl-title">Folders to index{known.length > 0 ? ` · ${known.length}` : ""}</div>
-      <div className="set-group">
-        <ul className="fl-list">
+    <Grp title={`Folders to index${known.length > 0 ? ` · ${known.length}` : ""}`}>
+      {known.length > 0 && (
+        <div className="glist">
           {known.map((p) => (
-            <li key={p}>
-              <label title={p}>
+            <div className="grow frow" key={p}>
+              <label className="fpath" title={p}>
                 <input type="checkbox" checked={on(p)} onChange={() => toggle(p)} />
                 <span>{p}</span>
               </label>
               <button className="fl-rm" onClick={() => remove(p)} aria-label={`Remove ${p}`}
                       title="Remove: stops indexing this folder and forgets the files already indexed">
-                <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden>
-                  <path d="M18 6 6 18M6 6l12 12" />
-                </svg>
+                <XIcon />
               </button>
-            </li>
+            </div>
           ))}
-          {known.length === 0 && <li className="none">No folders yet</li>}
-        </ul>
-        <div className="fl-add">
-          <input value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
-                 spellCheck={false} autoComplete="off"
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
-          <button className="btn quiet" onClick={add} disabled={!text.trim()}>Add</button>
         </div>
+      )}
+      {known.length === 0 && <div className="grow none">No folders yet</div>}
+      <div className="grow addrow">
+        <input className="gin" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
+               spellCheck={false} autoComplete="off"
+               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+        <button className="gbtn" onClick={add} disabled={!text.trim()}>Add</button>
       </div>
-    </div>
+    </Grp>
   );
 }
 
@@ -91,21 +89,27 @@ function Indexing({ t1, onPause }: { t1: Tier1Status | null; onPause: (p: boolea
   const frac = s && total > 0 ? s.done / total : null;
   const starting = t1.state === "models_missing";
   return (
-    <div className="idx">
-      <div className="idx-line">
-        <b>{starting ? "Starting…" : t1.state === "idle" && total > 0 && s!.pending === 0 ? "All caught up" : t1.state === "paused" ? "Indexing paused" : "Indexing in the background"}</b>
-        <span className="nums">{s ? `${fmt(s.done)} of ${fmt(total)} files` : ""}</span>
+    <Grp title="Indexing">
+      <div className="grow stack">
+        <div className="idx-line">
+          <b>{starting ? "Starting…" : t1.state === "idle" && total > 0 && s!.pending === 0 ? "All caught up" : t1.state === "paused" ? "Indexing paused" : "Indexing in the background"}</b>
+          <span className="nums">{s ? `${fmt(s.done)} of ${fmt(total)} files` : ""}</span>
+        </div>
+        <Bar value={starting ? null : (frac ?? 1)} label="Indexing progress" />
+        {t1.paused_reason && <div className="idx-note" role="status">{pausedText(t1.paused_reason)}</div>}
+        {s && s.failed > 0 && <div className="idx-note">{fmt(s.failed)} file{s.failed === 1 ? "" : "s"} could not be read</div>}
+        {t1.error && <div className="fr-error" role="alert">{t1.error}</div>}
       </div>
-      <Bar value={starting ? null : (frac ?? 1)} label="Indexing progress" />
-      {t1.paused_reason && <div className="idx-note" role="status">{pausedText(t1.paused_reason)}</div>}
-      {s && s.failed > 0 && <div className="idx-note">{fmt(s.failed)} file{s.failed === 1 ? "" : "s"} could not be read</div>}
-      {t1.error && <div className="fr-error" role="alert">{t1.error}</div>}
       {(t1.state === "indexing" || t1.state === "paused") && (t1.paused_reason == null || t1.paused_reason === "user") && (
-        <div><button className="btn quiet" onClick={() => onPause(t1.paused_reason == null)}>{t1.paused_reason == null ? "Pause" : "Resume"}</button></div>
+        <Row title={t1.paused_reason == null ? "Pause indexing" : "Resume indexing"}>
+          <button className="gbtn" onClick={() => onPause(t1.paused_reason == null)}>{t1.paused_reason == null ? "Pause" : "Resume"}</button>
+        </Row>
       )}
-    </div>
+    </Grp>
   );
 }
+
+const PARSER_DESC = "Reads scanned pages, receipts and screenshots into text and tables you can search and copy";
 
 export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose, primaryRef }: {
   t1: Tier1Status | null; models: Models;
@@ -113,7 +117,7 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
   primaryRef: React.MutableRefObject<() => void>;
 }) {
   const { plan, running, progress, interrupted } = models;
-  // The optional document parser never blocks the default setup: it is a checkbox (and, once the rest is
+  // The optional document parser never blocks the default setup: it is a switch (and, once the rest is
   // installed, a separate offer).
   const [includeParser, setIncludeParser] = useState(false);
   const optional = plan ? plan.items.filter((i) => i.optional) : [];
@@ -130,7 +134,7 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
     <section ref={root} className="firstrun setup" aria-label="Search by meaning setup"
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else trapKey(e); }}>
       <h2>Want search by meaning?</h2>
-      <p>Find photos by what is in them, like &ldquo;sunset at the beach&rdquo;. Everything runs on this PC; nothing leaves it. Names-only search stays fully available.</p>
+      <p>Search &ldquo;sunset at the beach&rdquo; and get beach photos, whatever they&rsquo;re named. Everything stays on this PC. Name search keeps working either way.</p>
 
       <div className={phase === "choose" || phase === "interrupted" || phase === "loading" ? "setup-cols" : undefined}>
       {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} />}
@@ -138,49 +142,40 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
       {phase === "loading" && <div className="vols"><Bar value={null} label="Detecting your GPU" /><span className="muted">Detecting your GPU…</span></div>}
 
       {plan && (phase === "choose" || phase === "interrupted" || phase === "downloading") && (
-        <div className="dl-plan">
-          <div className="gpu">{backendLine(plan)}</div>
-          <ul className="items set-group">
-            {plan.items.filter((i) => !i.optional).map((i) => (
-              <li key={i.name} className={i.present ? "have" : ""}>
-                <span>{i.name}</span>
-                <span className="sz">{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
-              </li>
-            ))}
-          </ul>
+        <Grp title={backendLine(plan)} note={phase !== "downloading" ? (
+          <>Download {formatSize(plan.total_bytes_missing + (includeParser ? parserBytes : 0))}{plan.size_unknown ? " plus the llama.cpp runtime" : ""}</>
+        ) : undefined}>
+          {plan.items.filter((i) => !i.optional).map((i) => (
+            <Row key={i.name} title={i.name}>
+              <span className={"val" + (i.present ? " ok" : "")}>{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
+            </Row>
+          ))}
           {optional.length > 0 && (
-            <div className="dl-opt">
-              <div className="dl-opt-head">
-                {optMissing.length > 0 && phase !== "downloading" && (
-                  <label className="switch">
-                    <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
-                  </label>
-                )}
-                <b>Document parser</b>
-                <span className="sz">{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
-              </div>
-              <div className="muted">Optional. Reads scanned pages, receipts and screenshots into text and tables you can search and copy.</div>
-            </div>
+            <Row title="Document parser" desc={`Optional. ${PARSER_DESC}`}>
+              <span className={"val" + (optMissing.length === 0 ? " ok" : "")}>{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
+              {optMissing.length > 0 && phase !== "downloading" && (
+                <label className="switch">
+                  <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
+                </label>
+              )}
+            </Row>
           )}
-          {phase !== "downloading" && (
-            <div className="muted">
-              Download {formatSize(plan.total_bytes_missing + (includeParser ? parserBytes : 0))}{plan.size_unknown ? " plus the llama.cpp runtime" : ""}
-            </div>
-          )}
-        </div>
+        </Grp>
       )}
       </div>
 
       {phase === "downloading" && (
-        <div className="vols dl-prog">
-          <div className="idx-line">
-            <b>{progress ? progress.item : "Starting…"}</b>
-            <span className="nums">
-              {progress ? `${formatSize(progress.overall_downloaded)} / ${formatSize(progress.overall_total)}` : ""}
-            </span>
+        <Grp title="Downloading">
+          <div className="grow stack">
+            <div className="idx-line">
+              <b>{progress ? progress.item : "Starting…"}</b>
+              <span className="nums">
+                {progress ? `${formatSize(progress.overall_downloaded)} / ${formatSize(progress.overall_total)}` : ""}
+              </span>
+            </div>
+            <Bar value={overall} label="Download progress" />
           </div>
-          <Bar value={overall} label="Download progress" />
-        </div>
+        </Grp>
       )}
 
       {phase === "interrupted" && (
@@ -192,11 +187,12 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
       {phase === "indexing" && <Indexing t1={t1} onPause={onPause} />}
 
       {phase === "indexing" && optMissing.length > 0 && (
-        <div className="dl-opt">
-          <div className="dl-opt-head"><b>Document parser</b><span className="sz">{formatSize(parserBytes)}</span></div>
-          <div className="muted">Optional. Reads scanned pages, receipts and screenshots into text and tables you can search and copy.</div>
-          <div><button className="btn quiet" onClick={() => models.start(true)}>Download the document parser</button></div>
-        </div>
+        <Grp title="Document parser">
+          <Row title="Document parser" desc={`Optional. ${PARSER_DESC}`}>
+            <span className="val">{formatSize(parserBytes)}</span>
+            <button className="gbtn" onClick={() => models.start(true)}>Download</button>
+          </Row>
+        </Grp>
       )}
 
       <div className="actions">

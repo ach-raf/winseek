@@ -540,7 +540,7 @@ export const mockBackend: Backend = {
     const all = query.toLowerCase().split(/\s+/).filter(Boolean);
     const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
     const terms = all.filter((t) => !t.startsWith("ext:"));
-    const m = DB.filter((e) => okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => e.lower.includes(t)));
+    const m = DB.filter((e) => okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t))); // a term with a backslash is a path match (the drive scope)
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
     else if (s === "size") m.sort((a, b) => b.size - a.size);

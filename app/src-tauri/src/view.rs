@@ -10,8 +10,8 @@ use tauri::{AppHandle, Emitter, LogicalSize, PhysicalPosition, PhysicalSize, Web
 
 use crate::{popup, tier1};
 
-pub const COMPACT_W: f64 = 840.0;
-pub const COMPACT_H: f64 = 540.0;
+pub const COMPACT_W: f64 = 780.0;
+pub const COMPACT_H: f64 = 560.0;
 
 /// What is on screen right now (true = full screen).
 static CURRENT_FULL: AtomicBool = AtomicBool::new(false);

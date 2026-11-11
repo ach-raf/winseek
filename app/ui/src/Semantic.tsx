@@ -56,10 +56,10 @@ export function Snippet({ text }: { text: string }) {
 export function SemanticHint({ onSetup, onDismiss }: { onSetup: () => void; onDismiss: () => void }) {
   return (
     <div className="sem-hint" role="note">
-      <span>Search by meaning is off &mdash; </span>
+      <span>Search by meaning is off</span>
       <button className="link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onSetup}>Set up</button>
-      <span className="spacer" />
-      <button className="x" tabIndex={-1} aria-label="Hide this hint" onMouseDown={(e) => e.preventDefault()} onClick={onDismiss}>
+      <span className="sp" />
+      <button className="ibtn" tabIndex={-1} aria-label="Hide this hint" onMouseDown={(e) => e.preventDefault()} onClick={onDismiss}>
         <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
       </button>
     </div>

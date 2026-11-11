@@ -160,6 +160,121 @@ export function moveIndex(i: number, key: string, cols: number, n: number): numb
   }
 }
 
+// ---- v4 mosaic (timeline) ---------------------------------------------------------------------------------
+
+export interface MosaicTile {
+  /** Flat item index. */
+  idx: number;
+  section: number;
+  col: number;
+  /** Row inside the section's mosaic. */
+  row: number;
+  w: number;
+  h: number;
+}
+export interface MosaicSection {
+  /** Flat range [first, end). */
+  first: number;
+  end: number;
+  rows: number;
+}
+export interface Mosaic {
+  tiles: MosaicTile[];
+  sections: MosaicSection[];
+  cols: number;
+}
+export interface MosaicMetrics {
+  top: number[];
+  h: number[];
+  head: number[];
+  total: number;
+}
+
+/** Feature tiles of the prototype: the first photo of a month is 2x2, every 5th is 2x1, plus a 2x2 now and then. */
+export function tileSpan(j: number, cols: number): [number, number] {
+  if (cols < 4) return [1, 1];
+  if (j === 0 || j % 11 === 6) return [2, 2];
+  if (j % 5 === 4) return [2, 1];
+  return [1, 1];
+}
+
+/** Packs every section like `grid-auto-flow: dense` (each tile takes the first free slot), independent of pixel sizes. */
+export function packMosaic(sizes: number[], cols: number): Mosaic {
+  const tiles: MosaicTile[] = [];
+  const sections: MosaicSection[] = [];
+  let flat = 0;
+  sizes.forEach((n, s) => {
+    const occ: Uint8Array[] = [];
+    const rowOf = (r: number) => (occ[r] ??= new Uint8Array(cols));
+    let minRow = 0, rows = 0;
+    for (let j = 0; j < n; j++) {
+      const [w0, h] = tileSpan(j, cols);
+      const w = Math.min(w0, cols);
+      let placed = false;
+      for (let r = minRow; !placed; r++) {
+        for (let c = 0; c + w <= cols && !placed; c++) {
+          let ok = true;
+          for (let dr = 0; dr < h && ok; dr++) for (let dc = 0; dc < w; dc++) if (rowOf(r + dr)[c + dc]) { ok = false; break; }
+          if (!ok) continue;
+          for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) rowOf(r + dr)[c + dc] = 1;
+          tiles.push({ idx: flat + j, section: s, col: c, row: r, w, h });
+          rows = Math.max(rows, r + h);
+          placed = true;
+        }
+      }
+      while (occ[minRow] && occ[minRow].every(Boolean)) minRow++;
+    }
+    sections.push({ first: flat, end: flat + n, rows });
+    flat += n;
+  });
+  return { tiles, sections, cols };
+}
+
+/** Vertical metrics for a packed mosaic: `headH[s]` is the heading height of section s (0 = none). */
+export function mosaicMetrics(m: Mosaic, rowH: number, gap: number, headH: number[], bottom: number, pad: number): MosaicMetrics {
+  const top: number[] = [], h: number[] = [];
+  let y = 0;
+  m.sections.forEach((s, i) => {
+    const body = s.rows > 0 ? s.rows * (rowH + gap) - gap : 0;
+    const sh = headH[i] + body + (s.rows > 0 ? bottom : 0);
+    top.push(y);
+    h.push(sh);
+    y += sh;
+  });
+  return { top, h, head: headH, total: y + pad };
+}
+
+/** Section-relative top and pixel height of a tile. */
+export function tileBox(t: MosaicTile, rowH: number, gap: number, head: number): { y: number; h: number } {
+  return { y: head + t.row * (rowH + gap), h: t.h * rowH + (t.h - 1) * gap };
+}
+
+/** Arrow-key move over a mosaic: left/right follow the order, up/down go to the nearest tile above/below. */
+export function moveMosaic(m: Mosaic, mt: MosaicMetrics, rowH: number, gap: number, i: number, key: string, n: number): number {
+  if (n <= 0) return 0;
+  switch (key) {
+    case "ArrowLeft": return Math.max(0, i - 1);
+    case "ArrowRight": return Math.min(n - 1, i + 1);
+    case "Home": return 0;
+    case "End": return n - 1;
+  }
+  if (key !== "ArrowUp" && key !== "ArrowDown") return i;
+  const cur = m.tiles[i];
+  if (!cur) return i;
+  const gy = (t: MosaicTile) => { const b = tileBox(t, rowH, gap, mt.head[t.section]); return { y: mt.top[t.section] + b.y, h: b.h }; };
+  const c = gy(cur), cx = cur.col + cur.w / 2;
+  let best = -1, bestDy = Infinity, bestDx = Infinity;
+  for (let k = Math.max(0, i - 64); k <= Math.min(n - 1, i + 64); k++) {
+    if (k === i) continue;
+    const t = m.tiles[k], b = gy(t);
+    const dy = key === "ArrowDown" ? b.y - (c.y + c.h) : c.y - (b.y + b.h);
+    if (dy < -1) continue;
+    const dx = Math.abs(t.col + t.w / 2 - cx);
+    if (dy < bestDy - 1 || (Math.abs(dy - bestDy) <= 1 && dx < bestDx)) { best = k; bestDy = dy; bestDx = dx; }
+  }
+  return best >= 0 ? best : i;
+}
+
 // ---- smart collections ------------------------------------------------------------------------------------
 
 /** The "Screenshots" name rule. */

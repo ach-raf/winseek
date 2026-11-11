@@ -21,3 +21,14 @@ test("keywords find the right section", () => {
   assert.deepEqual(filterSections(items, "full screen").map((s) => s.id), ["general"]);
   assert.deepEqual(filterSections(items, "zzz"), []);
 });
+
+test("section labels are searchable", () => {
+  const named = [
+    { id: "launcher" as const, label: "Apps and commands" },
+    { id: "agents" as const, label: "AI agents" },
+    { id: "meaning" as const, label: "Search by meaning" },
+  ];
+  assert.deepEqual(filterSections(named, "apps commands").map((s) => s.id), ["launcher"]);
+  assert.deepEqual(filterSections(named, "ai").map((s) => s.id), ["agents"]);
+  assert.deepEqual(filterSections(named, "by meaning").map((s) => s.id), ["meaning"]);
+});

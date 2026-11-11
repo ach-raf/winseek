@@ -2,8 +2,8 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
-import { formatDate, formatSize, splitDir } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, fitScale, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { formatDate, formatSize } from "./format";
+import { boxesForView, boxRect, clampPage, clampView, coverScale, crumbParts, driveOf, extOf, fitScale, kindLabel, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -92,68 +92,72 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
 
   const shown = info && info.path === hit.path ? info : null;
   const stale = loading && !!info;
-  const { head, tail } = splitDir(hit.path);
+  const kind = (shown ?? info)?.kind ?? null;
+  const tall = kind === "pdf" || kind === "text" || kind === "document";
+  const label = kindLabel(shown?.kind ?? null, shown?.ext ?? extOf(hit.name), hit.is_dir);
+  const crumbs = crumbParts(hit.path, hit.is_dir);
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
 
   return (
     <aside className="pv" aria-label={`Preview of ${hit.name}`}>
-      <header className="pv-head">
-        <FileIcon name={hit.name} isDir={hit.is_dir} src={backend.iconUrl(hit.path, hit.is_dir, false)} />
-        <div className="pv-title">
-          <div className="pv-name" title={hit.name}>{hit.name}</div>
-          <div className="pv-path" title={hit.path}><span className="head">{head}</span><span className="tail">{tail}</span></div>
+      <div className="pv-col">
+        <div className={"pbox" + (tall ? " tall" : "") + (stale ? " stale" : "")}>
+          {err ? (
+            <div className="pv-msg" role="alert">{err}</div>
+          ) : info ? (
+            <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
+                  boxes={boxes ?? null} onPage={setPdfPage} registerApi={registerApi} />
+          ) : (
+            <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
+          )}
         </div>
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
-        <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onReveal} title={tooltip("preview.reveal")}>Reveal</button>
-        <button className="btn primary pv-btn" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onOpen} title={tooltip("preview.open")}>Open</button>
-      </header>
-      {snippet && (
-        <div className="pv-snip" title="Text found inside the file"><Snippet text={snippet} /></div>
-      )}
-      <div className={"pv-body" + (stale ? " stale" : "")}>
-        {err ? (
-          <div className="pv-msg" role="alert">{err}</div>
-        ) : info ? (
-          <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
-                boxes={boxes ?? null} onPage={setPdfPage} registerApi={registerApi} />
-        ) : (
-          <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
+        <div className="pv-title">
+          <h2 title={hit.name}>{hit.name}</h2>
+          <div className="kind">{label}</div>
+        </div>
+        <div className="crumbs" title={hit.path}>
+          {crumbs.map((p, i) => i === crumbs.length - 1
+            ? <b key={i}>{p}</b>
+            : <span key={i} className="cr"><span>{p}</span><i>›</i></span>)}
+        </div>
+        {snippet && (
+          <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
         )}
+        {shown && <Meta info={shown} />}
+        {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
+          <ParseBar backend={backend} path={shown.path} available={parser} registerApi={registerApi}
+                    page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
+        )}
+        <div className="btns">
+          <button className="btn pri" tabIndex={-1} onMouseDown={keep} onClick={onOpen} title={tooltip("preview.open")}>Open <kbd>↵</kbd></button>
+          <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onReveal} title={tooltip("preview.reveal")}>Show in folder</button>
+          <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
+        </div>
       </div>
-      {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
-        <ParseBar backend={backend} path={shown.path} available={parser} registerApi={registerApi}
-                  page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
-      )}
-      {shown && <Facts info={shown} />}
     </aside>
   );
 }
 
-function Facts({ info }: { info: PreviewInfo }) {
-  const parts: string[] = [];
+function Meta({ info }: { info: PreviewInfo }) {
+  const rows: [string, string][] = [];
+  if (info.mtime !== null) rows.push(["Modified", formatDate(info.mtime)]);
+  if (info.size !== null && info.kind !== "folder") rows.push(["Size", formatSize(info.size)]);
+  const drive = driveOf(info.path);
+  if (drive) rows.push(["Drive", drive]);
+  if (info.ctime !== null) rows.push(["Created", formatDate(info.ctime)]);
   const im = info.image;
-  if (im?.width && im.height) parts.push(`${im.width} × ${im.height}`);
-  if (info.size !== null) parts.push(formatSize(info.size));
-  if (info.mtime !== null) parts.push(`Modified ${formatDate(info.mtime)}`);
-  if (info.kind === "text" && info.text) parts.push(info.text.encoding);
-  const ex = im?.exif;
-  return (
-    <footer className="pv-facts">
-      <div>{parts.join(" · ")}</div>
-      {im && (
-        <div className="exif">
-          {ex ? (
-            <>
-              {ex.date && <span>{ex.date}</span>}
-              {ex.camera && <span>{ex.camera}</span>}
-              <span>GPS: {ex.gps ? "yes" : "no"}</span>
-            </>
-          ) : (
-            <span>No EXIF data</span>
-          )}
-        </div>
-      )}
-    </footer>
-  );
+  if (im?.width && im.height) rows.push(["Dimensions", `${im.width} × ${im.height}`]);
+  if (info.kind === "text" && info.text) rows.push(["Encoding", info.text.encoding]);
+  if (info.kind === "pdf" && info.pdf?.pages) rows.push(["Pages", String(info.pdf.pages)]);
+  if (im) {
+    const ex = im.exif;
+    if (ex) {
+      if (ex.date) rows.push(["Taken", ex.date]);
+      if (ex.camera) rows.push(["Camera", ex.camera]);
+      rows.push(["GPS", ex.gps ? "Yes" : "No"]);
+    } else rows.push(["EXIF", "None"]);
+  }
+  return <dl className="meta">{rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}</dl>;
 }
 
 function Body({ backend, info, query, start, page, boxes, onPage, registerApi }: {
@@ -181,7 +185,7 @@ function ImageView({ info, boxes, registerApi }: { info: PreviewInfo; boxes: Hit
   if (!src || dead) return <OtherView info={info} note="This image cannot be shown here." />;
   return (
     <ImageStage
-      key={src} src={src} name={info.name} boxes={drawn} registerApi={registerApi}
+      key={src} src={src} name={info.name} boxes={drawn} registerApi={registerApi} cover={drawn.length === 0 && !useThumb}
       dims={!useThumb && meta?.width && meta.height ? { w: meta.width, h: meta.height } : null}
       note={useThumb ? "Shell thumbnail" : null}
       onError={() => { if (!useThumb && info.thumb) setUseThumb(true); else setDead(true); }}
@@ -189,9 +193,9 @@ function ImageView({ info, boxes, registerApi }: { info: PreviewInfo; boxes: Hit
   );
 }
 
-function ImageStage({ src, name, dims, note, boxes, onError, registerApi }: {
+function ImageStage({ src, name, dims, note, boxes, onError, registerApi, cover }: {
   src: string; name: string; dims: { w: number; h: number } | null; note: string | null; boxes: HitBox[]; onError: () => void;
-  registerApi?: (patch: Partial<PreviewApi>) => void;
+  registerApi?: (patch: Partial<PreviewApi>) => void; cover?: boolean;
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -201,7 +205,7 @@ function ImageStage({ src, name, dims, note, boxes, onError, registerApi }: {
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
-  const fit = nat ? fitScale(box.w, box.h, nat.w, nat.h) : 1;
+  const fit = nat ? (cover ? coverScale(box.w, box.h, nat.w, nat.h) : fitScale(box.w, box.h, nat.w, nat.h)) : 1;
   const cur: View = fitted ? { s: fit, tx: 0, ty: 0 } : view;
   // The wheel listener is native (React's is passive and could not stop the list from scrolling).
   const latest = useRef({ cur, fit, box, nat });
@@ -501,6 +505,7 @@ function ParseBar({ backend, path, page, available, registerApi }: {
 function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
   const ref = useRef<HTMLMediaElement>(null);
   const [failed, setFailed] = useState(false);
+  const [playing, setPlaying] = useState(false);
 
   const url = info.src;
   useEffect(() => {
@@ -524,14 +529,23 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
     },
   };
   return info.kind === "video" ? (
-    <div className="pv-media"><video ref={ref as React.RefObject<HTMLVideoElement>} {...common} /></div>
+    <div className="pv-media">
+      <video ref={ref as React.RefObject<HTMLVideoElement>} {...common} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
+      {!playing && (
+        <span className="playb" aria-hidden>
+          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5Z" /></svg>
+        </span>
+      )}
+    </div>
   ) : (
     <div className="pv-media audio">
-      <div className="pv-bigicon"><FileIcon name={info.name} isDir={false} src={null} /></div>
+      <div className="wave" aria-hidden>{WAVE.map((h, j) => <i key={j} style={{ height: `${h}%` }} />)}</div>
       <audio ref={ref as React.RefObject<HTMLAudioElement>} {...common} />
     </div>
   );
 }
+
+const WAVE = Array.from({ length: 52 }, (_, j) => 16 + Math.abs(Math.sin(j * 0.7) * 52 + Math.sin(j * 2.3) * 28));
 
 // ---- text / code --------------------------------------------------------------------------------------
 
@@ -562,12 +576,6 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
 
 function OtherView({ info, note }: { info: PreviewInfo; note?: string }) {
   const [broken, setBroken] = useState(false);
-  const rows: [string, string][] = [];
-  const type = info.kind === "folder" ? "Folder" : info.ext ? `${info.ext.toUpperCase()} file` : "File";
-  rows.push(["Type", type]);
-  if (info.size !== null) rows.push(["Size", formatSize(info.size)]);
-  if (info.mtime !== null) rows.push(["Modified", formatDate(info.mtime)]);
-  if (info.ctime !== null) rows.push(["Created", formatDate(info.ctime)]);
   return (
     <div className="pv-other">
       <div className="pv-bigicon">
@@ -577,11 +585,7 @@ function OtherView({ info, note }: { info: PreviewInfo; note?: string }) {
           <FileIcon name={info.name} isDir={info.kind === "folder"} src={null} />
         )}
       </div>
-      <div className="pv-oname" title={info.name}>{info.name}</div>
       {note && <div className="pv-note">{note}</div>}
-      <dl className="pv-dl">
-        {rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}
-      </dl>
     </div>
   );
 }

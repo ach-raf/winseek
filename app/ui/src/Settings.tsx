@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
@@ -9,26 +9,13 @@ import { eventToCombo } from "./hotkeyLogic";
 import { Folders, pausedText } from "./Setup";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
-import logo from "./assets/logo.png";
 import { filterSections, type SettingsSection } from "./settingsNav";
-import { VIEW_CHOICES, type ViewMode } from "./viewMode";
+import type { ViewMode } from "./viewMode";
+import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
+import { IChevL, ISearch } from "./icons";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const lc = (s: string) => s.toLowerCase();
-
-const Switch = ({ checked, disabled, onChange, label }: {
-  checked: boolean; disabled?: boolean; onChange: (v: boolean) => void; label: string;
-}) => (
-  <label className="switch">
-    <input type="checkbox" checked={checked} disabled={disabled} onChange={(e) => onChange(e.target.checked)} aria-label={label} />
-  </label>
-);
-
-const Check = () => (
-  <svg className="set-check" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-    <path d="m5 12.5 4.5 4.5L19 7.5" />
-  </svg>
-);
 
 /** Split pasted text into names: commas, semicolons and new lines separate entries. */
 function parseNames(text: string): string[] {
@@ -65,39 +52,35 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
   const remove = (n: string) => ig && save(ig.list.filter((x) => x !== n));
 
   return (
-    <div className="ignored">
-      <div className="fl-title">Skipped names</div>
-      <p className="muted set-note">Skipped anywhere inside the folders above. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</p>
-      <div className="set-group">
-        <div className="ig-add">
-          <input value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
-                 spellCheck={false} autoComplete="off"
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
-          <button className="btn quiet" onClick={add} disabled={!text.trim() || !ig}>Add</button>
-        </div>
-        {bad && <div className="ig-err fr-error" role="alert">{bad}</div>}
-        <div className="ig-bar">
-          <input className="ig-filter" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label="Filter ignored names"
-                 spellCheck={false} autoComplete="off" />
-          <span className="nums">
-            {ig ? `${fmt(ig.list.length)} name${ig.list.length === 1 ? "" : "s"}` : "Loading…"}
-            {ig && (isDefault ? " · defaults" : removedDefaults ? ` · ${fmt(removedDefaults)} default${removedDefaults === 1 ? "" : "s"} removed` : "")}
-          </span>
-          <button className="btn quiet" onClick={() => save(null)} disabled={!ig || isDefault}>Reset to defaults</button>
-        </div>
+    <Grp title="Skipped names" note={<>Skipped anywhere inside your folders. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</>}>
+      <div className="grow addrow">
+        <input className="gin" value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
+               spellCheck={false} autoComplete="off"
+               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+        <button className="gbtn" onClick={add} disabled={!text.trim() || !ig}>Add</button>
+      </div>
+      {bad && <div className="grow"><span className="fr-error" role="alert">{bad}</span></div>}
+      <div className="grow addrow">
+        <input className="gin sm" value={filter} onChange={(e) => setFilter(e.target.value)} placeholder="Filter" aria-label="Filter ignored names"
+               spellCheck={false} autoComplete="off" />
+        <span className="nums">
+          {ig ? `${fmt(ig.list.length)} name${ig.list.length === 1 ? "" : "s"}` : "Loading…"}
+          {ig && (isDefault ? " · defaults" : removedDefaults ? ` · ${fmt(removedDefaults)} default${removedDefaults === 1 ? "" : "s"} removed` : "")}
+        </span>
+        <button className="gbtn" onClick={() => save(null)} disabled={!ig || isDefault}>Reset to defaults</button>
+      </div>
+      <div className="grow stack">
         <ul className="ig-list" aria-label="Ignored names">
           {shown.map((n) => (
             <li key={n} className={defaults.has(lc(n)) ? "" : "custom"} title={defaults.has(lc(n)) ? n : `${n} (added by you)`}>
               <span>{n}</span>
-              <button className="ig-x" onClick={() => remove(n)} aria-label={`Stop ignoring ${n}`} title="Remove">
-                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
-              </button>
+              <button className="ig-x" onClick={() => remove(n)} aria-label={`Stop ignoring ${n}`} title="Remove"><XIcon size={10} /></button>
             </li>
           ))}
           {ig && shown.length === 0 && <li className="none">{ig.list.length ? "No name matches the filter" : "Nothing is ignored"}</li>}
         </ul>
       </div>
-    </div>
+    </Grp>
   );
 }
 
@@ -109,19 +92,15 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
     backend.tier1SetIndexCode(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
   };
   return (
-    <div className="set-group">
-      <div className="set-row">
-        <span className="set-optmain">
-          <b>Index source code</b>
-          <span className="muted">Searches the text of code files in your folders by content. Files ignored by a <code>.gitignore</code> are left out. Turning it off removes them from the index.</span>
-        </span>
+    <Grp title="Source code">
+      <Row title="Index source code" desc="Search inside code files by what they say. Files ignored by .gitignore are left out.">
         <Switch checked={!!on} disabled={on === null} onChange={change} label="Index source code" />
-      </div>
-    </div>
+      </Row>
+    </Grp>
   );
 }
 
-function AutostartToggle({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+function AutostartRow({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [on, setOn] = useState<boolean | null>(null);
   useEffect(() => { backend.autostartGet().then(setOn).catch(onError); }, [backend, onError]);
   const change = (v: boolean) => {
@@ -129,21 +108,15 @@ function AutostartToggle({ backend, onError }: { backend: Backend; onError: (e: 
     backend.autostartSet(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
   };
   return (
-    <div className="set-group">
-      <div className="set-row">
-        <span className="set-optmain">
-          <b>Start with Windows</b>
-          <span className="muted">Starts winseek in the tray when you sign in, so <kbd>Alt</kbd>+<kbd>Space</kbd> works right away. The name index runs as a service either way.</span>
-        </span>
-        <Switch checked={!!on} disabled={on === null} onChange={change} label="Start with Windows" />
-      </div>
-    </div>
+    <Row title="Start with Windows" desc="Starts in the tray when you sign in, so the shortcut works right away">
+      <Switch checked={!!on} disabled={on === null} onChange={change} label="Start with Windows" />
+    </Row>
   );
 }
 
 const PROFILES: { id: Profile; label: string; blurb: string }[] = [
-  { id: "low", label: "Low", blurb: "Least graphics memory. Slow on images and documents." },
-  { id: "balanced", label: "Balanced", blurb: "Search on the processor, image and document models load on the graphics card only while they work." },
+  { id: "low", label: "Light", blurb: "Least graphics memory. Slower on images and documents." },
+  { id: "balanced", label: "Balanced", blurb: "Search runs on the processor; image and document models use the graphics card only while they work." },
   { id: "fast", label: "Fast", blurb: "Keeps models loaded while the app is open. Uses the most graphics memory." },
 ];
 
@@ -157,23 +130,18 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
   };
   const shown = p ?? "balanced";
   return (
-    <div className="perf">
-      <div className="set-group" role="radiogroup" aria-label="Performance profile">
-        {PROFILES.map((x) => (
-          <button key={x.id} role="radio" aria-checked={x.id === shown} disabled={p === null}
-                  className={"set-row set-opt" + (x.id === shown ? " on" : "")} onClick={() => change(x.id)}>
-            <span className="set-optmain"><b>{x.label}</b><span className="muted">{x.blurb}</span></span>
-            <Check />
-          </button>
-        ))}
-      </div>
-      <p className="muted set-note">Applies to search by meaning: where the models run and how long they stay loaded. Name search is not affected.</p>
-    </div>
+    <Grp title="Performance" note="Applies to search by meaning: where the models run and how long they stay loaded. Name search is not affected.">
+      <Row title="Background work" desc={PROFILES.find((x) => x.id === shown)?.blurb}>
+        <Seg value={shown} options={PROFILES} onChange={change} disabled={p === null} label="Performance profile" />
+      </Row>
+    </Grp>
   );
 }
 
+const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [{ id: "compact", label: "Popup" }, { id: "full", label: "Full window" }];
+
 /** Which view the global hotkey opens: the compact popup or the full-screen layout. */
-function DefaultView({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+function DefaultViewRow({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [v, setV] = useState<ViewMode | null>(null);
   useEffect(() => { backend.viewGet().then((s) => setV(s.default_view)).catch(onError); }, [backend, onError]);
   const change = (m: ViewMode) => {
@@ -182,19 +150,9 @@ function DefaultView({ backend, onError }: { backend: Backend; onError: (e: unkn
     backend.viewSetDefault(m).then((s) => setV(s.default_view)).catch((e) => { setV(before); onError(e); });
   };
   return (
-    <div className="set-sec">
-      <div className="fl-title">Default view</div>
-      <div className="set-group" role="radiogroup" aria-label="Default view">
-        {VIEW_CHOICES.map((x) => (
-          <button key={x.id} role="radio" aria-checked={x.id === (v ?? "compact")} disabled={v === null}
-                  className={"set-row set-opt" + (x.id === (v ?? "compact") ? " on" : "")} onClick={() => change(x.id)}>
-            <span className="set-optmain"><b>{x.label}</b><span className="muted">{x.blurb}</span></span>
-            <Check />
-          </button>
-        ))}
-      </div>
-      <p className="muted set-note">What the hotkey opens. <kbd>F11</kbd> switches between the two at any time without changing this.</p>
-    </div>
+    <Row title="Open as" desc="What the shortcut opens. F11 switches between the two at any time.">
+      <Seg value={v ?? "compact"} options={VIEW_OPTIONS} onChange={change} disabled={v === null} label="Default view" />
+    </Row>
   );
 }
 
@@ -208,39 +166,30 @@ function ModelLine({ name, detail, act, optional, label, onGet, onCancel, childr
   optional?: boolean;
   /** Button verb: "Download" or "Install". */
   label: string;
-  onGet: () => void; onCancel: () => void; children: React.ReactNode;
+  onGet: () => void; onCancel: () => void; children: ReactNode;
 }) {
   const ok = act.kind === "installed" ? true : optional ? null : false;
   const size = (b: number | null) => (b != null ? ` · ${formatSize(b)}` : "");
   const paused = act.kind === "failed" && act.error === "cancelled";
+  const desc: ReactNode = act.kind === "installed" ? children
+    : act.kind === "downloading" ? (act.total > 0 ? `${formatSize(act.got)} of ${formatSize(act.total)}` : "Starting…")
+    : act.kind === "waiting" ? "Waiting for the current download"
+    : act.kind === "failed" ? (paused ? "Download paused. Resume continues where it stopped." : <span className="bad" role="alert">{`Download failed: ${act.error}. Retry continues where it stopped.`}</span>)
+    : children;
   return (
-    <li className={ok === true ? "ok" : ok === false ? "miss" : "opt"}>
-      <span className="mi" aria-hidden>{ok === true ? "✓" : ok === false ? "!" : "–"}</span>
-      <span className="mn"><b>{name}</b>{detail && <span className="muted"> · {detail}</span>}</span>
-      <span className="ms">
-        {act.kind === "installed" ? children
-          : act.kind === "downloading" ? (
-            <>
-              <span className="nums">{act.total > 0 ? `${formatSize(act.got)} of ${formatSize(act.total)}` : "Starting…"}</span>
-              <button className="btn quiet sm" onClick={onCancel}>Cancel</button>
-            </>
-          ) : act.kind === "waiting" ? <span className="muted">Waiting for the current download</span>
-          : act.kind === "failed" ? (
-            <button className="btn quiet sm" onClick={onGet}>{paused ? "Resume" : "Retry"}{size(act.bytes)}</button>
-          ) : (
-            <>
-              <span className="muted">{children}</span>
-              <button className="btn quiet sm" onClick={onGet}>{label}{size(act.bytes)}</button>
-            </>
-          )}
-      </span>
-      {act.kind === "downloading" && <div className="ml-sub"><Bar value={act.frac} label={`Downloading ${name}`} /></div>}
-      {act.kind === "failed" && (
-        <div className={"ml-sub " + (paused ? "muted" : "fr-error")} role={paused ? "status" : "alert"}>
-          {paused ? "Download paused. Resume continues where it stopped." : `Download failed: ${act.error}. Retry continues where it stopped.`}
-        </div>
-      )}
-    </li>
+    <div className="grow wrap" role="listitem">
+      <div className="gtxt">
+        <b><i className={"mdot " + (ok === true ? "ok" : ok === false ? "miss" : "opt")} aria-hidden />{name}{detail && <em> · {detail}</em>}</b>
+        <span>{desc}</span>
+      </div>
+      <div className="gctl">
+        {act.kind === "downloading" ? <button className="gbtn" onClick={onCancel}>Cancel</button>
+          : act.kind === "failed" ? <button className="gbtn" onClick={onGet}>{paused ? "Resume" : "Retry"}{size(act.bytes)}</button>
+          : act.kind === "download" ? <button className="gbtn" onClick={onGet}>{label}{size(act.bytes)}</button>
+          : null}
+      </div>
+      {act.kind === "downloading" && <div className="gsub"><Bar value={act.frac} label={`Downloading ${name}`} /></div>}
+    </div>
   );
 }
 
@@ -284,54 +233,46 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
   const act = (g: ModelGroup, installed: boolean) => rowAction(g, installed, models);
   const get = (g: ModelGroup) => () => models.start(g === "parser", [g]);
   return (
-    <div className="meaning" aria-label="Search by meaning">
-      <div className="set-group">
-        <div className="set-row">
-          <span className="set-optmain">
-            <b>Indexing</b>
-            <span className={"st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</span>
-          </span>
+    <>
+      <Grp title="Search by meaning" label="Search by meaning">
+        <Row title="Indexing" desc={<span className={"st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</span>}>
           {off ? (
-            t1?.state === "models_missing" && <button className="btn primary" onClick={onSetup}>Set up…</button>
+            t1?.state === "models_missing" && <button className="gbtn pri" onClick={onSetup}>Set up…</button>
           ) : (
             (pr == null || pr === "user") && (
-              <button className="btn quiet" onClick={() => onPause(pr == null)}>{pr == null ? "Pause" : "Resume"}</button>
+              <button className="gbtn" onClick={() => onPause(pr == null)}>{pr == null ? "Pause" : "Resume"}</button>
             )
           )}
-        </div>
+        </Row>
         {s && total > 0 && (
-          <div className="set-row col">
-            <div className="st-cov">
-              <div className="idx-line">
-                <span className="nums">{fmt(s.done)} of {fmt(total)} files</span>
-                <span className="nums muted">
-                  {[st?.rate != null && st.rate > 0 ? formatRate(st.rate) : null,
-                    st?.eta_s != null && live ? `about ${formatDuration(st.eta_s)} left` : null].filter(Boolean).join(" · ")}
-                </span>
-              </div>
-              <Bar value={total ? s.done / total : null} label="Files indexed" />
+          <div className="grow stack">
+            <div className="idx-line">
+              <span className="nums"><b>{fmt(s.done)} of {fmt(total)} files</b></span>
+              <span className="nums">
+                {[st?.rate != null && st.rate > 0 ? formatRate(st.rate) : null,
+                  st?.eta_s != null && live ? `about ${formatDuration(st.eta_s)} left` : null].filter(Boolean).join(" · ")}
+              </span>
             </div>
+            <Bar value={total ? s.done / total : null} label="Files indexed" />
           </div>
         )}
         {m?.parser.present && pTotal > 0 && (pLeft > 0 || pRate != null) && (
-          <div className="set-row col">
-            <div className="st-cov">
-              <div className="idx-line">
-                <span className="nums">{fmt(pTotal - pLeft)} of {fmt(pTotal)} pages</span>
-                <span className="nums muted">
-                  {[pRate != null ? formatPages(pRate) : null,
-                    pRate != null && pEta != null && pLeft > 0 && !pr ? `about ${formatDuration(pEta)} left` : null].filter(Boolean).join(" · ")}
-                </span>
-              </div>
-              <Bar value={pTotal ? (pTotal - pLeft) / pTotal : null} label="Pages read by the document parser" />
+          <div className="grow stack">
+            <div className="idx-line">
+              <span className="nums"><b>{fmt(pTotal - pLeft)} of {fmt(pTotal)} pages</b></span>
+              <span className="nums">
+                {[pRate != null ? formatPages(pRate) : null,
+                  pRate != null && pEta != null && pLeft > 0 && !pr ? `about ${formatDuration(pEta)} left` : null].filter(Boolean).join(" · ")}
+              </span>
             </div>
+            <Bar value={pTotal ? (pTotal - pLeft) / pTotal : null} label="Pages read by the document parser" />
           </div>
         )}
-      </div>
+      </Grp>
       {m && (
-        <>
-          <div className="fl-title">Components</div>
-          <ul className="set-group models" aria-label="Models">
+        <section className="grp" aria-label="Models">
+          <h3>Components</h3>
+          <div className="gcard" role="list">
             <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
                        act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
               {!embedOk ? "Not downloaded"
@@ -353,11 +294,11 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
                 : pTotal > 0 ? `Done · ${fmt(pTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
                 : m.parser.server.running ? "Loaded" : "Installed"}
             </ModelLine>
-          </ul>
-        </>
+          </div>
+        </section>
       )}
       {st?.error && <div className="fr-error" role="alert">Last error: {st.error}</div>}
-    </div>
+    </>
   );
 }
 
@@ -381,18 +322,18 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
   if (!page) {
     return err
       ? <div className="fr-error" role="alert">Could not read the status: {err}</div>
-      : <div className="vols"><Bar value={null} label="Loading" /><span className="muted">Loading…</span></div>;
+      : <Grp title="Status"><div className="grow stack"><Bar value={null} label="Loading" /></div></Grp>;
   }
   return (
-    <div className="st-cols">
+    <>
       <Names t0={page.tier0} busy={busy} onRescan={rescan} />
       <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding} />
       <ModelsPane m={page.models} />
-    </div>
+    </>
   );
 }
 
-/** Settings › Agents: the one read-only switch, content scope, copy-ready connect lines and
+/** Settings › AI agents: the one read-only switch, content scope, copy-ready connect lines and
  *  the activity log (PRD A6). */
 function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
@@ -422,66 +363,37 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
     : [];
   return (
     <>
-      <div className="set-sec">
-        <div className="fl-title">Agent access</div>
-        <div className="set-group">
-          <div className="set-row">
-            <span className="set-optmain">
-              <b>Let AI agents search with winseek</b>
-              <span className="muted">Read-only: agents can search and read, never open, change or delete anything. Every call is logged below.</span>
-            </span>
-            <Switch checked={!!cfg?.enabled} disabled={cfg === null} onChange={(v) => change({ enabled: v })} label="Let AI agents search with winseek" />
-          </div>
-          <div className="set-row" role="radiogroup" aria-label="What agents may read">
-            <span className="set-optmain">
-              <b>Let agents read file contents</b>
-              <span className="muted">Applies to reading text, parsing documents and photo details. Name search is always on.</span>
-            </span>
-            <span className="set-seg" role="presentation">
-              <button role="radio" aria-checked={cfg?.content === "indexed"} disabled={!cfg?.enabled}
-                      className={"set-segbtn" + (cfg?.content === "indexed" ? " on" : "")} onClick={() => change({ content: "indexed" })}>
-                Indexed folders only
-              </button>
-              <button role="radio" aria-checked={cfg?.content === "any"} disabled={!cfg?.enabled}
-                      className={"set-segbtn" + (cfg?.content === "any" ? " on" : "")} onClick={() => change({ content: "any" })}>
-                Any file I can open
-              </button>
-            </span>
-          </div>
-        </div>
-      </div>
+      <Grp title="AI agents" label="Agent access">
+        <Row title="Let AI agents search your files" desc="Read-only: agents can search and read, never open, change or delete anything. Every call is logged.">
+          <Switch checked={!!cfg?.enabled} disabled={cfg === null} onChange={(v) => change({ enabled: v })} label="Let AI agents search with winseek" />
+        </Row>
+        <Row title="Let agents read file contents" desc="Applies to reading text, parsing documents and photo details. Name search is always on.">
+          <Seg value={cfg?.content ?? null} disabled={!cfg?.enabled} onChange={(v) => change({ content: v })} label="What agents may read"
+               options={[{ id: "indexed", label: "Indexed folders" }, { id: "any", label: "Any file" }]} />
+        </Row>
+      </Grp>
 
-      <div className="set-sec">
-        <div className="fl-title">Connect an agent</div>
-        <div className="set-group">
-          {mcp && !mcp.exists && (
-            <div className="set-row"><span className="muted">winseek-mcp.exe is not installed next to the app yet (dev build). The snippets below still show where it will live.</span></div>
-          )}
-          {rows.map(([label, text]) => (
-            <div className="set-row col" key={label}>
-              <div className="idx-line">
-                <b>{label}</b>
-                <button className="btn quiet sm" onClick={() => copy(text)}>Copy</button>
-              </div>
-              <code className="agent-snip" title={text}>{text}</code>
+      <Grp title="Connect an agent">
+        {mcp && !mcp.exists && (
+          <div className="grow"><span className="gnote">winseek-mcp.exe is not installed next to the app yet (dev build). The snippets below still show where it will live.</span></div>
+        )}
+        {rows.map(([label, text]) => (
+          <div className="grow stack" key={label}>
+            <div className="idx-line">
+              <b>{label}</b>
+              <button className="gbtn" onClick={() => copy(text)}>Copy</button>
             </div>
-          ))}
-          {!snip && <div className="set-row"><span className="muted">Loading…</span></div>}
-        </div>
-      </div>
-
-      <div className="set-sec">
-        <div className="fl-title">Activity</div>
-        <div className="set-group">
-          <div className="set-row">
-            <span className="set-optmain">
-              <b>Last 50 calls</b>
-              <span className="muted">Who called what, and whether it worked. Paths are shown; file contents never are.</span>
-            </span>
-            <button className="btn secondary" onClick={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0}>
-              Clear log
-            </button>
+            <code className="agent-snip" title={text}>{text}</code>
           </div>
+        ))}
+        {!snip && <div className="grow"><span className="gnote">Loading…</span></div>}
+      </Grp>
+
+      <Grp title="Activity">
+        <Row title="Last 50 calls" desc="Who called what, and whether it worked. Paths are shown; file contents never are.">
+          <button className="gbtn" onClick={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0}>Clear log</button>
+        </Row>
+        <div className="grow stack">
           <ul className="agent-log" aria-label="Agent activity">
             {(log ?? []).slice().reverse().map((e, i) => (
               <li key={`${e.ts_ms}-${i}`} title={e.error ?? undefined}>
@@ -496,7 +408,7 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
             {log && log.length === 0 && <li className="none">No agent calls yet</li>}
           </ul>
         </div>
-      </div>
+      </Grp>
     </>
   );
 }
@@ -504,9 +416,9 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
 const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optional: boolean }[] = [
-  { which: "popup", label: "Show / hide winseek", blurb: "The one way in, so it must keep working. Combine Ctrl, Alt, Shift or Win with a key (F13-F24 also work alone).", optional: false },
-  { which: "library", label: "Open the Library", blurb: "A second global shortcut, straight to the photos.", optional: true },
-  { which: "clipboard", label: "Search with the clipboard text", blurb: "Shows winseek with whatever you copied as the query.", optional: true },
+  { which: "popup", label: "Shortcut", blurb: "Opens winseek from anywhere. Combine Ctrl, Alt, Shift or Win with a key.", optional: false },
+  { which: "library", label: "Open the Library", blurb: "A second shortcut, straight to your photos", optional: true },
+  { which: "clipboard", label: "Search the clipboard", blurb: "Opens winseek with whatever you copied as the query", optional: true },
 ];
 
 /** Settings › General › Shortcuts: the three global hotkeys, each with a press-to-record field
@@ -535,72 +447,59 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
     }
   };
   return (
-    <div className="set-group">
+    <Grp title="Shortcuts">
       {HOTKEY_ROWS.map((row) => {
         const bound = hk?.[row.which] ?? null;
         const recording = rec?.which === row.which;
         return (
-          <div className="set-row" key={row.which}>
-            <span className="set-optmain">
-              <b>{row.label}</b>
-              <span className="muted">{row.blurb}</span>
-              {recording ? (
-                <span className="hk-line">
-                  <span className="hk-rec" tabIndex={0} autoFocus role="textbox" aria-label="Press a shortcut"
-                        onBlur={() => setRec(null)}
-                        onKeyDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (e.key === "Escape") { setRec(null); return; }
-                          if (e.key === "Backspace") { if (row.optional) setRec({ which: row.which, combo: null }); return; }
-                          const c = eventToCombo(e);
-                          if (c) setRec({ which: row.which, combo: c });
-                        }}>
-                    {rec.combo ?? "Press a shortcut… (Esc cancels)"}
-                  </span>
-                  <button className="btn primary sm" onMouseDown={(e) => e.preventDefault()} onClick={() => void save()}>Save</button>
-                  <button className="btn quiet sm" onClick={() => setRec(null)}>Cancel</button>
+          <Row key={row.which} title={row.label} desc={row.blurb}>
+            {recording ? (
+              <span className="hk-line">
+                <span className="hk-rec" tabIndex={0} autoFocus role="textbox" aria-label="Press a shortcut"
+                      onBlur={() => setRec(null)}
+                      onKeyDown={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        if (e.key === "Escape") { setRec(null); return; }
+                        if (e.key === "Backspace") { if (row.optional) setRec({ which: row.which, combo: null }); return; }
+                        const c = eventToCombo(e);
+                        if (c) setRec({ which: row.which, combo: c });
+                      }}>
+                  {rec.combo ?? "Press a shortcut… (Esc cancels)"}
                 </span>
-              ) : (
-                <span className="hk-line">
-                  {bound ? <kbd className="hk-cur">{bound}</kbd> : <span className="muted">None</span>}
-                  <button className="btn quiet sm" onMouseDown={(e) => e.preventDefault()} onClick={() => { setErr(null); setRec({ which: row.which, combo: null }); }}>
-                    {bound ? "Change" : "Set"}
-                  </button>
-                  {row.optional && bound && (
-                    <button className="btn quiet sm" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
-                  )}
-                </span>
-              )}
-            </span>
-          </div>
+                <button className="gbtn pri" onMouseDown={(e) => e.preventDefault()} onClick={() => void save()}>Save</button>
+                <button className="gbtn" onClick={() => setRec(null)}>Cancel</button>
+              </span>
+            ) : (
+              <span className="hk-line">
+                {bound ? <kbd className="hk-cur">{bound}</kbd> : <span className="val">None</span>}
+                <button className="gbtn" onMouseDown={(e) => e.preventDefault()} onClick={() => { setErr(null); setRec({ which: row.which, combo: null }); }}>
+                  {bound ? "Change" : "Set"}
+                </button>
+                {row.optional && bound && (
+                  <button className="gbtn" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
+                )}
+              </span>
+            )}
+          </Row>
         );
       })}
-      {err && <div className="fr-error set-row" role="alert" style={{ paddingTop: 0 }}>{err}</div>}
-    </div>
+      {err && <div className="grow"><span className="fr-error" role="alert">{err}</span></div>}
+    </Grp>
   );
 }
 
 export type { SettingsSection };
 
-const I = {
-  meaning: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden><path d="M12 3.5c.65 4.1 2.75 6.2 6.9 6.9-4.15.7-6.25 2.8-6.9 6.9-.65-4.1-2.75-6.2-6.9-6.9 4.15-.7 6.25-2.8 6.9-6.9z" /><path d="M18.5 15.5c.3 1.9 1.3 2.9 3.2 3.2-1.9.3-2.9 1.3-3.2 3.2-.3-1.9-1.3-2.9-3.2-3.2 1.9-.3 2.9-1.3 3.2-3.2z" transform="scale(0.72) translate(7.2 6.6)" /></svg>,
-  indexing: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" /></svg>,
-  launcher: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><rect x="3.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="13.5" y="3.5" width="7" height="7" rx="1.6" /><rect x="3.5" y="13.5" width="7" height="7" rx="1.6" /><path d="M17 13.5v7M13.5 17h7" /></svg>,
-  agents: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4 6h9M17 6h3M4 12h3M11 12h9M4 18h9M17 18h3" /><circle cx="15" cy="6" r="2" /><circle cx="9" cy="12" r="2" /><circle cx="15" cy="18" r="2" /></svg>,
-  performance: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M4.5 18a8.5 8.5 0 1 1 15 0" /><path d="m12 14 3.6-4.6" /><circle cx="12" cy="14.2" r="1.3" fill="currentColor" stroke="none" /></svg>,
-  general: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden><path d="M4 8h8M17.5 8H20M4 16h3M12.5 16H20" /><circle cx="15" cy="8" r="2.2" /><circle cx="10" cy="16" r="2.2" /></svg>,
-  status: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M3 12h4l2.5-6.5 4 13L16.5 12H21" /></svg>,
-};
-
-const NAV: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
-  { id: "meaning", label: "Search by meaning", icon: I.meaning },
-  { id: "indexing", label: "Indexing", icon: I.indexing },
-  { id: "launcher", label: "Launcher", icon: I.launcher },
-  { id: "agents", label: "Agents", icon: I.agents },
-  { id: "performance", label: "Performance", icon: I.performance },
-  { id: "general", label: "General", icon: I.general },
-  { id: "status", label: "Status", icon: I.status },
+/** Section list in the prototype's order; Ctrl+1..7 follow it. */
+const NAV: { id: SettingsSection; label: string }[] = [
+  { id: "meaning", label: "Search by meaning" },
+  { id: "indexing", label: "Indexing" },
+  { id: "launcher", label: "Apps and commands" },
+  { id: "performance", label: "Performance" },
+  { id: "general", label: "General" },
+  { id: "agents", label: "AI agents" },
+  { id: "status", label: "Status" },
 ];
 
 /** Launcher (apps / settings / commands) switches, extra program folders, hidden items, counts. */
@@ -622,7 +521,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
     }).then((u) => (off = u));
     return () => off?.();
   }, [backend, reload]);
-  if (!cfg) return <div className="vols"><span className="muted">Loading…</span></div>;
+  if (!cfg) return <Grp title="Apps and commands"><div className="grow"><span className="gnote">Loading…</span></div></Grp>;
   const save = (patch: Partial<LaunchCfg>) => {
     const next = { ...cfg, ...patch };
     setCfg(next);
@@ -635,105 +534,74 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
     save({ folders: [...cfg.folders, p] });
   };
   const toggles: [keyof LaunchCfg, string, string][] = [
-    ["apps", "Installed apps", "Start menu programs and Store apps, searchable by name, acronym or exe name."],
-    ["settings", "Windows settings", "Settings pages and Control Panel items, opened straight from the box."],
-    ["commands", "System commands", "Lock, sleep, restart, shut down, sign out, and the Recycle Bin."],
-    ["portable", "Portable apps from the file index", "Programs that were never installed (unzipped tools, game launchers) are found by scanning the file index and searched like any other app."],
-    ["path", "Search PATH folders", "Also list executables from the directories on PATH. Off: it is a long, noisy list."],
-    ["hide_uninstallers", "Hide uninstallers", "Installer and uninstaller entries never show up as apps."],
+    ["apps", "Installed apps", "Start menu programs and Store apps, found by name, acronym or exe name"],
+    ["settings", "Windows settings", "Settings pages and Control Panel items"],
+    ["commands", "System commands", "Lock, sleep, restart, shut down, sign out, empty Recycle Bin"],
+    ["portable", "Portable apps", "Programs that were never installed, found through the file index"],
+    ["path", "Programs on your PATH", "Also list executables from the PATH folders. Off keeps the list short."],
+    ["hide_uninstallers", "Hide uninstallers", "Installer and uninstaller entries never show up as apps"],
   ];
   return (
     <>
-      <div className="set-sec">
-        <div className="fl-title">What the search box finds</div>
-        <div className="set-group">
-          {toggles.map(([key, title, hint]) => (
-            <div className="set-row" key={key}>
-              <span className="set-optmain">
-                <b>{title}</b>
-                <span className="muted">{hint}</span>
-              </span>
-              <Switch checked={!!cfg[key]} onChange={(v) => save({ [key]: v })} label={title} />
-            </div>
-          ))}
-        </div>
-      </div>
+      <Grp title="Apps and commands" label="What the search box finds">
+        {toggles.map(([key, title, hint]) => (
+          <Row key={key} title={title} desc={hint}>
+            <Switch checked={!!cfg[key]} onChange={(v) => save({ [key]: v })} label={title} />
+          </Row>
+        ))}
+      </Grp>
 
-      <div className="set-sec">
-        <div className="fl-title">Extra program folders</div>
-        <div className="set-group">
-          <ul className="fl-list">
+      <Grp title="Extra program folders" note="Programs here are scanned up to four levels deep. Installing or removing apps re-scans automatically.">
+        {cfg.folders.length > 0 && (
+          <div className="glist">
             {cfg.folders.map((p) => (
-              <li key={p}>
-                <label title={p}><span>{p}</span></label>
-                <button className="fl-rm" onClick={() => save({ folders: cfg.folders.filter((x) => x !== p) })} aria-label={`Remove ${p}`}>
-                  <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden><path d="M18 6 6 18M6 6l12 12" /></svg>
-                </button>
-              </li>
+              <div className="grow frow" key={p}>
+                <span className="fpath" title={p}>{p}</span>
+                <button className="fl-rm" onClick={() => save({ folders: cfg.folders.filter((x) => x !== p) })} aria-label={`Remove ${p}`}><XIcon /></button>
+              </div>
             ))}
-            {cfg.folders.length === 0 && <li className="none">No extra folders</li>}
-          </ul>
-          <div className="fl-add">
-            <input value={folderText} placeholder={"C:" + String.fromCharCode(92) + "tools"} spellCheck={false} aria-label="Folder to scan for programs"
-                   onChange={(e) => setFolderText(e.target.value)}
-                   onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }} />
-            <button className="btn secondary" onClick={addFolder}>Add</button>
           </div>
-          <span className="muted set-note">Programs here are scanned up to four levels deep. Installing or removing apps re-scans automatically.</span>
+        )}
+        {cfg.folders.length === 0 && <div className="grow none">No extra folders</div>}
+        <div className="grow addrow">
+          <input className="gin" value={folderText} placeholder={"C:" + String.fromCharCode(92) + "tools"} spellCheck={false} aria-label="Folder to scan for programs"
+                 onChange={(e) => setFolderText(e.target.value)}
+                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }} />
+          <button className="gbtn" onClick={addFolder}>Add</button>
         </div>
-      </div>
+      </Grp>
 
-      <div className="set-sec">
-        <div className="fl-title">Catalog</div>
-        <div className="set-group">
-          <div className="set-row">
-            <span className="set-optmain">
-              <b>{counts ? `${fmt(counts.apps)} apps · ${fmt(counts.settings)} settings · ${fmt(counts.commands)} commands` : "Counting…"}</b>
-              <span className="muted">The catalog lives in memory and refreshes on its own when the Start menu changes.</span>
-            </span>
-            <button className="btn secondary" disabled={scanning} onClick={() => { setScanning(true); backend.launchReindex(); }}>
-              {scanning ? "Scanning…" : "Re-scan apps"}
-            </button>
+      <Grp title="Catalog">
+        <Row title={counts ? `${fmt(counts.apps)} apps · ${fmt(counts.settings)} settings · ${fmt(counts.commands)} commands` : "Counting…"}
+             desc="Refreshes on its own when the Start menu changes">
+          <button className="gbtn" disabled={scanning} onClick={() => { setScanning(true); backend.launchReindex(); }}>
+            {scanning ? "Scanning…" : "Re-scan apps"}
+          </button>
+        </Row>
+        {cfg.hidden.map((id) => (
+          <div className="grow frow" key={id}>
+            <span className="fpath" title={id}>{id}</span>
+            <button className="gbtn" onClick={() => save({ hidden: cfg.hidden.filter((x) => x !== id) })}>Unhide</button>
           </div>
-          {cfg.hidden.length > 0 && (
-            <>
-              <div className="fl-title" style={{ marginTop: 10 }}>Hidden items · {cfg.hidden.length}</div>
-              <ul className="fl-list">
-                {cfg.hidden.map((id) => (
-                  <li key={id}>
-                    <label title={id}><span>{id}</span></label>
-                    <button className="btn secondary" onClick={() => save({ hidden: cfg.hidden.filter((x) => x !== id) })}>Unhide</button>
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-          <div className="set-row">
-            <span className="set-optmain">
-              <b>Usage history</b>
-              <span className="muted">Results you pick get a boost next time. Clearing forgets that, not the catalog.</span>
-            </span>
-            <button className="btn secondary" onClick={() => backend.launchClearHistory().catch(onError)}>Clear usage history</button>
-          </div>
-        </div>
-      </div>
+        ))}
+        <Row title="Usage history" desc="Results you pick get a boost next time. Clearing forgets that, not the catalog.">
+          <button className="gbtn" onClick={() => backend.launchClearHistory().catch(onError)}>Clear</button>
+        </Row>
+      </Grp>
     </>
   );
 }
 
-const BackIcon = () => (
-  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M19 12H5M11 6l-6 6 6 6" /></svg>
-);
-const CloseIcon = () => (
-  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6 6 18" /></svg>
-);
-
-export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onHide, onLibrary, section, onSection, onError }: {
+export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onHide: _onHide, onLibrary, section, onSection, onError, embedded, chrome }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
   onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void;
   /** onClose: back to search. onHide: hide the whole popup. */
   onSetup: () => void; onClose: () => void; onHide: () => void; onLibrary: () => void;
   section: SettingsSection; onSection: (s: SettingsSection) => void; onError: (e: unknown) => void;
+  /** Rendered in the full window beside the sidebar: no back button. */
+  embedded?: boolean;
+  /** Window controls, rendered at the right end of the top bar. */
+  chrome?: ReactNode;
 }) {
   const navRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -744,14 +612,14 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     // Landing on a section puts the focus on its list entry so the arrow keys work at once; typing in
     // the "find" box keeps its focus.
     if (document.activeElement === findRef.current) return;
-    (navRef.current?.querySelector<HTMLElement>(".set-navitem.on")
+    (navRef.current?.querySelector<HTMLElement>(".nv.on")
       ?? bodyRef.current?.querySelector<HTMLElement>("input, button"))?.focus();
   }, [section]);
   // Arrow keys walk the sidebar; the popup's global key handler skips everything inside panels.
   const navKey = (e: React.KeyboardEvent) => {
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
-    const items = Array.from(navRef.current?.querySelectorAll<HTMLElement>(".set-navitem") ?? []);
+    const items = Array.from(navRef.current?.querySelectorAll<HTMLElement>(".nv") ?? []);
     const at = items.indexOf(document.activeElement as HTMLElement);
     const next = items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
     next?.focus();
@@ -766,7 +634,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
         e.stopPropagation();
         onSection(NAV[at].id);
         requestAnimationFrame(() => {
-          const h = document.querySelector<HTMLElement>(".set-body .fl-title");
+          const h = bodyRef.current?.querySelector<HTMLElement>(".grp h3");
           if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); }
         });
         return;
@@ -774,9 +642,8 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     }
     trapKey(e);
   };
-  const current = NAV.find((s) => s.id === section);
   return (
-    <section className="firstrun setup settings" aria-label="Settings"
+    <section className="firstrun settings" aria-label="Settings"
              onKeyDown={(e) => {
                if (e.key === "Escape") {
                  e.preventDefault(); e.stopPropagation();
@@ -784,36 +651,33 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
                  onClose();
                } else sectionKey(e);
              }}>
-      <header className="set-top">
-        <button className="set-back" onClick={onClose} title="Back to search (Esc)">
-          <BackIcon /><span>Back to search</span>
-        </button>
-        <span className="set-title">Settings{current ? <><i>/</i>{current.label}</> : null}</span>
-        <input ref={findRef} className="set-find" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
-               onChange={(e) => setFind(e.target.value)}
-               onKeyDown={(e) => {
-                 if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
-                 else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".set-navitem")?.focus(); }
-               }} />
-        <button className="set-close" onClick={onHide} title="Close winseek (hides the window)">
-          <span>Close</span><CloseIcon />
-        </button>
+      <header className="tbar">
+        {!embedded && (
+          <button className="ibtn" onClick={onClose} title="Back to search (Esc)" aria-label="Back to search"><IChevL size={17} /></button>
+        )}
+        <h1>Settings</h1>
+        <label className="sfind">
+          <ISearch size={16} />
+          <input ref={findRef} className="sf" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
+                 onChange={(e) => setFind(e.target.value)}
+                 onKeyDown={(e) => {
+                   if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
+                   else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
+                 }} />
+        </label>
+        {chrome}
       </header>
-      <div className="set-cols">
-      <div className="set-side">
-        <div className="set-brand"><img src={logo} alt="" width={22} height={22} />winseek</div>
-        <nav ref={navRef} className="set-nav" aria-label="Settings sections" onKeyDown={navKey}>
+      <div className="set">
+        <nav ref={navRef} className="snav" aria-label="Settings sections" onKeyDown={navKey}>
           {navItems.map((s) => (
             <button key={s.id} role="tab" aria-selected={section === s.id}
-                    className={"set-navitem" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
-              {s.icon}<span>{s.label}</span>
+                    className={"nv" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
+              {s.label}
             </button>
           ))}
           {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
         </nav>
-      </div>
-      <div className="set-detail">
-        <div className="set-body" ref={bodyRef}>
+        <div className="scont" ref={bodyRef}>
           {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
           {section === "indexing" && (
             <>
@@ -827,33 +691,24 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "performance" && <Performance backend={backend} onError={onError} />}
           {section === "general" && (
             <>
-              <DefaultView backend={backend} onError={onError} />
-              <AutostartToggle backend={backend} onError={onError} />
-              <div className="set-sec">
-                <div className="fl-title">Shortcuts</div>
-                <ShortcutsBlock backend={backend} onError={onError} />
-              </div>
-              <div className="set-sec">
-                <div className="fl-title">Library</div>
-                <div className="set-group">
-                  <div className="set-row">
-                    <span className="set-optmain">
-                      <b>Photos &amp; clean up</b>
-                      <span className="muted">Photos by month, smart collections, and finding near-duplicates or oversized files.</span>
-                    </span>
-                    <button className="btn secondary" onClick={onLibrary}>Open</button>
-                  </div>
-                </div>
-              </div>
+              <Grp title="General">
+                <DefaultViewRow backend={backend} onError={onError} />
+                <AutostartRow backend={backend} onError={onError} />
+              </Grp>
+              <ShortcutsBlock backend={backend} onError={onError} />
+              <Grp title="Library">
+                <Row title="Photos and clean up" desc="Photos by month, collections, and finding near-duplicates or oversized files">
+                  <button className="gbtn" onClick={onLibrary}>Open</button>
+                </Row>
+              </Grp>
             </>
           )}
           {section === "status" && <StatusSection backend={backend} onError={onError} />}
         </div>
         <footer className="set-foot">
-          <span className="muted">Changes are saved right away.</span>
-          <span className="muted"><kbd>Esc</kbd> back to search · <kbd>Ctrl</kbd>+<kbd>F</kbd> find a setting</span>
+          <span>Changes are saved right away.</span>
+          <span><kbd>Esc</kbd> back to search · <kbd>Ctrl</kbd> <kbd>F</kbd> find a setting</span>
         </footer>
-      </div>
       </div>
     </section>
   );

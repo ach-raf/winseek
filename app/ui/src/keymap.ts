@@ -36,6 +36,7 @@ export const KEYMAP: KeyDef[] = [
   { id: "popup.recycle", keys: ["Delete"], label: "Move to Recycle Bin", scope: "popup", group: "Selection" },
   { id: "popup.undo", keys: ["Ctrl+Z"], label: "Undo recycle", scope: "popup", group: "Selection" },
   { id: "popup.menu", keys: ["Shift+F10", "Menu"], label: "Context menu", scope: "popup", group: "Selection" },
+  { id: "popup.more", keys: ["Ctrl+K"], label: "More actions (context menu)", scope: "popup", group: "Selection" },
   { id: "popup.copyPath", keys: ["Ctrl+Shift+C"], label: "Copy full path", scope: "popup", group: "Selection" },
   { id: "popup.copyFile", keys: ["Ctrl+C"], label: "Copy the file", scope: "popup", group: "Selection" },
   { id: "popup.copyName", keys: ["Ctrl+Alt+C"], label: "Copy the file name", scope: "popup", group: "Selection" },

@@ -3,14 +3,14 @@ import type { Backend, Hit } from "./types";
 import { Preview } from "./Preview";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize } from "./format";
-import {
-  GRID_PAD, activeSection, gridCols, layoutGrid, moveIndex, railEntries, rowOfItem, scrollIntoView, visibleRows,
-} from "./libraryLogic";
+import { activeSection, moveMosaic, mosaicMetrics, packMosaic, railEntries, tileBox } from "./libraryLogic";
 
-const MIN_CELL = 150;
-const GAP = 8;
-const HEAD_H = 48;
-const THUMB = 256;
+const PAD = 22;
+const GAP = 4;
+const HEAD_H = 44;
+const NO_HEAD = 6;
+const BOTTOM = 14;
+const OVERSCAN = 320;
 
 export interface GridItem {
   path: string;
@@ -41,13 +41,14 @@ export interface LibActions {
 
 const toHit = (i: GridItem): Hit => ({ name: i.name, path: i.path, is_dir: false, size: i.size, mtime: i.mtime });
 
-function Thumb({ backend, item }: { backend: Backend; item: GridItem }) {
-  const src = backend.iconUrl(item.path, false, true, THUMB);
+function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: number }) {
+  const src = backend.iconUrl(item.path, false, true, px);
   const [bad, setBad] = useState(false);
   if (!src || bad) return <span className="lg-ph"><FileIcon name={item.name} isDir={false} src={null} /></span>;
   return <img src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />;
 }
 
+/** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized. */
 export function Gallery({ backend, sections, rail, actions, empty }: {
   backend: Backend;
   sections: GallerySection[];
@@ -72,14 +73,20 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
     for (const s of sections) { out.push(n); n += s.items.length; }
     return out;
   }, [sections]);
-  const { cols, cell } = gridCols(size.w, MIN_CELL, GAP);
-  const layout = useMemo(
-    () => layoutGrid(sections.map((s) => s.items.length), sections.map((s) => s.label), cols, cell, GAP, HEAD_H),
-    [sections, cols, cell],
-  );
   const railList = useMemo(
     () => (rail ? railEntries(sections.filter((s) => s.year !== undefined && s.month !== undefined) as { year: number; month: number; items: GridItem[] }[]) : []),
     [rail, sections],
+  );
+
+  // 8 columns when there is room (prototype), fewer next to the preview pane / in narrow windows.
+  const inner = Math.max(0, size.w - PAD * 2);
+  const cols = inner >= 640 ? 8 : inner >= 460 ? 6 : 4;
+  const cell = Math.max(24, (inner - GAP * (cols - 1)) / cols);
+  const rowH = Math.max(80, Math.min(132, Math.round(cell * 0.92)));
+  const mosaic = useMemo(() => packMosaic(sections.map((s) => s.items.length), cols), [sections, cols]);
+  const metrics = useMemo(
+    () => mosaicMetrics(mosaic, rowH, GAP, sections.map((s) => (s.label ? HEAD_H : NO_HEAD)), BOTTOM, 28),
+    [mosaic, rowH, sections],
   );
 
   useLayoutEffect(() => {
@@ -95,17 +102,21 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, flat.length - 1))); }, [flat.length]);
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, [isEmpty]);
 
-  // Keep the selected cell on screen.
+  // Keep the selected tile on screen (below the sticky heading).
   const toScroll = useRef(false);
   useEffect(() => {
     const el = box.current;
-    if (!el || !toScroll.current) return;
+    const t = mosaic.tiles[sel];
+    if (!el || !toScroll.current || !t) return;
     toScroll.current = false;
-    const row = rowOfItem(layout, sel);
-    if (!row) return;
-    const t = scrollIntoView(row, el.scrollTop, el.clientHeight);
-    if (t !== el.scrollTop) el.scrollTop = t;
-  }, [sel, layout]);
+    const b = tileBox(t, rowH, GAP, metrics.head[t.section]);
+    const y = metrics.top[t.section] + b.y;
+    const margin = 8, headroom = HEAD_H + margin;
+    let next = el.scrollTop;
+    if (y - headroom < next) next = Math.max(0, y - headroom);
+    else if (y + b.h + margin > next + el.clientHeight) next = y + b.h + margin - el.clientHeight;
+    if (next !== el.scrollTop) el.scrollTop = next;
+  }, [sel, mosaic, metrics, rowH]);
 
   const cur = flat[sel] ?? null;
   // The preview follows the selection once it settles (arrowing must not load every file).
@@ -128,11 +139,11 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
     switch (e.key) {
       case "ArrowLeft": case "ArrowRight": case "ArrowUp": case "ArrowDown": case "Home": case "End":
         e.preventDefault();
-        move(moveIndex(sel, e.key, cols, flat.length));
+        move(moveMosaic(mosaic, metrics, rowH, GAP, sel, e.key, flat.length));
         break;
       case "PageDown": case "PageUp": {
         e.preventDefault();
-        const rows = Math.max(1, Math.floor(size.h / (cell + GAP)) - 1);
+        const rows = Math.max(1, Math.floor(size.h / (rowH + GAP)) - 1);
         move(Math.max(0, Math.min(flat.length - 1, sel + (e.key === "PageDown" ? 1 : -1) * rows * cols)));
         break;
       }
@@ -147,13 +158,13 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
   const jump = (section: number) => {
     const el = box.current;
     if (!el) return;
-    el.scrollTop = layout.sectionTop[section] ?? 0;
+    el.scrollTop = metrics.top[section] ?? 0;
     const first = sectionStart[section];
     if (first !== undefined) setSel(first);
     root.current?.focus({ preventScroll: true });
   };
 
-  const activeKey = sections[activeSection(layout.sectionTop, scrollTop)]?.key;
+  const activeKey = sections[activeSection(metrics.top, scrollTop)]?.key;
   // The rail follows the scroll position.
   const railRef = useRef<HTMLElement>(null);
   useEffect(() => {
@@ -162,44 +173,49 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
 
   if (isEmpty) return <div className="lg-empty">{empty}</div>;
 
-  const [a, b] = visibleRows(layout.rows, scrollTop, size.h);
+  const lo = scrollTop - OVERSCAN, hi = scrollTop + size.h + OVERSCAN;
 
   return (
-    <div className="lg" ref={root} tabIndex={0} onKeyDown={onKey} role="grid" aria-label="Photos">
+    <div className="lg" ref={root} tabIndex={0} data-autofocus onKeyDown={onKey} role="listbox" aria-label="Photos">
       <div className="lg-main">
         <div className="lg-scroll" ref={box} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
-          <div className="lg-space" style={{ height: layout.total }}>
-            {layout.rows.slice(a, b).map((r) =>
-              r.kind === "head" ? (
-                <div key={"h" + r.section} className="lg-head" style={{ top: r.top, height: r.h }}>
-                  <span>{r.label}</span>
-                  <em>{sections[r.section].items.length.toLocaleString("en-US")}</em>
-                </div>
-              ) : (
-                <div key={r.start} className="lg-row" style={{ top: r.top, height: r.h }} role="row">
-                  {flat.slice(r.start, r.end).map((it, k) => {
-                    const idx = r.start + k;
-                    return (
-                      <button
-                        key={it.path}
-                        role="gridcell"
-                        aria-selected={idx === sel}
-                        className={"lg-cell" + (idx === sel ? " sel" : "")}
-                        style={{ left: GRID_PAD + k * (cell + GAP), width: cell, height: cell }}
-                        tabIndex={-1}
-                        title={`${it.name}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}${it.mtime ? ` · ${formatDate(it.mtime)}` : ""}`}
-                        onClick={() => { setSel(idx); root.current?.focus({ preventScroll: true }); }}
-                        onDoubleClick={() => actions.open(it.path)}
-                        onContextMenu={(e) => { e.preventDefault(); setSel(idx); actions.menu(it.path, e.clientX, e.clientY); }}
-                      >
-                        <Thumb backend={backend} item={it} />
-                        <span className="lg-name">{it.name}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ),
-            )}
+          <div className="lg-space" style={{ height: metrics.total }}>
+            {sections.map((s, si) => {
+              const top = metrics.top[si], h = metrics.h[si];
+              if (top + h < lo || top > hi || s.items.length === 0) return null;
+              const head = metrics.head[si];
+              const ms = mosaic.sections[si];
+              const tiles: React.ReactNode[] = [];
+              for (let k = ms.first; k < ms.end; k++) {
+                const t = mosaic.tiles[k];
+                const b = tileBox(t, rowH, GAP, head);
+                if (top + b.y + b.h < lo || top + b.y > hi) continue;
+                const it = flat[k];
+                tiles.push(
+                  <button
+                    key={it.path}
+                    role="option"
+                    aria-selected={k === sel}
+                    className={"tl" + (t.w === 2 && t.h === 2 ? " w2" : t.w === 2 ? " wide" : "") + (k === sel ? " sel" : "")}
+                    style={{ left: PAD + t.col * (cell + GAP), top: b.y, width: t.w * cell + (t.w - 1) * GAP, height: b.h }}
+                    tabIndex={-1}
+                    title={`${it.name}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}${it.mtime ? ` · ${formatDate(it.mtime)}` : ""}`}
+                    onClick={() => { setSel(k); root.current?.focus({ preventScroll: true }); }}
+                    onDoubleClick={() => actions.open(it.path)}
+                    onContextMenu={(e) => { e.preventDefault(); setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}
+                  >
+                    <Thumb backend={backend} item={it} px={t.w === 2 ? 480 : 256} />
+                    <span className="lg-name">{it.name}</span>
+                  </button>,
+                );
+              }
+              return (
+                <section key={s.key} className="mon" style={{ top, height: h }}>
+                  {s.label && <h3>{s.label}<i>{s.items.length.toLocaleString("en-US")} items</i></h3>}
+                  {tiles}
+                </section>
+              );
+            })}
           </div>
         </div>
         <div className="lg-info" aria-live="polite">
@@ -209,7 +225,7 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
               {cur.name}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}
             </span>
           )}
-          <span className="spacer" />
+          <span className="sp" />
           <span className="hints">
             <span><kbd>Space</kbd> Preview</span>
             <span><kbd>↵</kbd> Open</span>

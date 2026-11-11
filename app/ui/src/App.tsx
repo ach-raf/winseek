@@ -1,4 +1,4 @@
-import { memo, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { backspaceDropsChip, hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
 import { calc } from "./calc.ts";
@@ -10,16 +10,17 @@ import { isToggleKey, shellClass, toggleMode, type ViewMode } from "./viewMode";
 import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
-import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
-import { buildOverview, expandable, ovMove, type Expand, type OvItem } from "./overviewLogic";
+import { HitRow, Overview, launchVerb, type ItemHandlers } from "./Overview";
+import { buildHome, buildOverview, bumpMru, expandable, fmtMs, isGrid, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import Library from "./Library";
+import { Sidebar, WindowControls, type Page } from "./Sidebar";
+import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
 import { portableApps, launchForFilter, makeLaunchGuard } from "./launchLogic";
 import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
-import { footerHints, HintChip, Shortcuts, tooltip, type RowKind } from "./Shortcuts";
+import { Shortcuts, tooltip } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
-import { applyAccent } from "./accent";
-import { FileIcon } from "./FileIcon";
-import { formatDate, formatSize, kindOf, splitDir } from "./format";
+import { kindOf } from "./format";
 
 const ROW_H = 54;
 const PAGE = 80;
@@ -30,7 +31,7 @@ const FILTERS: { id: Filter; label: string }[] = [
   { id: "apps", label: "Apps" },
   { id: "settings", label: "Settings" }, // launcher-only scope: no name-index rows
   { id: "images", label: "Images" },
-  { id: "docs", label: "Docs" },
+  { id: "docs", label: "Documents" },
   { id: "video", label: "Video" },
   { id: "audio", label: "Audio" },
   { id: "folders", label: "Folders" },
@@ -74,55 +75,6 @@ async function scanRanges(
   }
   return { rows, partial, ms: performance.now() - t0 };
 }
-
-const Row = memo(function Row({
-  hit, query, why, selected, top, icon, thumb, renaming, onPick, onOpen, onDown, onMenu, onRenameCommit, onRenameCancel,
-}: {
-  hit: Hit | undefined; query: string; why: string; selected: boolean; top: number; icon: string | null; thumb: boolean; renaming: boolean;
-  onPick: () => void; onOpen: () => void; onDown: (e: React.MouseEvent) => void; onMenu: (e: React.MouseEvent) => void;
-  onRenameCommit: (name: string) => void; onRenameCancel: () => void;
-}) {
-  if (!hit) {
-    return (
-      <div className="row skeleton" style={{ transform: `translateY(${top}px)` }}>
-        <span className="ficon" />
-        <div className="meta"><span className="sk w1" /><span className="sk w2" /></div>
-      </div>
-    );
-  }
-  const { head, tail } = splitDir(hit.path);
-  return (
-    <div
-      className={"row" + (selected ? " selected" : "")}
-      style={{ transform: `translateY(${top}px)` }}
-      role="option"
-      aria-selected={selected}
-      data-sel={selected ? "1" : undefined}
-      onClick={renaming ? undefined : onPick}
-      onDoubleClick={renaming ? undefined : onOpen}
-      onMouseDown={onDown}
-      onContextMenu={onMenu}
-      title={hit.path}
-    >
-      <FileIcon name={hit.name} isDir={hit.is_dir} src={icon} thumb={thumb} />
-      <div className="meta">
-        <div className="name">
-          {renaming
-            ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={onRenameCommit} onCancel={onRenameCancel} />
-            : <><Highlight text={hit.name} query={query} /></>}
-        </div>
-        <div className="path">
-          <span className="head">{head}</span><span className="tail">{tail}</span>
-          {why && <span className="why-line" title="Why it matched">{why}</span>}
-        </div>
-      </div>
-      <div className="side">
-        <span className="size">{hit.is_dir ? "Folder" : formatSize(hit.size)}</span>
-        <span className="date">{formatDate(hit.mtime)}</span>
-      </div>
-    </div>
-  );
-});
 
 type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] } | { kind: "unhide"; id: string };
 
@@ -174,6 +126,24 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
   // Compact popup or full-screen layout; the window itself is resized by the backend.
   const [viewMode, setViewMode] = useState<ViewMode>("compact");
+  const full = viewMode === "full";
+  // Full window: which page the sidebar shows (the compact popup is always "search").
+  const [page, setPage] = useState<Page>("search");
+  // Drive scope (the segmented control): "" = all drives, else one letter.
+  const [drive, setDrive] = useState("");
+  // Per-type result counts of the typed query (the numbers on the filter chips).
+  const [nameCounts, setNameCounts] = useState<Partial<Record<Filter, number>> | null>(null);
+  // "Most used" apps on home: a launch count kept here (the backend has no usage listing).
+  const [mru, setMru] = useState<MruEntry[]>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem("winseek.mru") ?? "[]");
+      return Array.isArray(v) ? v.filter((e): e is MruEntry => !!e?.item?.id && typeof e.n === "number") : [];
+    } catch { return []; }
+  });
+  const saveMru = useCallback((next: MruEntry[]) => {
+    setMru(next);
+    try { localStorage.setItem("winseek.mru", JSON.stringify(next)); } catch { /* remembered only when storage works */ }
+  }, []);
   const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
   const [hotkeyBindings, setHotkeyBindings] = useState<Record<string, string>>({});
   const [hintOff, setHintOff] = useState(false);
@@ -202,6 +172,9 @@ export default function App({ backend }: { backend: Backend }) {
   const setupPrimaryRef = useRef<() => void>(() => {});
   const ovRef = useRef<HTMLDivElement>(null);
   const previewApi = useRef<PreviewApi | null>(null); // the open preview's keyboard surface
+  const openSettingsRef = useRef<() => void>(() => {}); // Settings: a panel in the popup, a page in the full window
+  const enterRef = useRef<(ctrl: boolean, shift: boolean) => void>(() => {}); // Enter / Ctrl+Enter / Ctrl+Shift+Enter, also the footer buttons
+  const menuAtRef = useRef<() => void>(() => {}); // the context menu at the selection (Menu key, Ctrl+K, "More")
 
   const inputRef = useRef<HTMLInputElement>(null);
   // Search history (Alt+Up / Alt+Down): loaded once, appended when the user acts on a result.
@@ -234,6 +207,7 @@ export default function App({ backend }: { backend: Backend }) {
   const parsed = useMemo(() => parseQuery(query, { off }), [query, off]);
   useEffect(() => { if (!query.trim()) setOff((o) => (o.size ? new Set() : o)); }, [query]);
   const nameQ = nameQuery(parsed);
+  const scopedQ = scopeDrive(nameQ, drive); // what the name index gets: the words plus the drive scope
   // "settings" is a launcher-only scope, not a name-index filter — via the word in the query or the tab.
   const effFilter: Filter = parsed.kind && parsed.kind !== "settings" ? parsed.kind : filter;
   const settingsScope = parsed.kind === "settings" || filter === "settings";
@@ -245,14 +219,14 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
 
   // ---- search by meaning ---------------------------------------------------
-  const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen, epoch);
+  const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen || (full && page === "settings"), epoch);
   const models = useModels(backend, refreshT1);
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
   // Text found inside files (documents, PDFs, screenshot OCR) is searchable before the models exist, so the
   // meaning search runs whenever Tier 1 is up; without models it answers with text hits only.
   const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext);
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
-  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed)), [sem.hits, parsed]);
+  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed) && onDrive(h.path, drive)), [sem.hits, parsed, drive]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
   const selCount = data.total;
 
@@ -260,29 +234,35 @@ export default function App({ backend }: { backend: Backend }) {
   // A typed search shows sections (Top Hit, Files, Images, Documents) with "Show all"; the recent list, a sort
   // other than best match, and "Show all files" use the full virtualised list instead.
   const [expand, setExpand] = useState<Expand>(null);
-  useEffect(() => { setExpand(null); }, [query, filter]);
-  const overview = !isRecent && sort === "rel" && expand !== "files";
+  useEffect(() => { setExpand(null); }, [query, filter, drive]);
+  const overview = sort === "rel" && expand !== "files"; // home (Most used + Recent files) is an overview too
   // The calculator Top Hit belongs to "all" only — a type filter means "show me that kind of file".
   const calcResult = useMemo(() => (settingsScope || expand || effFilter !== "all" ? null : calc(parsed.text)), [parsed.text, settingsScope, expand, effFilter]);
   // Launcher rows follow the type filter (a Folders search must not put a settings page in the Top Hit slot).
   const launchSel = useMemo(
-    () => launchForFilter(launch, settingsScope ? "settings" : effFilter),
-    [launch, settingsScope, effFilter], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (drive ? [] : launchForFilter(launch, settingsScope ? "settings" : effFilter)), // apps / settings have no drive
+    [launch, settingsScope, effFilter, drive], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const portable = useMemo(
     () => (lcfg?.portable === false ? [] : portableApps(data.rows.filter((h): h is Hit => !!h), parsed.text, launch)),
     [lcfg, data.rows, data.ver, parsed.text, launch], // eslint-disable-line react-hooks/exhaustive-deps
   );
+  // Tile grids per layout: photos 4 / 5 columns, apps 6 / 8.
+  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, mostused: full ? 8 : 6 }), [full]);
+  const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
   const ov = useMemo(
-    () => buildOverview({
-      names: settingsScope ? [] : data.rows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
-      expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
-    }),
-    [data.rows, data.ver, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (isRecent
+      ? buildHome({ mru: mruHits, recent: data.recent ? data.rows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
+      : buildOverview({
+        names: settingsScope ? [] : data.rows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
+        expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
+        photoCols: gridCols.images,
+      })),
+    [isRecent, mruHits, gridCols, full, data.recent, data.rows, data.ver, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
-  useEffect(() => { setOselKey(null); }, [query, filter, expand]);
+  useEffect(() => { setOselKey(null); }, [query, filter, expand, drive]);
   const osel = Math.max(0, oselKey ? ov.flat.findIndex((x) => x.key === oselKey) : 0);
   const ovItem: OvItem | undefined = overview ? ov.flat[osel] : undefined;
 
@@ -292,17 +272,18 @@ export default function App({ backend }: { backend: Backend }) {
     inflight.current.clear();
     (async () => {
       if (isRecent) {
-        const hits = await backend.recent(40);
+        const all = await backend.recent(drive ? 300 : 40);
         if (my !== seq.current) return;
+        const hits = drive ? all.filter((h) => onDrive(h.path, drive)).slice(0, 40) : all;
         rowsRef.current = hits;
         setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else if (hasRanges(parsed)) {
-        const r = await scanRanges(backend, nameQ, effFilter, sort, parsed, () => my !== seq.current);
+        const r = await scanRanges(backend, scopedQ, effFilter, sort, parsed, () => my !== seq.current);
         if (my !== seq.current) return;
         rowsRef.current = r.rows;
         setData({ total: r.rows.length, rows: r.rows, elapsedMs: r.ms, recent: false, full: true, partial: r.partial, ver: 0 });
       } else {
-        const r = await backend.search({ query: nameQ, offset: 0, limit: PAGE, sort, filter: effFilter });
+        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: effFilter });
         if (my !== seq.current) return;
         // Only the loaded rows are stored (`data.total` is the length); a one-letter query can match
         // millions of names and must not allocate a slot for each on every keystroke.
@@ -315,7 +296,7 @@ export default function App({ backend }: { backend: Backend }) {
       setScrollTop(0);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, nameQ, effFilter, rangeKey, sort, isRecent, epoch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [backend, scopedQ, drive, effFilter, rangeKey, sort, isRecent, epoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const ensurePages = useCallback((first: number, last: number) => {
     if (data.recent || data.full) return;
@@ -323,18 +304,33 @@ export default function App({ backend }: { backend: Backend }) {
     for (let p = Math.floor(first / PAGE); p <= Math.floor(last / PAGE); p++) {
       if (rowsRef.current[p * PAGE] || inflight.current.has(p) || p * PAGE >= data.total) continue;
       inflight.current.add(p);
-      backend.search({ query: nameQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
+      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
         if (my !== seq.current) return;
         const rows = rowsRef.current;
         r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
         setData((d) => ({ ...d, ver: d.ver + 1 }));
       }).catch(console.error);
     }
-  }, [backend, data.recent, data.full, data.total, nameQ, sort, effFilter]);
+  }, [backend, data.recent, data.full, data.total, scopedQ, sort, effFilter]);
 
   const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
   const last = Math.min(data.total - 1, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
   useEffect(() => { if (last >= first) ensurePages(first, last); }, [first, last, ensurePages]);
+
+  // The numbers on the type chips: one limit-1 search per type for the typed query (debounced, newest wins).
+  // Not for home, and not while a date / size filter is active (those are applied here, so the totals would lie).
+  const countsOn = query.trim() !== "" && !hasRanges(parsed);
+  useEffect(() => {
+    if (!countsOn) { setNameCounts(null); return; }
+    let dead = false;
+    const t = window.setTimeout(() => {
+      const kinds: Filter[] = ["all", "images", "docs", "video", "audio", "folders"];
+      Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 1, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
+        .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })
+        .catch(() => { if (!dead) setNameCounts(null); });
+    }, 140);
+    return () => { dead = true; window.clearTimeout(t); };
+  }, [backend, countsOn, scopedQ, epoch]);
 
   // ---- status / window events ---------------------------------------------
   const fast = counting && !summary; // 250 ms while the first scan is being watched
@@ -377,15 +373,6 @@ export default function App({ backend }: { backend: Backend }) {
     }
   }, [counting, summary, status]);
 
-  // accent colour follows Windows; re-read on load, popup show and light/dark switch
-  useEffect(() => {
-    const dark = window.matchMedia("(prefers-color-scheme: dark)");
-    const apply = () => backend.accentPalette().then((p) => applyAccent(p, dark.matches)).catch(() => {});
-    apply();
-    dark.addEventListener("change", apply);
-    return () => dark.removeEventListener("change", apply);
-  }, [backend, epoch]);
-
   useEffect(() => {
     let off: (() => void) | undefined;
     backend.onShown(() => {
@@ -410,6 +397,7 @@ export default function App({ backend }: { backend: Backend }) {
     return () => { dead = true; off?.(); };
   }, [backend]);
   useEffect(() => { document.documentElement.classList.toggle("view-full", viewMode === "full"); }, [viewMode]);
+  useEffect(() => { if (viewMode !== "full") setPage("search"); }, [viewMode]); // the pages are a full-window thing
   const flipView = useCallback(() => {
     void backend.viewSetCurrent(toggleMode(viewMode)).then(setViewMode).catch(() => {});
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -479,7 +467,12 @@ export default function App({ backend }: { backend: Backend }) {
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
   const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
   /** Settings opened straight on the Status section (tray item, Ctrl+Shift+L). */
-  const openStatus = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); setSettingsSection("status"); refreshT1(); }, [refreshT1]);
+  const openStatus = useCallback(() => {
+    setSetupOpen(false);
+    setSettingsSection("status");
+    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    refreshT1();
+  }, [refreshT1, full, setSettingsSection]);
 
   const semSel = ovItem?.sem;
   const current: Hit | undefined = overview ? ovItem?.hit : data.rows[sel];
@@ -538,9 +531,7 @@ export default function App({ backend }: { backend: Backend }) {
       // The winseek panels are handled here; the backend only records the pick.
       if (id === "cmd:winseek_settings") {
         void backend.launchRecord(id, q);
-        setSetupOpen(false);
-        setSettingsOpen(true);
-        refreshT1();
+        openSettingsRef.current();
         await backend.hide();
         return;
       }
@@ -549,9 +540,20 @@ export default function App({ backend }: { backend: Backend }) {
       if (mode === "reveal") { await backend.launchReveal(id); await backend.hide(); return; }
       if (h.confirm && armed !== id) { armConfirm(id); return; } // second Enter confirms
       await backend.launchRun(id, q, mode === "admin");
+      if (h.item.kind === "app") saveMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
       await backend.hide();
     } catch (e) { fail(e); }
-  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, refreshT1, recordQuery]);
+  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, saveMru]);
+
+  const enter = (ctrl: boolean, shift: boolean) => {
+    if (ovItem?.calc !== undefined) { // calculator result: Enter copies it
+      void backend.copyTextHtml(ovItem.calc).then(() => backend.hide()).catch(fail);
+      return;
+    }
+    if (ovItem?.launch) { void launchAct(ovItem.launch, ctrl && shift ? "admin" : ctrl ? "reveal" : "open"); return; }
+    void act(ctrl ? "reveal" : "open", current);
+  };
+  enterRef.current = enter;
 
   const removeRow = useCallback((i: number) => {
     const rows = rowsRef.current.slice();
@@ -618,9 +620,10 @@ export default function App({ backend }: { backend: Backend }) {
     setLaunchMenu(null);
     void backend.launchHide(h.item.id).then(() => {
       setLaunch((prev) => prev.filter((x) => x.item.id !== h.item.id));
+      saveMru(mru.filter((e) => e.item.id !== h.item.id));
       pushUndo({ kind: "unhide", id: h.item.id }, "Hidden from results");
     }).catch(fail);
-  }, [backend, pushUndo, fail]);
+  }, [backend, pushUndo, fail, mru, saveMru]);
 
   const openMenu = useCallback(async (i: number, x: number, y: number) => {
     const h = rowsRef.current[i];
@@ -702,9 +705,16 @@ export default function App({ backend }: { backend: Backend }) {
         const r = el.getBoundingClientRect();
         void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
       };
-      const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir)); };
+      menuAtRef.current = menuAtSelection;
+      const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir, gridCols)); };
       // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
       if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
+      if (e.key === "Escape" && cheat) { e.preventDefault(); setCheat(false); return; }
+      // Full window, another page: the page owns the keyboard. Esc leaves Settings for the search.
+      if (full && page !== "search") {
+        if (e.key === "Escape" && page === "settings") { e.preventDefault(); setPage("search"); refocus(); }
+        return;
+      }
       // Alt combos (physical-key matching, so Alt+1 works on AZERTY) must preventDefault:
       // WebView2 otherwise beeps or moves focus to the menu bar.
       if (e.altKey && !e.ctrlKey && !e.metaKey) {
@@ -742,6 +752,7 @@ export default function App({ backend }: { backend: Backend }) {
         }
       }
       if (matchesKey(e, "Ctrl+Shift+L")) { e.preventDefault(); openStatus(); return; }
+      if (matchesKey(e, "Ctrl+K")) { e.preventDefault(); menuAtSelection(); return; } // "More" in the footer
       // Ctrl+Shift+E opens the containing folder WITHOUT selecting (folder rows: the folder
       // itself); Ctrl+Shift+T opens a terminal there (PRD B4, P1). Launch rows: no-ops.
       if (matchesKey(e, "Ctrl+Shift+E") || matchesKey(e, "Ctrl+Shift+T")) {
@@ -781,18 +792,18 @@ export default function App({ backend }: { backend: Backend }) {
         if (e.key === "ArrowUp") return ovStep(e.ctrlKey ? "prev" : "up");
         if (e.key === "PageDown") return ovStep("next");
         if (e.key === "PageUp") return ovStep("prev");
-        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && navigated.current && ovItem?.section === "images") {
+        if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && navigated.current && isGrid(ovItem?.section)) {
           return ovStep(e.key === "ArrowLeft" ? "left" : "right");
         }
       }
-      const page = Math.max(1, Math.floor(viewH / ROW_H) - 1);
+      const pageRows = Math.max(1, Math.floor(viewH / ROW_H) - 1);
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLibrary(); return; }
-        if (e.ctrlKey && e.key === ",") { e.preventDefault(); setSetupOpen(false); setSettingsOpen(true); refreshT1(); return; }
+      if (e.ctrlKey && e.key === ",") { e.preventDefault(); openSettingsRef.current(); return; }
       switch (e.key) {
         case "ArrowDown": e.preventDefault(); navigated.current = true; move(sel + 1); break;
         case "ArrowUp": e.preventDefault(); navigated.current = true; move(sel - 1); break;
-        case "PageDown": e.preventDefault(); navigated.current = true; move(sel + page); break;
-        case "PageUp": e.preventDefault(); navigated.current = true; move(sel - page); break;
+        case "PageDown": e.preventDefault(); navigated.current = true; move(sel + pageRows); break;
+        case "PageUp": e.preventDefault(); navigated.current = true; move(sel - pageRows); break;
         case "Home": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(0); } break;
         case "End": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(selCount - 1); } break;
         case " ":
@@ -814,12 +825,7 @@ export default function App({ backend }: { backend: Backend }) {
             e.preventDefault(); primaryRef.current(); break;
           }
           e.preventDefault();
-          if (ovItem?.calc !== undefined) { // calculator Top Hit: Enter copies the result
-            void backend.copyTextHtml(ovItem.calc).then(() => backend.hide()).catch(fail);
-            break;
-          }
-          if (ovItem?.launch) { void launchAct(ovItem.launch, e.ctrlKey && e.shiftKey ? "admin" : e.ctrlKey ? "reveal" : "open"); break; }
-          void act(e.ctrlKey ? "reveal" : "open", current);
+          enterRef.current(e.ctrlKey, e.shiftKey);
           break;
         case "Escape":
           e.preventDefault();
@@ -890,7 +896,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -928,13 +934,19 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
   const openSetup = useCallback(() => {
     setSettingsOpen(false);
+    if (full) setPage("search"); // the setup panel lives on the search page
     setSetupOpen(true);
     models.refreshPlan();
     refreshT1();
-  }, [models, refreshT1]);
+  }, [models, refreshT1, full]);
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
-  const openSettings = useCallback(() => { setSetupOpen(false); setSettingsOpen(true); refreshT1(); }, [refreshT1]);
-  const closeSettings = useCallback(() => { setSettingsOpen(false); refocus(); }, [refocus]);
+  const openSettings = useCallback(() => {
+    setSetupOpen(false);
+    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    refreshT1();
+  }, [refreshT1, full]);
+  openSettingsRef.current = openSettings;
+  const closeSettings = useCallback(() => { setSettingsOpen(false); setPage("search"); refocus(); }, [refocus]);
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.onOpenStatus(openStatus).then((u) => (dead ? u() : (off = u)));
@@ -951,10 +963,11 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
   const state = status.find((v) => v.state !== "live")?.state ?? (status.length ? "live" : "connecting");
+  const filesText = totalFiles >= 1e6 ? `${(totalFiles / 1e6).toFixed(1)}M` : totalFiles.toLocaleString("en-US");
   const statusText =
     state === "demo" ? `Demo data · ${service === "not_installed" ? "name service not installed" : service === "stopped" ? "name service stopped" : "searchd not running"}`
     : state === "offline" ? "searchd offline — reconnecting…"
-    : totalFiles ? `${totalFiles.toLocaleString("en-US")} files · ${state}`
+    : totalFiles ? (state === "live" ? `${filesText} files indexed` : `${filesText} files · ${state}`)
     : state === "scanning" ? "Indexing…"
     : "Connecting…";
   const heading = data.recent
@@ -963,28 +976,41 @@ export default function App({ backend }: { backend: Backend }) {
       ? `Recent · ${FILTERS.find((f) => f.id === filter)?.label}`
       : null;
   const sortLabel = SORTS.find((s) => s.id === sort)!.label;
+  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
+
+  // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
+  const rowHandlers: ItemHandlers = useMemo(() => ({
+    onSelect: (i) => {
+      if (suppressClick.current) { suppressClick.current = false; return; }
+      setSel(i); refocus();
+    },
+    onOpen: (i) => { if (!suppressClick.current) void act("open", rowsRef.current[i]); },
+    onMenu: (i, e) => { e.preventDefault(); if (!rowsRef.current[i]) return; setSel(i); void openMenu(i, e.clientX, e.clientY); },
+    onDown: (i, e) => { const h = rowsRef.current[i]; if (h) onRowDown(e, h); },
+    onRenameCommit: (i, n) => void doRename(i, n),
+    onRenameCancel: () => { setRenaming(false); refocus(); },
+  }), [act, openMenu, onRowDown, doRename, refocus]);
   const visible = useMemo(() => {
     const out: React.ReactNode[] = [];
     for (let i = first; i <= last; i++) {
       const h = data.rows[i];
-      const thumbKind = h ? ["image", "video"].includes(kindOf(h.name, h.is_dir)) : false;
+      if (!h) {
+        out.push(
+          <div key={i} className="row skeleton" style={{ transform: `translateY(${i * ROW_H}px)` }}>
+            <span className="ic" />
+            <div className="tx"><span className="sk w1" /><span className="sk w2" /></div>
+          </div>,
+        );
+        continue;
+      }
+      const why = data.recent ? "" : whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score);
       out.push(
-        <Row key={i} hit={h} query={parsed.text} why={h && !data.recent ? whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score) : ""} selected={i === sel} top={i * ROW_H}
-             icon={h ? backend.iconUrl(h.path, h.is_dir, thumbKind) : null} thumb={thumbKind}
-             renaming={renaming && i === sel}
-             onPick={() => {
-               if (suppressClick.current) { suppressClick.current = false; return; }
-               setSel(i); refocus();
-             }}
-             onOpen={() => { if (!suppressClick.current) void act("open", h); }}
-             onDown={(e) => { if (h) onRowDown(e, h); }}
-             onMenu={(e) => { e.preventDefault(); if (!h) return; setSel(i); void openMenu(i, e.clientX, e.clientY); }}
-             onRenameCommit={(n) => void doRename(i, n)}
-             onRenameCancel={() => { setRenaming(false); refocus(); }} />,
+        <HitRow key={i} hit={h} i={i} sel={i === sel} query={parsed.text} backend={backend} h={rowHandlers}
+                renaming={renaming && i === sel} y={i * ROW_H} title={why ? `${h.path}\n${why}` : h.path} />,
       );
     }
     return out;
-  }, [first, last, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, act, backend, renaming, onRowDown, openMenu, doRename, refocus]);
+  }, [first, last, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -993,6 +1019,7 @@ export default function App({ backend }: { backend: Backend }) {
     },
     onOpen: (i) => {
       const it = ov.flat[i];
+      if (it?.calc !== undefined) { void backend.copyTextHtml(it.calc).then(() => backend.hide()).catch(fail); return; }
       // Launch rows never drag, so a stale drag flag must not swallow their click; one launch per id covers click + dblclick.
       if (it?.launch) { if (launchOnce(it.launch.item.id)) void launchAct(it.launch, "open"); return; }
       if (suppressClick.current) return;
@@ -1001,7 +1028,7 @@ export default function App({ backend }: { backend: Backend }) {
     onMenu: (i, e) => {
       e.preventDefault();
       const it = ov.flat[i];
-      if (!it) return;
+      if (!it || it.calc !== undefined) return;
       ovGo(i);
       if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY }); return; }
       if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
@@ -1009,161 +1036,269 @@ export default function App({ backend }: { backend: Backend }) {
     onDown: (i, e) => { const it = ov.flat[i]; if (!it) return; if (it.launch) suppressClick.current = false; else onRowDown(e, it.hit); }, // launch rows do not drag
     onRenameCommit: (i, n) => { const idx = ov.flat[i]?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
     onRenameCancel: () => { setRenaming(false); refocus(); },
-  }), [ov.flat, ovGo, act, launchAct, launchOnce, openMenu, openSemMenu, onRowDown, doRename, refocus]);
+  }), [ov.flat, ovGo, act, launchAct, launchOnce, openMenu, openSemMenu, onRowDown, doRename, refocus, backend, fail]);
   const showList = !overview;
-  const rowKind: RowKind =
-    pvOpen ? "preview"
-    : ovItem?.calc !== undefined ? "calc"
-    : ovItem?.launch ? (({ app: "app", setting: "setting", command: "command" } as const)[ovItem.launch.item.kind])
-    : current?.is_dir ? "folder"
-    : current ? "file" : "file";
   const waitingSem = overview && sem.query !== parsed.text.trim() && parsed.text.trim().length >= 2 && !!t1 && t1.state !== "unavailable";
   const pvPane = !showPanel && !!pv && !!current;
+  const quickLook = pvOpen && pvPane;
 
-  return (
-    <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
-      <header
-        className={"searchbar" + (query ? "" : " idle")}
-        onMouseDown={(e) => {
-          // The bar is the window's drag handle; the input and buttons keep their own behavior.
-          if (e.button !== 0 || (e.target as HTMLElement).closest("input, button")) return;
-          e.preventDefault();
-          backend.movePopup().catch(fail);
-        }}
-      >
-        <svg className="glass" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-          <circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" />
-        </svg>
-        <input
-          ref={inputRef}
-          value={query}
-          onChange={(e) => { histAt.current = -1; setQuery(e.target.value); }}
-          placeholder="Search files and folders"
-          spellCheck={false}
-          autoComplete="off"
-          autoFocus
-          aria-label="Search"
-        />
-        {query && (
-          <button className="clear" onClick={() => { setQuery(""); inputRef.current?.focus(); }} aria-label="Clear" tabIndex={-1}>
-            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
+  // Result stat in the search bar: "N results · 0.4 ms" (not on home).
+  const statTotal = overview ? ov.sections.reduce((a, x) => a + x.total, 0) : data.total;
+  const statEl = !showPanel && !isRecent && loaded ? (
+    <span className="stat">
+      {statTotal.toLocaleString("en-US")}{data.partial ? "+" : ""} result{statTotal === 1 && !data.partial ? "" : "s"}
+      {data.elapsedMs !== null && <> {"·"} <b>{fmtMs(data.elapsedMs)} ms</b></>}
+    </span>
+  ) : null;
+
+  // ---- filter row ----
+  const countOf = (f: Filter): number | undefined => {
+    if (!nameCounts) return undefined;
+    const lc = (k: string) => (drive ? 0 : launch.filter((h) => h.item.kind === k).length);
+    switch (f) {
+      case "all": return (nameCounts.all ?? 0) + (drive ? 0 : launch.length);
+      case "apps": return lc("app") + portable.length;
+      case "settings": return lc("setting");
+      default: return nameCounts[f];
+    }
+  };
+  const frow = (
+    <nav className="frow" role="tablist" aria-label="File type filter">
+      {FILTERS.filter((f) => f.id !== "settings" || effFilter === "settings").map((f) => {
+        const n = countOf(f.id);
+        return (
+          <button key={f.id} role="tab" aria-selected={effFilter === f.id} tabIndex={-1}
+                  className={"fc" + (effFilter === f.id ? " on" : "") + (n === 0 ? " zero" : "")}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    const k = parsed.chips.find((c) => c.type === "kind");
+                    if (k) dropChip(k.key); // a tab click overrides the kind found in the text
+                    setFilter(f.id); inputRef.current?.focus();
+                  }}>
+            {f.label}{n !== undefined && n > 0 && <i>{n.toLocaleString("en-US")}</i>}
           </button>
-        )}
-        <kbd className="hotkey">Alt Space</kbd>
-      </header>
-
-      {parsed.chips.length > 0 && (
-        <div className="fchips" aria-label="Filters understood from your search">
-          {parsed.chips.map((c) => (
-            <span key={c.key} className={"fchip " + c.type}>
-              <span className="lbl">{c.label}</span>
-              <button tabIndex={-1} aria-label={`Remove filter ${c.label}`} title="Remove this filter (its words are searched as text)"
-                      onMouseDown={(e) => e.preventDefault()} onClick={() => dropChip(c.key)}>
-                <svg viewBox="0 0 24 24" width="10" height="10" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round"><path d="M6 6l12 12M18 6 6 18" /></svg>
-              </button>
-            </span>
-          ))}
-        </div>
+        );
+      })}
+      <span className="sp" />
+      {full && models.running && (
+        <button className="sortb" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
+                onMouseDown={(e) => e.preventDefault()} onClick={openSetup}>
+          Setting up search by meaning{models.progress && models.progress.overall_total > 0
+            ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
+        </button>
       )}
-
-      <div className="chips">
-        <div className="seg" role="tablist" aria-label="File type filter">
-          {FILTERS.map((f) => (
-            <button key={f.id} role="tab" aria-selected={effFilter === f.id} className={effFilter === f.id ? "on" : ""}
-                    tabIndex={-1} onClick={() => {
-                      const k = parsed.chips.find((c) => c.type === "kind");
-                      if (k) dropChip(k.key); // a tab click overrides the kind found in the text
-                      setFilter(f.id); inputRef.current?.focus();
-                    }}>
-              {f.label}
-            </button>
-          ))}
-        </div>
-        <span className="spacer" />
-        <button className="sort" tabIndex={-1} title={tooltip("popup.sort")}
-                onClick={() => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); }}>
+      {full && !isRecent && (
+        <button className="sortb" tabIndex={-1} title={tooltip("popup.sort")} onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
-        <button className="viewtoggle" tabIndex={-1} title={viewMode === "full" ? "Compact popup (F11)" : "Full screen (F11)"}
-                aria-label={viewMode === "full" ? "Switch to compact popup" : "Switch to full screen"} onMouseDown={(e) => e.preventDefault()} onClick={flipView}>
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            {viewMode === "full" ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /> : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
-          </svg>
-          <span className="rail-lbl">{viewMode === "full" ? "Compact popup" : "Full screen"}</span>
-        </button>
-        <button className="gear" tabIndex={-1} title={tooltip("popup.settings")} aria-label="Settings" onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
-          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-            <circle cx="12" cy="12" r="3" />
-            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.66 0-1.25.4-1.51 1z" />
-          </svg>
-          <span className="rail-lbl">Settings</span>
-        </button>
-      </div>
-
-      {showPanel && (setupOpen ? (
-        <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
-      ) : settingsOpen ? (
-        <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
-                  onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={openLibrary}
-                  section={settingsSection} onSection={setSettingsSection} onError={fail} />
-      ) : (
-        <FirstRun
-          mode={counting ? "counter" : "setup"} service={service} busy={setupBusy} error={setupErr}
-          rows={status.filter((v) => v.state !== "demo")} summary={summary}
-          onPrimary={() => void runSetup()}
-          onDismiss={() => { setDismissed(true); setSetupErr(null); refocus(); }}
-          onSemantic={t1?.state === "models_missing" ? openSetup : undefined}
-        />
-      ))}
-
-      <div className={"main" + (pvPane || (viewMode === "full" && !showPanel) ? " split" : "") + (pvPane && pvOpen ? " ql" : "")} hidden={showPanel}>
-      <div className="lcol">
-      {!showPanel && showList && (heading || expand === "files") && (
-        <div className="section">
-          {expand === "files" ? (
-            <button className="ov-back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => setExpand(null)} aria-label="Back to all results">
-              <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2.4" strokeLinecap="round" strokeLinejoin="round"><path d="m15 18-6-6 6-6" /></svg>
-              <span className="ov-title">Files <span className="ov-count">{data.total.toLocaleString("en-US")}</span></span>
-            </button>
-          ) : heading}
+      )}
+      {status.length > 0 && (
+        <div className="dseg" title="Limit to one drive">
+          <button className={!drive ? "on" : ""} tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => { setDrive(""); inputRef.current?.focus(); }}>All drives</button>
+          {status.map((v) => (
+            <button key={v.letter} className={drive === v.letter ? "on" : ""} tabIndex={-1} onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setDrive(v.letter); inputRef.current?.focus(); }}>{v.letter}:</button>
+          ))}
         </div>
       )}
+    </nav>
+  );
 
-      <div className="list" hidden={showPanel || !showList} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
-        <div className="spacer-v" style={{ height: data.total * ROW_H }}>{visible}</div>
-        {loaded && data.total === 0 && (
-          <div className="empty">
-            <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
-            <strong>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</strong>
-            <span>Check the spelling, or try a different filter.</span>
+  // ---- search box (compact: the popup's top bar; full: the field in the top bar) ----
+  const searchInner = (
+    <>
+      <IMag />
+      {parsed.chips.map((c) => (
+        <span key={c.key} className="qchip" title="Understood from your search">
+          <span>{c.type}</span>{c.label}
+          <button tabIndex={-1} aria-label={`Remove filter ${c.label}`} title="Remove this filter (its words are searched as text)"
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => dropChip(c.key)}>
+            <IX />
+          </button>
+        </span>
+      ))}
+      <input
+        ref={inputRef}
+        value={query}
+        onChange={(e) => { histAt.current = -1; setQuery(e.target.value); }}
+        placeholder="Search apps, files and photos"
+        spellCheck={false}
+        autoComplete="off"
+        autoFocus
+        aria-label="Search"
+      />
+    </>
+  );
+  const winControls = <WindowControls onRestore={flipView} onClose={() => void backend.hide()} />;
+
+  // ---- footer actions (compact popup) ----
+  const selItem = overview ? ovItem : undefined;
+  const hasSel = overview ? !!ovItem : !!current;
+  const isCalcSel = selItem?.calc !== undefined;
+  const launchSelHit = selItem?.launch && !isCalcSel ? selItem.launch : undefined;
+  const primary = isCalcSel ? "Copy result" : launchSelHit ? launchVerb(launchSelHit) : selItem?.section === "apps" ? "Launch" : "Open";
+  const second: { label: string; keys: string[]; run: () => void } | null =
+    launchSelHit ? (launchSelHit.item.kind === "app" && launchSelHit.item.admin_ok ? { label: "Run as admin", keys: ["Ctrl", "Shift", "↵"], run: () => enter(true, true) } : null)
+    : isCalcSel || !hasSel ? null
+    : { label: "Show in folder", keys: ["Ctrl", "↵"], run: () => enter(true, false) };
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // buttons must not take the caret from the box
+  const actions = !showPanel && hasSel ? (
+    <>
+      <button className="act pri" tabIndex={-1} onMouseDown={keep} onClick={() => enter(false, false)}>{primary} <kbd>{"↵"}</kbd></button>
+      {second && <><span className="vr" /><button className="act" tabIndex={-1} onMouseDown={keep} onClick={second.run}>{second.label} {second.keys.map((k) => <kbd key={k}>{k}</kbd>)}</button></>}
+      {!isCalcSel && <button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => menuAtRef.current()}>More <kbd>Ctrl</kbd><kbd>K</kbd></button>}
+    </>
+  ) : null;
+
+  const toastEl = toast ? (
+    <span className="toast" role="status">
+      {toast.msg}
+      {toast.undo && <> {"·"} <button className="undo" tabIndex={-1} onMouseDown={keep} onClick={() => void doUndo()}>Undo</button></>}
+    </span>
+  ) : null;
+
+  const panels = showPanel && (setupOpen ? (
+    <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
+  ) : settingsOpen ? (
+    <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
+              onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={openLibrary}
+              section={settingsSection} onSection={setSettingsSection} onError={fail} />
+  ) : (
+    <FirstRun
+      mode={counting ? "counter" : "setup"} service={service} busy={setupBusy} error={setupErr}
+      rows={status.filter((v) => v.state !== "demo")} summary={summary}
+      onPrimary={() => void runSetup()}
+      onDismiss={() => { setDismissed(true); setSetupErr(null); refocus(); }}
+      onSemantic={t1?.state === "models_missing" ? openSetup : undefined}
+    />
+  ));
+
+  return (
+    <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
+      {full && <Sidebar page={page} onPage={(p) => { setPage(p); if (p === "search") refocus(); }} status={status} />}
+
+      <div className="main-col" hidden={full && page !== "search"}>
+        {full ? (
+          <header className="tbar">
+            <div className="field sbar">{searchInner}</div>
+            {statEl}
+            <span className="sp" />
+            {winControls}
+          </header>
+        ) : (
+          <header
+            className="sbar pop"
+            onMouseDown={(e) => {
+              // The bar is the window's drag handle; the input and buttons keep their own behavior.
+              if (e.button !== 0 || (e.target as HTMLElement).closest("input, button")) return;
+              e.preventDefault();
+              backend.movePopup().catch(fail);
+            }}
+          >
+            {searchInner}
+            {statEl}
+            <button className="ibtn" tabIndex={-1} title={tooltip("popup.settings")} aria-label="Settings" onMouseDown={keep}
+                    onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
+              <IGear size={17} />
+            </button>
+            <button className="ibtn" tabIndex={-1} title="Open full window (F11)" aria-label="Switch to the full window" onMouseDown={keep} onClick={flipView}>
+              <IExpand />
+            </button>
+          </header>
+        )}
+
+        {frow}
+
+        {panels}
+
+        <div className={"cols" + (quickLook ? " ql" : "")} hidden={showPanel}>
+          <div className="lcol">
+            {full && !isRecent && (
+              <div className="colh"><span /><span>Name</span><span>Modified</span><span>Size</span></div>
+            )}
+            {!showPanel && showList && (heading || expand === "files") && (
+              <div className="sh">
+                {expand === "files" ? (
+                  <button className="back" tabIndex={-1} onMouseDown={keep} onClick={() => setExpand(null)} aria-label="Back to all results">
+                    <IChevL size={14} /><span>Files</span><i>{data.total.toLocaleString("en-US")}</i>
+                  </button>
+                ) : <span>{heading}</span>}
+              </div>
+            )}
+
+            <div className="list vlist" hidden={showPanel || !showList} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
+              <div className="spacer-v" style={{ height: data.total * ROW_H }}>{visible}</div>
+              {loaded && data.total === 0 && (
+                <div className="none">
+                  <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>
+                  Check the spelling, or try a different filter.
+                </div>
+              )}
+            </div>
+
+            {!showPanel && overview && (ov.flat.length > 0 ? (
+              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}
+                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} armed={armed} />
+            ) : loaded && !waitingSem ? (
+              <div className="none">
+                {isRecent ? (
+                  <><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</>
+                ) : (
+                  <><b>No results for &ldquo;{query.trim()}&rdquo;</b>Check the spelling, or try describing what the file is about.</>
+                )}
+              </div>
+            ) : <div className="list ov" />)}
+
+            {!showPanel && t1Off && !hintOff && query.trim() !== "" && (
+              <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
+            )}
           </div>
+
+          {/* full window: the preview is always there; compact: only as Quick Look (Space) */}
+          {(full || quickLook) && (pvPane ? (
+            <Preview backend={backend} hit={pv!.hit} query={parsed.text} snippet={pv!.snippet} page={pv!.page} boxes={pv!.boxes} apiRef={previewApi}
+                     onOpen={() => void act("open", pv!.hit)} onReveal={() => void act("reveal", pv!.hit)} onCopyPath={() => void act("copy", pv!.hit)} />
+          ) : (
+            <aside className="pv-none">
+              {ovItem?.calc !== undefined
+                ? <div className="none"><b>Calculator</b>Press Enter to copy the result.</div>
+                : isLaunchSel && ovItem?.launch
+                ? <div className="none"><b>{ovItem.launch.item.title}</b>{ovItem.launch.item.subtitle}. Press Enter to {launchVerb(ovItem.launch).toLowerCase()} it.</div>
+                : <div className="none"><b>Nothing selected</b>Pick a result to preview it.</div>}
+            </aside>
+          ))}
+        </div>
+
+        {!full && (
+          <footer className="abar">
+            <span className="st"><span className={"dot" + (state === "live" ? "" : " warn")} />{statusText}</span>
+            {models.running && (
+              <button className="dl-chip" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
+                      onMouseDown={keep} onClick={openSetup}>
+                Setting up search by meaning{models.progress && models.progress.overall_total > 0
+                  ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
+              </button>
+            )}
+            {toastEl}
+            <span className="sp" />
+            {actions}
+          </footer>
         )}
       </div>
 
-      {!showPanel && overview && (ov.flat.length > 0 ? (
-        <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}
-                  handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} armed={armed} />
-      ) : loaded && !waitingSem ? (
-        <div className="empty">
-          <svg viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round"><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21M8 10.5h5" /></svg>
-          <strong>No results for &ldquo;{query.trim()}&rdquo;</strong>
-          <span>Nothing by name, and nothing that clearly matches by meaning.</span>
+      {full && page === "settings" && (
+        <div className="main-col">
+          <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
+                    onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={() => setPage("timeline")}
+                    section={settingsSection} onSection={setSettingsSection} onError={fail} embedded chrome={winControls} />
         </div>
-      ) : <div className="ov" />)}
-
-      {!showPanel && t1Off && !hintOff && query.trim() !== "" && (
-        <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
       )}
-      </div>
-      {viewMode === "full" && !showPanel && !pvPane && (
-        <div className="pv pv-empty"><div className="pv-msg">{isLaunchSel ? "Press Enter to launch" : "Select a result to preview it here"}</div></div>
+      {full && (page === "timeline" || page === "collections" || page === "cleanup") && (
+        <div className="main-col">
+          <Library backend={backend} embedded tab={page} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
+        </div>
       )}
-      {pvPane && (
-        <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes} apiRef={previewApi}
-                 onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} onCopyPath={() => void act("copy", pv.hit)} />
-      )}
-      </div>
 
       {launchMenu && <LaunchMenu
         menu={{ hit: launchMenu.hit, x: launchMenu.x, y: launchMenu.y }} idx={menuIdx} setIdx={setMenuIdx}
@@ -1175,35 +1310,7 @@ export default function App({ backend }: { backend: Backend }) {
 
       {cheat && <Shortcuts scope="popup" bindings={hotkeyBindings} onClose={() => setCheat(false)} />}
 
-      <footer className="footer">
-        <span className={"status s-" + state}><i className="dot" />{statusText}</span>
-        {models.running && (
-          <button className="dl-chip" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
-                  onMouseDown={(e) => e.preventDefault()} onClick={openSetup}>
-            Setting up search by meaning{models.progress && models.progress.overall_total > 0
-              ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
-          </button>
-        )}
-        {toast ? (
-          <span className="toast" role="status">
-            {toast.msg}
-            {toast.undo && <> · <button className="undo" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => void doUndo()}>Undo</button></>}
-          </span>
-        ) : (
-          !data.recent && loaded && <span className="count">
-            {data.total.toLocaleString("en-US")}{data.partial ? "+" : ""} {overview && semHits.length ? "by name" : `result${data.total === 1 && !data.partial ? "" : "s"}`}
-            {data.elapsedMs !== null && ` · ${data.elapsedMs < 1 ? "<1" : Math.round(data.elapsedMs)} ms`}
-            {overview && semHits.length > 0 && ` · ${semHits.length} by meaning`}
-          </span>
-        )}
-        <span className="spacer" />
-        <span className="hints">
-          {(pvOpen ? footerHints("preview") : footerHints(rowKind)).map(([id, verb]) => (
-            <HintChip key={id + verb} id={id} verb={verb} />
-          ))}
-          <button className="lib-link" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={openLibrary} title={tooltip("popup.library")}>Library</button>
-        </span>
-      </footer>
+      {full && toastEl && <div className="ftoast">{toastEl}</div>}
     </div>
   );
 }

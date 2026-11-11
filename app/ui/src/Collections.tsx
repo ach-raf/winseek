@@ -3,6 +3,7 @@ import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./
 import { Gallery, type GallerySection, type GridItem, type LibActions } from "./Gallery";
 import { baseName } from "./Semantic";
 import { isScreenshot } from "./libraryLogic";
+import { IChevL, IPlus } from "./icons";
 
 interface Eval {
   status: "loading" | "ready" | "off" | "error";
@@ -76,9 +77,9 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   useEffect(() => { sigs.current = {}; }, [epoch]);
   useEffect(() => { if (list) void evalAll(list); }, [list, evalAll, epoch]);
 
+  // A collection that vanished (deleted) closes its viewer.
   useEffect(() => {
-    if (!list?.length) return;
-    if (!selName || !list.some((c) => c.name === selName)) setSelName(list[0].name);
+    if (selName && list && !list.some((c) => c.name === selName)) setSelName(null);
   }, [list, selName]);
 
   const sel = list?.find((c) => c.name === selName) ?? null;
@@ -148,107 +149,147 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   const newCollection = () => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD }); setFormErr(null); };
   const editCollection = (c: Collection) => { setDraft({ orig: c.name, name: c.name, query: c.query, threshold: c.threshold }); setFormErr(null); };
 
-  const listRef = useRef<HTMLDivElement>(null);
-  // The collection list is a keyboard widget: arrows select, Enter jumps to its photos,
-  // Ctrl+N / F2 / Delete are the buttons (Delete uses the same two-step confirm).
-  const onListKey = (e: React.KeyboardEvent) => {
-    if (!list?.length) return;
-    const at = Math.max(0, list.findIndex((c) => c.name === selName));
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
-      e.preventDefault();
-      const n = (at + (e.key === "ArrowDown" ? 1 : list.length - 1)) % list.length;
-      setSelName(list[n].name);
-      setDraft(null);
-      requestAnimationFrame(() => listRef.current?.querySelector<HTMLElement>('[aria-selected="true"]')?.focus());
-    } else if (e.key === "Enter") {
-      e.preventDefault();
-      document.querySelector<HTMLElement>(".co-grid [role='grid']")?.focus({ preventScroll: true });
-    } else if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "KeyN") {
-      e.preventDefault();
-      newCollection();
-    } else if (e.key === "F2") {
-      e.preventDefault();
-      if (sel) editCollection(sel);
-    } else if (e.key === "Delete") {
-      e.preventDefault();
-      if (!sel) return;
-      if (confirmDel) void del(); else setConfirmDel(true);
-    }
+  const gridRef = useRef<HTMLDivElement>(null);
+  // The card grid is a keyboard widget: arrows move between cards, Enter opens one, Ctrl+N starts a new collection.
+  const onGridKey = (e: React.KeyboardEvent) => {
+    if (e.ctrlKey && !e.shiftKey && !e.altKey && e.code === "KeyN") { e.preventDefault(); newCollection(); return; }
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "Home", "End"].includes(e.key)) return;
+    const el = gridRef.current;
+    if (!el) return;
+    const cards = Array.from(el.querySelectorAll<HTMLElement>(".coll"));
+    const at = cards.indexOf(document.activeElement as HTMLElement);
+    if (at < 0) return;
+    e.preventDefault();
+    const cols = Math.max(1, getComputedStyle(el).gridTemplateColumns.split(" ").length);
+    const n = e.key === "ArrowLeft" ? at - 1 : e.key === "ArrowRight" ? at + 1 : e.key === "ArrowUp" ? at - cols
+      : e.key === "ArrowDown" ? at + cols : e.key === "Home" ? 0 : cards.length - 1;
+    cards[Math.max(0, Math.min(cards.length - 1, n))]?.focus();
   };
 
-  const embedded = t1?.stats?.done;
-  return (
-    <div className="co">
-      <aside className="co-side">
-        <div className="co-list" role="listbox" aria-label="Smart collections" ref={listRef} tabIndex={0} onKeyDown={onListKey}>
-          {list?.map((c) => {
-            const n = count(c);
-            return (
-              <button key={c.name} role="option" aria-selected={c.name === selName} className={"co-item" + (c.name === selName ? " on" : "")} onClick={() => { setSelName(c.name); setDraft(null); }}>
-                <span className="co-name">{c.name}</span>
-                <span className="co-n">{n === null ? (evals[c.name]?.status === "loading" ? "…" : "–") : n.toLocaleString("en-US")}</span>
-              </button>
-            );
-          })}
-        </div>
-        <button className="btn quiet co-new" onClick={newCollection}>+ New collection</button>
-        <p className="co-note">Each collection is a saved search by meaning. {embedded !== undefined && `${embedded.toLocaleString("en-US")} photos understood so far; collections refresh as indexing goes on.`}</p>
-      </aside>
+  // Esc inside a collection goes back to the card grid (the form and the gallery's preview handle their own Esc first).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement | null;
+      if (e.defaultPrevented || !sel || draft) return;
+      if (t && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return;
+      if (e.key === "Escape" || (e.altKey && e.key === "ArrowLeft")) { e.preventDefault(); setSelName(null); }
+      else if (e.key === "F2") { e.preventDefault(); editCollection(sel); }
+      else if (e.key === "Delete" && !t?.closest(".lg")) { e.preventDefault(); if (confirmDel) void del(); else setConfirmDel(true); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sel, draft, confirmDel, list]);
 
-      <section className="co-main">
-        {draft ? (
-          <form className="co-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}
-                onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setDraft(null); setFormErr(null); } }}>
-            <h2>{draft.orig ? "Edit collection" : "New collection"}</h2>
-            <label>Name<input autoFocus value={draft.name} maxLength={60} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Receipts" /></label>
-            {!(draft.orig && list?.find((c) => c.name === draft.orig)?.rule) && (
+  /** Up to four thumbnails for a card. */
+  const peek = (c: Collection): GridItem[] => {
+    if (c.rule === "screenshots") return shots.slice(0, 4).map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime }));
+    const out: GridItem[] = [];
+    for (const h of evals[c.name]?.hits ?? []) {
+      if (hidden.has(h.path)) continue;
+      out.push({ path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null });
+      if (out.length === 4) break;
+    }
+    return out;
+  };
+  const blurb = (c: Collection) => (c.rule === "screenshots" ? "Files whose name looks like a screenshot" : c.query);
+
+  const embedded = t1?.stats?.done;
+  const back = () => { setSelName(null); setDraft(null); setFormErr(null); };
+
+  if (draft) {
+    return (
+      <div className="page-body co">
+        <form className="co-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}
+              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); setDraft(null); setFormErr(null); } }}>
+          <h2>{draft.orig ? "Edit collection" : "New collection"}</h2>
+          <label>Name<input autoFocus value={draft.name} maxLength={60} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Receipts" /></label>
+          {!(draft.orig && list?.find((c) => c.name === draft.orig)?.rule) && (
+            <>
+              <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a photo of a paper receipt" /></label>
+              <label>Minimum match: <b>{draft.threshold.toFixed(2)}</b>
+                <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
+              </label>
+            </>
+          )}
+          {formErr && <div className="co-err" role="alert">{formErr}</div>}
+          <div className="co-btns">
+            <button type="submit" className="btn pri">Save</button>
+            <button type="button" className="btn" onClick={() => { setDraft(null); setFormErr(null); }}>Cancel</button>
+          </div>
+        </form>
+      </div>
+    );
+  }
+
+  if (sel) {
+    return (
+      <div className="co co-view">
+        <header className="co-head">
+          <button className="btn co-back" onClick={back} title="Back to collections (Esc)"><IChevL size={14} />Collections</button>
+          <div className="co-title">
+            <h2>{sel.name}</h2>
+            <p>{sel.rule === "screenshots" ? "Files whose name looks like a screenshot." : `“${sel.query}”`}</p>
+          </div>
+          {!sel.rule && (
+            <label className="co-thr" title="Minimum cosine match for a photo to belong to the collection">
+              Match ≥ <b>{(thr ?? sel.threshold).toFixed(2)}</b>
+              <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
+            </label>
+          )}
+          <div className="co-btns">
+            <button className="btn" onClick={() => editCollection(sel)}>Edit</button>
+            {confirmDel ? (
               <>
-                <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a photo of a paper receipt" /></label>
-                <label>Minimum match: <b>{draft.threshold.toFixed(2)}</b>
-                  <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
-                </label>
+                <button className="btn pri" onClick={() => void del()}>Delete collection</button>
+                <button className="btn" onClick={() => setConfirmDel(false)}>Keep</button>
               </>
+            ) : (
+              <button className="btn" onClick={() => setConfirmDel(true)}>Delete</button>
             )}
-            {formErr && <div className="co-err" role="alert">{formErr}</div>}
-            <div className="co-btns">
-              <button type="submit" className="btn primary">Save</button>
-              <button type="button" className="btn quiet" onClick={() => { setDraft(null); setFormErr(null); }}>Cancel</button>
-            </div>
-          </form>
-        ) : sel ? (
-          <>
-            <header className="co-head">
-              <div className="co-title">
-                <h2>{sel.name}</h2>
-                <p>{sel.rule === "screenshots" ? "Files whose name looks like a screenshot." : `“${sel.query}”`}</p>
+          </div>
+        </header>
+        {formErr && <div className="co-err" role="alert">{formErr}</div>}
+        <div className="co-grid">
+          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="page-body co">
+      <div className="colls" ref={gridRef} onKeyDown={onGridKey} role="list" aria-label="Smart collections">
+        {list?.map((c, k) => {
+          const n = count(c);
+          const th = peek(c);
+          return (
+            <button key={c.name} role="listitem" className="coll" data-autofocus={k === 0 ? "" : undefined} onClick={() => { setSelName(c.name); setDraft(null); }}>
+              <div className="c4">
+                {[0, 1, 2, 3].map((j) => (
+                  <div key={j}>{th[j] && <CollThumb backend={backend} item={th[j]} />}</div>
+                ))}
               </div>
-              {!sel.rule && (
-                <label className="co-thr" title="Minimum cosine match for a photo to belong to the collection">
-                  Match ≥ <b>{(thr ?? sel.threshold).toFixed(2)}</b>
-                  <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
-                </label>
-              )}
-              <div className="co-btns">
-                <button className="btn quiet" onClick={() => editCollection(sel)}>Edit</button>
-                {confirmDel ? (
-                  <>
-                    <button className="btn primary" onClick={() => void del()}>Delete collection</button>
-                    <button className="btn quiet" onClick={() => setConfirmDel(false)}>Keep</button>
-                  </>
-                ) : (
-                  <button className="btn quiet" onClick={() => setConfirmDel(true)}>Delete</button>
-                )}
-              </div>
-            </header>
-            {formErr && <div className="co-err" role="alert">{formErr}</div>}
-            <div className="co-grid">
-              <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} />
-            </div>
-          </>
-        ) : (
-          <div className="lg-empty"><strong>No collections</strong><span>Create one with “New collection”.</span></div>
-        )}
-      </section>
+              <h4>{c.name}<span>{n === null ? (evals[c.name]?.status === "loading" ? "…" : "–") : n.toLocaleString("en-US")}</span></h4>
+              <p title={blurb(c)}>{blurb(c)}</p>
+            </button>
+          );
+        })}
+        <button className="coll new" role="listitem" onClick={newCollection} data-autofocus={list?.length ? undefined : ""}>
+          <div className="c4"><IPlus /></div>
+          <h4>New collection</h4>
+          <p>Type a description, like “dog photos”</p>
+        </button>
+      </div>
+      {formErr && <div className="co-err" role="alert">{formErr}</div>}
+      <p className="co-note">Each collection is a saved search by meaning. {embedded !== undefined && `${embedded.toLocaleString("en-US")} photos understood so far; collections refresh as indexing goes on.`}</p>
     </div>
   );
+}
+
+function CollThumb({ backend, item }: { backend: Backend; item: GridItem }) {
+  const src = backend.iconUrl(item.path, false, true, 256);
+  const [bad, setBad] = useState(false);
+  if (!src || bad) return null;
+  return <img src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />;
 }

@@ -1,33 +1,30 @@
-import { useState } from "react";
-import { kindOf } from "./format";
+import { useState, type CSSProperties } from "react";
+import { FileGlyph, ICmd, IFolder, ISet } from "./icons";
+import { appGradient, glyphFor, initials } from "./iconLogic";
 
-const PATHS: Record<string, string> = {
-  folder: "M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z",
-  image: "M5 5h14a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1zM5 17l4.5-5 3 3 2-2L19 17M8 9h.01",
-  doc: "M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm6 0v5h5M9 13h6M9 16.5h6",
-  video: "M4 6h11a1 1 0 0 1 1 1v10a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1zm13 4 4-2.5v9L17 14",
-  audio: "M9 17V6l10-2v11M9 17a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0zm10-2a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0z",
-  archive: "M5 4h14v4H5zM6 8h12v12H6zm4 3h4",
-  code: "M9 8l-5 4 5 4M15 8l5 4-5 4M13.5 6l-3 12",
-  app: "M4 5h16v14H4zM4 9h16M7 7h.01M10 7h.01",
-  file: "M7 3h7l4 4v13a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm6 0v5h5",
-};
-
-export function FileIcon({ name, isDir, src, thumb }: { name: string; isDir: boolean; src?: string | null; thumb?: boolean }) {
-  const k = kindOf(name, isDir);
+/**
+ * v4 result icon: a 36 px `.ic` box (size set by its context: row 36, top result 52, app tile 46).
+ * Files: a thumbnail (`thumb`), the shell icon when the backend has one, else the paper sheet with a coloured
+ * extension badge. Folders: the folder. Apps: the real icon, else a gradient squircle with initials (stable per
+ * name). Settings / commands: the grey squircle glyphs.
+ */
+export function FileIcon({ name, isDir, src, thumb, variant }: {
+  name: string; isDir: boolean; src?: string | null; thumb?: boolean; variant?: "app" | "setting" | "command";
+}) {
   const [failed, setFailed] = useState<string | null>(null);
-  if (src && failed !== src) {
-    return (
-      <span className={"ficon has-img" + (thumb ? " thumb" : "")} aria-hidden>
-        <img src={src} loading="lazy" draggable={false} alt="" onError={() => setFailed(src)} />
-      </span>
-    );
+  const ok = !!src && failed !== src;
+  const img = ok ? <img src={src!} loading="lazy" draggable={false} alt="" onError={() => setFailed(src!)} /> : null;
+
+  if (variant === "setting") return <span className="ic ficon sys" aria-hidden><ISet /></span>;
+  if (variant === "command") return <span className="ic ficon sys cmd" aria-hidden><ICmd /></span>;
+  if (variant === "app") {
+    if (img) return <span className="ic ficon shell" aria-hidden>{img}</span>;
+    const [a, b] = appGradient(name);
+    return <span className="ic ficon app" aria-hidden style={{ "--a": a, "--b": b } as CSSProperties}>{initials(name)}</span>;
   }
-  return (
-    <span className={`ficon k-${k}`} aria-hidden>
-      <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-        <path d={PATHS[k]} />
-      </svg>
-    </span>
-  );
+  if (isDir) return <span className="ic ficon" aria-hidden><IFolder /></span>;
+  if (img && thumb) return <span className="ic ficon ph" aria-hidden>{img}</span>;
+  if (img) return <span className="ic ficon shell" aria-hidden>{img}</span>;
+  const g = glyphFor(name);
+  return <span className="ic ficon" aria-hidden><FileGlyph col={g.col} lab={g.lab} /></span>;
 }
