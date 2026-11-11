@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isHelperExe, launchForFilter, pickTop, portableApps, TOP_MIN } from "./launchLogic.ts";
+import { isHelperExe, launchForFilter, pickTop, portableApps, TOP_MIN, makeLaunchGuard } from "./launchLogic.ts";
 import type { Hit, LaunchHit, LaunchItem } from "./types.ts";
 
 const hit = (path: string): Hit => {
@@ -69,4 +69,14 @@ test("launcher rows follow the type filter: a folders search keeps none, apps ke
   assert.deepEqual(launchForFilter(items, "apps").map((h) => h.item.id), ["app:mpv"]);
   // settings scope: the overview shows only the settings pages, so it needs the full list
   assert.equal(launchForFilter(items, "settings").length, 3);
+});
+
+test("launch guard: click + dblclick launches once, later launches pass", () => {
+  let t = 0;
+  const g = makeLaunchGuard(1500, () => t);
+  assert.equal(g("app:mpc"), true);
+  t = 200; assert.equal(g("app:mpc"), false); // the dblclick's own click events
+  t = 300; assert.equal(g("app:other"), true);
+  t = 400; assert.equal(g("app:mpc"), true);
+  t = 3000; assert.equal(g("app:mpc"), true);
 });

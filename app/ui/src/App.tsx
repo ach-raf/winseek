@@ -10,7 +10,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { Highlight, Overview, RenameInput, type ItemHandlers } from "./Overview";
 import { buildOverview, expandable, ovMove, type Expand, type OvItem } from "./overviewLogic";
-import { portableApps, launchForFilter } from "./launchLogic";
+import { portableApps, launchForFilter, makeLaunchGuard } from "./launchLogic";
 import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { footerHints, HintChip, Shortcuts, tooltip, type RowKind } from "./Shortcuts";
@@ -213,6 +213,7 @@ export default function App({ backend }: { backend: Backend }) {
   const undoRef = useRef<Undo | null>(null);
   const undoQuery = useRef("");
   const suppressClick = useRef(false);
+  const launchOnce = useRef(makeLaunchGuard()).current;
 
   const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
 
@@ -443,6 +444,7 @@ export default function App({ backend }: { backend: Backend }) {
     toastTimer.current = window.setTimeout(() => setToast(null), ms);
   }, []);
   const fail = useCallback((e: unknown) => {
+    console.error("winseek action failed:", e);
     flash(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""), false, 3500);
   }, [flash]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
@@ -961,9 +963,10 @@ export default function App({ backend }: { backend: Backend }) {
       ovGo(i); refocus();
     },
     onOpen: (i) => {
-      if (suppressClick.current) return;
       const it = ov.flat[i];
-      if (it?.launch) { void launchAct(it.launch, "open"); return; }
+      // Launch rows never drag, so a stale drag flag must not swallow their click; one launch per id covers click + dblclick.
+      if (it?.launch) { if (launchOnce(it.launch.item.id)) void launchAct(it.launch, "open"); return; }
+      if (suppressClick.current) return;
       void act("open", it?.hit);
     },
     onMenu: (i, e) => {
@@ -974,10 +977,10 @@ export default function App({ backend }: { backend: Backend }) {
       if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY }); return; }
       if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
     },
-    onDown: (i, e) => { const it = ov.flat[i]; if (it && !it.launch) onRowDown(e, it.hit); }, // launch rows do not drag
+    onDown: (i, e) => { const it = ov.flat[i]; if (!it) return; if (it.launch) suppressClick.current = false; else onRowDown(e, it.hit); }, // launch rows do not drag
     onRenameCommit: (i, n) => { const idx = ov.flat[i]?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
     onRenameCancel: () => { setRenaming(false); refocus(); },
-  }), [ov.flat, ovGo, act, launchAct, openMenu, openSemMenu, onRowDown, doRename, refocus]);
+  }), [ov.flat, ovGo, act, launchAct, launchOnce, openMenu, openSemMenu, onRowDown, doRename, refocus]);
   const showList = !overview;
   const rowKind: RowKind =
     pvOpen ? "preview"

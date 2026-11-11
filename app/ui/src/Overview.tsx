@@ -129,7 +129,7 @@ const Row = memo(function Row({ it, i, sel, query, backend, h, renaming, armed }
       <div className={"ov-row launch" + (it.section === "top" ? " top" : "") + (sel ? " selected" : "") + (isArmed ? " armed" : "")}
            role="option" aria-selected={sel} data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}
            onClick={() => (oneClick ? h.onOpen(i) : h.onSelect(i))} onDoubleClick={() => h.onOpen(i)}
-           onContextMenu={(e) => h.onMenu(i, e)}>
+           onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
         {item.icon
           ? <span className="glyph" aria-hidden>{item.icon}</span>
           : item.target.t === "cmd"
