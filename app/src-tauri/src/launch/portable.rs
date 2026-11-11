@@ -155,7 +155,6 @@ pub fn select(hits: &[Hit]) -> Vec<LaunchItem> {
 }
 
 fn to_item(c: &Cand) -> LaunchItem {
-    let dir = c.hit.path.rsplit_once('\\').map(|(d, _)| d).unwrap_or("");
     let mut keywords = vec![c.stem.clone()];
     for k in [Some(&c.folder), c.extra.as_ref()].into_iter().flatten() {
         if !k.is_empty() && !k.eq_ignore_ascii_case(&c.stem) && !keywords.iter().any(|x| x.eq_ignore_ascii_case(k)) {
