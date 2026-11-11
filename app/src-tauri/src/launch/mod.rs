@@ -28,6 +28,9 @@ use commands as syscmd;
 use history::History;
 use item::{Kind, LaunchItem, Target};
 
+/// Score taken off portable exes living in toolchain / SDK / backup folders.
+const JUNK_PENALTY: u32 = 60;
+
 /// Launcher sources + exclusions. All fields default (PRD §4.3): everything on except PATH
 /// search, uninstallers hidden, no extra folders, nothing hidden.
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -237,6 +240,12 @@ impl Launcher {
         // Score first, clone later: only the rows that survive the sort get their LaunchItem
         // cloned (a 1-char query can match every item in the catalog).
         struct Scored {
+            /// Match score before history / app bonuses; the portable cap compares on it.
+            raw: u32,
+            /// Final score without the history boost (the boost survives the portable cap).
+            base: u32,
+            boost: u32,
+            portable: bool,
             score: u32,
             ranges: Vec<(usize, usize)>,
             confirm: bool,
@@ -253,14 +262,38 @@ impl Launcher {
                 continue;
             }
             let Some(mut m) = matcher::score_item_with(&mut scorer, &q, item) else { continue };
-            m.score = m.score.saturating_add(hist.boost(&qtext, &item.id));
+            let raw = m.score;
+            let boost = hist.boost(&qtext, &item.id);
+            let portable = item.kind == Kind::App && item.subtitle.starts_with("Portable");
             // Apps are what a launcher is for: they win ties against settings and commands, and a
             // Start-menu app beats an unzipped portable copy of the same name.
             if item.kind == Kind::App {
-                m.score += if item.subtitle.starts_with("Portable") { 8 } else { 15 };
+                m.score += if portable { 8 } else { 15 };
             }
+            // Toolchain / SDK / backup copies are real but never what the user means.
+            if portable {
+                if let Target::Path { path, .. } = &item.target {
+                    if portable::is_junk_path(path) {
+                        m.score = m.score.saturating_sub(JUNK_PENALTY);
+                    }
+                }
+            }
+            let base = m.score;
+            m.score = m.score.saturating_add(boost);
             let confirm = matches!(item.target, Target::Cmd { .. }) && syscmd::needs_confirm(&item.id);
-            scored.push(Scored { score: m.score, ranges: m.ranges, confirm, idx });
+            scored.push(Scored { raw, base, boost, portable, score: m.score, ranges: m.ranges, confirm, idx });
+        }
+        // A portable copy never outranks a Start-menu app whose match is equal or better (the
+        // history boost still counts: a copy you keep picking can win).
+        if let Some((raw, base_final)) = scored
+            .iter()
+            .filter(|s| !s.portable && item_at(s.idx).kind == Kind::App)
+            .map(|s| (s.raw, s.score))
+            .max()
+        {
+            for s in scored.iter_mut().filter(|s| s.portable && s.raw <= raw) {
+                s.score = s.base.min(base_final.saturating_sub(1)).saturating_add(s.boost);
+            }
         }
         scored.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| item_at(a.idx).title.cmp(&item_at(b.idx).title)));
         scored.truncate(limit);
@@ -735,6 +768,7 @@ mod tests {
             item("app:vsc", Kind::App, "Visual Studio Code", &["Code"]),
             item("app:term", Kind::App, "Windows Terminal", &["wt"]),
             item("app:macro", Kind::App, "Macro Buttons", &[]),
+            item("app:mpc", Kind::App, "Media Player Classic", &["mpc-hc64"]),
             item("set:hide", Kind::Setting, "Auto hide the taskbar", &["taskbar"]),
         ];
         aliases::apply(&mut items, &Default::default());
@@ -747,7 +781,32 @@ mod tests {
         assert_eq!(top("vsc").as_deref(), Some("app:vsc"));
         assert_eq!(top("ps").as_deref(), Some("app:ps"));
         assert_eq!(top("wt").as_deref(), Some("app:term"));
+        assert_eq!(top("mpc").as_deref(), Some("app:mpc"));
         assert_eq!(top("term").as_deref(), Some("app:term"));
+    }
+
+    /// `mpc` must open Media Player Classic, not a CamelCase-acronym coincidence in an SDK folder,
+    /// and a portable copy never takes the top spot from an equal Start-menu app.
+    #[test]
+    fn portable_never_tops_start_menu_app() {
+        let mut junk = item("app:d:msbuild", Kind::App, "MsPdbCmf", &["MsPdbCmf"]);
+        junk.subtitle = r"Portable · E:\vs_studio\Msbuild\AppxPackage\x86\MsPdbCmf.exe".into();
+        junk.target = Target::Path { path: r"E:\vs_studio\Msbuild\AppxPackage\x86\MsPdbCmf.exe".into(), args: None };
+        let mut copy = item("app:d:mpv", Kind::App, "Mpv", &[]);
+        copy.subtitle = r"Portable · D:\t\mpv\mpv.exe".into();
+        copy.target = Target::Path { path: r"D:\t\mpv\mpv.exe".into(), args: None };
+        let menu = item("app:mpv", Kind::App, "mpv", &["mpv"]);
+        let l = launcher_with(vec![item("app:mpc", Kind::App, "Media Player Classic", &[])], LaunchCfg::default());
+        *l.portable_raw.lock().unwrap() = vec![junk, copy.clone()];
+        l.refresh_portable();
+        let hits = l.search("mpc", 5);
+        assert_eq!(hits[0].item.id, "app:mpc");
+        let l2 = launcher_with(vec![menu], LaunchCfg::default());
+        *l2.portable_raw.lock().unwrap() = vec![copy];
+        l2.refresh_portable();
+        let hits = l2.search("mpv", 5);
+        assert_eq!(hits[0].item.id, "app:mpv");
+        assert_eq!(hits.len(), 2, "the portable copy is still listed");
     }
 
     #[test]
