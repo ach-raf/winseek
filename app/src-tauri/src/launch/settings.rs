@@ -82,10 +82,15 @@ fn catalog_from(entries: Vec<RawEntry>, build: u32) -> Vec<LaunchItem> {
         }
         let title = TITLES.iter().find(|(n, _)| *n == e.name).map_or_else(|| humanize(&e.name), |(_, t)| t.to_string());
         let area = humanize(&e.area);
-        let subtitle = match e.kind.as_str() {
-            "ControlPanel" => format!("Control Panel › {area}"),
-            "TaskLink" => format!("Task › {area}"),
-            _ => format!("Settings › {area}"),
+        // The vendored data tags many task links with area "Unknown": never show that word.
+        let area_known = !area.is_empty() && !area.eq_ignore_ascii_case("unknown");
+        let subtitle = match (e.kind.as_str(), area_known) {
+            ("ControlPanel", true) => format!("Control Panel › {area}"),
+            ("ControlPanel", false) => "Control Panel".to_string(),
+            ("TaskLink", true) => format!("Windows task › {area}"),
+            ("TaskLink", false) => "Windows task".to_string(),
+            (_, true) => format!("Settings › {area}"),
+            (_, false) => "Settings".to_string(),
         };
         let mut keywords: Vec<String> = Vec::new();
         if let Some(alts) = &e.alt_names {
@@ -97,7 +102,9 @@ fn catalog_from(entries: Vec<RawEntry>, build: u32) -> Vec<LaunchItem> {
         if let Some((_, extra)) = EXTRA_KEYWORDS.iter().find(|(n, _)| *n == e.name) {
             keywords.extend(extra.iter().map(|k| k.to_string()));
         }
-        keywords.push(area.clone());
+        if area_known {
+            keywords.push(area.clone());
+        }
         keywords.push(e.name.clone());
         keywords.retain(|k| !k.is_empty());
 

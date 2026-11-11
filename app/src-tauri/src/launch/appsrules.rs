@@ -74,7 +74,7 @@ pub fn dedupe(items: Vec<LaunchItem>) -> Vec<LaunchItem> {
     out
 }
 
-fn dedupe_key(item: &LaunchItem) -> Option<String> {
+pub(crate) fn dedupe_key(item: &LaunchItem) -> Option<String> {
     match &item.target {
         Target::Path { path, args } => Some(format!("p:{}|{}", path.to_lowercase(), args.as_deref().unwrap_or(""))),
         Target::Aumid { aumid, path } => match path {

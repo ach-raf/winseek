@@ -278,12 +278,14 @@ export interface LaunchCfg {
   apps: boolean;
   settings: boolean;
   commands: boolean;
-  /** Portable exes promoted from the file index (UI-side rule). */
+  /** Portable programs found by sweeping the file index for .exe files (backend catalog). */
   portable: boolean;
   path: boolean;
   hide_uninstallers: boolean;
   folders: string[];
   hidden: string[];
+  /** Your own shortcuts: alias typed -> text in an app title / exe name. */
+  aliases?: Record<string, string>;
 }
 /** The rebindable global hotkeys; each a canonical combo ("Ctrl+Alt+Space") or null. */
 export interface Hotkeys {

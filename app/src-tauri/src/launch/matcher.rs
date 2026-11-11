@@ -199,6 +199,9 @@ fn count_distinct_groups(matched: &[usize], orig: &[char]) -> u32 {
 /// is an in-order char scan over the candidate, greedy re-anchor when a contiguous run exists).
 fn fuzzy(q: &[char], c: &[char]) -> Option<(Match, bool)> {
     let subs: Vec<&[char]> = q.split(|&ch| ch == ' ').filter(|s| !s.is_empty()).collect();
+    if subs.len() == 1 {
+        return single_token(subs[0], c);
+    }
     let mut sub = subs[0];
     let mut sub_i = 0usize;
     let mut sub_ci = 0usize;
@@ -254,6 +257,93 @@ fn fuzzy(q: &[char], c: &[char]) -> Option<(Match, bool)> {
     }
 
     let fm = first_match.unwrap_or(0);
+    // A multi-token query must still anchor on a word start: "of nat" matching mid-word junk
+    // is how a loose in-order scan buries real hits.
+    if !is_word_start(c, fm) {
+        return None;
+    }
+    Some((finish(q, c, fm, last_match, all_contained, index_list), false))
+}
+
+fn is_word_start(c: &[char], i: usize) -> bool {
+    i == 0 || !c[i - 1].is_alphanumeric()
+}
+
+/// Single-token query (the overwhelmingly common case). Unlike a loose in-order scan this only
+/// accepts what a human would call a match, tried best-first:
+/// 1. the query as a contiguous substring (a word-start occurrence wins over a mid-word one;
+///    mid-word needs >= 3 chars, so `at` does not hit every "Format");
+/// 2. otherwise a typo/abbreviation match: >= 3 chars, anchored on a WORD START, inside one word
+///    run (no spaces crossed) with at most `len/4` (min 1) skipped letters — `chrm` -> Chrome,
+///    `firefx` -> Firefox, but `atos` NOT -> "Rise of Nations".
+fn single_token(q: &[char], c: &[char]) -> Option<(Match, bool)> {
+    let n = q.len();
+    let mut sub: Option<usize> = None;
+    if c.len() >= n {
+        for i in 0..=c.len() - n {
+            if c[i..i + n] == *q {
+                if is_word_start(c, i) {
+                    sub = Some(i);
+                    break;
+                }
+                sub.get_or_insert(i);
+            }
+        }
+    }
+    if let Some(s) = sub.filter(|&s| is_word_start(c, s) || n >= 3) {
+        return Some((finish(q, c, s, s + n, true, (s..s + n).collect()), false));
+    }
+    if n < 3 {
+        return None;
+    }
+    // Swapped neighbours ("chrmoe" -> Chrome): a word-start hit on the corrected query, a bit
+    // below a clean match.
+    if n >= 4 {
+        for i in 0..n - 1 {
+            if q[i] == q[i + 1] {
+                continue;
+            }
+            let mut fixed = q.to_vec();
+            fixed.swap(i, i + 1);
+            if let Some(s) = (0..=c.len().saturating_sub(n)).find(|&s| c.len() >= n && c[s..s + n] == fixed[..] && is_word_start(c, s)) {
+                let mut m = finish(&fixed, c, s, s + n, true, (s..s + n).collect());
+                m.score = m.score.saturating_sub(15);
+                return Some((m, false));
+            }
+        }
+    }
+    let mut best: Option<Vec<usize>> = None;
+    for i in 0..c.len() {
+        if c[i] != q[0] || !is_word_start(c, i) {
+            continue;
+        }
+        let mut idx = vec![i];
+        let mut qi = 1;
+        let mut j = i + 1;
+        while qi < n && j < c.len() {
+            if c[j] == q[qi] {
+                idx.push(j);
+                qi += 1;
+            }
+            j += 1;
+        }
+        if qi < n {
+            continue;
+        }
+        if best.as_ref().is_none_or(|b| idx[n - 1] - i < b[n - 1] - b[0]) {
+            best = Some(idx);
+        }
+    }
+    let idx = best?;
+    let (fm, last) = (idx[0], idx[n - 1] + 1);
+    if c[fm..last].iter().any(|ch| ch.is_whitespace()) || last - fm - n > (n / 4).max(1) {
+        return None;
+    }
+    Some((finish(q, c, fm, last, false, idx), false))
+}
+
+/// Flow's scoring formula over a finished match.
+fn finish(q: &[char], c: &[char], fm: usize, last_match: usize, all_contained: bool, index_list: Vec<usize>) -> Match {
     // Measure from the word that contains the match, not the string start: 'world' in
     // 'hello world' scores like a match at index 0 (Flow's nearest-space adjustment).
     let first_rel = fm - space_before(c, fm);
@@ -277,7 +367,7 @@ fn fuzzy(q: &[char], c: &[char]) -> Option<(Match, bool)> {
             sc += (THRESHOLD * 10 + (count - THRESHOLD) * 5) as i32;
         }
     }
-    Some((Match { score: sc.max(0) as u32, ranges: ranges(index_list) }, false))
+    Match { score: sc.max(0) as u32, ranges: ranges(index_list) }
 }
 
 /// Index just after the last space at or before `at` (0 when none) — Flow's closest-space shift.
@@ -328,6 +418,12 @@ pub(crate) fn score_item_with(s: &mut Scorer, q: &Prepared, item: &LaunchItem) -
     }
     let (mut m, full_acronym) = best?;
     let fq = &q.chars;
+    // An alias / exe name typed in full (`code`, `wt`, `ps`) is as good as the exact title.
+    if m.ranges.is_empty()
+        && item.keywords.iter().any(|kw| kw.chars().count() == fq.len() && kw.chars().map(fold_char).eq(fq.iter().copied()))
+    {
+        m.score += 40;
+    }
     let ft: Vec<char> = item.title.chars().map(fold_char).collect();
     if ft == *fq {
         m.score += 50;
@@ -422,6 +518,40 @@ mod tests {
     fn tokens_must_match_in_order() {
         assert!(score("studio visual", "Visual Studio Code").is_none());
         assert!(score("vi co", "Visual Studio Code").is_some());
+    }
+
+    #[test]
+    fn scattered_subsequences_are_not_matches() {
+        // The "atos" bug: a loose in-order scan hit all of these.
+        for junk in ["Rise of Nations", "AtomicParsley Documentation", "Adobe Photoshop 2025", "Macro Buttons", "Change font settings"] {
+            assert!(score("atos", junk).is_none(), "{junk}");
+        }
+        assert!(score("atos", "MyAtos Portal").is_some());
+        assert!(score("shop", "Adobe Photoshop 2025").is_some()); // mid-word substring, >= 3 chars
+        assert!(score("ph", "Adobe Photoshop").is_some()); // word-start prefix
+        assert!(score("ot", "Photoshop").is_none()); // 2-char mid-word is noise
+    }
+
+    #[test]
+    fn typos_and_abbreviations_still_match() {
+        assert!(score("chrm", "Google Chrome").is_some());
+        assert!(score("firefx", "Firefox").is_some());
+        assert!(score("chrome", "Google Chrome").unwrap().score > score("chrm", "Google Chrome").unwrap().score);
+    }
+
+    #[test]
+    fn swapped_letters_and_exact_aliases() {
+        assert!(score("chrmoe", "Google Chrome").is_some());
+        let ps = item("Adobe Photoshop 2025", &["Photoshop", "ps"]);
+        let plain = item("Psi Messenger", &[]);
+        assert!(score_item("ps", &ps).unwrap().score > score_item("ps", &plain).unwrap().score);
+    }
+
+    #[test]
+    fn word_start_beats_mid_word() {
+        let a = score("studio", "Visual Studio Code").unwrap().score;
+        let b = score("studio", "Photostudio").unwrap().score;
+        assert!(a > b);
     }
 
     #[test]

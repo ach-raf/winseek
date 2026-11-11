@@ -610,7 +610,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
     ["apps", "Installed apps", "Start menu programs and Store apps, searchable by name, acronym or exe name."],
     ["settings", "Windows settings", "Settings pages and Control Panel items, opened straight from the box."],
     ["commands", "System commands", "Lock, sleep, restart, shut down, sign out, and the Recycle Bin."],
-    ["portable", "Portable apps from the file index", "An .exe in your indexed folders whose name matches what you type joins the Apps section."],
+    ["portable", "Portable apps from the file index", "Programs that were never installed (unzipped tools, game launchers) are found by scanning the file index and searched like any other app."],
     ["path", "Search PATH folders", "Also list executables from the directories on PATH. Off: it is a long, noisy list."],
     ["hide_uninstallers", "Hide uninstallers", "Installer and uninstaller entries never show up as apps."],
   ];
