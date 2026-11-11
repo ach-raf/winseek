@@ -10,6 +10,8 @@ import { Folders, pausedText } from "./Setup";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import logo from "./assets/logo.png";
+import { filterSections, type SettingsSection } from "./settingsNav";
+import { VIEW_CHOICES, type ViewMode } from "./viewMode";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const lc = (s: string) => s.toLowerCase();
@@ -166,6 +168,32 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
         ))}
       </div>
       <p className="muted set-note">Applies to search by meaning: where the models run and how long they stay loaded. Name search is not affected.</p>
+    </div>
+  );
+}
+
+/** Which view the global hotkey opens: the compact popup or the full-screen layout. */
+function DefaultView({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [v, setV] = useState<ViewMode | null>(null);
+  useEffect(() => { backend.viewGet().then((s) => setV(s.default_view)).catch(onError); }, [backend, onError]);
+  const change = (m: ViewMode) => {
+    const before = v;
+    setV(m);
+    backend.viewSetDefault(m).then((s) => setV(s.default_view)).catch((e) => { setV(before); onError(e); });
+  };
+  return (
+    <div className="set-sec">
+      <div className="fl-title">Default view</div>
+      <div className="set-group" role="radiogroup" aria-label="Default view">
+        {VIEW_CHOICES.map((x) => (
+          <button key={x.id} role="radio" aria-checked={x.id === (v ?? "compact")} disabled={v === null}
+                  className={"set-row set-opt" + (x.id === (v ?? "compact") ? " on" : "")} onClick={() => change(x.id)}>
+            <span className="set-optmain"><b>{x.label}</b><span className="muted">{x.blurb}</span></span>
+            <Check />
+          </button>
+        ))}
+      </div>
+      <p className="muted set-note">What the hotkey opens. <kbd>F11</kbd> switches between the two at any time without changing this.</p>
     </div>
   );
 }
@@ -553,7 +581,7 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
   );
 }
 
-export type SettingsSection = "meaning" | "indexing" | "launcher" | "agents" | "performance" | "general" | "status";
+export type { SettingsSection };
 
 const I = {
   meaning: <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" aria-hidden><path d="M12 3.5c.65 4.1 2.75 6.2 6.9 6.9-4.15.7-6.25 2.8-6.9 6.9-.65-4.1-2.75-6.2-6.9-6.9 4.15-.7 6.25-2.8 6.9-6.9z" /><path d="M18.5 15.5c.3 1.9 1.3 2.9 3.2 3.2-1.9.3-2.9 1.3-3.2 3.2-.3-1.9-1.3-2.9-3.2-3.2 1.9-.3 2.9-1.3 3.2-3.2z" transform="scale(0.72) translate(7.2 6.6)" /></svg>,
@@ -693,15 +721,29 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
   );
 }
 
-export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onLibrary, section, onSection, onError }: {
+const BackIcon = () => (
+  <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M19 12H5M11 6l-6 6 6 6" /></svg>
+);
+const CloseIcon = () => (
+  <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" aria-hidden><path d="M6 6l12 12M18 6 6 18" /></svg>
+);
+
+export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onHide, onLibrary, section, onSection, onError }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
   onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void;
-  onSetup: () => void; onClose: () => void; onLibrary: () => void;
+  /** onClose: back to search. onHide: hide the whole popup. */
+  onSetup: () => void; onClose: () => void; onHide: () => void; onLibrary: () => void;
   section: SettingsSection; onSection: (s: SettingsSection) => void; onError: (e: unknown) => void;
 }) {
   const navRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
+  const findRef = useRef<HTMLInputElement>(null);
+  const [find, setFind] = useState("");
+  const navItems = useMemo(() => filterSections(NAV, find), [find]);
   useEffect(() => {
+    // Landing on a section puts the focus on its list entry so the arrow keys work at once; typing in
+    // the "find" box keeps its focus.
+    if (document.activeElement === findRef.current) return;
     (navRef.current?.querySelector<HTMLElement>(".set-navitem.on")
       ?? bodyRef.current?.querySelector<HTMLElement>("input, button"))?.focus();
   }, [section]);
@@ -714,9 +756,10 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     const next = items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
     next?.focus();
   };
-  // Ctrl+1..7 jump to a section (PRD B8); the section heading takes the focus.
+  // Ctrl+1..7 jump to a section (PRD B8); the section heading takes the focus. Ctrl+F finds a setting.
   const sectionKey = (e: React.KeyboardEvent) => {
     if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+      if (e.key.toLowerCase() === "f") { e.preventDefault(); e.stopPropagation(); findRef.current?.focus(); findRef.current?.select(); return; }
       const at = NAV.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
       if (at >= 0) {
         e.preventDefault();
@@ -731,18 +774,42 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     }
     trapKey(e);
   };
+  const current = NAV.find((s) => s.id === section);
   return (
     <section className="firstrun setup settings" aria-label="Settings"
-             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else sectionKey(e); }}>
+             onKeyDown={(e) => {
+               if (e.key === "Escape") {
+                 e.preventDefault(); e.stopPropagation();
+                 if (find) { setFind(""); return; } // the first Esc clears a search in progress
+                 onClose();
+               } else sectionKey(e);
+             }}>
+      <header className="set-top">
+        <button className="set-back" onClick={onClose} title="Back to search (Esc)">
+          <BackIcon /><span>Back to search</span>
+        </button>
+        <span className="set-title">Settings{current ? <><i>/</i>{current.label}</> : null}</span>
+        <input ref={findRef} className="set-find" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
+               onChange={(e) => setFind(e.target.value)}
+               onKeyDown={(e) => {
+                 if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
+                 else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".set-navitem")?.focus(); }
+               }} />
+        <button className="set-close" onClick={onHide} title="Close winseek (hides the window)">
+          <span>Close</span><CloseIcon />
+        </button>
+      </header>
+      <div className="set-cols">
       <div className="set-side">
         <div className="set-brand"><img src={logo} alt="" width={22} height={22} />winseek</div>
         <nav ref={navRef} className="set-nav" aria-label="Settings sections" onKeyDown={navKey}>
-          {NAV.map((s) => (
+          {navItems.map((s) => (
             <button key={s.id} role="tab" aria-selected={section === s.id}
                     className={"set-navitem" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
               {s.icon}<span>{s.label}</span>
             </button>
           ))}
+          {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
         </nav>
       </div>
       <div className="set-detail">
@@ -760,6 +827,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "performance" && <Performance backend={backend} onError={onError} />}
           {section === "general" && (
             <>
+              <DefaultView backend={backend} onError={onError} />
               <AutostartToggle backend={backend} onError={onError} />
               <div className="set-sec">
                 <div className="fl-title">Shortcuts</div>
@@ -783,8 +851,9 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
         </div>
         <footer className="set-foot">
           <span className="muted">Changes are saved right away.</span>
-          <button className="btn primary" onClick={onClose}>Done</button>
+          <span className="muted"><kbd>Esc</kbd> back to search · <kbd>Ctrl</kbd>+<kbd>F</kbd> find a setting</span>
         </footer>
+      </div>
       </div>
     </section>
   );

@@ -1,6 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
+import type { ViewMode, ViewState } from "./viewMode";
 import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
@@ -490,6 +491,9 @@ const LAUNCH_CATALOG: LaunchItem[] = [
 ];
 const launchCfg: LaunchCfg = { apps: true, settings: true, commands: true, portable: true, path: false, hide_uninstallers: true, folders: [], hidden: [] };
 let agentCfg: AgentConfig = { enabled: false, content: "indexed" };
+let viewDefault: ViewMode = "compact";
+let viewCurrent: ViewMode = "compact";
+const viewListeners = new Set<(m: ViewMode) => void>();
 let hotkeys: Hotkeys = { popup: "Alt+Space", library: null, clipboard: null };
 let agentLogRows: AgentLogEntry[] = [
   { ts_ms: Date.now() - 42_000, client: "claude-code", tool: "search_files", args: { query: "invoice", type: "docs", modified_after: "this_month" }, ok: true, count: 12, ms: 34 },
@@ -592,6 +596,10 @@ export const mockBackend: Backend = {
   async showProperties(path) { console.info("[mock] properties", path); },
   async openTerminal(dir) { console.info("[mock] terminal in", dir); },
   async startDrag(paths) { console.info("[mock] start drag", paths); return "none"; },
+  async viewGet(): Promise<ViewState> { return { default_view: viewDefault, current: viewCurrent }; },
+  async viewSetDefault(mode): Promise<ViewState> { viewDefault = mode; return { default_view: viewDefault, current: viewCurrent }; },
+  async viewSetCurrent(mode): Promise<ViewMode> { viewCurrent = mode; viewListeners.forEach((f) => f(mode)); return mode; },
+  async onViewChanged(cb) { viewListeners.add(cb); return () => { viewListeners.delete(cb); }; },
   async movePopup() { console.info("[mock] window drag (no-op in browser)"); },
   // ---- launcher ----
   async launchSearch(query, limit): Promise<LaunchHit[]> {

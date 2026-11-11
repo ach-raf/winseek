@@ -485,6 +485,13 @@ export interface Backend {
   agentClearLog(): Promise<void>;
   /** Where winseek-mcp.exe lives next to the app (exists=false in dev builds). */
   agentMcpPath(): Promise<McpPath>;
+  // ---- view mode (compact popup / full screen) ----
+  viewGet(): Promise<import("./viewMode").ViewState>;
+  /** Saves what the hotkey opens next time. */
+  viewSetDefault(mode: import("./viewMode").ViewMode): Promise<import("./viewMode").ViewState>;
+  /** Switches the window now (resize + reposition) without changing the saved default. */
+  viewSetCurrent(mode: import("./viewMode").ViewMode): Promise<import("./viewMode").ViewMode>;
+  onViewChanged(cb: (m: import("./viewMode").ViewMode) => void): Promise<() => void>;
   // ---- global hotkeys (rebindable) ----
   hotkeysGet(): Promise<Hotkeys>;
   /** Registers the new combination (or unbinds with null); rejects with a user-facing message
