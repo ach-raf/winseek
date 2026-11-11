@@ -41,6 +41,32 @@ test("overview: Show all photos lists every image and nothing else", () => {
   assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["images", 14, false]]);
 });
 
+test("overview: three or more name-matched images become photo tiles and leave Files", () => {
+  const names = ["budget.xlsx", "a.png", "b.png", "c.png", "notes.txt"].map(hit);
+  const r = buildOverview({ names, nameTotal: 5, sem: [], text: "budget", expand: null, isImage });
+  assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["top", 1, false], ["files", 1, false], ["images", 3, false]]);
+  const tiles = r.sections.find((x) => x.id === "images")!.items;
+  assert.ok(tiles.every((x) => x.nameIdx !== undefined), "name tiles keep their row index (rename / recycle)");
+  assert.deepEqual(tiles.map((x) => x.col), [0, 1, 2], "tiles keep their grid column");
+});
+
+test("overview: fewer than three name-matched images stay in Files", () => {
+  const names = ["a.png", "b.png", "notes.txt"].map(hit);
+  const r = buildOverview({ names, nameTotal: 3, sem: [], text: "x", expand: null, isImage });
+  assert.deepEqual(r.sections.map((x) => x.id), ["files"]);
+  assert.equal(r.sections[0].items.length, 3, "rows, not tiles");
+});
+
+test("overview: Show all photos also lists the name-matched images", () => {
+  const names = ["budget.xlsx", ...Array.from({ length: 5 }, (_, i) => `n${i}.png`)].map(hit);
+  const s = Array.from({ length: 14 }, (_, i) => sem(`p${i}.jpg`));
+  const r = buildOverview({ names, nameTotal: 6, sem: s, text: "x", expand: "images", isImage });
+  const imgs = r.sections.find((x) => x.id === "images")!;
+  assert.deepEqual([imgs.items.length, imgs.total, imgs.more], [19, 19, false]);
+  assert.equal(imgs.items[0].nameIdx, 1, "the name photos come first, keeping their row index");
+  assert.equal(imgs.items[5].nameIdx, undefined, "the meaning photos follow");
+});
+
 test("ovMove walks rows, the grid by rows and tiles, and jumps sections", () => {
   const mk = (section: OvItem["section"], n: number): OvItem[] => Array.from({ length: n }, (_, i) => ({ key: section + i, section, hit: hit("f" + i), col: section === "images" ? i % 5 : undefined }));
   const C = { images: 5 };

@@ -164,6 +164,16 @@ export function buildOverview(opts: {
   const docs = rest.filter((h) => !isImage(baseName(h.path)));
   const hasMeaning = imgs.length + docs.length > 0;
 
+  // Name-matched images become photo tiles too, like the demo: once three or more match by name
+  // they leave the Files list and show as a grid; the meaning photos join them.
+  const nameImgs: { hit: Hit; idx: number }[] = [];
+  for (let i = 0; i < names.length; i++) {
+    const h = names[i];
+    if (!h || shownPaths.has(k(h.path)) || !isImage(baseName(h.path))) continue;
+    nameImgs.push({ hit: h, idx: i });
+  }
+  const photosFromNames = !expand && nameImgs.length >= 3;
+
   if (!expand) {
     const cap = hasMeaning ? FILES_WITH_MEANING : FILES_ALONE;
     const items: OvItem[] = [];
@@ -171,18 +181,54 @@ export function buildOverview(opts: {
       const h = names[i];
       if (!h) break;
       if (shownPaths.has(k(h.path))) continue; // the Top result (file or resolved app exe) is not repeated
+      if (photosFromNames && isImage(baseName(h.path))) continue; // photo tiles below
       items.push({ key: "n" + i, section: "files", hit: h, nameIdx: i });
       shownPaths.add(k(h.path));
     }
-    const total = nameTotal - (top?.nameIdx !== undefined ? 1 : 0);
+    const hidden = (top?.nameIdx !== undefined ? 1 : 0) + (photosFromNames ? nameImgs.length : 0);
+    const total = Math.max(items.length, nameTotal - hidden);
     if (items.length) sections.push({ id: "files", title: "Files", items, total, more: total > items.length });
   }
 
   if (!expand || expand === "images") {
-    const list = imgs.filter((h) => !shownPaths.has(k(h.path)));
-    const cap = expand ? list.length : photoCols * GRID_ROWS;
-    const items = list.slice(0, cap).map((h, i): OvItem => ({ key: "s:" + h.path, section: "images", hit: semHit(h), sem: h, col: i % photoCols }));
-    if (items.length) sections.push({ id: "images", title: "Photos", items, total: list.length, more: list.length > items.length });
+    // Name-hit photos first (they matched the query), then the meaning photos; a path shows once.
+    const list: { hit: Hit; sem?: SemanticHit; idx?: number }[] = [];
+    const seen = new Set<string>();
+    const taken = (p: string) => seen.has(k(p)) || shownPaths.has(k(p));
+    if (photosFromNames || expand === "images") {
+      for (const x of nameImgs) {
+        if (taken(x.hit.path)) continue;
+        seen.add(k(x.hit.path));
+        list.push({ hit: x.hit, idx: x.idx });
+      }
+    }
+    for (const h of imgs) {
+      if (taken(h.path)) continue;
+      seen.add(k(h.path));
+      list.push({ hit: semHit(h), sem: h });
+    }
+    // A grid of many thousands of tiles would jank the render: the expanded grid shows the first
+    // EXPAND_CAP; the Images filter and its list remain the "show everything" surface.
+    const EXPAND_CAP = 240;
+    const cap = expand ? Math.min(list.length, EXPAND_CAP) : Math.min(list.length, photoCols * GRID_ROWS);
+    const items = list.slice(0, cap).map((x, i): OvItem => ({
+      key: x.idx !== undefined ? "n" + x.idx : "s:" + x.hit.path,
+      section: "images",
+      hit: x.hit,
+      sem: x.sem,
+      nameIdx: x.idx,
+      col: i % photoCols,
+    }));
+    if (items.length) {
+      sections.push({
+        id: "images",
+        title: "Photos",
+        items,
+        total: list.length,
+        more: !expand && list.length > items.length,
+        note: expand && list.length > cap ? `Showing the first ${cap.toLocaleString("en-US")}` : undefined,
+      });
+    }
   }
 
   if (!expand || expand === "docs") {
