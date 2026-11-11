@@ -1,11 +1,11 @@
-/** Popup view mode: the compact Spotlight popup or the full-screen layout. Pure helpers (tested). */
+/** Popup view mode: the compact Spotlight popup or the larger full window (same placement, just 1280x800). Pure helpers (tested). */
 export type ViewMode = "compact" | "full";
 
 export interface ViewState { default_view: ViewMode; current: ViewMode }
 
 export const VIEW_CHOICES: { id: ViewMode; label: string; blurb: string }[] = [
   { id: "compact", label: "Compact popup", blurb: "The small Spotlight-style box in the upper third of the screen." },
-  { id: "full", label: "Full screen", blurb: "Fills the screen: wide results, a preview pane, and a filter rail." },
+  { id: "full", label: "Full window", blurb: "A bigger 1280x800 window: wide results, a preview pane, and a filter rail." },
 ];
 
 /** Anything unexpected (old config, missing value) means the compact popup. */
@@ -20,7 +20,7 @@ export function isToggleKey(e: { key: string; ctrlKey?: boolean; altKey?: boolea
   return e.key === "F11" && !e.ctrlKey && !e.altKey && !e.shiftKey && !e.metaKey;
 }
 
-/** Class on the root shell; CSS keys the whole full-screen layout off it. */
+/** Class on the root shell; CSS keys the whole full-window layout off it. */
 export const shellClass = (m: ViewMode): string => (m === "full" ? " full" : "");
 
 /** Preview pane in full mode: always on when something is selected (wider than in compact). */

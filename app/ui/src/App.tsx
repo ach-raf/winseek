@@ -124,7 +124,7 @@ export default function App({ backend }: { backend: Backend }) {
     setSettingsSectionRaw(s);
     try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
   }, []);
-  // Compact popup or full-screen layout; the window itself is resized by the backend.
+  // Compact popup or full-window layout; the window itself is resized by the backend.
   const [viewMode, setViewMode] = useState<ViewMode>("compact");
   const full = viewMode === "full";
   // Full window: which page the sidebar shows (the compact popup is always "search").

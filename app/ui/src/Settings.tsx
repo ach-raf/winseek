@@ -140,7 +140,7 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
 
 const VIEW_OPTIONS: { id: ViewMode; label: string }[] = [{ id: "compact", label: "Popup" }, { id: "full", label: "Full window" }];
 
-/** Which view the global hotkey opens: the compact popup or the full-screen layout. */
+/** Which view the global hotkey opens: the compact popup or the full-window layout. */
 function DefaultViewRow({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [v, setV] = useState<ViewMode | null>(null);
   useEffect(() => { backend.viewGet().then((s) => setV(s.default_view)).catch(onError); }, [backend, onError]);

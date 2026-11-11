@@ -1,19 +1,22 @@
-//! View mode of the popup window: the compact Spotlight popup or a borderless full-screen
-//! layout (the monitor's work area under the cursor). The user's default lives in
+//! View mode of the popup window: the compact Spotlight popup or the larger full window.
+//! There is no true full screen — the modes differ only in size (780x560 vs 1280x800, the
+//! demo's proportions in docs/redesign/winseek-redesign.html). The user's default lives in
 //! `%LOCALAPPDATA%\winseek\ui.json` (`{ "default_view": "compact" | "full" }`); the mode in use
 //! can be flipped at any time (F11 in the UI) without touching the saved default.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, LogicalSize, PhysicalPosition, PhysicalSize, WebviewWindow};
+use tauri::{AppHandle, Emitter, LogicalSize, WebviewWindow};
 
 use crate::{popup, tier1};
 
 pub const COMPACT_W: f64 = 780.0;
 pub const COMPACT_H: f64 = 560.0;
+pub const FULL_W: f64 = 1280.0;
+pub const FULL_H: f64 = 800.0;
 
-/// What is on screen right now (true = full screen).
+/// What is on screen right now (true = full window).
 static CURRENT_FULL: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -64,30 +67,12 @@ fn mode_of(full: bool) -> Mode {
     if full { Mode::Full } else { Mode::Compact }
 }
 
-/// Position + size (physical px) of the full-screen window: the whole work area of the monitor.
-pub fn full_rect(work: (i32, i32, u32, u32)) -> (i32, i32, u32, u32) {
-    work
-}
-
-/// Resizes (and, for full, repositions) the window for `full`; compact is centred by the popup.
+/// Resizes the window for `full` (1280x800 vs the popup's 780x560) and lets the popup place it
+/// on the monitor under the cursor; placement is the same for both modes.
 fn apply(w: &WebviewWindow, full: bool) {
-    if full {
-        let mon = w
-            .cursor_position()
-            .ok()
-            .and_then(|c| w.monitor_from_point(c.x, c.y).ok().flatten())
-            .or_else(|| w.current_monitor().ok().flatten())
-            .or_else(|| w.primary_monitor().ok().flatten());
-        if let Some(m) = mon {
-            let wa = m.work_area();
-            let (x, y, ww, hh) = full_rect((wa.position.x, wa.position.y, wa.size.width, wa.size.height));
-            let _ = w.set_position(PhysicalPosition::new(x, y));
-            let _ = w.set_size(PhysicalSize::new(ww, hh));
-        }
-    } else {
-        let _ = w.set_size(LogicalSize::new(COMPACT_W, COMPACT_H));
-        popup::place_on_cursor_monitor(w);
-    }
+    let (ww, hh) = if full { (FULL_W, FULL_H) } else { (COMPACT_W, COMPACT_H) };
+    let _ = w.set_size(LogicalSize::new(ww, hh));
+    popup::place_on_cursor_monitor(w);
 }
 
 /// Called by `popup::show` before the window is shown: applies the user's default view
@@ -152,7 +137,10 @@ mod tests {
     }
 
     #[test]
-    fn full_rect_is_the_work_area() {
-        assert_eq!(full_rect((-1920, 0, 1920, 1040)), (-1920, 0, 1920, 1040));
+    fn full_window_is_the_demo_size_not_true_fullscreen() {
+        // The demo's only difference between popup and full window is the size (1280x800 vs 780x560).
+        assert_eq!((FULL_W, FULL_H), (1280.0, 800.0));
+        assert_eq!((COMPACT_W, COMPACT_H), (780.0, 560.0));
+        assert_ne!((FULL_W, FULL_H), (COMPACT_W, COMPACT_H));
     }
 }
