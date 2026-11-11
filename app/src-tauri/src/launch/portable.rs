@@ -14,8 +14,6 @@ use crate::source::{Hit, NameSource};
 
 /// Hard cap on catalog growth: a machine with 100k stray exes must not slow every keystroke.
 const MAX_ITEMS: usize = 6000;
-/// Same program unzipped in several places: keep the newest few.
-const COPIES_PER_STEM: usize = 2;
 /// A folder with more exes than this is a tool suite / bin dir: keep only its namesake + largest.
 const SUITE: usize = 8;
 /// Below this size an exe is a stub/helper unless it carries its folder's name.
@@ -50,6 +48,19 @@ fn skip_path(lower: &str) -> bool {
         return true;
     }
     dirs.windows(2).any(|w| BUILD_PAIRS.iter().any(|(a, b)| w[0] == *a && w[1] == *b))
+}
+
+/// Folder names of toolchain / SDK / build internals: their exes are kept (they are real) but
+/// must never outrank what a person actually launches. Compared per path component, lower-case.
+const JUNK_COMPS: &[&str] = &[
+    "appxpackage", "msbuild", "winsdk", "windows kits", "visualstudio", "vs_studio", "_backups", "backup", "backups", "redist",
+    "sdk", "sdks", "toolchains", "buildtools", "build tools",
+];
+
+/// True when any directory component of `path` (any case) is toolchain / SDK / backup territory.
+pub fn is_junk_path(path: &str) -> bool {
+    let lower = path.to_lowercase();
+    lower.split('\\').any(|c| JUNK_COMPS.contains(&c) || c.starts_with("microsoft.visualstudio") || c.starts_with("windows kits"))
 }
 
 fn norm(s: &str) -> String {
@@ -128,18 +139,16 @@ pub fn select(hits: &[Hit]) -> Vec<LaunchItem> {
         keep.extend(group);
     }
 
-    // Same program in several places: newest copies win (then the shallower path).
+    // Every copy of a program is a real program: duplicates are kept (the subtitle carries the
+    // full path to tell them apart). Only the sanity cap trims: namesakes first (the real
+    // programs), non-junk before tool/SDK junk, then newest, so the cap never eats those.
     keep.sort_by(|a, b| {
-        a.stem.to_lowercase().cmp(&b.stem.to_lowercase()).then(b.hit.mtime.cmp(&a.hit.mtime)).then(a.lower_dir.len().cmp(&b.lower_dir.len()))
+        b.namesake
+            .cmp(&a.namesake)
+            .then(is_junk_path(&a.lower_dir).cmp(&is_junk_path(&b.lower_dir)))
+            .then(b.hit.mtime.cmp(&a.hit.mtime))
+            .then(a.lower_dir.len().cmp(&b.lower_dir.len()))
     });
-    let mut per_stem: HashMap<String, usize> = HashMap::new();
-    keep.retain(|c| {
-        let n = per_stem.entry(c.stem.to_lowercase()).or_insert(0);
-        *n += 1;
-        *n <= COPIES_PER_STEM
-    });
-    // Namesakes first, then newest: if the cap bites, the real programs survive.
-    keep.sort_by(|a, b| b.namesake.cmp(&a.namesake).then(b.hit.mtime.cmp(&a.hit.mtime)));
     keep.truncate(MAX_ITEMS);
 
     keep.into_iter().map(|c| to_item(&c)).collect()
@@ -157,7 +166,7 @@ fn to_item(c: &Cand) -> LaunchItem {
         id: format!("app:{}", c.hit.path.to_lowercase()),
         kind: Kind::App,
         title: title_of(&c.stem),
-        subtitle: format!("Portable · {dir}"),
+        subtitle: format!("Portable · {}", c.hit.path),
         keywords,
         target: Target::Path { path: c.hit.path.clone(), args: None },
         icon: None,
@@ -234,7 +243,7 @@ mod tests {
         assert_eq!(out.len(), 2); // both are their folder's namesake, so the size floor does not apply
         let ev = out.iter().find(|i| i.title == "Everything").unwrap();
         assert!(ev.keywords.iter().any(|k| k == "Everything"));
-        assert_eq!(ev.subtitle, r"Portable · D:\Portable\Everything\x64");
+        assert_eq!(ev.subtitle, r"Portable · D:\Portable\Everything\x64\Everything.exe");
         assert_eq!(ev.id, r"app:d:\portable\everything\x64\everything.exe");
     }
 
@@ -250,15 +259,26 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_copies_keep_the_newest_two() {
+    fn duplicate_copies_are_all_kept_and_tellable_apart() {
         let hits = vec![
             exe(r"D:\a\foo\foo.exe", 1_000_000, 1),
             exe(r"D:\b\foo\foo.exe", 1_000_000, 3),
             exe(r"D:\c\foo\foo.exe", 1_000_000, 2),
         ];
         let out = select(&hits);
-        assert_eq!(out.len(), 2);
-        assert!(out.iter().all(|i| !i.id.contains(r"d:\a\")));
+        assert_eq!(out.len(), 3);
+        let mut subs: Vec<_> = out.iter().map(|i| i.subtitle.clone()).collect();
+        subs.sort();
+        subs.dedup();
+        assert_eq!(subs.len(), 3, "each copy shows its own full path");
+        assert!(subs.iter().all(|s| s.ends_with("foo.exe")));
+    }
+
+    #[test]
+    fn junk_paths_are_flagged() {
+        assert!(is_junk_path(r"E:\vs_studio\Msbuild\Microsoft\VisualStudio\v17.0\AppxPackage\x86\MsPdbCmf.exe"));
+        assert!(is_junk_path(r"C:\tools\mpv\_backups\mpv-v0.41\mpv.exe"));
+        assert!(!is_junk_path(r"C:\tools\mpv\mpv.exe"));
     }
 
     #[test]

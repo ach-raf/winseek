@@ -169,8 +169,15 @@ fn acronym(q: &[char], c: &[char], orig: &[char]) -> Option<(Match, bool)> {
     if total == 0 {
         return None;
     }
-    let full = groups == total;
-    let score = (groups * 200 + total) / (total * 2); // round to nearest (see module doc)
+    let mut full = groups == total;
+    let mut score = (groups * 200 + total) / (total * 2); // round to nearest (see module doc)
+    // A CamelCase acronym inside ONE word (`MsPdbCmf` for `mpc`) is a coincidence, not a
+    // spelled-out title: it scores a fraction of a spaced-word acronym and earns no title bonus.
+    let single_word = !orig.iter().any(|ch| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'));
+    if single_word && total > 1 {
+        full = false;
+        score /= 3;
+    }
     (score >= PRECISION).then(|| (Match { score, ranges: ranges(matched) }, full))
 }
 

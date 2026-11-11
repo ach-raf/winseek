@@ -140,12 +140,18 @@ fn apps_folder_item(item: &IShellItem, opts: &AppOpts, startup: &[String]) -> Op
     {
         return None;
     }
+    // Shortcut apps show where the exe really lives (the UI middle-truncates); Store apps have none.
+    let subtitle = match exe {
+        Some(p) if !store => format!("Start menu · {p}"),
+        _ if store => "Store app".into(),
+        _ => "Start menu".into(),
+    };
     let keywords = exe.map(|p| vec![appsrules::path_stem(p)]).unwrap_or_default();
     Some(LaunchItem {
         id: format!("app:{}", aumid.to_lowercase()),
         kind: Kind::App,
         title,
-        subtitle: if store { "Store app".into() } else { "Start menu".into() },
+        subtitle,
         keywords,
         target: Target::Aumid { aumid, path },
         icon: None,
