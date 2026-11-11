@@ -123,3 +123,16 @@ function strongStem(name: string, text: string): boolean {
   const s = stemOf(name).toLowerCase();
   return s === q || s.startsWith(q) || name.toLowerCase() === q;
 }
+
+/** One launch per id inside `windowMs`: a single click already launches, so the dblclick that follows must not launch again. */
+export function makeLaunchGuard(windowMs = 1500, now: () => number = Date.now) {
+  let lastId = "";
+  let lastAt = -Infinity;
+  return (id: string): boolean => {
+    const t = now();
+    if (id === lastId && t - lastAt < windowMs) return false;
+    lastId = id;
+    lastAt = t;
+    return true;
+  };
+}
