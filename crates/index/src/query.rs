@@ -35,16 +35,28 @@ pub struct Query {
     pub terms: Vec<Term>,
 }
 
+/// Result order. The name orders walk the sorted order array (ties by path); the meta
+/// orders keep the best window of matches by the stored size / mtime, ties by slot.
+/// Records without metadata (a volume scanned `with_meta = false`) sort as size 0 /
+/// oldest, so they land at the end.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Order {
+    #[default]
+    NameAsc,
+    NameDesc,
+    MtimeDesc,
+    SizeDesc,
+}
+
 #[derive(Debug, Clone)]
 pub struct SearchOptions {
     pub offset: usize,
     pub limit: usize,
-    /// Reverse the (name) order, Everything's flip-pair: iterate the same array backwards.
-    pub descending: bool,
+    pub order: Order,
 }
 impl Default for SearchOptions {
     fn default() -> Self {
-        SearchOptions { offset: 0, limit: usize::MAX, descending: false }
+        SearchOptions { offset: 0, limit: usize::MAX, order: Order::NameAsc }
     }
 }
 
@@ -240,59 +252,101 @@ impl Index {
         out
     }
 
-    /// Execute a query. Results are in name order (ties by path); `descending` reverses
-    /// the same order. The scan runs in storage order (sequential memory) over
-    /// `available_parallelism` chunks of slots and yields each hit's rank in the sorted
-    /// order array; only the requested window is selected/sorted (`select_nth_unstable`).
-    /// Works on a dirty index (merges pending changes on the fly); call
-    /// [`Index::refresh`] first for best latency.
+    /// Like [`Index::scan`], but yields the storage slots themselves (for the meta orders).
+    fn scan_slots(&self, q: &Query, rank: &[u32], lo: usize, hi: usize) -> Vec<u32> {
+        let mut sc = Scratch::default();
+        let mut out = Vec::new();
+        for (i, &r) in rank.iter().enumerate().take(hi).skip(lo) {
+            if r != NONE && q.terms.iter().all(|t| self.eval(t, i as u32, &mut sc)) {
+                out.push(i as u32);
+            }
+        }
+        out
+    }
+
+    /// Split `0..slots` into `available_parallelism` chunks and run `scan` over them.
+    fn parallel_scan(&self, slots: usize, scan: impl Fn(usize, usize) -> Vec<u32> + Send + Sync) -> Vec<u32> {
+        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        const MIN_CHUNK: usize = 8192;
+        let nt = hw.min(slots / MIN_CHUNK).max(1);
+        if nt == 1 {
+            return scan(0, slots);
+        }
+        let chunk = slots.div_ceil(nt);
+        let scan = &scan;
+        let parts: Vec<Vec<u32>> = std::thread::scope(|s| {
+            let hs: Vec<_> = (0..nt)
+                .map(|k| s.spawn(move || scan((k * chunk).min(slots), ((k + 1) * chunk).min(slots))))
+                .collect();
+            hs.into_iter().map(|h| h.join().expect("scan thread")).collect()
+        });
+        let mut all = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
+        for p in parts {
+            all.extend(p);
+        }
+        all
+    }
+
+    /// Execute a query. The name orders give name-sorted results (ties by path,
+    /// `NameDesc` reversed); the meta orders keep the newest / largest `offset+limit`
+    /// matches. The scan runs in storage order (sequential memory) over
+    /// `available_parallelism` chunks of slots; only the requested window is
+    /// selected/sorted (`select_nth_unstable`). Works on a dirty index (merges pending
+    /// changes on the fly); call [`Index::refresh`] first for best latency.
     pub fn search(&self, q: &Query, o: &SearchOptions) -> SearchResult {
-        let order = self.clean_order();
-        let rank = if self.dirty { std::borrow::Cow::Owned(self.compute_rank(&order)) } else { std::borrow::Cow::Borrowed(&self.rank[..]) };
+        let order_arr = self.clean_order();
+        let rank = if self.dirty { std::borrow::Cow::Owned(self.compute_rank(&order_arr)) } else { std::borrow::Cow::Borrowed(&self.rank[..]) };
         let slots = rank.len();
-        let mut ranks: Vec<u32> = if q.terms.is_empty() {
-            (0..order.len() as u32).collect()
-        } else {
-            let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
-            const MIN_CHUNK: usize = 8192;
-            let nt = hw.min(slots / MIN_CHUNK).max(1);
-            if nt == 1 {
-                self.scan(q, &rank, 0, slots)
+        let is_name = matches!(o.order, Order::NameAsc | Order::NameDesc);
+        // Name orders collect ranks (positions in the sorted order array); the meta orders
+        // collect storage slots. The vectors only materialize what the chosen order needs.
+        let collected: Vec<u32> = if q.terms.is_empty() {
+            if is_name {
+                (0..order_arr.len() as u32).collect()
             } else {
-                let chunk = slots.div_ceil(nt);
-                let rank = &rank[..];
-                let parts: Vec<Vec<u32>> = std::thread::scope(|s| {
-                    let hs: Vec<_> = (0..nt)
-                        .map(|k| s.spawn(move || self.scan(q, rank, (k * chunk).min(slots), ((k + 1) * chunk).min(slots))))
-                        .collect();
-                    hs.into_iter().map(|h| h.join().expect("scan thread")).collect()
-                });
-                let mut all = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
-                for p in parts {
-                    all.extend(p);
-                }
-                all
+                (0..slots as u32).filter(|&i| rank[i as usize] != NONE).collect()
             }
-        };
-        let total = ranks.len();
-        let k = o.offset.saturating_add(o.limit).min(total);
-        let window: &[u32] = if o.descending {
-            // largest `k` ranks, sorted descending
-            let k = k.min(total);
-            if k < total {
-                ranks.select_nth_unstable(total - k);
-            }
-            ranks[total - k..].sort_unstable_by(|a, b| b.cmp(a));
-            &ranks[total - k..]
+        } else if is_name {
+            let rank_ref = &rank[..];
+            self.parallel_scan(slots, |lo, hi| self.scan(q, rank_ref, lo, hi))
         } else {
-            if k < total && k > 0 {
-                ranks.select_nth_unstable(k - 1);
-            }
-            ranks[..k].sort_unstable();
-            &ranks[..k]
+            let rank_ref = &rank[..];
+            self.parallel_scan(slots, |lo, hi| self.scan_slots(q, rank_ref, lo, hi))
         };
-        let start = o.offset.min(window.len());
-        let items = window[start..].iter().map(|&r| order[r as usize]).collect();
+        let total = collected.len();
+        let k = o.offset.saturating_add(o.limit).min(total);
+        let items: Vec<u32> = if is_name {
+            let mut ranks = collected;
+            let window: &[u32] = if o.order == Order::NameDesc {
+                // largest `k` ranks, sorted descending
+                if k < total {
+                    ranks.select_nth_unstable(total - k);
+                }
+                ranks[total - k..].sort_unstable_by(|a, b| b.cmp(a));
+                &ranks[total - k..]
+            } else {
+                if k < total && k > 0 {
+                    ranks.select_nth_unstable(k - 1);
+                }
+                ranks[..k].sort_unstable();
+                &ranks[..k]
+            };
+            let start = o.offset.min(window.len());
+            window[start..].iter().map(|&r| order_arr[r as usize]).collect()
+        } else {
+            // Keyed pairs so every comparison is one array read; the slot tiebreak makes the
+            // order total, so paged windows never repeat or drop equal-key rows.
+            let mut pairs: Vec<(i64, u32)> = match o.order {
+                Order::MtimeDesc => collected.into_iter().map(|i| (self.mtime(i).unwrap_or(i64::MIN), i)).collect(),
+                _ => collected.into_iter().map(|i| (self.size(i).unwrap_or(0) as i64, i)).collect(),
+            };
+            if k < total && k > 0 {
+                pairs.select_nth_unstable_by(k - 1, |a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            }
+            pairs[..k].sort_unstable_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
+            let start = o.offset.min(k);
+            pairs[start..k].iter().map(|&(_, i)| i).collect()
+        };
         SearchResult { total, items }
     }
 

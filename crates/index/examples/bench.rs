@@ -157,7 +157,7 @@ fn main() {
         "node_modules\\ index",
         "program*\\*.dll",
     ];
-    let opts = SearchOptions { offset: 0, limit: 100, descending: false };
+    let opts = SearchOptions { offset: 0, limit: 100, order: Order::NameAsc };
     println!("\n{:<28} {:>9} {:>9} {:>9}", "query", "matches", "p50 us", "p99 us");
     let mut all = Vec::new();
     for q in queries {

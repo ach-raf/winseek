@@ -5,13 +5,13 @@
 //! batches. A volume replace builds the new index under a *read* lock and takes the write
 //! lock only for the pointer swap.
 
-use std::collections::{BTreeMap, VecDeque};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
-use std::sync::{Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
 use std::time::Instant;
 
-use winseek_index::{Index, SearchOptions, VolKind};
+use winseek_index::{Index, Order, SearchOptions, VolKind};
 use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, VolumeState, VolumeStatus};
 use winseek_usn::{Change, JournalCursor};
 
@@ -24,6 +24,36 @@ pub const RECENT_CAP: usize = 2000;
 /// Max stat() calls per batch (to refine size/mtime of created/modified files).
 const STAT_BUDGET: usize = 256;
 const SUB_QUEUE: usize = 4096;
+/// Cached whole-query result lists (fast paging): at most this many queries, each with at
+/// most `QUERY_CACHE_ITEMS` matches (~8 MB of slot ids at the cap).
+const QUERY_CACHE_ENTRIES: usize = 4;
+const QUERY_CACHE_ITEMS: usize = 2_000_000;
+
+/// One cached query: the full ordered slot list plus the index generation it was scanned
+/// under. Any index mutation bumps the generation, so a stale entry never answers twice.
+#[derive(Default)]
+struct QCache {
+    map: HashMap<(String, Sort), (u64, Arc<Vec<u32>>)>,
+    lru: VecDeque<(String, Sort)>,
+}
+
+impl QCache {
+    fn get(&self, gen: u64, query: &str, sort: Sort) -> Option<Arc<Vec<u32>>> {
+        let (g, items) = self.map.get(&(query.to_string(), sort))?;
+        (*g == gen).then(|| items.clone())
+    }
+    fn put(&mut self, gen: u64, query: &str, sort: Sort, items: Vec<u32>) {
+        self.map.retain(|_, (g, _)| *g == gen); // a new generation invalidates everything older
+        let key = (query.to_string(), sort);
+        self.lru.retain(|k| k != &key);
+        self.lru.push_back(key.clone());
+        self.map.insert(key, (gen, Arc::new(items)));
+        while self.lru.len() > QUERY_CACHE_ENTRIES {
+            let old = self.lru.pop_front().expect("lru tracks the map");
+            self.map.remove(&old);
+        }
+    }
+}
 
 /// Per-volume control flags shared with that volume's worker thread.
 #[derive(Default)]
@@ -62,6 +92,10 @@ pub struct Shared {
     /// Asks the main loop to save a snapshot soon (set after a volume replace).
     pub save_now: AtomicBool,
     pub started: Instant,
+    /// Index generation: bumped by the writer after every mutation, so the query cache
+    /// can tell a stale result list from a live one.
+    gen: AtomicU64,
+    qcache: Mutex<QCache>,
 }
 
 impl Shared {
@@ -76,6 +110,8 @@ impl Shared {
             shutdown: AtomicBool::new(false),
             save_now: AtomicBool::new(false),
             started: Instant::now(),
+            gen: AtomicU64::new(1),
+            qcache: Mutex::new(QCache::default()),
         }
     }
 
@@ -237,6 +273,7 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             }
         }
     }
+    sh.gen.fetch_add(1, Ordering::Relaxed); // the query cache must not serve this batch's old results
     publish(sh, recent, &events);
 }
 
@@ -258,6 +295,7 @@ fn apply_paths(sh: &Shared, vol: u8, ops: &[PathOp]) {
         }
         ix.refresh();
     }
+    sh.gen.fetch_add(1, Ordering::Relaxed);
     publish(sh, recent, &events);
 }
 
@@ -268,6 +306,7 @@ fn drop_volume(sh: &Shared, vol: u8) {
         let old = std::mem::take(&mut *ix);
         *ix = retain_volumes(old, |v| v.letter != vol);
     }
+    sh.gen.fetch_add(1, Ordering::Relaxed);
     let prefix = format!("{}:\\", vol as char).to_lowercase();
     sh.recent.lock().unwrap().retain(|h| !h.path.to_lowercase().starts_with(&prefix));
     sh.forget(vol as char);
@@ -306,6 +345,7 @@ fn replace(sh: &Shared, fresh: Index) {
     let new = merged.unwrap_or(fresh);
     let old = std::mem::replace(&mut *sh.index.write().unwrap(), new);
     drop(old);
+    sh.gen.fetch_add(1, Ordering::Relaxed);
     for l in letters {
         sh.set_state(l as char, VolumeState::Live);
     }
@@ -326,18 +366,42 @@ pub fn hit_at(ix: &Index, i: u32) -> Hit {
     }
 }
 
-/// Returns (total, hits, note). Only name sorting exists in Tier 0; others fall back with a note.
+/// Returns (total, hits, note). Every protocol sort is a real order now; `PathAsc` is the
+/// one gap and answers in name order with a note (logged server-side, once).
 pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> (u64, Vec<Hit>, Option<&'static str>) {
-    let (descending, note) = match sort {
-        Sort::NameAsc => (false, None),
-        Sort::NameDesc => (true, None),
-        _ => (false, Some("only name_asc/name_desc sorts are supported; used name_asc")),
+    let (order, note) = match sort {
+        Sort::NameAsc => (Order::NameAsc, None),
+        Sort::NameDesc => (Order::NameDesc, None),
+        Sort::MtimeDesc => (Order::MtimeDesc, None),
+        Sort::SizeDesc => (Order::SizeDesc, None),
+        Sort::PathAsc => (Order::NameAsc, Some("path_asc is not supported yet; used name_asc")),
     };
-    let opts = SearchOptions { offset: offset as usize, limit: limit.min(10_000) as usize, descending };
+    let lim = limit.min(10_000) as usize;
+    let off = offset as usize;
     let ix = sh.index.read().unwrap();
-    let r = ix.search_str(query, &opts);
-    let hits = r.items.iter().map(|&i| hit_at(&ix, i)).collect();
-    (r.total as u64, hits, note)
+    // The generation is read while holding the read lock, so it always matches the index
+    // this scan is about to see (the writer bumps only after a mutation is done).
+    let gen = sh.gen.load(Ordering::Relaxed);
+    if let Some(items) = sh.qcache.lock().unwrap().get(gen, query, sort) {
+        let start = off.min(items.len());
+        let end = (off + lim).min(items.len());
+        let hits = items[start..end].iter().map(|&i| hit_at(&ix, i)).collect();
+        return (items.len() as u64, hits, note);
+    }
+    // Scan the whole query once, cache the ordered list, and slice the window: scrolling a
+    // big result set then costs a slice per page instead of a full rescan. Results too big
+    // to keep are scanned in the requested window directly, like before.
+    let full = ix.search_str(query, &SearchOptions { offset: 0, limit: QUERY_CACHE_ITEMS, order });
+    if full.total > QUERY_CACHE_ITEMS {
+        let r = ix.search_str(query, &SearchOptions { offset: off, limit: lim, order });
+        let hits = r.items.iter().map(|&i| hit_at(&ix, i)).collect();
+        return (r.total as u64, hits, note);
+    }
+    sh.qcache.lock().unwrap().put(gen, query, sort, full.items.clone());
+    let start = off.min(full.items.len());
+    let end = (off + lim).min(full.items.len());
+    let hits = full.items[start..end].iter().map(|&i| hit_at(&ix, i)).collect();
+    (full.total as u64, hits, note)
 }
 
 pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
@@ -383,7 +447,7 @@ mod tests {
         apply_batch(&sh, b'C', &[create(100, 10, "a.txt"), create(101, 10, "b.txt"), create(100, 10, "a.txt")], CUR);
         let (total, hits, note) = search(&sh, "txt", 0, 10, Sort::NameDesc);
         assert_eq!((total, hits[0].name.as_str(), note), (2, "b.txt", None));
-        assert!(search(&sh, "txt", 0, 10, Sort::SizeDesc).2.is_some());
+        assert!(search(&sh, "txt", 0, 10, Sort::SizeDesc).2.is_none(), "size sort is real now");
         let m = &sh.index.read().unwrap().volumes()[0].clone();
         assert_eq!((m.journal_id, m.next_usn), (7, 99));
         let r = recent(&sh, 10);
@@ -446,6 +510,37 @@ mod tests {
         apply_batch(&sh, b'R', &[mk(dir, 1 << 100, 0x10, "Big"), mk(dir + 1, dir, 0x20, "x.txt")], CUR);
         let (_, hits, _) = search(&sh, "x.txt", 0, 10, Sort::NameAsc);
         assert_eq!(hits[0].path, r"R:\Big\x.txt");
+    }
+
+    #[test]
+    fn meta_sorts_order_and_page_through_the_cache() {
+        let sh = shared();
+        // A folder-watch volume carries explicit sizes/mtimes (USN records get theirs from a later stat).
+        let mut b = IndexBuilder::new(true);
+        b.add_volume(b'E', 5);
+        b.volume_mut(b'E').unwrap().kind = VolKind::Folder;
+        replace(&sh, b.finish());
+        let up = |rel: &str, size: u64, mtime: i64| PathOp::Upsert { rel: rel.into(), is_dir: false, size, mtime };
+        apply_paths(&sh, b'E', &[up(r"Ph\a.txt", 10, 100), up(r"Ph\b.txt", 900, 500), up(r"Ph\c.txt", 500, 300), up(r"Ph\d.txt", 20, 400)]);
+
+        let names = |hits: Vec<Hit>| hits.iter().map(|h| h.name.as_str().to_string()).collect::<Vec<_>>();
+        let (total, hits, note) = search(&sh, "txt", 0, 10, Sort::MtimeDesc);
+        assert_eq!((total, note.is_none()), (4, true), "mtime sort is real now");
+        assert_eq!(names(hits), ["b.txt", "d.txt", "c.txt", "a.txt"]);
+        // the second page answers from the cache and tiles the same order exactly
+        let (_, page, _) = search(&sh, "txt", 2, 2, Sort::MtimeDesc);
+        assert_eq!(names(page), ["c.txt", "a.txt"]);
+        let (_, hits, _) = search(&sh, "txt", 0, 10, Sort::SizeDesc);
+        assert_eq!(names(hits), ["b.txt", "c.txt", "d.txt", "a.txt"]);
+
+        // any mutation bumps the generation: the cached list is dropped, the new file leads
+        apply_paths(&sh, b'E', &[up(r"Ph\e.txt", 1, 999)]);
+        let (total, hits, _) = search(&sh, "txt", 0, 10, Sort::MtimeDesc);
+        assert_eq!((total, hits[0].name.as_str()), (5, "e.txt"));
+        // and the name orders still behave, PathAsc keeps its fallback note
+        let (_, hits, _) = search(&sh, "txt", 0, 10, Sort::NameAsc);
+        assert_eq!(names(hits), ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]);
+        assert!(search(&sh, "txt", 0, 10, Sort::PathAsc).2.is_some());
     }
 
     #[test]

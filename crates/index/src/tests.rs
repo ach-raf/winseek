@@ -207,37 +207,105 @@ fn sort_order_offset_limit() {
     b.push(C, 200, 10, "same", false, 0, 0);
     b.push(C, 201, 11, "same", false, 0, 0);
     let mut ix = b.finish();
-    let o = |ix: &Index, q: &str, off, lim, desc| {
-        let r = ix.search_str(q, &SearchOptions { offset: off, limit: lim, descending: desc });
+    let o = |ix: &Index, q: &str, off, lim, order| {
+        let r = ix.search_str(q, &SearchOptions { offset: off, limit: lim, order });
         (r.total, r.items.iter().map(|&i| ix.name(i).to_string()).collect::<Vec<_>>())
     };
-    let (t, all) = o(&ix, "file:", 0, usize::MAX, false);
+    let (t, all) = o(&ix, "file:", 0, usize::MAX, Order::NameAsc);
     assert_eq!(all, ["Alpha", "Bravo", "charlie", "delta", "echo", "same", "same", "zulu", "ÉCLAIR"]);
     assert_eq!(t, 9);
-    let (t, page) = o(&ix, "file:", 2, 3, false);
+    let (t, page) = o(&ix, "file:", 2, 3, Order::NameAsc);
     assert_eq!((t, page), (9, vec!["charlie".into(), "delta".into(), "echo".into()]));
-    let (t, rev) = o(&ix, "file:", 0, usize::MAX, true);
+    let (t, rev) = o(&ix, "file:", 0, usize::MAX, Order::NameDesc);
     assert_eq!(t, 9);
     let mut exp = all.clone();
     exp.reverse();
     assert_eq!(rev, exp);
-    let (_, page) = o(&ix, "file:", 1, 2, true);
+    let (_, page) = o(&ix, "file:", 1, 2, Order::NameDesc);
     assert_eq!(page, vec!["zulu".to_string(), "same".to_string()]);
-    assert_eq!(o(&ix, "file:", 100, 5, false), (9, vec![]));
+    assert_eq!(o(&ix, "file:", 100, 5, Order::NameAsc), (9, vec![]));
     let sames = ix.search_str("same", &SearchOptions::default()).items;
     assert_eq!(ix.full_path(sames[0]), "C:\\a\\same");
     assert_eq!(ix.full_path(sames[1]), "C:\\b\\same");
     // incremental maintenance keeps order
     ix.insert(C, 300, 5, "bravo2", false, 0, 0);
     ix.insert(C, 301, 5, "aaa", false, 0, 0);
-    let before = o(&ix, "file:", 0, usize::MAX, false).1; // dirty path
+    let before = o(&ix, "file:", 0, usize::MAX, Order::NameAsc).1; // dirty path
     ix.refresh();
-    let after = o(&ix, "file:", 0, usize::MAX, false).1;
+    let after = o(&ix, "file:", 0, usize::MAX, Order::NameAsc).1;
     assert_eq!(before, after);
     assert_eq!(after[0], "aaa");
     let mut sorted = after.clone();
     sorted.sort_by(|a, b| crate::fold::cmp_fold(a, b));
     assert_eq!(after, sorted);
+}
+
+#[test]
+fn meta_orders_sort_and_page() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    // (frn, name, size, mtime) — mtimes/size deliberately out of name order; two rows share an mtime.
+    let rows = [
+        (100u64, "old_small.txt", 10u64, 100i64),
+        (101, "new_big.txt", 900, 500),
+        (102, "mid.txt", 500, 300),
+        (103, "same_a.txt", 50, 400),
+        (104, "same_b.txt", 20, 400),
+        (105, "old_big.txt", 800, 200),
+    ];
+    for (frn, name, size, mtime) in rows {
+        b.push(C, frn, 5, name, false, size, mtime);
+    }
+    let mut ix = b.finish();
+    let q = "file:";
+    let get = |ix: &Index, off: usize, lim: usize, order: Order| -> Vec<(String, u64, i64)> {
+        ix.search_str(q, &SearchOptions { offset: off, limit: lim, order })
+            .items
+            .iter()
+            .map(|&i| (ix.name(i).to_string(), ix.size(i).unwrap(), ix.mtime(i).unwrap()))
+            .collect()
+    };
+
+    // newest first; the equal-mtime pair keeps slot order (same_a before same_b) on every page
+    let by_date = get(&ix, 0, usize::MAX, Order::MtimeDesc);
+    assert_eq!(
+        by_date.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["new_big.txt", "same_a.txt", "same_b.txt", "mid.txt", "old_big.txt", "old_small.txt"]
+    );
+    let p0 = get(&ix, 0, 2, Order::MtimeDesc);
+    let p1 = get(&ix, 2, 2, Order::MtimeDesc);
+    let p2 = get(&ix, 4, 2, Order::MtimeDesc);
+    assert_eq!([p0, p1, p2].concat(), by_date, "pages must tile the full order exactly");
+    assert_eq!(ix.search_str(q, &SearchOptions { offset: 6, limit: 5, order: Order::MtimeDesc }).items, vec![]);
+
+    // largest first
+    let by_size = get(&ix, 0, usize::MAX, Order::SizeDesc);
+    assert_eq!(
+        by_size.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
+        ["new_big.txt", "old_big.txt", "mid.txt", "same_a.txt", "same_b.txt", "old_small.txt"]
+    );
+    let (_, page) = {
+        let r = ix.search_str(q, &SearchOptions { offset: 1, limit: 3, order: Order::SizeDesc });
+        (r.total, r.items.iter().map(|&i| ix.name(i).to_string()).collect::<Vec<_>>())
+    };
+    assert_eq!(page, ["old_big.txt", "mid.txt", "same_a.txt"]);
+
+    // a scoped query keeps the same order within the matches (dirty index path)
+    ix.insert(C, 106, 5, "fresh.txt", false, 5, 600);
+    let dirty = get(&ix, 0, usize::MAX, Order::MtimeDesc);
+    assert_eq!(dirty[0].0, "fresh.txt");
+    assert_eq!(dirty.len(), 7);
+    ix.refresh();
+    assert_eq!(get(&ix, 0, usize::MAX, Order::MtimeDesc), dirty);
+
+    // a volume without metadata sorts as size 0 / oldest, never panics
+    let mut nb = IndexBuilder::new(false);
+    nb.add_volume(C, 5);
+    nb.push(C, 200, 5, "x.txt", false, 3, 3);
+    let no_meta = nb.finish();
+    let r = no_meta.search_str(q, &SearchOptions { offset: 0, limit: 10, order: Order::MtimeDesc });
+    assert_eq!(r.total, 1);
+    assert_eq!(no_meta.name(r.items[0]), "x.txt");
 }
 
 #[test]
