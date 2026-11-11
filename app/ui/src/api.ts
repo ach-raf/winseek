@@ -1,3 +1,4 @@
+import { parseMode, type ViewMode, type ViewState } from "./viewMode";
 import type { Backend, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
@@ -84,6 +85,10 @@ function tauriBackend(t: TauriGlobal): Backend {
     agentLog: (limit) => inv<AgentLogEntry[]>("agent_log", { limit }),
     agentClearLog: () => inv("agent_clear_log"),
     agentMcpPath: () => inv<McpPath>("agent_mcp_path"),
+    viewGet: () => inv<ViewState>("view_get"),
+    viewSetDefault: (mode) => inv<ViewState>("view_set_default", { mode }),
+    viewSetCurrent: (mode) => inv<ViewMode>("view_set_current", { mode }),
+    onViewChanged: (cb) => t.event.listen<ViewMode>("view-changed", (e) => cb(parseMode(e.payload))),
     hotkeysGet: () => inv<Hotkeys>("hotkeys_get"),
     hotkeysSet: (which, combo) => inv<Hotkeys>("hotkeys_set", { which, combo }),
     onHotkeysChanged: (cb) => t.event.listen<Hotkeys>("hotkeys-changed", (e) => cb(e.payload)),

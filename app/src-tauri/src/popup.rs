@@ -17,6 +17,11 @@ fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
 
+/// A reposition/resize we do ourselves (view switch) must not be remembered as a user drag.
+pub fn mark_programmatic_move() {
+    SHOWN_AT_MS.store(now_ms(), Ordering::Relaxed);
+}
+
 pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
     app.get_webview_window(LABEL)
 }
@@ -24,7 +29,7 @@ pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
 /// Our own reposition right after `show` must not count as a user drag.
 const SETTLE_MS: u64 = 500;
 
-fn place_on_cursor_monitor(w: &WebviewWindow) {
+pub(crate) fn place_on_cursor_monitor(w: &WebviewWindow) {
     let Ok(cursor) = w.cursor_position() else { return };
     let mon = w
         .monitor_from_point(cursor.x, cursor.y)
@@ -69,7 +74,7 @@ pub fn move_popup(w: WebviewWindow) {
 
 /// Records a drag the user made while the popup was visible.
 pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
-    if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS {
+    if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS || crate::view::is_full() {
         return;
     }
     if w.is_visible().unwrap_or(false) {
@@ -81,7 +86,7 @@ pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
 
 pub fn show(app: &AppHandle) {
     let Some(w) = window(app) else { return };
-    place_on_cursor_monitor(&w);
+    crate::view::begin_show(app, &w); // default view: size + placement
     SHOWN_AT_MS.store(now_ms(), Ordering::Relaxed);
     // Tell the UI first: the (already-running, hidden) page focuses its input while the OS is still
     // mapping the window, so the caret is live the moment the first frame appears.

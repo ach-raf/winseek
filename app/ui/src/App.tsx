@@ -5,6 +5,8 @@ import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
 import { Settings, type SettingsSection } from "./Settings";
+import { parseSection } from "./settingsNav";
+import { isToggleKey, shellClass, toggleMode, type ViewMode } from "./viewMode";
 import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
@@ -162,7 +164,16 @@ export default function App({ backend }: { backend: Backend }) {
   const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; boxes: HitBox[] | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsSection, setSettingsSection] = useState<SettingsSection>("meaning");
+  // The last section is remembered across sessions of the popup.
+  const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
+    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "meaning"; }
+  });
+  const setSettingsSection = useCallback((s: SettingsSection) => {
+    setSettingsSectionRaw(s);
+    try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
+  }, []);
+  // Compact popup or full-screen layout; the window itself is resized by the backend.
+  const [viewMode, setViewMode] = useState<ViewMode>("compact");
   const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
   const [hotkeyBindings, setHotkeyBindings] = useState<Record<string, string>>({});
   const [hintOff, setHintOff] = useState(false);
@@ -389,6 +400,24 @@ export default function App({ backend }: { backend: Backend }) {
   }, [backend]);
 
   useEffect(() => { inputRef.current?.focus(); }, []);
+
+  // View mode: follow the backend (it also announces the default view on every show), and F11 flips it.
+  useEffect(() => {
+    let off: (() => void) | undefined, dead = false;
+    backend.viewGet().then((s) => setViewMode(s.current)).catch(() => {});
+    backend.onViewChanged(setViewMode).then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [backend]);
+  useEffect(() => { document.documentElement.classList.toggle("view-full", viewMode === "full"); }, [viewMode]);
+  const flipView = useCallback(() => {
+    void backend.viewSetCurrent(toggleMode(viewMode)).then(setViewMode).catch(() => {});
+    requestAnimationFrame(() => inputRef.current?.focus());
+  }, [backend, viewMode]);
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (isToggleKey(e)) { e.preventDefault(); flipView(); } };
+    window.addEventListener("keydown", onKey, true); // capture: works from inside Settings and the preview too
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [flipView]);
 
   // The cheat sheet shows the CURRENT global hotkey, not the default (PRD RB2).
   useEffect(() => {
@@ -989,7 +1018,7 @@ export default function App({ backend }: { backend: Backend }) {
   const pvPane = !showPanel && !!pv && !!current;
 
   return (
-    <div className="shell">
+    <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
       <header
         className={"searchbar" + (query ? "" : " idle")}
         onMouseDown={(e) => {
@@ -1053,11 +1082,19 @@ export default function App({ backend }: { backend: Backend }) {
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
+        <button className="viewtoggle" tabIndex={-1} title={viewMode === "full" ? "Compact popup (F11)" : "Full screen (F11)"}
+                aria-label={viewMode === "full" ? "Switch to compact popup" : "Switch to full screen"} onMouseDown={(e) => e.preventDefault()} onClick={flipView}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+            {viewMode === "full" ? <path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /> : <path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" />}
+          </svg>
+          <span className="rail-lbl">{viewMode === "full" ? "Compact popup" : "Full screen"}</span>
+        </button>
         <button className="gear" tabIndex={-1} title={tooltip("popup.settings")} aria-label="Settings" onClick={() => (settingsOpen ? closeSettings() : openSettings())}>
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
             <circle cx="12" cy="12" r="3" />
             <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09a1.65 1.65 0 0 0-1.08-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09a1.65 1.65 0 0 0 1.51-1.08 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9c.26.6.85 1 1.51 1H21a2 2 0 1 1 0 4h-.09c-.66 0-1.25.4-1.51 1z" />
           </svg>
+          <span className="rail-lbl">Settings</span>
         </button>
       </div>
 
@@ -1065,7 +1102,7 @@ export default function App({ backend }: { backend: Backend }) {
         <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
       ) : settingsOpen ? (
         <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
-                  onSetup={openSetup} onClose={closeSettings} onLibrary={openLibrary}
+                  onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={openLibrary}
                   section={settingsSection} onSection={setSettingsSection} onError={fail} />
       ) : (
         <FirstRun
@@ -1077,7 +1114,7 @@ export default function App({ backend }: { backend: Backend }) {
         />
       ))}
 
-      <div className={"main" + (pvPane ? " split" : "") + (pvPane && pvOpen ? " ql" : "")} hidden={showPanel}>
+      <div className={"main" + (pvPane || (viewMode === "full" && !showPanel) ? " split" : "") + (pvPane && pvOpen ? " ql" : "")} hidden={showPanel}>
       <div className="lcol">
       {!showPanel && showList && (heading || expand === "files") && (
         <div className="section">
@@ -1116,6 +1153,9 @@ export default function App({ backend }: { backend: Backend }) {
         <SemanticHint onSetup={openSetup} onDismiss={() => setHintOff(true)} />
       )}
       </div>
+      {viewMode === "full" && !showPanel && !pvPane && (
+        <div className="pv pv-empty"><div className="pv-msg">{isLaunchSel ? "Press Enter to launch" : "Select a result to preview it here"}</div></div>
+      )}
       {pvPane && (
         <Preview backend={backend} hit={pv.hit} query={parsed.text} snippet={pv.snippet} page={pv.page} boxes={pv.boxes} apiRef={previewApi}
                  onOpen={() => void act("open", pv.hit)} onReveal={() => void act("reveal", pv.hit)} onCopyPath={() => void act("copy", pv.hit)} />

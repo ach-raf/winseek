@@ -16,6 +16,7 @@ mod source;
 mod status;
 mod textdec;
 mod tier1;
+mod view;
 mod watcher;
 
 use commands::AppState;
@@ -104,6 +105,9 @@ fn main() {
             shell::start_drag,
             popup::move_popup,
             popup::open_popup,
+            view::view_get,
+            view::view_set_default,
+            view::view_set_current,
             service::service_state,
             service::install_service,
             service::start_service,
