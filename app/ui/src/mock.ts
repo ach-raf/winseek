@@ -601,6 +601,7 @@ export const mockBackend: Backend = {
   async viewSetCurrent(mode): Promise<ViewMode> { viewCurrent = mode; viewListeners.forEach((f) => f(mode)); return mode; },
   async onViewChanged(cb) { viewListeners.add(cb); return () => { viewListeners.delete(cb); }; },
   async movePopup() { console.info("[mock] window drag (no-op in browser)"); },
+  async minimize() { console.info("[mock] minimize (no-op in browser)"); },
   // ---- launcher ----
   async launchSearch(query, limit): Promise<LaunchHit[]> {
     await sleep(2);

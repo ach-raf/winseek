@@ -96,6 +96,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     openLibrary: () => inv("open_library"),
     openPopup: () => inv("open_popup"),
     movePopup: () => inv("move_popup"),
+    minimize: () => inv("minimize_popup"),
     launchSearch: (query, limit) => inv<LaunchHit[]>("launch_search", { query, limit }),
     launchRun: (id, query, admin) => inv("launch_run", { id, query, admin }),
     launchRecord: (id, query) => inv("launch_record", { id, query }),

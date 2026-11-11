@@ -592,7 +592,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
   );
 }
 
-export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onHide: _onHide, onLibrary, section, onSection, onError, embedded, chrome }: {
+export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPause, onSetup, onClose, onHide: _onHide, onLibrary, section, onSection, onError, embedded, chrome, escHint = "back to search" }: {
   backend: Backend; t1: Tier1Status | null; models: Models;
   onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void;
   /** onClose: back to search. onHide: hide the whole popup. */
@@ -602,6 +602,8 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   embedded?: boolean;
   /** Window controls, rendered at the right end of the top bar. */
   chrome?: ReactNode;
+  /** What Esc does here (the footer hint): the search page, or back from Settings in the library window. */
+  escHint?: string;
 }) {
   const navRef = useRef<HTMLElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -707,7 +709,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
         </div>
         <footer className="set-foot">
           <span>Changes are saved right away.</span>
-          <span><kbd>Esc</kbd> back to search · <kbd>Ctrl</kbd> <kbd>F</kbd> find a setting</span>
+          <span><kbd>Esc</kbd> {escHint} · <kbd>Ctrl</kbd> <kbd>F</kbd> find a setting</span>
         </footer>
       </div>
     </section>

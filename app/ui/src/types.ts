@@ -374,8 +374,10 @@ export interface Backend {
   /** Windows Terminal in the folder (cmd.exe fallback). */
   openTerminal(dir: string): Promise<void>;
   startDrag(paths: string[]): Promise<string>;
-  /** Start a native window drag from the search bar (popup). */
+  /** Start a native window drag (the bars are the handle). */
   movePopup(): Promise<void>;
+  /** Minimize the full window (its title bar button). */
+  minimize(): Promise<void>;
   /** Shell icon/thumbnail URL, or null when unavailable (mock) -> SVG glyph. */
   iconUrl(path: string, isDir: boolean, thumb: boolean, size?: number): string | null;
   hide(): Promise<void>;

@@ -1,12 +1,12 @@
 /* ===== winseek v4 design tokens — source of truth: docs/redesign/winseek-redesign.html =====
-   Light + dark follow the OS. Accent is the fixed blue (#2f7cf6, white ink). */
+   Light + dark follow the OS. Accent is the demo's amber (#ffc533, dark ink). */
 :root {
   color-scheme: light dark;
   --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-display: var(--font);
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
-  --acc: #2f7cf6; --acc-ink: #ffffff;
+  --acc: #ffc533; --acc-ink: #231a00;
   --bg: #ffffff; --bg2: #f5f6f8; --bg3: #eceef2; --line: #e7e9ee;
   --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
@@ -70,6 +70,9 @@ mark { background: var(--mark); color: var(--mark-fg); border-radius: 3px; font-
   overflow: hidden;
   animation: pop 180ms var(--ease);
 }
+/* Real window (the browser preview gets the demo's full shadow instead): the square native shadow is
+   off, so a thin inner edge keeps the rounded panel visible on any wallpaper. */
+html:not(.web) .shell { box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--fg) 14%, transparent); }
 /* Browser preview (dev only): stand-in desktop behind the framed window */
 html.web body {
   display: grid; place-items: center;

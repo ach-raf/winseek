@@ -464,6 +464,48 @@ export default function App({ backend }: { backend: Backend }) {
     console.error("winseek action failed:", e);
     flash(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""), false, 3500);
   }, [flash]);
+
+  // Window drag: the bars are the handle (popup search bar, full-window top bar and side rail —
+  // Settings / Library pages bring their own .tbar, so they drag the same way). A press on the bar
+  // background starts the native drag right away, like a titlebar; buttons and inputs keep their
+  // own behavior.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      if (!t || !t.closest(".sbar.pop, .tbar, .side")) return;
+      if (t.closest("button, input, textarea, select, .rename")) return;
+      e.preventDefault(); // a titlebar press: no text selection, no focus change
+      backend.movePopup().catch(fail);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [backend, fail]);
+
+  // Dragging from inside the search field needs a small move threshold, so a plain click still
+  // places the caret and selects text; past it, the window drag takes over.
+  useEffect(() => {
+    let sx = 0, sy = 0;
+    const cleanup = () => {
+      window.removeEventListener("mousemove", mv);
+      window.removeEventListener("mouseup", cleanup);
+    };
+    const mv = (e: MouseEvent) => {
+      if (Math.hypot(e.clientX - sx, e.clientY - sy) <= 6) return;
+      cleanup();
+      backend.movePopup().catch(fail);
+    };
+    const onDown = (e: MouseEvent) => {
+      if (e.button !== 0) return;
+      const t = e.target as HTMLElement | null;
+      if (!t || !t.closest(".sbar input")) return;
+      sx = e.clientX; sy = e.clientY;
+      window.addEventListener("mousemove", mv);
+      window.addEventListener("mouseup", cleanup);
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, [backend, fail]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
   const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
   /** Settings opened straight on the Status section (tray item, Ctrl+Shift+L). */
@@ -1130,7 +1172,7 @@ export default function App({ backend }: { backend: Backend }) {
       />
     </>
   );
-  const winControls = <WindowControls onRestore={flipView} onClose={() => void backend.hide()} />;
+  const winControls = <WindowControls onMin={() => void backend.minimize()} onRestore={flipView} onClose={() => void backend.hide()} />;
 
   // ---- footer actions (compact popup) ----
   const selItem = overview ? ovItem : undefined;
@@ -1187,15 +1229,7 @@ export default function App({ backend }: { backend: Backend }) {
             {winControls}
           </header>
         ) : (
-          <header
-            className="sbar pop"
-            onMouseDown={(e) => {
-              // The bar is the window's drag handle; the input and buttons keep their own behavior.
-              if (e.button !== 0 || (e.target as HTMLElement).closest("input, button")) return;
-              e.preventDefault();
-              backend.movePopup().catch(fail);
-            }}
-          >
+          <header className="sbar pop">
             {searchInner}
             {statEl}
             <button className="ibtn" tabIndex={-1} title={tooltip("popup.settings")} aria-label="Settings" onMouseDown={keep}

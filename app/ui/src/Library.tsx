@@ -4,8 +4,10 @@ import { Gallery, type GallerySection, type LibActions } from "./Gallery";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
 import { Sidebar, type Page } from "./Sidebar";
+import { Settings, type SettingsSection } from "./Settings";
+import { parseSection } from "./settingsNav";
 import { baseName } from "./Semantic";
-import { useTier1 } from "./hooks";
+import { useTier1, useModels } from "./hooks";
 import { groupByMonth } from "./libraryLogic";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
@@ -51,7 +53,18 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   });
   const tab: LibTab = embedded ? (tabProp ?? "timeline") : ownTab;
   const [epoch, setEpoch] = useState(0); // bumped after an undo: every list is read again
-  const [t1] = useTier1(backend, false, epoch);
+  // Settings inside this window: the sidebar's Settings item used to bounce back to the popup.
+  const [showSettings, setShowSettings] = useState(false);
+  // The last section is remembered across sessions (the popup uses the same storage key).
+  const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
+    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "meaning"; }
+  });
+  const setSettingsSection = useCallback((s: SettingsSection) => {
+    setSettingsSectionRaw(s);
+    try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
+  }, []);
+  const [t1, refreshT1] = useTier1(backend, showSettings, epoch);
+  const models = useModels(backend, refreshT1);
   const [images, setImages] = useState<LibImage[] | null>(null);
   const [loadErr, setLoadErr] = useState<string | null>(null);
   // Files sent to the Recycle Bin from here. They vanish from every list at once; an undo brings them back.
@@ -94,6 +107,17 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     toastTimer.current = window.setTimeout(() => setToast(null), ms);
   }, []);
   const fail = useCallback((e: unknown) => flash(errText(e), false, 4500), [flash]);
+
+  // Settings' indexing rows: the same thin backend wrappers the popup passes (single mutation path).
+  const setFolders = useCallback((include: string[]) => {
+    backend.tier1SetScopes(include, t1?.exclude ?? []).then(refreshT1).catch(fail);
+  }, [backend, t1, refreshT1, fail]);
+  const removeFolder = useCallback((path: string) => {
+    backend.tier1RemoveFolder(path).then(refreshT1).catch(fail);
+  }, [backend, refreshT1, fail]);
+  const pauseIndexing = useCallback((p: boolean) => {
+    backend.tier1Pause(p).then(refreshT1).catch(fail);
+  }, [backend, refreshT1, fail]);
 
   // Back to the search: embedded, the parent switches page; standalone, the popup shows first, then this window hides.
   const goBack = useCallback(() => {
@@ -142,6 +166,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
       const t = e.target as HTMLElement | null;
       if (combos("library.cheatsheet").some((c) => matches(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (cheat && e.key === "Escape") { e.preventDefault(); setCheat(false); return; }
+      if (showSettings && (e.key === "Escape" || matches(e, "Alt+Left"))) { e.preventDefault(); setShowSettings(false); return; }
       if (!embedded && e.ctrlKey && !e.shiftKey && !e.altKey) {
         const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
         if (ti >= 0) { e.preventDefault(); setOwnTab(TABS[ti]); return; }
@@ -160,7 +185,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo, goBack, cheat, embedded]);
+  }, [doUndo, goBack, cheat, embedded, showSettings]);
 
   // A tab switch puts the keyboard on the tab's main widget (gallery, first collection, cleanup list).
   useEffect(() => {
@@ -191,8 +216,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     : SUBS[tab];
 
   const onPage = (p: Page) => {
+    if (p === "settings") { setShowSettings(true); return; }
+    setShowSettings(false);
     if ((TABS as string[]).includes(p)) setOwnTab(p as LibTab);
-    else goBack(); // "search" and (for now) "settings" go back to the popup
+    else goBack(); // "search": back to the popup
   };
 
   const main = (
@@ -223,8 +250,15 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   if (embedded) return main;
   return (
     <div className="lib">
-      <Sidebar page={tab} onPage={onPage} status={status} />
-      <div className="main-col">{main}</div>
+      <Sidebar page={showSettings ? "settings" : tab} onPage={onPage} status={status} />
+      <div className="main-col">
+        {showSettings ? (
+          <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
+                    onSetup={goBack} onClose={() => setShowSettings(false)} onHide={() => void backend.hide()}
+                    onLibrary={() => setShowSettings(false)}
+                    section={settingsSection} onSection={setSettingsSection} onError={fail} embedded escHint="back to the library" />
+        ) : main}
+      </div>
     </div>
   );
 }
