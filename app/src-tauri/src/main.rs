@@ -104,6 +104,7 @@ fn main() {
             shell::show_properties,
             shell::start_drag,
             popup::move_popup,
+            popup::minimize_popup,
             popup::open_popup,
             view::view_get,
             view::view_set_default,
@@ -182,9 +183,6 @@ fn main() {
             app.manage(tier1::init()); // also starts the battery / full-screen pause policy
             agent::server::spawn(app.handle().clone());
             hotkeys::init(app.handle()); // registers the (possibly rebound) global hotkeys
-            if let Some(w) = popup::window(app.handle()) {
-                popup::apply_backdrop(&w);
-            }
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));

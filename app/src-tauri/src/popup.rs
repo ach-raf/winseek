@@ -72,6 +72,12 @@ pub fn move_popup(w: WebviewWindow) {
     let _ = w.start_dragging();
 }
 
+/// UI command, invoked as `minimize_popup`: the full window's minimize button.
+#[tauri::command]
+pub fn minimize_popup(w: WebviewWindow) {
+    let _ = w.minimize();
+}
+
 /// Records a drag the user made while the popup was visible.
 pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
     if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS || crate::view::is_full() {
@@ -87,6 +93,7 @@ pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
 pub fn show(app: &AppHandle) {
     let Some(w) = window(app) else { return };
     crate::view::begin_show(app, &w); // default view: size + placement
+    let _ = w.unminimize(); // minimized (the full window's minimize button): SW_SHOW alone would leave it hidden
     SHOWN_AT_MS.store(now_ms(), Ordering::Relaxed);
     // Tell the UI first: the (already-running, hidden) page focuses its input while the OS is still
     // mapping the window, so the caret is live the moment the first frame appears.
@@ -149,46 +156,4 @@ pub fn on_blur(app: &AppHandle) {
     if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) > 250 {
         hide(app);
     }
-}
-
-#[cfg(windows)]
-fn windows_build() -> u32 {
-    #[repr(C)]
-    struct OsVersionInfo {
-        size: u32,
-        major: u32,
-        minor: u32,
-        build: u32,
-        platform: u32,
-        csd: [u16; 128],
-    }
-    #[link(name = "ntdll")]
-    extern "system" {
-        fn RtlGetVersion(info: *mut OsVersionInfo) -> i32;
-    }
-    let mut v = OsVersionInfo {
-        size: std::mem::size_of::<OsVersionInfo>() as u32,
-        major: 0,
-        minor: 0,
-        build: 0,
-        platform: 0,
-        csd: [0; 128],
-    };
-    // SAFETY: struct is correctly sized/initialised for RtlGetVersion.
-    unsafe { RtlGetVersion(&mut v) };
-    v.build
-}
-
-/// Mica on Win11 (build >= 22000), acrylic on Win10; failures are ignored.
-pub fn apply_backdrop(w: &WebviewWindow) {
-    #[cfg(windows)]
-    {
-        if windows_build() >= 22000 {
-            let _ = window_vibrancy::apply_mica(w, None);
-        } else {
-            let _ = window_vibrancy::apply_acrylic(w, Some((24, 24, 28, 120)));
-        }
-    }
-    #[cfg(not(windows))]
-    let _ = w;
 }

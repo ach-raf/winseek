@@ -67,10 +67,30 @@ fn mode_of(full: bool) -> Mode {
     if full { Mode::Full } else { Mode::Compact }
 }
 
-/// Resizes the window for `full` (1280x800 vs the popup's 780x560) and lets the popup place it
-/// on the monitor under the cursor; placement is the same for both modes.
+/// The demo scales its prototype down to fit the screen with 48 px margins on each side
+/// (`min(1, (avail_w - 96) / W, (avail_h - 96) / H)`); the real window does the same, so the
+/// full window always floats with the desktop visible around it instead of covering the screen.
+fn fitted_size(w: &WebviewWindow, ww: f64, hh: f64) -> (f64, f64) {
+    let Some(mon) = w
+        .cursor_position()
+        .ok()
+        .and_then(|c| w.monitor_from_point(c.x, c.y).ok().flatten())
+    else {
+        return (ww, hh);
+    };
+    let scale = mon.scale_factor();
+    let area = mon.work_area();
+    let avail_w = area.size.width as f64 / scale - 96.0;
+    let avail_h = area.size.height as f64 / scale - 96.0;
+    let sc = 1.0f64.min(avail_w / ww).min(avail_h / hh).max(0.5);
+    ((ww * sc).floor(), (hh * sc).floor())
+}
+
+/// Resizes the window for `full` (1280x800 vs the popup's 780x560, fitted to the work area) and
+/// lets the popup place it on the monitor under the cursor; placement is the same for both modes.
 fn apply(w: &WebviewWindow, full: bool) {
     let (ww, hh) = if full { (FULL_W, FULL_H) } else { (COMPACT_W, COMPACT_H) };
+    let (ww, hh) = fitted_size(w, ww, hh);
     let _ = w.set_size(LogicalSize::new(ww, hh));
     popup::place_on_cursor_monitor(w);
 }
@@ -142,5 +162,26 @@ mod tests {
         assert_eq!((FULL_W, FULL_H), (1280.0, 800.0));
         assert_eq!((COMPACT_W, COMPACT_H), (780.0, 560.0));
         assert_ne!((FULL_W, FULL_H), (COMPACT_W, COMPACT_H));
+    }
+
+    /// The demo's fit rule: the prototype scales down to leave 48 px of desktop on each side.
+    /// Mirrors `fitted_size`'s maths so the window can never cover the screen.
+    #[test]
+    fn demo_fit_rule_never_exceeds_the_work_area() {
+        for &(screen_w, screen_h, full) in &[
+            (1920.0, 1040.0, true),  // big desktop: full size, floating
+            (1366.0, 728.0, true),   // small laptop: scaled down
+            (1280.0, 720.0, true),   // barely fits at all
+            (1920.0, 1040.0, false), // popup on a big desktop
+            (1024.0, 600.0, false),  // popup on a tiny screen
+        ] {
+            let (ww, hh) = if full { (1280.0, 800.0) } else { (780.0, 560.0) };
+            let avail_w = screen_w - 96.0;
+            let avail_h = screen_h - 96.0;
+            let sc = 1.0f64.min(avail_w / ww).min(avail_h / hh).max(0.5);
+            let (w, h) = ((ww * sc).floor(), (hh * sc).floor());
+            assert!(w <= avail_w && h <= avail_h, "{w}x{h} covers {avail_w}x{avail_h}");
+            assert!(sc == 1.0 || w >= 390.0, "never smaller than half the popup");
+        }
     }
 }
