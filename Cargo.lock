@@ -3222,7 +3222,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "searchd"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "winseek-folder",
  "winseek-index",
@@ -5066,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-app"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "flate2",
  "image",
@@ -5093,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-eval"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "image",
  "serde",
@@ -5105,15 +5105,15 @@ dependencies = [
 
 [[package]]
 name = "winseek-folder"
-version = "0.2.14"
+version = "0.2.15"
 
 [[package]]
 name = "winseek-index"
-version = "0.2.14"
+version = "0.2.15"
 
 [[package]]
 name = "winseek-ipc"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "serde",
  "serde_json",
@@ -5121,7 +5121,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-llama"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -5136,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-mcp"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "serde",
  "serde_json",
@@ -5145,11 +5145,11 @@ dependencies = [
 
 [[package]]
 name = "winseek-ntfs"
-version = "0.2.14"
+version = "0.2.15"
 
 [[package]]
 name = "winseek-store"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "rusqlite",
  "serde",
@@ -5159,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-usn"
-version = "0.2.14"
+version = "0.2.15"
 dependencies = [
  "winseek-ntfs",
 ]
