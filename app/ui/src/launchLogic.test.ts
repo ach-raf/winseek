@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isHelperExe, launchForFilter, pickTop, portableApps, TOP_MIN, makeLaunchGuard } from "./launchLogic.ts";
+import { isHelperExe, launchForFilter, launchPath, pickTop, portableApps, TOP_MIN, makeLaunchGuard } from "./launchLogic.ts";
 import type { Hit, LaunchHit, LaunchItem } from "./types.ts";
 
 const hit = (path: string): Hit => {
@@ -79,4 +79,15 @@ test("launch guard: click + dblclick launches once, later launches pass", () => 
   t = 300; assert.equal(g("app:other"), true);
   t = 400; assert.equal(g("app:mpc"), true);
   t = 3000; assert.equal(g("app:mpc"), true);
+});
+
+test("launchPath: the path each target kind runs, null when there is none", () => {
+  const base = { id: "x", title: "X", subtitle: "Start menu", keywords: [], icon: null, admin_ok: true };
+  const t = (target: object) => launchPath({ ...base, kind: "app", target } as LaunchItem);
+  assert.equal(t({ t: "path", path: "D:\\my\\app.exe", args: null }), "D:\\my\\app.exe");
+  assert.equal(t({ t: "exec", exe: "C:\\x\\y.exe", args: [] }), "C:\\x\\y.exe");
+  assert.equal(t({ t: "aumid", aumid: "A!B", path: "C:\\store\\p.exe" }), "C:\\store\\p.exe");
+  assert.equal(t({ t: "aumid", aumid: "A!B", path: null }), null); // Store app Windows knows no path for
+  assert.equal(t({ t: "uri", uri: "ms-settings:display" }), "ms-settings:display");
+  assert.equal(t({ t: "cmd", name: "empty-bin" }), null);
 });

@@ -1,4 +1,4 @@
-import type { Filter, Hit, LaunchHit } from "./types";
+import type { Filter, Hit, LaunchHit, LaunchItem } from "./types";
 
 // Pure helpers for the launcher integration (PRD R9 + §4.1). No imports besides types so the
 // rules stay unit-testable — App.tsx feeds it name hits + launch hits per keystroke.
@@ -135,4 +135,16 @@ export function makeLaunchGuard(windowMs = 1500, now: () => number = Date.now) {
     lastAt = t;
     return true;
   };
+}
+
+/** The on-disk path a launcher item runs — shown in full (wrapped) in the launch preview card.
+ *  Store apps carry their install path when Windows knows it; settings pages and commands have none. */
+export function launchPath(item: LaunchItem): string | null {
+  switch (item.target.t) {
+    case "path": return item.target.path;
+    case "exec": return item.target.exe;
+    case "aumid": return item.target.path;
+    case "uri": return item.target.uri;
+    default: return null;
+  }
 }

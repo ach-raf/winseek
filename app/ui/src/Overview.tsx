@@ -1,7 +1,8 @@
 import { memo, useEffect, useRef, type ReactNode } from "react";
-import type { Backend, Hit, LaunchHit } from "./types";
+import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
 import { nicePath, relDate } from "./overviewLogic";
+import { launchPath } from "./launchLogic";
 import { FileIcon } from "./FileIcon";
 import { IChevL } from "./icons";
 import { Snippet } from "./Semantic";
@@ -20,6 +21,32 @@ export function Highlight({ text, query, ranges }: { text: string; query: string
   });
   if (at < text.length) out.push(text.slice(at));
   return <>{out}</>;
+}
+
+/** Shell icon size asked for: the Top result row draws a 52 px icon. */
+const iconSize = (top: boolean) => (top ? 96 : undefined);
+
+/** Icon source for a launcher item — one place for the rows, the tiles and the preview card:
+ *  Store apps by AUMID, file-backed apps by their path, the rest fall back to FileIcon's glyph. */
+export function launchIconSrc(backend: Backend, item: LaunchItem, big = false): string | null {
+  return item.target.t === "aumid" ? backend.appIconUrl(item.target.aumid, big ? 96 : 32)
+    : item.target.t === "path" ? backend.iconUrl(item.target.path, false, false, big ? 96 : undefined) : null;
+}
+
+/** The preview panel's card for a launcher selection: icon, title, source, the full wrapped
+ *  path and the Enter hint — the raw subtitle used to render as one ugly unbreakable line. */
+export function LaunchPreview({ backend, l }: { backend: Backend; l: LaunchHit }) {
+  const item = l.item;
+  const path = launchPath(item);
+  return (
+    <div className="none app">
+      <FileIcon name={item.title} isDir={false} src={launchIconSrc(backend, item, true)} variant={item.kind} />
+      <b>{item.title}</b>
+      <span className="lsrc">{item.subtitle.split(" · ")[0]}</span>
+      {path && <code className="lpath" title={path}>{path}</code>}
+      <span className="lgo">Press Enter to {launchVerb(l).toLowerCase()} it.</span>
+    </div>
+  );
 }
 
 export function RenameInput({ initial, isDir, onCommit, onCancel }: {
@@ -88,9 +115,6 @@ function PathSub({ path }: { path: string }) {
   return <div className="sub path"><span className="head">{head}</span><span className="tail">{tail}</span></div>;
 }
 
-/** Shell icon size asked for: the Top result row draws a 52 px icon. */
-const iconSize = (top: boolean) => (top ? 96 : undefined);
-
 /** A file / folder row (also the virtualised list's row): 36 px icon, name + folder, date, size, "Open ↵" when selected. */
 export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, renaming, top, app, sem, title, y }: {
   hit: Hit; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers; renaming: boolean;
@@ -138,9 +162,7 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
   // Apps and settings have no preview to select for, so one click launches them.
   // Commands keep select-then-open: their open is confirm-gated.
   const oneClick = item.kind === "app" || item.kind === "setting";
-  const src = item.target.t === "aumid"
-    ? backend.appIconUrl(item.target.aumid, top ? 96 : 32)
-    : item.target.t === "path" ? backend.iconUrl(item.target.path, false, false, iconSize(top)) : null;
+  const src = launchIconSrc(backend, item, top);
   return (
     <div className={"row launch" + (top ? " top" : "") + (sel ? " sel" : "") + (isArmed ? " armed" : "")}
          role="option" aria-selected={sel} data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}
@@ -161,8 +183,7 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
 /** Most used: an app tile. */
 const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; i: number; sel: boolean; backend: Backend; h: ItemHandlers }) {
   const item = it.launch!.item;
-  const src = item.target.t === "aumid" ? backend.appIconUrl(item.target.aumid, 96)
-    : item.target.t === "path" ? backend.iconUrl(item.target.path, false, false, 96) : null;
+  const src = launchIconSrc(backend, item, true);
   return (
     <div className={"atile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={item.title}
          data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}

@@ -10,7 +10,7 @@ import { isToggleKey, shellClass, toggleMode, type ViewMode } from "./viewMode";
 import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
-import { HitRow, Overview, launchVerb, type ItemHandlers } from "./Overview";
+import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
 import { buildHome, buildOverview, bumpMru, expandable, fmtMs, isGrid, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
@@ -1586,7 +1586,7 @@ export default function App({ backend }: { backend: Backend }) {
               {ovItem?.calc !== undefined
                 ? <div className="none"><b>Calculator</b>Press Enter to copy the result.</div>
                 : isLaunchSel && ovItem?.launch
-                ? <div className="none"><b>{ovItem.launch.item.title}</b>{ovItem.launch.item.subtitle}. Press Enter to {launchVerb(ovItem.launch).toLowerCase()} it.</div>
+                ? <LaunchPreview backend={backend} l={ovItem.launch} />
                 : <div className="none"><b>Nothing selected</b>Pick a result to preview it.</div>}
             </aside>
           ))}
