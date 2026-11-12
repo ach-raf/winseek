@@ -64,6 +64,26 @@ pub(crate) fn place_on_cursor_monitor(w: &WebviewWindow) {
     let _ = w.set_position(PhysicalPosition::new(x, y));
 }
 
+/// Dead centre of the work area on the monitor under the cursor — where workspace windows open
+/// (the full-mode window, the library window), no matter which screen or taskbar. The compact
+/// popup keeps its Spotlight upper third; a tall workspace anchored there would sit high.
+pub(crate) fn place_centered_on_cursor_monitor(w: &WebviewWindow) {
+    let Ok(cursor) = w.cursor_position() else { return };
+    let mon = w
+        .monitor_from_point(cursor.x, cursor.y)
+        .ok()
+        .flatten()
+        .or_else(|| w.primary_monitor().ok().flatten());
+    let (Some(mon), Ok(size)) = (mon, w.outer_size()) else { return };
+    let area = mon.work_area();
+    let (aw, ah) = (area.size.width as i32, area.size.height as i32);
+    let (ww, wh) = (size.width as i32, size.height as i32);
+    let x = area.position.x + ((aw - ww) / 2).max(0);
+    let y = area.position.y + ((ah - wh) / 2).max(0);
+    mark_programmatic_move(); // our own set_position must not be remembered as a user drag
+    let _ = w.set_position(PhysicalPosition::new(x, y));
+}
+
 /// Starts a native window drag from the search bar (UI command, invoked as `move_popup`). The
 /// drag loop can fire a transient focus loss on Windows, so the time is armed for the blur guard.
 #[tauri::command]
@@ -80,6 +100,9 @@ pub fn minimize_popup(w: WebviewWindow) {
 
 /// Records a drag the user made while the popup was visible.
 pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
+    if w.label() != LABEL {
+        return; // the saved popup position belongs to the popup only (the library window moves too)
+    }
     if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS || crate::view::is_full() {
         return;
     }

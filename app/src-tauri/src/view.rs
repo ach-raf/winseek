@@ -87,12 +87,17 @@ fn fitted_size(w: &WebviewWindow, ww: f64, hh: f64) -> (f64, f64) {
 }
 
 /// Resizes the window for `full` (1280x800 vs the popup's 780x560, fitted to the work area) and
-/// lets the popup place it on the monitor under the cursor; placement is the same for both modes.
+/// places it: the compact popup opens Spotlight-style on the monitor under the cursor, the full
+/// window opens dead centre — a workspace window anchored in the upper third sits high on screen.
 fn apply(w: &WebviewWindow, full: bool) {
     let (ww, hh) = if full { (FULL_W, FULL_H) } else { (COMPACT_W, COMPACT_H) };
     let (ww, hh) = fitted_size(w, ww, hh);
     let _ = w.set_size(LogicalSize::new(ww, hh));
-    popup::place_on_cursor_monitor(w);
+    if full {
+        popup::place_centered_on_cursor_monitor(w);
+    } else {
+        popup::place_on_cursor_monitor(w);
+    }
 }
 
 /// Called by `popup::show` before the window is shown: applies the user's default view
