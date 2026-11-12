@@ -3222,7 +3222,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "searchd"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "winseek-folder",
  "winseek-index",
@@ -3772,7 +3772,7 @@ dependencies = [
  "url",
  "webkit2gtk",
  "webview2-com",
- "window-vibrancy 0.8.1",
+ "window-vibrancy",
  "windows",
 ]
 
@@ -4746,21 +4746,6 @@ checksum = "712e227841d057c1ee1cd2fb22fa7e5a5461ae8e48fa2ca79ec42cfc1931183f"
 
 [[package]]
 name = "window-vibrancy"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d9bec5a31f3f9362f2258fd0e9c9dd61a9ca432e7306cc78c444258f0dce9a9c"
-dependencies = [
- "objc2",
- "objc2-app-kit",
- "objc2-core-foundation",
- "objc2-foundation",
- "raw-window-handle",
- "windows-sys 0.59.0",
- "windows-version",
-]
-
-[[package]]
-name = "window-vibrancy"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "111e51caca442cafd9bab396628ac4d814880eaea4e63dfd76a12e9f342b5580"
@@ -5081,7 +5066,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-app"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "flate2",
  "image",
@@ -5099,7 +5084,6 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tempfile",
- "window-vibrancy 0.6.0",
  "windows",
  "winseek-ipc",
  "winseek-llama",
@@ -5109,7 +5093,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-eval"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "image",
  "serde",
@@ -5121,15 +5105,15 @@ dependencies = [
 
 [[package]]
 name = "winseek-folder"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "winseek-index"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "winseek-ipc"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -5137,7 +5121,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-llama"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -5152,7 +5136,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-mcp"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "serde",
  "serde_json",
@@ -5161,11 +5145,11 @@ dependencies = [
 
 [[package]]
 name = "winseek-ntfs"
-version = "0.2.4"
+version = "0.2.6"
 
 [[package]]
 name = "winseek-store"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "rusqlite",
  "serde",
@@ -5175,7 +5159,7 @@ dependencies = [
 
 [[package]]
 name = "winseek-usn"
-version = "0.2.4"
+version = "0.2.6"
 dependencies = [
  "winseek-ntfs",
 ]
