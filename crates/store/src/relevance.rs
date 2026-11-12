@@ -73,6 +73,8 @@ impl From<VecKind> for Modality {
 pub struct Candidate {
     pub file_id: FileId,
     pub path: String,
+    /// Content hash (copies of one file share it).
+    pub hash: String,
     pub chunk: u32,
     pub locator: Option<String>,
     pub modality: Modality,
@@ -141,7 +143,7 @@ mod tests {
     use super::*;
 
     fn cand(id: i64, m: Modality, adj: f32, z: Option<f32>) -> Candidate {
-        Candidate { file_id: FileId(id), path: format!("p{id}"), chunk: 0, locator: None, modality: m, score: 0.7, adj, z }
+        Candidate { file_id: FileId(id), path: format!("p{id}"), hash: format!("h{id}"), chunk: 0, locator: None, modality: m, score: 0.7, adj, z }
     }
 
     #[test]

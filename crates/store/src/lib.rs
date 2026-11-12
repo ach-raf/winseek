@@ -17,7 +17,7 @@ pub use recover::{is_corruption_message, Recovery};
 use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -1131,8 +1131,27 @@ impl Store {
     /// in that modality's distribution. Returns the best `per_modality` file contents of each
     /// modality as candidates (one per file path), ungated: [`relevance::gate`] decides.
     pub fn search_calibrated(&self, query: &[f32], hub: &[f32], per_modality: usize) -> Result<Vec<Candidate>> {
-        if query.len() != self.dims || hub.len() != self.dims {
-            return Err(Error::BadVector { expected: self.dims, got: if query.len() != self.dims { query.len() } else { hub.len() } });
+        self.search_calibrated_multi(&[query], hub, per_modality, &HashSet::new())
+    }
+
+    /// [`Store::search_calibrated`] for several phrasings of one wish at once (a collection's
+    /// "receipts, invoices or bills" is three queries): one pass over the vectors, each query
+    /// calibrated on its own (own best chunk, own distribution), and a content is ranked by the
+    /// query it stands out most for. Contents whose hash is in `skip` do not take part at all:
+    /// they are neither candidates nor part of the population a hit must stand out from.
+    pub fn search_calibrated_multi(
+        &self,
+        queries: &[&[f32]],
+        hub: &[f32],
+        per_modality: usize,
+        skip: &HashSet<String>,
+    ) -> Result<Vec<Candidate>> {
+        if let Some(bad) = queries.iter().map(|q| q.len()).chain([hub.len()]).find(|n| *n != self.dims) {
+            return Err(Error::BadVector { expected: self.dims, got: bad });
+        }
+        let nq = queries.len();
+        if nq == 0 {
+            return Ok(Vec::new());
         }
         let mut by_hash: HashMap<String, Vec<(FileId, String)>> = HashMap::new();
         {
@@ -1141,11 +1160,16 @@ impl Store {
             )?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
-                by_hash.entry(r.get(0)?).or_default().push((FileId(r.get(1)?), r.get(2)?));
+                let hash: String = r.get(0)?;
+                if skip.contains(&hash) {
+                    continue;
+                }
+                by_hash.entry(hash).or_default().push((FileId(r.get(1)?), r.get(2)?));
             }
         }
-        // (hash, modality) -> (adj, raw, chunk)
-        let mut best: HashMap<(String, Modality), (f32, f32, u32)> = HashMap::new();
+        // (hash, modality) -> per query (adj, raw, chunk)
+        type PerQuery = Vec<(f32, f32, u32)>;
+        let mut best: HashMap<(String, Modality), PerQuery> = HashMap::new();
         {
             let mut st = self.conn.prepare_cached("SELECT hash, chunk, kind, vec FROM vectors")?;
             let mut rows = st.query([])?;
@@ -1159,28 +1183,49 @@ impl Store {
                 if blob.len() != self.dims * 4 {
                     continue;
                 }
-                let raw = dot_le(query, blob);
-                let adj = raw - dot_le(hub, blob);
+                let hub_dot = dot_le(hub, blob);
                 let chunk: u32 = r.get(1)?;
-                let key = (hash.to_owned(), Modality::from(kind));
-                match best.get_mut(&key) {
-                    Some(b) if b.0 >= adj => {}
-                    Some(b) => *b = (adj, raw, chunk),
-                    None => {
-                        best.insert(key, (adj, raw, chunk));
+                let slot = best
+                    .entry((hash.to_owned(), Modality::from(kind)))
+                    .or_insert_with(|| vec![(f32::NEG_INFINITY, 0.0, 0); nq]);
+                for (qi, q) in queries.iter().enumerate() {
+                    let raw = dot_le(q, blob);
+                    let adj = raw - hub_dot;
+                    if adj > slot[qi].0 {
+                        slot[qi] = (adj, raw, chunk);
                     }
                 }
             }
         }
+        type Pick<'a> = (&'a String, f32, f32, u32, Option<f32>);
         let mut out = Vec::new();
         for m in [Modality::Visual, Modality::Text] {
-            let mut items: Vec<(&String, f32, f32, u32)> =
-                best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v.0, v.1, v.2)).collect();
-            let adjs: Vec<f32> = items.iter().map(|i| i.1).collect();
-            let (mu, sd) = relevance::mean_sd(&adjs);
+            let items: Vec<(&String, &PerQuery)> =
+                best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v)).collect();
             let n = items.len();
-            items.sort_by(|a, b| b.1.total_cmp(&a.1));
-            for (hash, adj, raw, chunk) in items.into_iter().take(per_modality) {
+            let stats: Vec<(f32, f32)> = (0..nq)
+                .map(|qi| relevance::mean_sd(&items.iter().map(|i| i.1[qi].0).collect::<Vec<f32>>()))
+                .collect();
+            // each content under the query it stands out most for: (hash, adj, raw, chunk, z)
+            let mut picked: Vec<Pick<'_>> = items
+                .iter()
+                .map(|(hash, per)| {
+                    let mut win = 0usize;
+                    let mut win_key = f32::NEG_INFINITY;
+                    for (qi, v) in per.iter().enumerate() {
+                        let key = relevance::z_of(v.0, n, stats[qi].0, stats[qi].1).unwrap_or(v.0);
+                        if key > win_key {
+                            win = qi;
+                            win_key = key;
+                        }
+                    }
+                    let (adj, raw, chunk) = per[win];
+                    (*hash, adj, raw, chunk, relevance::z_of(adj, n, stats[win].0, stats[win].1))
+                })
+                .collect();
+            let key = |i: &Pick<'_>| i.4.unwrap_or(i.1);
+            picked.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.0.cmp(b.0)));
+            for (hash, adj, raw, chunk, z) in picked.into_iter().take(per_modality) {
                 let locator: Option<String> = self
                     .conn
                     .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?
@@ -1189,12 +1234,13 @@ impl Store {
                     out.push(Candidate {
                         file_id: *fid,
                         path: path.clone(),
+                        hash: hash.clone(),
                         chunk,
                         locator: locator.clone(),
                         modality: m,
                         score: raw,
                         adj,
-                        z: relevance::z_of(adj, n, mu, sd),
+                        z,
                     });
                 }
             }
@@ -1275,6 +1321,30 @@ impl Store {
         )?;
         let rows = st.query_map([], Self::image_row)?.collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
+    }
+
+    /// Pixel size of every image content measured so far (`(0, 0)` = could not be read).
+    pub fn image_dims(&self) -> Result<HashMap<String, (u32, u32)>> {
+        let mut st = self.conn.prepare_cached("SELECT hash, w, h FROM image_dims")?;
+        let mut rows = st.query([])?;
+        let mut out = HashMap::new();
+        while let Some(r) = rows.next()? {
+            out.insert(r.get(0)?, (r.get::<_, i64>(1)?.max(0) as u32, r.get::<_, i64>(2)?.max(0) as u32));
+        }
+        Ok(out)
+    }
+
+    /// Remember pixel sizes (by content hash), replacing older values.
+    pub fn set_image_dims(&mut self, rows: &[(String, u32, u32)]) -> Result<()> {
+        let tx = self.conn.transaction()?;
+        {
+            let mut st = tx.prepare_cached("INSERT OR REPLACE INTO image_dims(hash, w, h) VALUES (?1, ?2, ?3)")?;
+            for (hash, w, h) in rows {
+                st.execute(params![hash, w, h])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     /// Byte-identical image files (same content hash), biggest saving first. Documents and
@@ -1781,6 +1851,15 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if v < 4 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS image_dims(
+                 hash TEXT PRIMARY KEY, w INTEGER NOT NULL, h INTEGER NOT NULL);
+             PRAGMA user_version = 4;
+             COMMIT;",
+        )?;
+    }
     Ok(())
 }
 
@@ -2106,6 +2185,40 @@ mod tests {
         let ct = c.iter().find(|c| c.path == "t").unwrap();
         assert_eq!((ct.modality, ct.chunk), (Modality::Text, 1));
         assert!(matches!(s.search_calibrated(&[1., 0.], &hub, 5), Err(Error::BadVector { .. })));
+    }
+
+    #[test]
+    fn calibrated_multi_ranks_by_the_best_phrase_and_skips_contents() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, "a", 1);
+        let b = add(&mut s, 2, "b", 1);
+        let c = add(&mut s, 3, "c", 1);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap(); // matches phrase 1 only
+        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap(); // matches phrase 2 only
+        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[]).unwrap(); // matches neither
+        let hub = [0., 1., 0., 0.];
+        let (q1, q2) = ([1., 0., 0., 0.], [0., 0., 1., 0.]);
+        let none = HashSet::new();
+        let one = s.search_calibrated_multi(&[&q1], &hub, 10, &none).unwrap();
+        assert_eq!(one.iter().find(|x| x.path == "b").unwrap().adj, 0.0, "one phrase misses b");
+        let both = s.search_calibrated_multi(&[&q1, &q2], &hub, 10, &none).unwrap();
+        let adj = |p: &str| both.iter().find(|x| x.path == p).unwrap().adj;
+        assert_eq!((adj("a"), adj("b"), adj("c")), (1.0, 1.0, 0.0), "each content is scored under its best phrase");
+        assert_eq!(both.iter().find(|x| x.path == "a").unwrap().hash, "ha");
+        let skip: HashSet<String> = ["ha".to_string()].into();
+        let rest = s.search_calibrated_multi(&[&q1, &q2], &hub, 10, &skip).unwrap();
+        assert!(rest.iter().all(|x| x.path != "a") && rest.len() == 2, "skipped contents are not candidates");
+        assert!(s.search_calibrated_multi(&[], &hub, 10, &none).unwrap().is_empty());
+    }
+
+    #[test]
+    fn image_dims_roundtrip_and_replace() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert!(s.image_dims().unwrap().is_empty());
+        s.set_image_dims(&[("h1".into(), 640, 480), ("h2".into(), 0, 0)]).unwrap();
+        s.set_image_dims(&[("h1".into(), 800, 600)]).unwrap();
+        let d = s.image_dims().unwrap();
+        assert_eq!((d["h1"], d["h2"], d.len()), ((800, 600), (0, 0), 2));
     }
 
     #[test]

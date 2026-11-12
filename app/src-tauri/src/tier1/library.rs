@@ -14,6 +14,7 @@ use winseek_store::relevance;
 use winseek_store::{cluster_near, ImageRow, Store};
 
 use super::embedder::EmbedError;
+use super::imgclass::{self, ImgClass};
 use super::{lock, locator_page, stat, Handle, SemanticHit, SemanticResult, Tier1};
 use crate::commands::AppState;
 use crate::source::Hit;
@@ -31,6 +32,12 @@ const BUCKET_MS: i64 = 30 * 24 * 3600 * 1000;
 /// Largest number of vectors compared pairwise at once (a bigger bucket is cut into runs).
 const BUCKET_CHUNK: usize = 3000;
 const BIG_FILES_CAP: usize = 500;
+/// Phrases one collection description is split into, at most (the whole description included).
+const MAX_FACETS: usize = 6;
+/// Files a collection can have removed by hand.
+const MAX_EXCLUDED: usize = 2000;
+/// Header reads per thread when pixel sizes are measured for the first time.
+const DIMS_THREADS: usize = 8;
 
 // ---------------------------------------------------------------- DTOs
 
@@ -40,11 +47,24 @@ pub struct LibImage {
     pub size: u64,
     /// Modified time, unix ms.
     pub mtime: i64,
+    /// Pixel size; 0 x 0 when the file could not be read.
+    pub w: u32,
+    pub h: u32,
+    /// "photo" | "screenshot" | "graphic" (app / game / web assets, see `imgclass`).
+    pub class: &'static str,
+}
+
+/// An indexed image with what the library knows about it.
+#[derive(Debug, Clone)]
+pub struct ClassedImage {
+    pub row: ImageRow,
+    pub dims: Option<(u32, u32)>,
+    pub class: ImgClass,
 }
 
 /// A saved semantic query. `rule` replaces the query with a name rule ("screenshots"), which the UI
 /// evaluates against the timeline.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct Collection {
     pub name: String,
     #[serde(default)]
@@ -53,6 +73,57 @@ pub struct Collection {
     pub threshold: f32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rule: Option<String>,
+    /// Files the user removed from this collection by hand (full paths). They, and every copy
+    /// with the same content, never come back.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub exclude: Vec<String>,
+    /// Also let app / game / web graphics in (icons, logos, sprites). Off: only photos,
+    /// screenshots and documents.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub graphics: bool,
+}
+
+/// What a collection asks beyond its description.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CollectionOpts<'a> {
+    pub exclude: &'a [String],
+    pub graphics: bool,
+}
+
+/// The phrases a description is searched as: the whole text, plus each alternative of a list
+/// ("a medical document, a doctor's note or an x-ray" is three more). One long either-or sentence
+/// embeds to a blur between its parts; measured on a real library (2026-11-12) the sentence above
+/// found nothing where its parts found the vaccine pass and four scans. One-word parts are not
+/// searched on their own ("... or image" would match every picture).
+pub fn facets(query: &str) -> Vec<String> {
+    let q = query.trim();
+    let mut out = vec![q.to_string()];
+    let spaced = q.replace([',', ';', '\n'], " | ");
+    let mut parts: Vec<String> = Vec::new();
+    for chunk in spaced.split(" | ") {
+        let mut rest = chunk;
+        loop {
+            let low = rest.to_lowercase();
+            match low.find(" or ") {
+                // lowercasing can change byte lengths for a few scripts: only cut on a boundary
+                Some(i) if rest.is_char_boundary(i) && rest.is_char_boundary(i + 4) => {
+                    parts.push(rest[..i].to_string());
+                    rest = &rest[i + 4..];
+                }
+                _ => break,
+            }
+        }
+        parts.push(rest.to_string());
+    }
+    if parts.len() > 1 {
+        for part in parts {
+            let part = part.trim().trim_start_matches("or ").trim();
+            if part.split_whitespace().count() >= 2 && !out.iter().any(|o| o.eq_ignore_ascii_case(part)) && out.len() < MAX_FACETS {
+                out.push(part.to_string());
+            }
+        }
+    }
+    out
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq)]
@@ -112,6 +183,7 @@ pub fn default_collections() -> Vec<Collection> {
         query: query.into(),
         threshold,
         rule: rule.map(Into::into),
+        ..Collection::default()
     };
     vec![
         c("Receipts", "a photo of a paper receipt or invoice", 0.64, None),
@@ -155,6 +227,15 @@ pub fn sanitize_collections(list: Vec<Collection>) -> Result<Vec<Collection>, St
             return Err(format!("There is already a collection named \"{}\"", c.name));
         }
         c.threshold = if c.threshold.is_finite() { c.threshold.clamp(-1.0, 1.0) } else { 0.0 };
+        let mut kept = HashSet::new();
+        c.exclude.retain(|p| !p.trim().is_empty() && kept.insert(p.to_lowercase()));
+        if c.exclude.len() > MAX_EXCLUDED {
+            let drop = c.exclude.len() - MAX_EXCLUDED;
+            c.exclude.drain(..drop); // the oldest removals go first
+        }
+        if c.rule.is_some() {
+            c.graphics = false;
+        }
         out.push(c);
     }
     Ok(out)
@@ -177,15 +258,69 @@ impl Tier1 {
         Ok(list)
     }
 
-    /// Every indexed image in scope, newest first.
+    /// Every indexed image in scope, newest first, with its pixel size and class.
     pub fn library_images(&self) -> Result<Vec<LibImage>, String> {
-        let snap = self.snapshot();
-        let rows = lock(&self.store).list_images().map_err(|e| e.to_string())?;
-        Ok(rows
+        Ok(self
+            .classed_images()?
             .into_iter()
-            .filter(|r| snap.in_scope(&r.path))
-            .map(|r| LibImage { path: r.path, size: r.size, mtime: r.mtime })
+            .map(|c| {
+                let (w, h) = c.dims.unwrap_or((0, 0));
+                LibImage { path: c.row.path, size: c.row.size, mtime: c.row.mtime, w, h, class: c.class.as_str() }
+            })
             .collect())
+    }
+
+    /// Every indexed image in scope, newest first, measured and classified (see `imgclass`).
+    /// Pixel sizes are read from the file headers once and remembered by content hash; the
+    /// first call on a big library reads them all (a few threads, off the store lock).
+    pub fn classed_images(&self) -> Result<Vec<ClassedImage>, String> {
+        let snap = self.snapshot();
+        let (mut rows, mut dims) = {
+            let store = lock(&self.store);
+            (store.list_images().map_err(|e| e.to_string())?, store.image_dims().map_err(|e| e.to_string())?)
+        };
+        rows.retain(|r| snap.in_scope(&r.path));
+
+        let mut seen = HashSet::new();
+        let missing: Vec<(&str, &str)> = rows
+            .iter()
+            .filter(|r| !dims.contains_key(&r.content_hash) && seen.insert(r.content_hash.as_str()))
+            .map(|r| (r.content_hash.as_str(), r.path.as_str()))
+            .collect();
+        if !missing.is_empty() {
+            let per = missing.len().div_ceil(DIMS_THREADS).max(1);
+            let measured: Vec<(String, u32, u32)> = std::thread::scope(|sc| {
+                let handles: Vec<_> = missing
+                    .chunks(per)
+                    .map(|part| {
+                        sc.spawn(move || {
+                            part.iter()
+                                .map(|(hash, path)| {
+                                    let (w, h) = image_size(path).unwrap_or((0, 0));
+                                    (hash.to_string(), w, h)
+                                })
+                                .collect::<Vec<_>>()
+                        })
+                    })
+                    .collect();
+                handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+            });
+            for (hash, w, h) in &measured {
+                dims.insert(hash.clone(), (*w, *h));
+            }
+            // Best effort: a failed write only means the headers are read again next time.
+            let _ = lock(&self.store).set_image_dims(&measured);
+        }
+
+        let items: Vec<(&str, Option<(u32, u32)>)> = rows.iter().map(|r| (r.path.as_str(), dims.get(&r.content_hash).copied())).collect();
+        let classes = imgclass::classify(&items, &snap.scopes.include, super::ocr::screenshots_dir());
+        let sized: Vec<Option<(u32, u32)>> = items.iter().map(|i| i.1).collect();
+        Ok(rows.into_iter().zip(sized).zip(classes).map(|((row, dims), class)| ClassedImage { row, dims, class }).collect())
+    }
+
+    /// Paths of the in-scope images that are app / game / web graphics.
+    fn graphic_paths(&self) -> Result<HashSet<String>, String> {
+        Ok(self.classed_images()?.into_iter().filter(|c| c.class == ImgClass::Graphic).map(|c| c.row.path).collect())
     }
 
     /// The stored slider (0.4..0.9, historically a raw cosine floor) as a calibrated-gate
@@ -197,40 +332,58 @@ impl Tier1 {
         (2.5 + (threshold - 0.4) * 7.0).clamp(2.0, 8.0)
     }
 
-    /// Files that belong to a collection: embed the query and return the in-scope files that are
-    /// *relevant* — the same calibrated gate search uses (see `relevance`: hub correction, then a
-    /// per-modality z-score, so icons that sit near every query cannot flood the list) — best
-    /// first, at most `cap`. `threshold` only dials the strictness (see [`Self::threshold_z_min`]).
-    pub fn collection_hits(&self, query: &str, threshold: f32, cap: usize) -> Result<SemanticResult, String> {
+    /// Files that belong to a collection: every phrase of the description ([`facets`]) is embedded
+    /// and the in-scope files that are *relevant* to one of them are returned — the same
+    /// calibrated gate search uses (see `relevance`: hub correction, then a per-modality z-score)
+    /// — best first, one per file content, at most `cap`. `threshold` only dials the strictness
+    /// (see [`Self::threshold_z_min`]). App graphics do not take part unless `opts.graphics`
+    /// (neither as hits nor as the crowd a hit must stand out from), and what the user removed by
+    /// hand (`opts.exclude`) stays out together with its copies.
+    pub fn collection_hits(&self, query: &str, threshold: f32, cap: usize, opts: CollectionOpts<'_>) -> Result<SemanticResult, String> {
         let cap = cap.clamp(1, COLLECTION_CAP);
         let q = query.trim();
         if q.is_empty() {
             return Ok(SemanticResult { state: self.state_str().into(), hits: vec![] });
         }
-        let (vec, hub) = {
+        let missing = || Ok(SemanticResult { state: "models_missing".into(), hits: vec![] });
+        let (vecs, hub) = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
-                return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] });
+                return missing();
             }
-            match e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
+            let embedded = facets(q).iter().map(|f| e.embed_query(f)).collect::<Result<Vec<_>, _>>();
+            match embedded.and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
                 Ok(v) => v,
-                Err(EmbedError::ModelsMissing) => return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] }),
+                Err(EmbedError::ModelsMissing) => return missing(),
                 Err(EmbedError::Other(m)) => return Err(m),
             }
         };
         let snap = self.snapshot();
+        let skip: HashSet<String> = if opts.graphics {
+            HashSet::new()
+        } else {
+            self.classed_images()?.into_iter().filter(|c| c.class == ImgClass::Graphic).map(|c| c.row.content_hash).collect()
+        };
         let cands = {
             let store = lock(&self.store);
-            // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
-            store.search_calibrated(&vec, &hub, (cap * 4).max(40)).map_err(|e| e.to_string())?
+            let queries: Vec<&[f32]> = vecs.iter().map(Vec::as_slice).collect();
+            // Over-fetch: rows outside the current scopes (scopes shrank since indexing), removed
+            // files and copies are dropped below.
+            store.search_calibrated_multi(&queries, &hub, (cap * 4).max(40), &skip).map_err(|e| e.to_string())?
         };
+        let removed: HashSet<String> = opts.exclude.iter().map(|p| p.to_lowercase()).collect();
+        let removed_hashes: HashSet<String> =
+            cands.iter().filter(|c| removed.contains(&c.path.to_lowercase())).map(|c| c.hash.clone()).collect();
         let gated = relevance::gate_at(
-            cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect(),
-            cap,
+            cands.into_iter().filter(|c| snap.in_scope(&c.path) && !removed_hashes.contains(&c.hash)).collect(),
+            COLLECTION_CAP * 4,
             Self::threshold_z_min(threshold),
         );
+        let mut shown = HashSet::new();
         let hits = gated
             .into_iter()
+            .filter(|h| shown.insert(h.hash.clone()))
+            .take(cap)
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
                 SemanticHit {
@@ -251,13 +404,15 @@ impl Tier1 {
     /// Byte-identical files in scope that still exist, biggest saving first.
     pub fn library_dup_groups(&self) -> Result<Vec<DupGroupDto>, String> {
         let snap = self.snapshot();
+        // Copies of an app's own images are that app's business: deleting them breaks it.
+        let graphic = self.graphic_paths()?;
         let groups = lock(&self.store).dup_groups().map_err(|e| e.to_string())?;
         let mut out = Vec::new();
         for g in groups {
             let members: Vec<DupMember> = g
                 .files
                 .iter()
-                .filter(|f| snap.in_scope(&f.path) && Path::new(&f.path).is_file())
+                .filter(|f| snap.in_scope(&f.path) && !graphic.contains(&f.path) && Path::new(&f.path).is_file())
                 .map(|f| DupMember { path: f.path.clone(), size: f.size, mtime: f.mtime, sim: None })
                 .collect();
             if members.len() < 2 {
@@ -367,7 +522,9 @@ impl LibState {
         let spawned = std::thread::Builder::new().name("library-near".into()).spawn(move || {
             super::lower_thread_priority();
             let snap = t.snapshot();
-            let in_scope = |p: &str| snap.in_scope(p);
+            // App graphics are left alone (thousands of look-alike icons are not "similar photos").
+            let graphic = t.graphic_paths().unwrap_or_default();
+            let in_scope = |p: &str| snap.in_scope(p) && !graphic.contains(p);
             let cancelled = || inner.gen.load(Ordering::SeqCst) != my;
             let progress = |done: usize, total: usize| {
                 if !cancelled() {
@@ -446,9 +603,16 @@ pub async fn library_collection(
     query: String,
     threshold: f32,
     cap: Option<usize>,
+    exclude: Option<Vec<String>>,
+    graphics: Option<bool>,
 ) -> Result<SemanticResult, String> {
     let t = tier1(&h)?;
-    blocking(move || t.collection_hits(&query, threshold, cap.unwrap_or(COLLECTION_CAP))).await
+    blocking(move || {
+        let exclude = exclude.unwrap_or_default();
+        let opts = CollectionOpts { exclude: &exclude, graphics: graphics.unwrap_or(false) };
+        t.collection_hits(&query, threshold, cap.unwrap_or(COLLECTION_CAP), opts)
+    })
+    .await
 }
 
 #[tauri::command]
@@ -536,15 +700,15 @@ mod tests {
         assert_eq!(d[4].rule.as_deref(), Some("screenshots"));
 
         let saved = t
-            .set_collections(vec![Collection { name: "  Cats ".into(), query: " cat ".into(), threshold: 7.0, rule: Some("bogus".into()) }])
+            .set_collections(vec![Collection { name: "  Cats ".into(), query: " cat ".into(), threshold: 7.0, rule: Some("bogus".into()), ..Default::default() }])
             .unwrap();
-        assert_eq!(saved, vec![Collection { name: "Cats".into(), query: "cat".into(), threshold: 1.0, rule: None }]);
+        assert_eq!(saved, vec![Collection { name: "Cats".into(), query: "cat".into(), threshold: 1.0, rule: None, ..Default::default() }]);
         assert_eq!(t.get_collections().unwrap(), saved);
         t.set_collections(vec![]).unwrap();
         assert!(t.get_collections().unwrap().is_empty(), "an empty list is a valid choice");
 
         let bad = |c: Vec<Collection>| t.set_collections(c).unwrap_err();
-        let c = |n: &str, q: &str| Collection { name: n.into(), query: q.into(), threshold: 0.2, rule: None };
+        let c = |n: &str, q: &str| Collection { name: n.into(), query: q.into(), threshold: 0.2, rule: None, ..Default::default() };
         assert!(bad(vec![c("", "x")]).contains("name"));
         assert!(bad(vec![c("A", "  ")]).contains("search phrase"));
         assert!(bad(vec![c("A", "x"), c("a", "y")]).contains("already"));
@@ -570,7 +734,7 @@ mod tests {
             c.threshold = LEGACY_DEFAULT_THRESHOLD;
         }
         old[1].query = "my own whiteboard query".into(); // edited: keeps 0.2
-        old.push(Collection { name: "Cats".into(), query: "cat".into(), threshold: 0.2, rule: None });
+        old.push(Collection { name: "Cats".into(), query: "cat".into(), threshold: 0.2, rule: None, ..Default::default() });
         t.set_collections(old).unwrap();
         let got = t.get_collections().unwrap();
         let thr: Vec<f32> = got.iter().map(|c| c.threshold).collect();
@@ -587,12 +751,73 @@ mod tests {
         add(&t, 4, r"C:\Pics\c.jpg", 1, 1, "h3", mix(1, 2, 1.4)); // far: dropped
         add(&t, 5, r"C:\Pics\e.jpg", 1, 1, "h5", unit(5)); // orthogonal to both: adj 0, dropped
         add(&t, 6, r"C:\Old\d.jpg", 1, 1, "h4", unit(1)); // out of scope
-        let r = t.collection_hits("cat", 0.5, 10).unwrap();
+        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts::default()).unwrap();
         let names: Vec<_> = r.hits.iter().map(|h| h.path.rsplit('\\').next().unwrap()).collect();
         assert_eq!(names, ["f.jpg", "a.jpg"], "calibrated best-first: hub junk and ordinary files stay out");
-        assert_eq!(t.collection_hits("cat", 0.5, 1).unwrap().hits.len(), 1, "cap");
-        assert_eq!(t.collection_hits("cat", 0.0, 100_000).unwrap().hits.len(), 2, "cap is clamped, gate still applies");
-        assert!(t.collection_hits("  ", 0.0, 5).unwrap().hits.is_empty());
+        assert_eq!(t.collection_hits("cat", 0.5, 1, CollectionOpts::default()).unwrap().hits.len(), 1, "cap");
+        assert_eq!(t.collection_hits("cat", 0.0, 100_000, CollectionOpts::default()).unwrap().hits.len(), 2, "cap is clamped, gate still applies");
+        assert!(t.collection_hits("  ", 0.0, 5, CollectionOpts::default()).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn facets_split_lists_and_keep_the_whole_description() {
+        assert_eq!(facets("dog photos"), ["dog photos"]);
+        assert_eq!(
+            facets("a medical related document or doctor's note or image"),
+            ["a medical related document or doctor's note or image", "a medical related document", "doctor's note"],
+            "one-word parts are not searched alone"
+        );
+        assert_eq!(facets("paper receipts, restaurant bills; OR parking tickets").len(), 4);
+        assert_eq!(facets("a floor plan or a floor plan"), ["a floor plan or a floor plan", "a floor plan"], "no repeats");
+        assert!(facets("a b, c d, e f, g h, i j, k l, m n").len() <= MAX_FACETS);
+        assert_eq!(facets("a meme: an image with a funny caption").len(), 1);
+    }
+
+    #[test]
+    fn collections_leave_graphics_out_and_respect_removals() {
+        let dir = crate::tier1::test_tmp();
+        let p = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
+        let save = |n: &str, w: u32, h: u32| image::RgbImage::from_pixel(w, h, image::Rgb([1, 2, 3])).save(dir.path().join(n)).unwrap();
+        save("photo.png", 800, 600);
+        save("icon.png", 48, 48);
+        save("copy.png", 800, 600);
+        let t = tier(&[&dir.path().to_string_lossy()]);
+        add(&t, 1, &p("photo.png"), 1, 1, "h1", mix(1, 3, 0.2));
+        add(&t, 2, &p("icon.png"), 1, 1, "h2", mix(1, 3, 0.1)); // the closest match, but an icon
+        add(&t, 3, &p("copy.png"), 1, 2, "h1", mix(1, 3, 0.2)); // same content as photo.png
+        let names = |r: SemanticResult| r.hits.iter().map(|h| h.path.rsplit('\\').next().unwrap().to_string()).collect::<Vec<_>>();
+
+        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts::default()).unwrap();
+        assert_eq!(names(r).len(), 1, "the icon is out and the two copies are one tile");
+        let with = t.collection_hits("cat", 0.5, 10, CollectionOpts { graphics: true, ..Default::default() }).unwrap();
+        assert_eq!(names(with)[0], "icon.png", "graphics come back when asked for");
+
+        let gone = [p("copy.png").to_uppercase()];
+        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts { exclude: &gone, graphics: false }).unwrap();
+        assert!(r.hits.is_empty(), "removing one copy removes the content, whatever the path's case");
+
+        let imgs = t.library_images().unwrap();
+        let class = |n: &str| imgs.iter().find(|i| i.path.ends_with(n)).map(|i| (i.w, i.h, i.class)).unwrap();
+        assert_eq!(class("icon.png"), (48, 48, "graphic"));
+        assert_eq!(class("photo.png"), (800, 600, "photo"));
+        assert_eq!(lock(&t.store).image_dims().unwrap().len(), 2, "sizes are remembered per content");
+    }
+
+    #[test]
+    fn sanitize_dedupes_removals_and_rules_take_no_graphics() {
+        let c = Collection {
+            name: "A".into(),
+            query: "q".into(),
+            exclude: vec!["C:\\x.png".into(), "c:\\X.PNG".into(), " ".into()],
+            graphics: true,
+            ..Default::default()
+        };
+        let shots = Collection { name: "S".into(), rule: Some("screenshots".into()), graphics: true, ..Default::default() };
+        let out = sanitize_collections(vec![c, shots]).unwrap();
+        assert_eq!(out[0].exclude, ["C:\\x.png"]);
+        assert!(out[0].graphics && !out[1].graphics);
+        let json = serde_json::to_string(&Collection { name: "N".into(), query: "q".into(), ..Default::default() }).unwrap();
+        assert!(!json.contains("exclude") && !json.contains("graphics"), "old readers see the old shape: {json}");
     }
 
     #[test]
@@ -613,8 +838,8 @@ mod tests {
         add(&t, 3, r"C:\Other\x.jpg", 7, 500, "h3", unit(3));
         let v = t.library_images().unwrap();
         assert_eq!(v, vec![
-            LibImage { path: r"C:\Pics\new.png".into(), size: 6, mtime: 900 },
-            LibImage { path: r"C:\Pics\old.jpg".into(), size: 5, mtime: 100 },
+            LibImage { path: r"C:\Pics\new.png".into(), size: 6, mtime: 900, w: 0, h: 0, class: "photo" },
+            LibImage { path: r"C:\Pics\old.jpg".into(), size: 5, mtime: 100, w: 0, h: 0, class: "photo" },
         ]);
     }
 

@@ -539,7 +539,8 @@ fn library_collections(deps: &Deps, args: &Value) -> Result<Value, String> {
                 .find(|c| c.name.eq_ignore_ascii_case(name))
                 .ok_or_else(|| format!("no collection named \"{name}\""))?;
             let query = if c.query.is_empty() { &c.name } else { &c.query };
-            let r = t.collection_hits(query, c.threshold, tier1::library::COLLECTION_CAP)?;
+            let opts = tier1::library::CollectionOpts { exclude: &c.exclude, graphics: c.graphics };
+            let r = t.collection_hits(query, c.threshold, tier1::library::COLLECTION_CAP, opts)?;
             let hits: Vec<Value> = r
                 .hits
                 .iter()

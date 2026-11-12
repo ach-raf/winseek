@@ -15,6 +15,7 @@ pub mod gitignore;
 pub mod gpu_phase;
 pub mod hitbox;
 pub mod identity;
+pub mod imgclass;
 pub mod library;
 pub mod ocr;
 pub mod parse_pass;
