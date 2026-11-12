@@ -1,5 +1,6 @@
 /** Settings sidebar logic: remembered section, and filtering sections by a typed query. Pure (tested). */
-export const SECTION_IDS = ["meaning", "indexing", "launcher", "general", "agents", "status"] as const;
+/** Known order: app-wide behaviour first, engine next, add-ons, diagnostics last. */
+export const SECTION_IDS = ["general", "indexing", "meaning", "launcher", "agents", "status"] as const;
 export type SettingsSection = (typeof SECTION_IDS)[number];
 
 /** Words that live in each section, so "hotkey" finds General and "gpu" finds Performance. */
@@ -14,7 +15,7 @@ export const SECTION_KEYWORDS: Record<SettingsSection, string> = {
 
 export function parseSection(v: unknown): SettingsSection {
   if (v === "performance") return "general"; // Performance lives in General now
-  return (SECTION_IDS as readonly string[]).includes(v as string) ? (v as SettingsSection) : "meaning";
+  return (SECTION_IDS as readonly string[]).includes(v as string) ? (v as SettingsSection) : "general";
 }
 
 /** Sections whose label or keywords contain every typed word; an empty query keeps all. */

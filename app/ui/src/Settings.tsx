@@ -508,12 +508,12 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
 
 export type { SettingsSection };
 
-/** Section list in the prototype's order; Ctrl+1..7 follow it. */
+/** General first, engine next, add-ons, diagnostics last (the known order); Ctrl+1..7 follow it. */
 const NAV: { id: SettingsSection; label: string }[] = [
-  { id: "meaning", label: "Search by meaning" },
-  { id: "indexing", label: "Indexing" },
-  { id: "launcher", label: "Apps and commands" },
   { id: "general", label: "General" },
+  { id: "indexing", label: "Indexing" },
+  { id: "meaning", label: "Search by meaning" },
+  { id: "launcher", label: "Apps and commands" },
   { id: "agents", label: "AI agents" },
   { id: "status", label: "Status" },
 ];

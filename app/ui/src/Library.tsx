@@ -57,7 +57,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const [showSettings, setShowSettings] = useState(false);
   // The last section is remembered across sessions (the popup uses the same storage key).
   const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
-    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "meaning"; }
+    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "general"; }
   });
   const setSettingsSection = useCallback((s: SettingsSection) => {
     setSettingsSectionRaw(s);

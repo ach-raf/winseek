@@ -4,10 +4,15 @@ import { filterSections, parseSection, SECTION_IDS } from "./settingsNav.ts";
 
 const items = SECTION_IDS.map((id) => ({ id, label: id[0].toUpperCase() + id.slice(1) }));
 
-test("parseSection falls back to meaning", () => {
-  assert.equal(parseSection("general"), "general");
-  assert.equal(parseSection("nope"), "meaning");
-  assert.equal(parseSection(null), "meaning");
+test("parseSection falls back to general", () => {
+  assert.equal(parseSection("meaning"), "meaning");
+  assert.equal(parseSection("nope"), "general");
+  assert.equal(parseSection(null), "general");
+  assert.equal(parseSection("performance"), "general"); // the old Performance section moved into General
+});
+
+test("sections follow the known order: General first, Status last", () => {
+  assert.deepEqual(SECTION_IDS, ["general", "indexing", "meaning", "launcher", "agents", "status"]);
 });
 
 test("empty query keeps everything", () => {
