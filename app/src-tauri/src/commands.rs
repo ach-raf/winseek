@@ -82,6 +82,33 @@ pub async fn status(state: tauri::State<'_, AppState>) -> Result<Vec<VolumeStatu
     .await
 }
 
+/// Capacity of one drive, for the sidebar's "what is left on each drive" card.
+#[derive(serde::Serialize)]
+pub struct DriveSpace {
+    pub letter: String,
+    pub total: u64,
+    pub free: u64,
+}
+
+fn space_of(letter: char) -> Option<DriveSpace> {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetDiskFreeSpaceExW;
+    if !letter.is_ascii_alphabetic() {
+        return None;
+    }
+    let root: Vec<u16> = format!("{}:\\", letter.to_ascii_uppercase()).encode_utf16().chain(std::iter::once(0)).collect();
+    let (mut free, mut total) = (0u64, 0u64);
+    // SAFETY: `root` is NUL-terminated and outlives the call; the out pointers are valid u64s.
+    unsafe { GetDiskFreeSpaceExW(PCWSTR(root.as_ptr()), Some(&mut free), Some(&mut total), None) }.ok()?;
+    (total > 0).then(|| DriveSpace { letter: letter.to_ascii_uppercase().to_string(), total, free })
+}
+
+/// Free and total bytes of the given drive letters (a drive that does not answer is left out).
+#[tauri::command]
+pub async fn drive_space(letters: Vec<String>) -> Result<Vec<DriveSpace>, String> {
+    blocking(move || letters.iter().filter_map(|l| l.chars().next().and_then(space_of)).collect()).await
+}
+
 #[tauri::command]
 pub async fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Result<Vec<Hit>, String> {
     let src = state.source();

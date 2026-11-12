@@ -123,7 +123,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
         {snippet && (
           <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
         )}
-        {shown && <Meta info={shown} />}
+        {shown && <Meta info={shown} folderSize={hit.is_dir ? hit.size : null} />}
         {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
           <ParseBar backend={backend} path={shown.path} available={parser} registerApi={registerApi}
                     page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
@@ -138,10 +138,12 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
   );
 }
 
-function Meta({ info }: { info: PreviewInfo }) {
+function Meta({ info, folderSize }: { info: PreviewInfo; folderSize?: number | null }) {
   const rows: [string, string][] = [];
   if (info.mtime !== null) rows.push(["Modified", formatDate(info.mtime)]);
   if (info.size !== null && info.kind !== "folder") rows.push(["Size", formatSize(info.size)]);
+  // A folder's size comes with the search row (the index adds up everything inside it).
+  if (info.kind === "folder" && folderSize != null) rows.push(["Contains", formatSize(folderSize)]);
   const drive = driveOf(info.path);
   if (drive) rows.push(["Drive", drive]);
   if (info.ctime !== null) rows.push(["Created", formatDate(info.ctime)]);

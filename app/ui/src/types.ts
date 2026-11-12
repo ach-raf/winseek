@@ -360,6 +360,8 @@ export interface NearState {
 export interface Backend {
   search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter }): Promise<SearchResult>;
   status(): Promise<VolumeStatus[]>;
+  /** Capacity of the given drive letters; a drive that does not answer is left out. */
+  driveSpace(letters: string[]): Promise<DriveSpace[]>;
   recent(limit: number): Promise<Hit[]>;
   openPath(path: string): Promise<void>;
   revealPath(path: string): Promise<void>;
@@ -504,3 +506,6 @@ export interface Backend {
   /** The clipboard hotkey shows the popup with the clipboard text as the query. */
   onSetQuery(cb: (p: { query: string }) => void): Promise<() => void>;
 }
+
+/** Bytes on one drive (sidebar card). */
+export interface DriveSpace { letter: string; total: number; free: number }

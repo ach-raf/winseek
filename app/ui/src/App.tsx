@@ -1,6 +1,6 @@
-import { startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
-import { backspaceDropsChip, hasRanges, matchesRanges, nameQuery, parseQuery, type Parsed } from "./filters";
+import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
+import { backspaceDropsChip, hasRanges, nameQuery, parseQuery, rangeClause } from "./filters";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -24,6 +24,7 @@ import { kindOf } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
 const ROW_H = 54;
+const ROW_H_DENSE = 32; // compact rows in the full window: one line, name + location
 // Rows fetched per request. One block covers the whole visible window on a scroll jump, and
 // searchd caches the query's ordered results, so each further block is a cheap slice.
 const PAGE = 400;
@@ -60,39 +61,6 @@ const COLS: { label: string; a: Sort; b: Sort; up: Sort; hint: string }[] = [
   { label: "Size", a: "size", b: "size_asc", up: "size_asc", hint: "Sort by size" },
 ];
 
-const SCAN_PAGE = 2000;
-const SCAN_MAX = 30000;
-
-/**
- * Date / size filters are not part of the Tier 0 query language yet, so they are applied here: pull name
- * results in pages (newest first for a date filter, biggest first for a size filter, so the scan can stop as
- * soon as it is past the range) and keep what fits. The result is fully loaded; no paging afterwards.
- */
-async function scanRanges(
-  backend: Backend, query: string, filter: Filter, sort: Sort, p: Parsed, cancelled: () => boolean,
-): Promise<{ rows: Hit[]; partial: boolean; ms: number }> {
-  const t0 = performance.now();
-  const byDate = !!p.date && (sort === "rel" || sort === "date");
-  const bySize = !byDate && !!p.size && (sort === "rel" || sort === "size");
-  const srvSort: Sort = byDate ? "date" : bySize ? "size" : sort;
-  const rows: Hit[] = [];
-  let offset = 0, partial = false;
-  for (;;) {
-    const r = await backend.search({ query, offset, limit: SCAN_PAGE, sort: srvSort, filter });
-    if (cancelled()) break;
-    let stop = false;
-    for (const h of r.hits) {
-      if (byDate && (h.mtime ?? 0) < p.date!.from) { stop = true; break; }
-      if (bySize && p.size!.min !== null && h.size !== null && h.size < p.size!.min) { stop = true; break; }
-      if (matchesRanges(p, h)) rows.push(h);
-    }
-    offset += r.hits.length;
-    if (stop || r.hits.length === 0 || offset >= r.total) break;
-    if (offset >= SCAN_MAX) { partial = true; break; }
-  }
-  return { rows, partial, ms: performance.now() - t0 };
-}
-
 type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] } | { kind: "unhide"; id: string };
 
 interface Data {
@@ -128,7 +96,21 @@ export default function App({ backend }: { backend: Backend }) {
   const [scrollTop, setScrollTop] = useState(0);
   // Exact list offset for wheel / keyboard moves on lists too long for the scrollbar to address (see vlist.ts).
   const [pin, setPin] = useState<number | null>(null);
-  const [scrolling, setScrolling] = useState(false); // shows the "row N of M" tag while the list moves
+  const [scrolling, setScrolling] = useState(false);
+  const [loadErr, setLoadErr] = useState(false); // rows on screen could not be fetched (the service kept answering nothing)
+  // Row density of the full window's file list, remembered.
+  const [compactRows, setCompactRows] = useState(() => {
+    try { return localStorage.getItem("winseek.density") === "compact"; } catch { return false; }
+  });
+  const toggleDensity = useCallback(() => {
+    setCompactRows((c) => {
+      try { localStorage.setItem("winseek.density", c ? "comfortable" : "compact"); } catch { /* not remembered */ }
+      return !c;
+    });
+  }, []);
+  const totalRef = useRef(0);
+  const [space, setSpace] = useState<DriveSpace[]>([]);
+  const [liveVer, setLiveVer] = useState(0); // bumped when a live refresh found the results changed // shows the "row N of M" tag while the list moves
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
   // First run: panel shown while on demo data with the service missing/stopped. Typing hides it (clearing the
@@ -247,7 +229,8 @@ export default function App({ backend }: { backend: Backend }) {
   const parsed = useMemo(() => parseQuery(query, { off }), [query, off]);
   useEffect(() => { if (!query.trim()) setOff((o) => (o.size ? new Set() : o)); }, [query]);
   const nameQ = nameQuery(parsed);
-  const scopedQ = scopeDrive(nameQ, drive); // what the name index gets: the words plus the drive scope
+  // The date / size chips ride along as index terms, so they are exact over the whole index (no client scan).
+  const scopedQ = `${scopeDrive(nameQ, drive)} ${rangeClause(parsed)}`.trim(); // what the name index gets: the words plus the drive scope
   // "settings" is a launcher-only scope, not a name-index filter — via the word in the query or the tab.
   const effFilter: Filter = parsed.kind && parsed.kind !== "settings" ? parsed.kind : filter;
   const settingsScope = parsed.kind === "settings" || filter === "settings";
@@ -317,6 +300,7 @@ export default function App({ backend }: { backend: Backend }) {
     const my = ++seq.current;
     inflight.current.clear();
     emptyTries.current.clear();
+    setLoadErr(false);
     (async () => {
       if (isRecent) {
         const all = await backend.recent(drive ? 300 : 40);
@@ -324,11 +308,6 @@ export default function App({ backend }: { backend: Backend }) {
         const hits = drive ? all.filter((h) => onDrive(h.path, drive)).slice(0, 40) : all;
         rowsRef.current = hits;
         setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
-      } else if (hasRanges(parsed)) {
-        const r = await scanRanges(backend, scopedQ, effFilter, sort, parsed, () => my !== seq.current);
-        if (my !== seq.current) return;
-        rowsRef.current = r.rows;
-        setData({ total: r.rows.length, rows: r.rows, elapsedMs: r.ms, recent: false, full: true, partial: r.partial, ver: 0 });
       } else {
         const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: effFilter });
         if (my !== seq.current) return;
@@ -364,7 +343,9 @@ export default function App({ backend }: { backend: Backend }) {
         if (my !== seq.current) return;
         inflight.current.delete(p);
         if (r.hits.length === 0) {
-          emptyTries.current.set(p, (emptyTries.current.get(p) ?? 0) + 1);
+          const n = (emptyTries.current.get(p) ?? 0) + 1;
+          emptyTries.current.set(p, n);
+          if (n >= 3) setLoadErr(true);
         } else {
           const rows = rowsRef.current;
           r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
@@ -377,12 +358,15 @@ export default function App({ backend }: { backend: Backend }) {
           setData((d) => ({ ...d, ver: d.ver + 1 }));
         }
         pumpRef.current();
-      }).catch((e) => { if (my === seq.current) inflight.current.delete(p); console.error(e); });
+      }).catch((e) => { if (my === seq.current) { inflight.current.delete(p); setLoadErr(true); } console.error(e); });
     }
   }, [backend, data.recent, data.full, data.total, scopedQ, sort, effFilter]);
   pumpRef.current = pump;
 
-  const vl = vlist(data.total, ROW_H, scrollTop, viewH, OVERSCAN, pin);
+  const dense = full && compactRows && !overview;
+  const rowH = dense ? ROW_H_DENSE : ROW_H;
+  totalRef.current = data.total;
+  const vl = vlist(data.total, rowH, scrollTop, viewH, OVERSCAN, pin);
   const first = vl.first;
   const last = vl.last;
   voffRef.current = vl.voff;
@@ -395,15 +379,15 @@ export default function App({ backend }: { backend: Backend }) {
   const scrollToVoff = useCallback((voff: number) => {
     const el = listRef.current;
     if (!el) return;
-    if (!vlistClipped(data.total, ROW_H)) { el.scrollTop = voff; return; }
-    const v = Math.max(0, Math.min(voff, data.total * ROW_H - el.clientHeight));
-    el.scrollTop = scrollTopFor(data.total, ROW_H, el.clientHeight, v);
+    if (!vlistClipped(data.total, rowH)) { el.scrollTop = voff; return; }
+    const v = Math.max(0, Math.min(voff, data.total * rowH - el.clientHeight));
+    el.scrollTop = scrollTopFor(data.total, rowH, el.clientHeight, v);
     pinTop.current = el.scrollTop;
     pinRef.current = v;
     voffRef.current = v;
     setPin(v);
     setScrollTop(el.scrollTop);
-  }, [data.total]);
+  }, [data.total, rowH]);
 
   const onListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const st = e.currentTarget.scrollTop;
@@ -419,11 +403,11 @@ export default function App({ backend }: { backend: Backend }) {
   // few rows, not a few thousand).
   useEffect(() => {
     const el = listRef.current;
-    if (!el || !vlistClipped(data.total, ROW_H)) return;
+    if (!el || !vlistClipped(data.total, rowH)) return;
     const onWheel = (e: WheelEvent) => {
       if (e.ctrlKey || e.deltaY === 0) return;
       e.preventDefault();
-      const d = e.deltaMode === 1 ? e.deltaY * ROW_H : e.deltaMode === 2 ? e.deltaY * el.clientHeight : e.deltaY;
+      const d = e.deltaMode === 1 ? e.deltaY * rowH : e.deltaMode === 2 ? e.deltaY * el.clientHeight : e.deltaY;
       scrollToVoff(voffRef.current + d);
       setScrolling(true);
       window.clearTimeout(scrollTimer.current);
@@ -431,11 +415,39 @@ export default function App({ backend }: { backend: Backend }) {
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
-  }, [data.total, scrollToVoff]);
+  }, [data.total, rowH, scrollToVoff]);
+
+  // Keep the list true while it is open: every few seconds ask the index how many files match now (a count
+  // costs it almost nothing). When that changed - a download finished, something was deleted - the rows are
+  // refreshed in place; the selection and the scroll position stay where they are.
+  useEffect(() => {
+    if (isRecent || data.recent || !loaded || renaming) return;
+    const my = seq.current;
+    const args = { query: scopedQ, sort, filter: effFilter };
+    const t = window.setInterval(() => {
+      if (document.visibilityState !== "visible" || my !== seq.current) return;
+      backend.search({ ...args, offset: 0, limit: 0 }).then((c) => {
+        if (my !== seq.current || c.total === totalRef.current) return;
+        if (c.total === 0 && c.elapsed_us === 0) return; // a superseded request, not an answer
+        return backend.search({ ...args, offset: 0, limit: PAGE }).then((r) => {
+          if (my !== seq.current || r.total !== c.total) return;
+          const old = rowsRef.current;
+          const rows: (Hit | undefined)[] = r.hits.slice();
+          for (const k in old) { const j = Number(k); if (j >= PAGE && j < r.total) rows[j] = old[j]; } // shown until re-read
+          rowsRef.current = rows;
+          pagesRef.current = new Set([0]);
+          emptyTries.current.clear();
+          setData((d) => ({ ...d, total: r.total, rows, ver: d.ver + 1 }));
+          setLiveVer((v) => v + 1); // the type-chip counts follow
+        });
+      }).catch(() => { /* the next tick asks again */ });
+    }, 5000);
+    return () => window.clearInterval(t);
+  }, [backend, scopedQ, sort, effFilter, isRecent, data.recent, loaded, renaming]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query (debounced, newest wins).
   // Not for home, and not while a date / size filter is active (those are applied here, so the totals would lie).
-  const countsOn = query.trim() !== "" && !hasRanges(parsed);
+  const countsOn = query.trim() !== "";
   useEffect(() => {
     if (!countsOn) { setNameCounts(null); return; }
     let dead = false;
@@ -447,7 +459,7 @@ export default function App({ backend }: { backend: Backend }) {
         .catch(() => { if (!dead) setNameCounts(null); });
     }, 140);
     return () => { dead = true; window.clearTimeout(t); };
-  }, [backend, countsOn, scopedQ, epoch]);
+  }, [backend, countsOn, scopedQ, epoch, liveVer]);
 
   // ---- status / window events ---------------------------------------------
   const fast = counting && !summary; // 250 ms while the first scan is being watched
@@ -840,10 +852,10 @@ export default function App({ backend }: { backend: Backend }) {
     setSel(n);
     const el = listRef.current;
     if (!el || n >= data.total) return; // semantic rows scroll into view in an effect
-    const top = n * ROW_H, bottom = top + ROW_H, cur = voffRef.current;
+    const top = n * rowH, bottom = top + rowH, cur = voffRef.current;
     if (top < cur) scrollToVoff(top);
     else if (bottom + 8 > cur + el.clientHeight) scrollToVoff(bottom + 8 - el.clientHeight); // 8 = the list's top padding + air
-  }, [data.total, selCount, scrollToVoff]);
+  }, [data.total, selCount, scrollToVoff, rowH]);
 
   useEffect(() => {
     setSel((s) => (s >= selCount ? Math.max(0, selCount - 1) : s));
@@ -886,7 +898,7 @@ export default function App({ backend }: { backend: Backend }) {
           return;
         }
         const r = el.getBoundingClientRect();
-        void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - voffRef.current + ROW_H / 2);
+        void openMenu(sel, r.left + 120, r.top + 4 + sel * rowH - voffRef.current + rowH / 2);
       };
       menuAtRef.current = menuAtSelection;
       const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir, gridCols)); };
@@ -979,7 +991,7 @@ export default function App({ backend }: { backend: Backend }) {
           return ovStep(e.key === "ArrowLeft" ? "left" : "right");
         }
       }
-      const pageRows = Math.max(1, Math.floor(viewH / ROW_H) - 1);
+      const pageRows = Math.max(1, Math.floor(viewH / rowH) - 1);
       if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "l") { e.preventDefault(); openLibrary(); return; }
       if (e.ctrlKey && e.key === ",") { e.preventDefault(); openSettingsRef.current(); return; }
       switch (e.key) {
@@ -1156,7 +1168,13 @@ export default function App({ backend }: { backend: Backend }) {
   const heading = data.recent
     ? "Recent"
     : query.trim() === ""
-      ? `Recent · ${FILTERS.find((f) => f.id === filter)?.label}`
+      ? (() => {
+        const label = FILTERS.find((f) => f.id === filter)?.label ?? "Files";
+        const where = drive ? ` on ${drive}:` : "";
+        if (sort === "size" && filter === "folders") return `Biggest folders${where}`;
+        if (sort === "rel" || sort === "date") return `Recent · ${label}${where}`;
+        return `${label}${where} · ${SORT_LABEL[sort]}`;
+      })()
       : null;
   const sortLabel = SORT_LABEL[sort];
   const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
@@ -1179,7 +1197,7 @@ export default function App({ backend }: { backend: Backend }) {
       const h = data.rows[i];
       if (!h) {
         out.push(
-          <div key={i} className="row skeleton" style={{ transform: `translateY(${vl.top + i * ROW_H - vl.voff}px)` }}>
+          <div key={i} className="row skeleton" style={{ transform: `translateY(${vl.top + i * rowH - vl.voff}px)` }}>
             <span className="ic" />
             <div className="tx"><span className="sk w1" /><span className="sk w2" /></div>
           </div>,
@@ -1189,11 +1207,11 @@ export default function App({ backend }: { backend: Backend }) {
       const why = data.recent ? "" : whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score);
       out.push(
         <HitRow key={i} hit={h} i={i} sel={i === sel} query={parsed.text} backend={backend} h={rowHandlers}
-                renaming={renaming && i === sel} y={vl.top + i * ROW_H - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
+                renaming={renaming && i === sel} y={vl.top + i * rowH - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
       );
     }
     return out;
-  }, [first, last, vl.voff, vl.top, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
+  }, [first, last, vl.voff, vl.top, rowH, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -1234,6 +1252,48 @@ export default function App({ backend }: { backend: Backend }) {
     </span>
   ) : null;
 
+  // Free space per drive for the sidebar card (full window only; a minute old is fine).
+  const driveKey = status.map((v) => v.letter).join("");
+  useEffect(() => {
+    if (!full || !driveKey) return;
+    let dead = false;
+    const load = () => backend.driveSpace(driveKey.split("").filter((l) => /[A-Za-z]/.test(l))).then((s) => { if (!dead) setSpace(s); }).catch(() => { /* the card falls back to file counts */ });
+    void load();
+    const t = window.setInterval(load, 60000);
+    return () => { dead = true; window.clearInterval(t); };
+  }, [backend, full, driveKey]);
+  // A click on a drive in that card: its folders, biggest first ("what is taking the space").
+  const showDrive = (letter: string) => {
+    setPage("search");
+    setQuery("");
+    setOff(new Set());
+    setDrive(letter);
+    setFilter("folders");
+    changeSort("size");
+    inputRef.current?.focus();
+  };
+
+  // ---- nothing found: the filters that are narrowing the search, each one click to lift ----
+  const fixes: { label: string; run: () => void }[] = [];
+  if (!isRecent) {
+    if (drive) fixes.push({ label: "Search all drives", run: () => setDrive("") });
+    if (effFilter !== "all") {
+      fixes.push({ label: `Search all types, not only ${FILTERS.find((f) => f.id === effFilter)?.label ?? effFilter}`, run: () => {
+        const k = parsed.chips.find((c) => c.type === "kind");
+        if (k) dropChip(k.key);
+        setFilter("all");
+      } });
+    }
+    for (const c of parsed.chips) if (c.type !== "kind") fixes.push({ label: `Remove \u201c${c.label}\u201d`, run: () => dropChip(c.key) });
+  }
+  const fixEl = fixes.length > 0 ? (
+    <div className="fixes">
+      {fixes.map((f) => (
+        <button key={f.label} className="fix" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => { f.run(); inputRef.current?.focus(); }}>{f.label}</button>
+      ))}
+    </div>
+  ) : null;
+
   // ---- filter row ----
   const countOf = (f: Filter): number | undefined => {
     if (!nameCounts) return undefined;
@@ -1268,6 +1328,13 @@ export default function App({ backend }: { backend: Backend }) {
                 onMouseDown={(e) => e.preventDefault()} onClick={openSetup}>
           Setting up search by meaning{models.progress && models.progress.overall_total > 0
             ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
+        </button>
+      )}
+      {full && !isRecent && !overview && (
+        <button className={"sortb dens" + (compactRows ? " on" : "")} tabIndex={-1} aria-pressed={compactRows}
+                aria-label="Compact rows" title={compactRows ? "Compact rows are on. Click for roomy rows." : "Compact rows: more files on screen, with a Location column"}
+                onMouseDown={(e) => e.preventDefault()} onClick={() => { toggleDensity(); inputRef.current?.focus(); }}>
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
         </button>
       )}
       {!isRecent && (
@@ -1366,7 +1433,7 @@ export default function App({ backend }: { backend: Backend }) {
 
   return (
     <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
-      {full && <Sidebar page={page} onPage={(p) => { setPage(p); if (p === "search") refocus(); }} status={status} />}
+      {full && <Sidebar page={page} onPage={(p) => { setPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
 
       <div className="main-col" hidden={full && page !== "search"}>
         {full ? (
@@ -1397,12 +1464,13 @@ export default function App({ backend }: { backend: Backend }) {
         <div className={"cols" + (quickLook ? " ql" : "")} hidden={showPanel}>
           <div className="lcol">
             {full && !isRecent && (
-              <div className="colh">
+              <div className={"colh" + (dense ? " dense" : "")}>
                 <span />
-                {COLS.map((c) => {
+                {COLS.map((c, ci) => {
                   const on = sort === c.a || sort === c.b;
                   return (
-                    <button key={c.label} tabIndex={-1} className={on ? "on" : ""} onMouseDown={keep}
+                    <Fragment key={c.label}>
+                    <button tabIndex={-1} className={on ? "on" : ""} onMouseDown={keep}
                             aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[sort]}` : ""}`}
                             title={on ? `${SORT_LABEL[sort]}. Click to reverse.` : c.hint}
                             onClick={() => { changeSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
@@ -1413,6 +1481,8 @@ export default function App({ backend }: { backend: Backend }) {
                         </svg>
                       )}
                     </button>
+                    {dense && ci === 0 && <span>Location</span>}
+                    </Fragment>
                   );
                 })}
               </div>
@@ -1427,19 +1497,27 @@ export default function App({ backend }: { backend: Backend }) {
               </div>
             )}
 
-            <div className="list vlist" hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
+            <div className={"list vlist" + (dense ? " dense" : "")} hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
               <div className="spacer-v" style={{ height: vl.height }}>{visible}</div>
               {loaded && data.total === 0 && (
                 <div className="none">
                   <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>
-                  Check the spelling, or try a different filter.
+                  {fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try fewer words."}
+                  {fixEl}
                 </div>
               )}
             </div>
 
             {!showPanel && showList && scrolling && data.total > 2000 && (
               <div className="pos" aria-hidden="true">
-                <b>{(Math.min(data.total, Math.floor(vl.voff / ROW_H) + 1)).toLocaleString("en-US")}</b> of {data.total.toLocaleString("en-US")}
+                <b>{(Math.min(data.total, Math.floor(vl.voff / rowH) + 1)).toLocaleString("en-US")}</b> of {data.total.toLocaleString("en-US")}
+              </div>
+            )}
+
+            {!showPanel && showList && loadErr && (
+              <div className="lerr" role="alert">
+                Some rows could not be loaded.
+                <button tabIndex={-1} onMouseDown={keep} onClick={() => { emptyTries.current.clear(); setLoadErr(false); pumpRef.current(); }}>Try again</button>
               </div>
             )}
 
@@ -1451,7 +1529,7 @@ export default function App({ backend }: { backend: Backend }) {
                 {isRecent ? (
                   <><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</>
                 ) : (
-                  <><b>No results for &ldquo;{query.trim()}&rdquo;</b>Check the spelling, or try describing what the file is about.</>
+                  <><b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}</>
                 )}
               </div>
             ) : <div className="list ov" />)}

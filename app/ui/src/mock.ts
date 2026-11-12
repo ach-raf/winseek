@@ -76,7 +76,21 @@ function bringUp() {
 
 const bin: { e: E; at: number }[] = [];
 
-const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? null : e.size, mtime: Math.floor(e.mtime) });
+// Folders report the bytes they hold (the real index adds up every file below them).
+const toHit = (e: E): Hit => ({ name: e.name, path: e.path, is_dir: e.dir, size: e.dir ? (e.lower.length * 7919 % 900 + 12) * 1048576 : e.size, mtime: Math.floor(e.mtime) });
+/** Tier 0 `size:A..B` / `dm:A..B` terms (what the date / size chips are sent as). */
+function rangeTerms(all: string[]): (e: E) => boolean {
+  const num = (v: string, d: number) => (v === "" ? d : Number(v));
+  const tests: ((e: E) => boolean)[] = [];
+  for (const t of all) {
+    const m = /^(size|dm):(\d*)\.\.(\d*)$/.exec(t);
+    if (!m) continue;
+    const lo = num(m[2], -Infinity), hi = num(m[3], Infinity);
+    tests.push(m[1] === "size" ? (e) => !e.dir && e.size >= lo && e.size <= hi : (e) => e.mtime >= lo && e.mtime < hi);
+  }
+  return (e) => tests.every((f) => f(e));
+}
+const isRangeTerm = (t: string) => /^(size|dm):/.test(t);
 const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -553,18 +567,24 @@ export const mockBackend: Backend = {
     }
     const all = query.toLowerCase().split(/\s+/).filter(Boolean);
     const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
-    const terms = all.filter((t) => !t.startsWith("ext:"));
-    const m = DB.filter((e) => okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t))); // a term with a backslash is a path match (the drive scope)
+    const terms = all.filter((t) => !t.startsWith("ext:") && !isRangeTerm(t));
+    const inRange = rangeTerms(all);
+    const m = DB.filter((e) => inRange(e) && okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t))); // a term with a backslash is a path match (the drive scope)
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
     else if (s === "name_desc") m.sort((a, b) => b.lower.localeCompare(a.lower));
-    else if (s === "size") m.sort((a, b) => b.size - a.size);
-    else if (s === "size_asc") m.sort((a, b) => a.size - b.size);
+    else if (s === "size") m.sort((a, b) => (toHit(b).size ?? 0) - (toHit(a).size ?? 0)); // folders by what they hold
+    else if (s === "size_asc") m.sort((a, b) => (toHit(a).size ?? 0) - (toHit(b).size ?? 0));
     else if (s === "date") m.sort((a, b) => b.mtime - a.mtime);
     else if (s === "date_asc") m.sort((a, b) => a.mtime - b.mtime);
     else m.sort((a, b) => Number(b.lower.startsWith(terms[0])) - Number(a.lower.startsWith(terms[0])) || a.lower.length - b.lower.length);
     await sleep(8);
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
+  },
+  async driveSpace(letters) {
+    const GB = 1024 ** 3;
+    const known: Record<string, [number, number]> = { C: [931 * GB, 41 * GB], H: [1863 * GB, 1122 * GB], E: [119 * GB, 96 * GB] };
+    return letters.filter((l) => known[l]).map((l) => ({ letter: l, total: known[l][0], free: known[l][1] }));
   },
   async status(): Promise<VolumeStatus[]> {
     if (scanStart === null || performance.now() < scanStart) return [{ letter: "C", files: 0, folders: 0, state: "demo" }];

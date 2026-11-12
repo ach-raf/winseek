@@ -193,12 +193,15 @@ fn main() {
     let count_t = t.elapsed();
     let t = Instant::now();
     let slots = ix.match_slots(&q);
-    let top = ix.top_slots(&slots, MetaKey::Mtime, 50_000).len();
+    let top = ix.top_slots(&slots, MetaKey::Mtime, 50_000, None).len();
     let top_t = t.elapsed();
     let t = Instant::now();
-    let sorted = ix.sort_slots(slots, MetaKey::Mtime).len();
+    let sorted = ix.sort_slots(slots, MetaKey::Mtime, None).len();
     let sort_t = t.elapsed();
     println!("\npaging \"e\": {} matches ({count} counted in {count_t:.1?})", set.total());
     println!("  name order : match set {build:.1?} ({} KB), then {page:.1?} per 400-row window anywhere ({rows} rows read)", set.mem_bytes() / 1024);
+    let t = Instant::now();
+    let totals = ix.folder_totals();
+    println!("  folder totals: {:.1?} for {} slots", t.elapsed(), totals.len());
     println!("  date order : first {top} rows {top_t:.1?} (scan + select); full sort of {sorted} for deep jumps {sort_t:.1?}, then slices");
 }

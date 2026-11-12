@@ -208,6 +208,7 @@ test("relDate: calendar days, weeks, months, years", () => {
   assert.equal(relDate(ago(1), now), "Yesterday");
   assert.equal(relDate(ago(4), now), "4 days ago");
   assert.equal(relDate(ago(14), now), "2 weeks ago");
+  assert.equal(relDate(ago(8), now), "Last week"); // never "1 weeks ago"
   assert.equal(relDate(ago(90), now), "3 months ago");
   assert.equal(relDate(ago(900), now), "2 years ago");
   assert.equal(relDate(null, now), "");

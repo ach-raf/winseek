@@ -189,10 +189,20 @@ impl NameSource for MockSource {
             .filter_map(|t| t.strip_prefix("ext:"))
             .flat_map(|x| x.split([';', ',']).map(|e| format!(".{e}")).collect::<Vec<_>>())
             .collect();
-        let terms: Vec<String> = all.into_iter().filter(|t| !t.starts_with("ext:")).collect();
+        // Tier 0 `size:A..B` (bytes, files only) and `dm:A..B` (unix ms) terms: the UI's size / date chips.
+        let range = |t: &str, p: &str| -> Option<(i64, i64)> {
+            let (a, b) = t.strip_prefix(p)?.split_once("..")?;
+            Some((if a.is_empty() { i64::MIN } else { a.parse().ok()? }, if b.is_empty() { i64::MAX } else { b.parse().ok()? }))
+        };
+        let sizes: Vec<(i64, i64)> = all.iter().filter_map(|t| range(t, "size:")).collect();
+        let dates: Vec<(i64, i64)> = all.iter().filter_map(|t| range(t, "dm:")).collect();
+        let terms: Vec<String> =
+            all.into_iter().filter(|t| !t.starts_with("ext:") && range(t, "size:").is_none() && range(t, "dm:").is_none()).collect();
         let mut idx: Vec<u32> = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             if matches_filter(e, filter)
+                && sizes.iter().all(|&(lo, hi)| !e.is_dir && e.size as i64 >= lo && e.size as i64 <= hi)
+                && dates.iter().all(|&(lo, hi)| e.mtime >= lo && e.mtime < hi)
                 && (exts.is_empty() || exts.iter().any(|x| e.lower.ends_with(x.as_str())))
                 && terms.iter().all(|t| e.lower.contains(t.as_str()))
             {

@@ -119,3 +119,12 @@ test("backspaceDropsChip only at caret 0, no selection, chips present", async ()
   assert.equal(backspaceDropsChip(true, true, 2), false, "a selection must survive");
   assert.equal(backspaceDropsChip(true, false, 0), false, "no chips: nothing to remove");
 });
+
+test("date and size chips become exact name-index terms", async () => {
+  const { rangeClause } = await import("./filters.ts");
+  assert.equal(rangeClause({ date: null, size: null }), "");
+  assert.equal(rangeClause({ date: { from: 1000.7, to: 2000 }, size: null }), "dm:1000..2000");
+  assert.equal(rangeClause({ date: null, size: { min: 104857600, max: null } }), "size:104857600..");
+  assert.equal(rangeClause({ date: null, size: { min: null, max: 1048576 } }), "size:0..1048576");
+  assert.equal(rangeClause({ date: { from: 5, to: 9 }, size: { min: 1, max: 2 } }), "dm:5..9 size:1..2");
+});

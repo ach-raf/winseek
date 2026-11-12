@@ -35,6 +35,40 @@ const QUERY_CACHE_IDLE: Duration = Duration::from_secs(90);
 const META_FULL_SORT: usize = 1_000_000;
 const META_TOP: usize = 50_000;
 
+/// Folder sizes (bytes under each folder, all levels) are recomputed at most this often while
+/// the index keeps changing, and only while somebody is looking at folders.
+const FOLDER_SIZES_EVERY: Duration = Duration::from_secs(20);
+const FOLDER_SIZES_WANTED: Duration = Duration::from_secs(600);
+
+/// Folder totals keyed by identity (volume + file reference number), not by record slot:
+/// slots are recycled by index refreshes, an identity stays right while the table is a few
+/// seconds old.
+pub struct FolderSizes {
+    gen: u64,
+    at: Instant,
+    /// Sorted by key.
+    table: Vec<(u64, u64)>,
+}
+
+fn folder_key(ix: &Index, i: u32) -> u64 {
+    ((ix.vol(i) as u64) << 56) | (ix.frn(i) & 0x00FF_FFFF_FFFF_FFFF)
+}
+
+impl FolderSizes {
+    fn build(ix: &Index, totals: &[u64], gen: u64) -> Self {
+        let mut table: Vec<(u64, u64)> = (0..totals.len() as u32)
+            .filter(|&i| ix.is_dir(i) && !ix.is_deleted(i))
+            .map(|i| (folder_key(ix, i), totals[i as usize]))
+            .collect();
+        table.sort_unstable_by_key(|e| e.0);
+        FolderSizes { gen, at: Instant::now(), table }
+    }
+    fn get(&self, ix: &Index, i: u32) -> Option<u64> {
+        let k = folder_key(ix, i);
+        self.table.binary_search_by_key(&k, |e| e.0).ok().map(|p| self.table[p].1)
+    }
+}
+
 /// What a query's result looks like once computed.
 enum Cached {
     /// Name orders: asc and desc read the same set from either end.
@@ -150,6 +184,9 @@ pub struct Shared {
     /// can tell a stale result list from a live one.
     gen: AtomicU64,
     qcache: Mutex<QCache>,
+    folder_sizes: Mutex<Option<Arc<FolderSizes>>>,
+    /// Seconds since `started` when a search last returned a folder (0 = never).
+    folders_seen: AtomicU64,
 }
 
 impl Shared {
@@ -166,6 +203,8 @@ impl Shared {
             started: Instant::now(),
             gen: AtomicU64::new(1),
             qcache: Mutex::new(QCache::default()),
+            folder_sizes: Mutex::new(None),
+            folders_seen: AtomicU64::new(0),
         }
     }
 
@@ -185,6 +224,25 @@ impl Shared {
     /// Give back the memory of cached result lists nobody paged through lately (main loop tick).
     pub fn trim_query_cache(&self) {
         self.qcache.lock().unwrap().trim_idle();
+    }
+
+    /// Keep the folder-size table fresh (main loop tick). Does nothing while nobody has seen a
+    /// folder row lately, while the table matches the index, or within `FOLDER_SIZES_EVERY`.
+    pub fn refresh_folder_sizes(&self) {
+        let seen = self.folders_seen.load(Ordering::Relaxed);
+        if seen == 0 || self.started.elapsed().as_secs().saturating_sub(seen) > FOLDER_SIZES_WANTED.as_secs() {
+            return;
+        }
+        let cur = self.folder_sizes.lock().unwrap().clone();
+        let gen = self.gen.load(Ordering::Relaxed);
+        if cur.as_ref().is_some_and(|c| c.gen == gen || c.at.elapsed() < FOLDER_SIZES_EVERY) {
+            return;
+        }
+        let ix = self.index.read().unwrap();
+        let gen = self.gen.load(Ordering::Relaxed);
+        let fresh = FolderSizes::build(&ix, &ix.folder_totals(), gen);
+        drop(ix);
+        *self.folder_sizes.lock().unwrap() = Some(Arc::new(fresh));
     }
 
     pub fn has_ctl(&self, letter: char) -> bool {
@@ -414,6 +472,15 @@ fn replace(sh: &Shared, fresh: Index) {
 
 // ------------------------------------------------------------------ read side
 
+/// A search row: like [`hit_at`], and a folder carries the bytes it holds when known.
+fn hit_sized(ix: &Index, i: u32, sizes: Option<&FolderSizes>) -> Hit {
+    let mut h = hit_at(ix, i);
+    if h.is_dir {
+        h.size = sizes.and_then(|s| s.get(ix, i));
+    }
+    h
+}
+
 pub fn hit_at(ix: &Index, i: u32) -> Hit {
     let is_dir = ix.is_dir(i);
     Hit {
@@ -464,10 +531,17 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
             SortClass::Mtime | SortClass::Size => {
                 let key = if class == SortClass::Mtime { MetaKey::Mtime } else { MetaKey::Size };
                 let slots = ix.match_slots(&q);
+                // A size sort with folders in it ranks them by what they hold (computed for
+                // exactly this index state; it also refreshes the table the rows read).
+                let totals = (key == MetaKey::Size && slots.iter().any(|&i| ix.is_dir(i))).then(|| ix.folder_totals());
+                if let Some(t) = &totals {
+                    *sh.folder_sizes.lock().unwrap() = Some(Arc::new(FolderSizes::build(&ix, t, gen)));
+                }
+                let dirs = totals.as_deref();
                 if slots.len() <= META_FULL_SORT || reverse || off + lim > META_TOP {
-                    Cached::Sorted(ix.sort_slots(slots, key))
+                    Cached::Sorted(ix.sort_slots(slots, key, dirs))
                 } else {
-                    Cached::Top { total: slots.len(), items: ix.top_slots(&slots, key, META_TOP) }
+                    Cached::Top { total: slots.len(), items: ix.top_slots(&slots, key, META_TOP, dirs) }
                 }
             }
         });
@@ -485,7 +559,19 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
             }
         }
     };
-    let hits = slots.into_iter().map(|i| hit_at(&ix, i)).collect();
+    let has_dirs = slots.iter().any(|&i| ix.is_dir(i));
+    let mut sizes = None;
+    if has_dirs {
+        sh.folders_seen.store(sh.started.elapsed().as_secs().max(1), Ordering::Relaxed);
+        sizes = sh.folder_sizes.lock().unwrap().clone();
+        if sizes.is_none() {
+            // First folder row since start: compute once here so it never shows without a size.
+            let fresh = Arc::new(FolderSizes::build(&ix, &ix.folder_totals(), gen));
+            *sh.folder_sizes.lock().unwrap() = Some(fresh.clone());
+            sizes = Some(fresh);
+        }
+    }
+    let hits = slots.into_iter().map(|i| hit_sized(&ix, i, sizes.as_deref())).collect();
     (data.total() as u64, hits, note)
 }
 
@@ -640,8 +726,21 @@ mod tests {
         let (total, hits, _) = search(&sh, "a.txt", 0, 0, Sort::SizeDesc);
         assert_eq!((total, hits.len()), (1, 0));
         assert_eq!(sh.qcache.lock().unwrap().map.len(), cached);
+        // exact filters run in the engine: size bounds, date range (unix ms), both countable
+        let (total, hits, _) = search(&sh, "txt size:>=500", 0, 10, Sort::NameAsc);
+        assert_eq!((total, names(hits)), (2, vec!["b.txt".to_string(), "c.txt".to_string()]));
+        assert_eq!(search(&sh, "txt size:<100", 0, 0, Sort::NameAsc).0, 3);
+        // folders carry what they hold, and a size sort ranks them by it
+        let (_, hits, _) = search(&sh, "Ph", 0, 10, Sort::NameAsc);
+        assert_eq!((hits[0].name.as_str(), hits[0].is_dir, hits[0].size), ("Ph", true, Some(10 + 900 + 500 + 20 + 1)));
+        let (_, hits, _) = search(&sh, "", 0, 3, Sort::SizeDesc);
+        assert!(hits.iter().any(|h| h.name == "Ph" && h.size == Some(1431)), "{hits:?}");
+        // a new file shows up in the folder's size once the table is refreshed
+        apply_paths(&sh, b'E', &[up(r"Ph\f.txt", 69, 1)]);
+        let (_, hits, _) = search(&sh, "folder:Ph", 0, 10, Sort::SizeDesc); // a size sort recomputes
+        assert_eq!(hits[0].size, Some(1500));
         // a window past the end is empty, the total stays
-        assert_eq!(search(&sh, "txt", 99, 5, Sort::NameAsc).0, 5);
+        assert_eq!(search(&sh, "txt", 99, 5, Sort::NameAsc).0, 6);
         assert!(search(&sh, "txt", 99, 5, Sort::MtimeDesc).1.is_empty());
     }
 

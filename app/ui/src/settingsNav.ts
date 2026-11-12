@@ -1,5 +1,5 @@
 /** Settings sidebar logic: remembered section, and filtering sections by a typed query. Pure (tested). */
-export const SECTION_IDS = ["meaning", "indexing", "launcher", "performance", "general", "agents", "status"] as const;
+export const SECTION_IDS = ["meaning", "indexing", "launcher", "general", "agents", "status"] as const;
 export type SettingsSection = (typeof SECTION_IDS)[number];
 
 /** Words that live in each section, so "hotkey" finds General and "gpu" finds Performance. */
@@ -8,12 +8,12 @@ export const SECTION_KEYWORDS: Record<SettingsSection, string> = {
   indexing: "indexing folders skipped ignored names gitignore source code index drives volumes",
   launcher: "apps and commands launcher apps start menu settings commands portable path uninstallers hidden usage history catalog",
   agents: "ai agents mcp claude tools server log connect",
-  performance: "performance profile low balanced fast gpu memory vram",
-  general: "general start with windows autostart shortcuts hotkeys alt space default view full screen compact library photos",
+  general: "general performance profile low balanced fast gpu memory vram start with windows autostart shortcuts hotkeys alt space default view full screen compact library photos",
   status: "status health service volumes files log diagnostics",
 };
 
 export function parseSection(v: unknown): SettingsSection {
+  if (v === "performance") return "general"; // Performance lives in General now
   return (SECTION_IDS as readonly string[]).includes(v as string) ? (v as SettingsSection) : "meaning";
 }
 

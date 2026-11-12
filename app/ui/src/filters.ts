@@ -275,5 +275,16 @@ export function matchesRanges(p: Pick<Parsed, "date" | "size">, h: Item): boolea
 
 export const hasRanges = (p: Pick<Parsed, "date" | "size">) => !!(p.date || p.size);
 
+/**
+ * The date / size chips as name-index terms (`dm:` = modified, unix ms, [from, to); `size:` = bytes, inclusive).
+ * The index applies them to every file it knows, so a filtered search is exact and countable at any size.
+ */
+export function rangeClause(p: Pick<Parsed, "date" | "size">): string {
+  const out: string[] = [];
+  if (p.date) out.push(`dm:${Math.floor(p.date.from)}..${Math.floor(p.date.to)}`);
+  if (p.size) out.push(`size:${p.size.min ?? 0}..${p.size.max ?? ""}`);
+  return out.join(" ");
+}
+
 /** Sent to the name index: free text plus `ext:` when an extension was named. */
 export const nameQuery = (p: Pick<Parsed, "text" | "ext">) => (p.ext ? `${p.text} ext:${p.ext}`.trim() : p.text);

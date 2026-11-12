@@ -69,7 +69,13 @@
 /* Full window (embedded beside the sidebar): the content column is ~2x the popup's, so the
    640px group cap would strand a third of it as dead space. Wider cards, symmetric gutter. */
 .settings.embedded .scont { padding: 0 32px 28px 20px; }
-.settings.embedded .grp { max-width: 820px; }
+/* The page is wide: cards flow into as many ~460px columns as fit, so a section fills the window
+   instead of a single strip down the left with half the screen empty. */
+.settings.embedded .scols { columns: 440px; column-gap: 20px; }
+.settings.embedded .grp { max-width: none; break-inside: avoid; margin-bottom: 20px; }
+.settings.embedded .grp h3 { margin-top: 0; }
+.settings.embedded .scols > :not(.grp) { break-inside: avoid; }
+@media (min-width: 1900px) { .settings.embedded .scols { columns: 3; max-width: 1700px; } }
 .settings.embedded .set-foot { padding: 8px 32px 12px 20px; }
 
 /* ---- groups, cards, rows ---- */

@@ -269,7 +269,9 @@ fn search_files(deps: &Deps, args: &Value) -> Result<Value, String> {
         (Some(bound), size) => {
             // Date pulls newest-first pages, size biggest-first (same as the popup's scan).
             let sort = if matches!(bound, Bound::Date { .. }) { "date" } else { "size" };
-            let extra = |h: &Hit| size.is_none_or(|(min, max)| size_in(h.size, min, max));
+            // Folders report the bytes they hold; a size filter is about files (the popup's rule).
+            let file_size = |h: &Hit| if h.is_dir { None } else { h.size };
+            let extra = |h: &Hit| size.is_none_or(|(min, max)| size_in(file_size(h), min, max));
             scan::scan(
                 |off, lim| {
                     let r = src.search(&a.query, &a.filter, off, lim, sort);
@@ -278,7 +280,7 @@ fn search_files(deps: &Deps, args: &Value) -> Result<Value, String> {
                 bound,
                 &extra,
                 |h| h.mtime.unwrap_or(0),
-                |h| h.size,
+                file_size,
                 a.limit,
                 a.offset,
             )?

@@ -17,7 +17,7 @@ test("empty query keeps everything", () => {
 test("keywords find the right section", () => {
   assert.deepEqual(filterSections(items, "hotkey").map((s) => s.id), ["general"]);
   assert.deepEqual(filterSections(items, "hotkeys").map((s) => s.id), ["general"]);
-  assert.deepEqual(filterSections(items, "gpu").map((s) => s.id), ["performance"]);
+  assert.deepEqual(filterSections(items, "gpu").map((s) => s.id), ["general"]);
   assert.deepEqual(filterSections(items, "full screen").map((s) => s.id), ["general"]);
   assert.deepEqual(filterSections(items, "zzz"), []);
 });

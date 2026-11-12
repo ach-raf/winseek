@@ -6,6 +6,9 @@
 //! * `*` / `?` in a term: whole-name wildcard match (whole *path* if the term has `\`)
 //! * a term containing `\` (or `/`) is matched against the full path (substring)
 //! * `ext:jpg;png` (also `,`), `file:`, `folder:` (alone = filter, `folder:foo` = filter + term)
+//! * `size:>100mb`, `size:<=4kb`, `size:1mb..2gb`, `size:0` (files only; b/kb/mb/gb/tb, 1024-based)
+//! * `dm:A..B` date modified in unix milliseconds, `[A, B)`; either end may be left out
+//!   (`dm:1700000000000..`). The app turns "last week" / "summer 2023" into this.
 //!
 //! Matching is case-insensitive (see `fold`). Execution scans the sorted order array in
 //! parallel chunks (so hits are already in name order), cheapest terms first.
@@ -22,6 +25,61 @@ pub enum Cond {
     Ext(Vec<String>),
     File,
     Folder,
+    /// File size in bytes, inclusive bounds (folders never match).
+    Size { min: u64, max: u64 },
+    /// Modified time as stored (FILETIME), `[from, to)`.
+    Mtime { from: i64, to: i64 },
+}
+
+/// 1601 -> 1970 in 100 ns units (the store keeps raw FILETIMEs).
+const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
+
+fn parse_bytes(s: &str) -> Option<u64> {
+    let s = s.trim().to_ascii_lowercase();
+    let cut = s.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(s.len());
+    let (num, unit) = s.split_at(cut);
+    let mul: u64 = match unit {
+        "" | "b" => 1,
+        "k" | "kb" => 1 << 10,
+        "m" | "mb" => 1 << 20,
+        "g" | "gb" => 1 << 30,
+        "t" | "tb" => 1 << 40,
+        _ => return None,
+    };
+    let v: f64 = num.parse().ok()?;
+    (v >= 0.0 && v.is_finite()).then(|| (v * mul as f64).min(u64::MAX as f64) as u64)
+}
+
+/// `>N`, `>=N`, `<N`, `<=N`, `A..B`, `A..`, `..B`, `N` -> inclusive (min, max).
+fn parse_size(text: &str) -> Option<Cond> {
+    let (min, max) = if let Some(r) = text.strip_prefix(">=") {
+        (parse_bytes(r)?, u64::MAX)
+    } else if let Some(r) = text.strip_prefix('>') {
+        (parse_bytes(r)?.checked_add(1)?, u64::MAX)
+    } else if let Some(r) = text.strip_prefix("<=") {
+        (0, parse_bytes(r)?)
+    } else if let Some(r) = text.strip_prefix('<') {
+        (0, parse_bytes(r)?.checked_sub(1)?)
+    } else if let Some((a, b)) = text.split_once("..") {
+        if a.is_empty() && b.is_empty() {
+            return None;
+        }
+        (if a.is_empty() { 0 } else { parse_bytes(a)? }, if b.is_empty() { u64::MAX } else { parse_bytes(b)? })
+    } else {
+        let v = parse_bytes(text)?;
+        (v, v)
+    };
+    Some(Cond::Size { min, max })
+}
+
+/// `A..B` in unix milliseconds (either end optional) -> FILETIME `[from, to)`.
+fn parse_mtime(text: &str) -> Option<Cond> {
+    let (a, b) = text.split_once("..")?;
+    if a.is_empty() && b.is_empty() {
+        return None;
+    }
+    let ft = |ms: &str| ms.parse::<i64>().ok().map(|ms| ms.saturating_mul(10_000).saturating_add(FILETIME_UNIX_EPOCH));
+    Some(Cond::Mtime { from: if a.is_empty() { i64::MIN } else { ft(a)? }, to: if b.is_empty() { i64::MAX } else { ft(b)? } })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -213,7 +271,7 @@ impl Query {
             let mut prefix = None;
             if j < n && ch[j] == ':' && j > start {
                 let w: String = ch[start..j].iter().collect::<String>().to_ascii_lowercase();
-                if matches!(w.as_str(), "ext" | "file" | "folder") {
+                if matches!(w.as_str(), "ext" | "file" | "folder" | "size" | "dm") {
                     prefix = Some(w);
                     i = j + 1;
                 }
@@ -245,6 +303,13 @@ impl Query {
                         terms.push(Term { cond: Cond::Ext(list), negate });
                     }
                 }
+                Some(p @ ("size" | "dm")) => {
+                    // A value that does not parse is ordinary text ("size:huge" finds that name).
+                    match if p == "size" { parse_size(&text) } else { parse_mtime(&text) } {
+                        Some(cond) => terms.push(Term { cond, negate }),
+                        None => terms.extend(text_term(&format!("{p}:{text}"), negate)),
+                    }
+                }
                 Some(p) => {
                     let cond = if p == "file" { Cond::File } else { Cond::Folder };
                     if text.is_empty() {
@@ -259,7 +324,7 @@ impl Query {
         }
         // cheapest first
         terms.sort_by_key(|t| match &t.cond {
-            Cond::File | Cond::Folder => 0,
+            Cond::File | Cond::Folder | Cond::Size { .. } | Cond::Mtime { .. } => 0,
             Cond::Ext(_) => 1,
             Cond::Text { ascii: true, path: false, .. } => 2,
             Cond::Text { path: false, .. } => 3,
@@ -289,6 +354,8 @@ impl Index {
         let m = match &t.cond {
             Cond::File => !self.is_dir(i),
             Cond::Folder => self.is_dir(i),
+            Cond::Size { min, max } => !self.is_dir(i) && self.size(i).is_some_and(|s| s >= *min && s <= *max),
+            Cond::Mtime { from, to } => self.mtime(i).is_some_and(|m| m >= *from && m < *to),
             Cond::Ext(list) => {
                 !self.is_dir(i)
                     && ext_of(self.name(i)).is_some_and(|e| {
@@ -445,19 +512,85 @@ impl Index {
     }
 
     /// Sort key of one record for a meta order. Records without metadata sort as size 0 /
-    /// oldest.
-    fn meta_key(&self, key: MetaKey, i: u32) -> i64 {
+    /// oldest. With `dirs` (see [`Index::folder_totals`]) a folder sorts by what it holds.
+    fn meta_key(&self, key: MetaKey, i: u32, dirs: Option<&[u64]>) -> i64 {
         match key {
             MetaKey::Mtime => self.mtime(i).unwrap_or(i64::MIN),
-            MetaKey::Size => self.size(i).unwrap_or(0) as i64,
+            MetaKey::Size => match dirs {
+                Some(t) if self.is_dir(i) => t.get(i as usize).copied().unwrap_or(0).min(i64::MAX as u64) as i64,
+                _ => self.size(i).unwrap_or(0).min(i64::MAX as u64) as i64,
+            },
         }
+    }
+
+    /// Total bytes under every folder (all descendants), indexed by record slot; 0 for
+    /// files. One pass adds each file to its parent, then folders are folded into their
+    /// parents deepest first. ~14M records take tens of milliseconds; nothing is kept.
+    pub fn folder_totals(&self) -> Vec<u64> {
+        let n = self.parent.len();
+        let mut tot = vec![0u64; n];
+        if !self.with_meta {
+            return tot;
+        }
+        let live = |i: usize| self.flags[i] & F_DELETED == 0;
+        for i in 0..n {
+            if live(i) && self.flags[i] & F_DIR == 0 {
+                let p = self.parent[i] as usize;
+                if p < n {
+                    tot[p] = tot[p].saturating_add(self.size[i]);
+                }
+            }
+        }
+        // Depth of every folder (0 = no parent), memoized; a broken chain is cut at MAX_DEPTH.
+        const MAX_DEPTH: u16 = 4096;
+        const UNSET: u16 = u16::MAX;
+        let mut depth = vec![UNSET; n];
+        let mut chain: Vec<u32> = Vec::new();
+        let mut by_depth: Vec<Vec<u32>> = Vec::new();
+        for i in 0..n {
+            if !live(i) || self.flags[i] & F_DIR == 0 || depth[i] != UNSET {
+                continue;
+            }
+            chain.clear();
+            let mut c = i;
+            let mut base = 0u16;
+            loop {
+                chain.push(c as u32);
+                let p = self.parent[c] as usize;
+                if p >= n || chain.len() as u16 >= MAX_DEPTH {
+                    break;
+                }
+                if depth[p] != UNSET {
+                    base = depth[p].saturating_add(1);
+                    break;
+                }
+                c = p;
+            }
+            for (k, &c) in chain.iter().rev().enumerate() {
+                let d = base.saturating_add(k as u16).min(MAX_DEPTH);
+                depth[c as usize] = d;
+                if by_depth.len() <= d as usize {
+                    by_depth.resize_with(d as usize + 1, Vec::new);
+                }
+                by_depth[d as usize].push(c);
+            }
+        }
+        for level in by_depth.iter().rev() {
+            for &c in level {
+                let p = self.parent[c as usize] as usize;
+                if p < n && p != c as usize {
+                    tot[p] = tot[p].saturating_add(tot[c as usize]);
+                }
+            }
+        }
+        tot
     }
 
     /// Sort matches newest / largest first (ties by slot, so the order is total). The
     /// ascending orders are this list read backwards. Chunks sort on all cores; the final
     /// stable sort only merges those runs.
-    pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey) -> Vec<u32> {
-        let mut pairs: Vec<(i64, u32)> = slots.into_iter().map(|i| (self.meta_key(key, i), i)).collect();
+    pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey, dirs: Option<&[u64]>) -> Vec<u32> {
+        let mut pairs: Vec<(i64, u32)> = slots.into_iter().map(|i| (self.meta_key(key, i, dirs), i)).collect();
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
         let nt = hw.min(pairs.len() / 65536).max(1);
@@ -476,8 +609,8 @@ impl Index {
     }
 
     /// The first `k` rows of [`Index::sort_slots`] without sorting the rest.
-    pub fn top_slots(&self, slots: &[u32], key: MetaKey, k: usize) -> Vec<u32> {
-        let mut pairs: Vec<(i64, u32)> = slots.iter().map(|&i| (self.meta_key(key, i), i)).collect();
+    pub fn top_slots(&self, slots: &[u32], key: MetaKey, k: usize, dirs: Option<&[u64]>) -> Vec<u32> {
+        let mut pairs: Vec<(i64, u32)> = slots.iter().map(|&i| (self.meta_key(key, i, dirs), i)).collect();
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let k = k.min(pairs.len());
         if k < pairs.len() && k > 0 {
@@ -511,13 +644,13 @@ impl Index {
         let slots = self.match_slots(q);
         let total = slots.len();
         let items = if asc {
-            let sorted = self.sort_slots(slots, key);
+            let sorted = self.sort_slots(slots, key, None);
             let hi = total.saturating_sub(o.offset);
             let lo = hi.saturating_sub(o.limit);
             sorted[lo..hi].iter().rev().copied().collect()
         } else {
             let k = o.offset.saturating_add(o.limit).min(total);
-            let top = self.top_slots(&slots, key, k);
+            let top = self.top_slots(&slots, key, k, None);
             top[o.offset.min(k)..].to_vec()
         };
         SearchResult { total, items }

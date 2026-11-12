@@ -121,7 +121,7 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
           : <PathSub path={hit.path} />}
       </div>
       <span className="dt">{relDate(hit.mtime)}</span>
-      <span className="sz">{hit.is_dir ? "" : formatSize(hit.size)}</span>
+      <span className="sz" title={hit.is_dir && hit.size !== null ? "Everything inside this folder" : undefined}>{formatSize(hit.size)}</span>
       <span className="go">{app ? "Launch" : "Open"} <kbd>{"↵"}</kbd></span>
     </div>
   );

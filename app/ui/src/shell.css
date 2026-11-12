@@ -34,3 +34,16 @@
 .wc button { width: 40px; height: 32px; display: grid; place-items: center; color: var(--fg3); border-radius: 6px; }
 .wc button:hover { background: var(--bg3); color: var(--fg); }
 .page-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 22px 90px; position: relative; }
+
+/* ---- drives card: is search current, and how much room is left where ---- */
+.side .idx { gap: 5px; padding: 12px 8px 8px; }
+.idx .h { padding: 0 4px; }
+.idx .sub { padding: 0 4px 0 20px; margin-top: -3px; font-size: 11.5px; color: var(--fg3); font-variant-numeric: tabular-nums; }
+.idx .dl { padding: 6px 4px 0; font-size: 11px; font-weight: 600; color: var(--fg3); }
+.idx button.d { width: 100%; grid-template-columns: 20px 1fr auto; padding: 4px; border-radius: 6px; font: inherit; font-size: 11.5px; text-align: left; cursor: default; }
+.idx button.d:not(:disabled):hover { background: color-mix(in oklab, var(--fg) 7%, transparent); color: var(--fg); }
+.idx button.d span { min-width: 52px; color: var(--fg2); }
+.idx .meter i { background: color-mix(in oklab, var(--fg3) 80%, var(--fg)); min-width: 3px; }
+.idx .d.tight .meter i { background: var(--warn); }
+.idx .d.tight span { color: var(--warn); font-weight: 600; }
+.idx .meter.scan i { background: var(--acc); }

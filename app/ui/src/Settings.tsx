@@ -496,7 +496,6 @@ const NAV: { id: SettingsSection; label: string }[] = [
   { id: "meaning", label: "Search by meaning" },
   { id: "indexing", label: "Indexing" },
   { id: "launcher", label: "Apps and commands" },
-  { id: "performance", label: "Performance" },
   { id: "general", label: "General" },
   { id: "agents", label: "AI agents" },
   { id: "status", label: "Status" },
@@ -680,6 +679,8 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
         </nav>
         <div className="scont" ref={bodyRef}>
+          {/* the inner block has its own height, so the full window's card columns balance and scroll down, not sideways */}
+          <div className="scols">
           {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
           {section === "indexing" && (
             <>
@@ -690,13 +691,13 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           )}
           {section === "launcher" && <LauncherSection backend={backend} onError={onError} />}
           {section === "agents" && <AgentsSection backend={backend} onError={onError} />}
-          {section === "performance" && <Performance backend={backend} onError={onError} />}
           {section === "general" && (
             <>
               <Grp title="General">
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
               </Grp>
+              <Performance backend={backend} onError={onError} />
               <ShortcutsBlock backend={backend} onError={onError} />
               <Grp title="Library">
                 <Row title="Photos and clean up" desc="Photos by month, collections, and finding near-duplicates or oversized files">
@@ -706,6 +707,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
             </>
           )}
           {section === "status" && <StatusSection backend={backend} onError={onError} />}
+          </div>
         </div>
         <footer className="set-foot">
           <span>Changes are saved right away.</span>

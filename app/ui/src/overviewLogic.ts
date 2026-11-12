@@ -318,9 +318,10 @@ export function relDate(ms: number | null, now = Date.now()): string {
   if (d <= 0) return "Today";
   if (d === 1) return "Yesterday";
   if (d < 7) return `${d} days ago`;
-  if (d < 60) return `${Math.round(d / 7)} weeks ago`;
-  if (d < 700) return `${Math.round(d / 30)} months ago`;
-  return `${Math.round(d / 365)} years ago`;
+  const n = (v: number, unit: string) => (v <= 1 ? `Last ${unit}` : `${v} ${unit}s ago`);
+  if (d < 60) return n(Math.round(d / 7), "week");
+  if (d < 700) return n(Math.round(d / 30), "month");
+  return n(Math.round(d / 365), "year");
 }
 
 /** Search time for the stat: one decimal below 10 ms ("0.4"), whole milliseconds above. */

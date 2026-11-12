@@ -654,12 +654,57 @@ fn match_sets_page_anywhere_and_reverse_exactly() {
 
     // meta: the sorted list, its top-k prefix and the windowed search agree; asc is the exact reverse
     for (key, desc, asc) in [(MetaKey::Mtime, Order::MtimeDesc, Order::MtimeAsc), (MetaKey::Size, Order::SizeDesc, Order::SizeAsc)] {
-        let sorted = ix.sort_slots(ix.match_slots(&q), key);
+        let sorted = ix.sort_slots(ix.match_slots(&q), key, None);
         assert_eq!(sorted.len(), all.total);
-        assert_eq!(ix.top_slots(&ix.match_slots(&q), key, 300), sorted[..300]);
+        assert_eq!(ix.top_slots(&ix.match_slots(&q), key, 300, None), sorted[..300]);
         assert_eq!(ix.search(&q, &SearchOptions { offset: 1000, limit: 40, order: desc }).items, sorted[1000..1040]);
         let rev: Vec<u32> = sorted.iter().rev().copied().collect();
         assert_eq!(ix.search(&q, &SearchOptions { offset: 0, limit: usize::MAX, order: asc }).items, rev);
         assert_eq!(ix.search(&q, &SearchOptions { offset: 7, limit: 5, order: asc }).items, rev[7..12]);
     }
+}
+
+#[test]
+fn size_and_date_filters_and_folder_totals() {
+    const EPOCH: i64 = 116_444_736_000_000_000;
+    let ft = |ms: i64| ms * 10_000 + EPOCH;
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 10, 5, "Photos", true, 0, ft(1_000));
+    b.push(C, 11, 10, "2024", true, 0, ft(2_000));
+    b.push(C, 12, 5, "Empty", true, 0, ft(3_000));
+    b.push(C, 100, 11, "a.jpg", false, 3 << 20, ft(5_000));
+    b.push(C, 101, 11, "b.jpg", false, 1 << 20, ft(6_000));
+    b.push(C, 102, 10, "c.jpg", false, 500, ft(7_000));
+    b.push(C, 103, 5, "d.txt", false, 0, ft(8_000));
+    b.push(C, 104, 5, "size:huge.txt", false, 2048, ft(9_000));
+    let ix = b.finish();
+    let names = |q: &str| -> Vec<String> { ix.search_str(q, &SearchOptions::default()).items.iter().map(|&i| ix.name(i).to_string()).collect() };
+
+    assert_eq!(names("size:>1mb"), ["a.jpg"]);
+    assert_eq!(names("size:>=1mb"), ["a.jpg", "b.jpg"]);
+    assert_eq!(names("size:<1kb"), ["c.jpg", "d.txt"], "folders never match a size filter");
+    assert_eq!(names("size:0"), ["d.txt"]);
+    assert_eq!(names("size:1kb..1.5mb"), ["b.jpg", "size:huge.txt"]);
+    assert_eq!(names("jpg !size:>2mb"), ["b.jpg", "c.jpg"]);
+    assert_eq!(names("size:huge"), ["size:huge.txt"], "an unparsable value is plain text");
+    // dates: [from, to) in unix ms, open ends allowed, folders included
+    assert_eq!(names("dm:5000..7000"), ["a.jpg", "b.jpg"]);
+    assert_eq!(names("dm:8000.."), ["d.txt", "size:huge.txt"]);
+    assert_eq!(names("dm:..2001"), ["2024", "Photos"]);
+    assert_eq!(names("jpg dm:6000.. size:<1mb"), ["c.jpg"]);
+    assert_eq!(ix.count(&Query::parse("size:>=1mb")), 2);
+
+    // folder totals: every descendant counts, files and empty folders are 0
+    let tot = ix.folder_totals();
+    let of = |name: &str| tot[ix.search_str(name, &SearchOptions::default()).items[0] as usize];
+    assert_eq!(of("2024"), 4 << 20);
+    assert_eq!(of("Photos"), (4 << 20) + 500);
+    assert_eq!(of("Empty"), 0);
+    assert_eq!(of("a.jpg"), 0);
+    // with the totals a size sort ranks folders by what they hold
+    let sorted = ix.sort_slots(ix.match_slots(&Query::parse("")), MetaKey::Size, Some(&tot));
+    let top: Vec<&str> = sorted.iter().map(|&i| ix.name(i)).filter(|n| !n.is_empty() && !n.ends_with(':')).take(4).collect();
+    assert!(top.contains(&"Photos") && top.contains(&"2024") && top.contains(&"a.jpg"), "{top:?}");
+    assert_eq!(ix.top_slots(&ix.match_slots(&Query::parse("")), MetaKey::Size, 3, Some(&tot)), sorted[..3]);
 }
