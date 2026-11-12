@@ -35,7 +35,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .tl:hover { filter: brightness(.94); }
 .tl.sel { z-index: 2; box-shadow: 0 0 0 2px var(--bg), 0 0 0 4px var(--acc); }
 .tl .lg-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11.5px; color: #fff; text-align: left;
-  background: linear-gradient(transparent, rgba(0,0,0,.6)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity 120ms; }
+  background: linear-gradient(transparent, rgba(0,0,0,.6)); overflow-wrap: anywhere; opacity: 0; transition: opacity 120ms; }
 .tl:hover .lg-name, .tl.sel .lg-name, .tl.doc .lg-name { opacity: 1; }
 .lg-info { white-space: nowrap; display: flex; align-items: center; gap: 14px; height: 36px; padding: 0 22px; flex: none; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg3); background: var(--bg); }
 .lg-cur { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }

@@ -3,7 +3,7 @@ import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, coverScale, crumbParts, extOf, fitScale, kindLabel, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, crumbParts, extOf, fitScale, kindLabel, highlight, MAX_SCALE, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -191,9 +191,11 @@ function ImageView({ info, boxes, registerApi }: { info: PreviewInfo; boxes: Hit
   const src = useThumb ? info.thumb : info.src;
   const drawn = useMemo(() => boxesForView(boxes, null, null), [boxes]);
   if (!src || dead) return <OtherView info={info} note="This image cannot be shown here." />;
+  // Fit (contain) always: the whole picture is visible on open, and wheel / drag / the zoom
+  // bar take it from there. (Cover cropped the picture and locked pan at the crop scale.)
   return (
     <ImageStage
-      key={src} src={src} name={info.name} boxes={drawn} registerApi={registerApi} cover={drawn.length === 0 && !useThumb}
+      key={src} src={src} name={info.name} boxes={drawn} registerApi={registerApi}
       dims={!useThumb && meta?.width && meta.height ? { w: meta.width, h: meta.height } : null}
       note={useThumb ? "Shell thumbnail" : null}
       onError={() => { if (!useThumb && info.thumb) setUseThumb(true); else setDead(true); }}
@@ -201,9 +203,9 @@ function ImageView({ info, boxes, registerApi }: { info: PreviewInfo; boxes: Hit
   );
 }
 
-function ImageStage({ src, name, dims, note, boxes, onError, registerApi, cover }: {
+function ImageStage({ src, name, dims, note, boxes, onError, registerApi }: {
   src: string; name: string; dims: { w: number; h: number } | null; note: string | null; boxes: HitBox[]; onError: () => void;
-  registerApi?: (patch: Partial<PreviewApi>) => void; cover?: boolean;
+  registerApi?: (patch: Partial<PreviewApi>) => void;
 }) {
   const stage = useRef<HTMLDivElement>(null);
   const [box, setBox] = useState({ w: 0, h: 0 });
@@ -213,8 +215,9 @@ function ImageStage({ src, name, dims, note, boxes, onError, registerApi, cover 
   const [dragging, setDragging] = useState(false);
   const drag = useRef<{ x: number; y: number; tx: number; ty: number } | null>(null);
 
-  const fit = nat ? (cover ? coverScale(box.w, box.h, nat.w, nat.h) : fitScale(box.w, box.h, nat.w, nat.h)) : 1;
+  const fit = nat ? fitScale(box.w, box.h, nat.w, nat.h) : 1;
   const cur: View = fitted ? { s: fit, tx: 0, ty: 0 } : view;
+  const zoomed = nat !== null && cur.s > fit + 1e-6;
   // The wheel listener is native (React's is passive and could not stop the list from scrolling).
   const latest = useRef({ cur, fit, box, nat });
   latest.current = { cur, fit, box, nat };
@@ -289,6 +292,12 @@ function ImageStage({ src, name, dims, note, boxes, onError, registerApi, cover 
   };
   const onUp = () => { drag.current = null; setDragging(false); };
   const onDouble = () => { if (nat) apply(toggleActual(cur, fit), fit); };
+  const zoomStep = (factor: number) => {
+    const { cur, fit, box, nat } = latest.current;
+    if (!nat) return;
+    apply(zoomAt(cur, factor, 0, 0, fit, box.w, box.h, nat.w, nat.h), fit);
+  };
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
 
   const style: React.CSSProperties = nat
     ? {
@@ -310,7 +319,26 @@ function ImageStage({ src, name, dims, note, boxes, onError, registerApi, cover 
              onError={onError} />
         {boxes.map((b, i) => <div key={i} className="pv-box" style={boxRect(b)} aria-hidden />)}
       </div>
-      <div className="pv-zoom" aria-hidden>{Math.round(cur.s * 100)}%{note ? ` · ${note}` : ""}</div>
+      {/* The zoom bar: wheel and drag work too, but these say so without a manual.
+          Pointer events stop at the bar so a press does not start a stage drag. */}
+      {nat && (
+        <div className="pv-zoombar" onPointerDown={(e) => e.stopPropagation()}>
+          <button className="pv-zb" tabIndex={-1} onMouseDown={keep} disabled={cur.s <= fit + 1e-6}
+                  onClick={() => zoomStep(0.8)} aria-label="Zoom out"
+                  title={`Zoom out (scroll wheel, ${combos("preview.zoomOut")[0] ?? "Ctrl+-"})`}>−</button>
+          <span className="pv-zp" aria-live="off">{Math.round(cur.s * 100)}%</span>
+          <button className="pv-zb" tabIndex={-1} onMouseDown={keep} disabled={cur.s >= MAX_SCALE - 1e-6}
+                  onClick={() => zoomStep(1.25)} aria-label="Zoom in"
+                  title={`Zoom in (scroll wheel, ${combos("preview.zoomIn")[0] ?? "Ctrl+="})`}>+</button>
+          {fit < 1 - 1e-6 && (
+            <button className="pv-zb pv-zfit" tabIndex={-1} onMouseDown={keep} onClick={() => apply(toggleActual(cur, fit), fit)}
+                    title={zoomed ? "Back to fit (double-click, Ctrl+0)" : "Actual size (double-click)"}>
+              {zoomed ? "Fit" : "1:1"}
+            </button>
+          )}
+          {note && <span className="pv-zn">{note}</span>}
+        </div>
+      )}
     </div>
   );
 }

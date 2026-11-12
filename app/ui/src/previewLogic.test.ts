@@ -135,9 +135,13 @@ test("pan step is a fraction of the stage and clamps like a drag", async () => {
   assert.deepEqual([fitted.tx, fitted.ty], [0, 0]);
 });
 
-test("kindLabel, crumbParts, driveOf, coverScale", async () => {
+test("kindLabel, crumbParts, driveOf", async () => {
   const m = await import("./previewLogic.ts");
   assert.equal(m.kindLabel("pdf", "pdf", false), "PDF document");
+  assert.equal(m.kindLabel("image", "png", false), "PNG image", "the extension names the type");
+  assert.equal(m.kindLabel("image", "", false), "Image");
+  assert.equal(m.kindLabel("video", "mp4", false), "MP4 video");
+  assert.equal(m.kindLabel("audio", "flac", false), "FLAC audio");
   assert.equal(m.kindLabel("other", "zip", false), "ZIP file");
   assert.equal(m.kindLabel(null, "", true), "Folder");
   assert.equal(m.kindLabel("other", "", false), "File");
@@ -150,6 +154,4 @@ test("kindLabel, crumbParts, driveOf, coverScale", async () => {
   assert.deepEqual(m.crumbParts(P("D:", "Work", "Proj"), true), ["D:", "Work", "Proj"]);
   assert.equal(m.driveOf(P("d:", "x")), "D:");
   assert.equal(m.driveOf(P("", "", "srv", "share")), "");
-  assert.equal(m.coverScale(400, 300, 800, 600), 0.5);
-  assert.equal(m.coverScale(400, 300, 40, 30), 3);
 });

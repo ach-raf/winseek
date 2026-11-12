@@ -67,7 +67,7 @@ export function fitScale(cw: number, ch: number, iw: number, ih: number): number
   return Math.min(1, cw / iw, ch / ih);
 }
 
-const MAX_SCALE = 32;
+export const MAX_SCALE = 32;
 
 /** Keep the image from being dragged out of the stage: no gap on an axis where it is larger than the stage. */
 export function clampView(v: View, cw: number, ch: number, iw: number, ih: number): View {
@@ -145,11 +145,16 @@ const KIND_WORD: Record<string, string> = {
   image: "Image", video: "Video", audio: "Audio", pdf: "PDF document", document: "Document", text: "Text file", folder: "Folder",
 };
 
-/** "PDF document", "Image", "Folder", "ZIP file" ... Falls back to the extension, then "File". */
+/** Kinds whose generic word would hide the actual type (a wall of "Image" says nothing about PNG vs JPG). */
+const KIND_PREFIX_EXT = new Set(["image", "video", "audio"]);
+
+/** "PDF document", "PNG image", "Folder", "ZIP file" ... Falls back to the extension, then "File". */
 export function kindLabel(kind: string | null | undefined, ext: string, isDir: boolean): string {
   if (isDir || kind === "folder") return "Folder";
-  if (kind && KIND_WORD[kind]) return KIND_WORD[kind];
+  const word = kind && KIND_WORD[kind];
   const e = ext.replace(/^\./, "").trim();
+  if (word && !(KIND_PREFIX_EXT.has(kind!) && e)) return word;
+  if (word) return `${e.toUpperCase()} ${word.toLowerCase()}`;
   return e ? `${e.toUpperCase()} file` : "File";
 }
 
@@ -183,10 +188,4 @@ export function crumbParts(path: string, isDir: boolean): string[] {
 export function driveOf(path: string): string {
   const m = path.match(/^([A-Za-z]:)/);
   return m ? m[1].toUpperCase() : "";
-}
-
-/** Scale at which the image covers the whole stage (like object-fit: cover), capped so tiny images are not blown up. */
-export function coverScale(cw: number, ch: number, iw: number, ih: number, max = 3): number {
-  if (iw <= 0 || ih <= 0 || cw <= 0 || ch <= 0) return 1;
-  return Math.min(max, Math.max(cw / iw, ch / ih));
 }
