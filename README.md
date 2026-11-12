@@ -156,11 +156,9 @@ The release workflow checks that the tag matches both versions, builds the insta
 
 ## Roadmap
 
-- `size:` and date filters in the name query syntax
-- Show why a result matched, with the region highlighted on parsed pages
 - Video and audio indexing through transcripts (FFmpeg sidecar)
-- Opt-in text and code indexing that respects `.gitignore`
-- More sort orders and columns
+- Sort by path, and created and accessed columns (the index does not store those timestamps yet)
+- Search by meaning inside video frames
 
 ## Credits
 
