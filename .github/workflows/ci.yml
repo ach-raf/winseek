@@ -59,7 +59,7 @@ jobs:
         shell: pwsh
         run: ./scripts/build-installer.ps1 -SkipNpm
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: winseek-installer-${{ github.sha }}
           path: target/release/bundle/nsis/*-setup.exe
