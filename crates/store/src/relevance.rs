@@ -86,7 +86,11 @@ pub struct Candidate {
 
 impl Candidate {
     pub fn passes(&self) -> bool {
-        self.adj >= ADJ_MIN && self.z.is_none_or(|z| z >= Z_MIN)
+        self.passes_at(Z_MIN)
+    }
+    /// Same gate with a caller-chosen strictness (collections dial it with their slider).
+    pub fn passes_at(&self, z_min: f32) -> bool {
+        self.adj >= ADJ_MIN && self.z.is_none_or(|z| z >= z_min)
     }
     /// Sort key: z when known, else a z-like scale of `adj`.
     fn rank(&self) -> f32 {
@@ -112,8 +116,13 @@ pub fn z_of(x: f32, n: usize, mu: f32, sd: f32) -> Option<f32> {
 
 /// Keep what passes the gate, one entry per file (its best modality), best first, at most `k`.
 pub fn gate(cands: Vec<Candidate>, k: usize) -> Vec<Candidate> {
+    gate_at(cands, k, Z_MIN)
+}
+
+/// [`gate`] with a caller-chosen strictness: collections map their slider onto `z_min`.
+pub fn gate_at(cands: Vec<Candidate>, k: usize, z_min: f32) -> Vec<Candidate> {
     let mut best: HashMap<FileId, Candidate> = HashMap::new();
-    for c in cands.into_iter().filter(Candidate::passes) {
+    for c in cands.into_iter().filter(|c| c.passes_at(z_min)) {
         match best.get(&c.file_id) {
             Some(b) if b.rank() >= c.rank() => {}
             _ => {
@@ -171,6 +180,19 @@ mod tests {
         assert_eq!(out.len(), 2);
         assert_eq!((out[0].file_id.0, out[0].modality), (1, Modality::Text));
         assert_eq!(out[1].file_id.0, 2);
+    }
+
+    #[test]
+    fn gate_at_dials_strictness() {
+        let cands = vec![cand(1, Modality::Visual, 0.10, Some(4.2)), cand(2, Modality::Visual, 0.10, Some(3.8))];
+        assert_eq!(gate_at(cands.clone(), 10, 4.0).len(), 1, "default strictness: only the 4.2 passes");
+        assert_eq!(gate_at(cands.clone(), 10, 3.5).len(), 2, "looser: both pass");
+        assert!(gate_at(cands, 10, 5.0).is_empty(), "stricter: neither passes");
+        assert_eq!(gate(cands_dummy_for_default(), 10).len(), gate_at(cands_dummy_for_default(), 10, Z_MIN).len(), "gate == gate_at(Z_MIN)");
+    }
+
+    fn cands_dummy_for_default() -> Vec<Candidate> {
+        vec![cand(1, Modality::Visual, 0.10, Some(4.2)), cand(2, Modality::Visual, 0.10, Some(3.8))]
     }
 
     #[test]

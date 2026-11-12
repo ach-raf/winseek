@@ -10,10 +10,11 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
+use winseek_store::relevance;
 use winseek_store::{cluster_near, ImageRow, Store};
 
 use super::embedder::EmbedError;
-use super::{lock, stat, Handle, SemanticHit, SemanticResult, Tier1};
+use super::{lock, locator_page, stat, Handle, SemanticHit, SemanticResult, Tier1};
 use crate::commands::AppState;
 use crate::source::Hit;
 
@@ -102,10 +103,9 @@ const LEGACY_DEFAULT_THRESHOLD: f32 = 0.2;
 /// The default collections. Thresholds measured 2026-10-14 with `winseek-eval route` (EmbeddingGemma-2
 /// Q8_0, llama.cpp b11588, 418 labelled images): real photos score at most 0.585 / 0.601 / 0.619 /
 /// 0.597 against these four queries, members (synthetic receipts + invoices, whiteboards, captioned
-/// memes, contracts + forms) score at least 0.691 / 0.614 / 0.634 / 0.645. Each threshold is the
-/// midpoint between the best-scoring photo and the members' 10th percentile: no photo in any
-/// collection, every member in. Other documents do score high on Receipts / Documents to sign (the
-/// zero-shot query barely tells document kinds apart), which the slider can trim.
+/// memes, contracts + forms) score at least 0.691 / 0.614 / 0.634 / 0.645. Since the calibrated gate
+/// (2026-11-12) these numbers are no longer raw cosine floors — they are strictness dials (see
+/// [`Tier1::threshold_z_min`]); the values were kept so saved collections keep their slider position.
 pub fn default_collections() -> Vec<Collection> {
     let c = |name: &str, query: &str, threshold: f32, rule: Option<&str>| Collection {
         name: name.into(),
@@ -188,34 +188,61 @@ impl Tier1 {
             .collect())
     }
 
-    /// Files whose embedding matches `query` with a cosine score of at least `threshold`
-    /// (best first, at most `cap`, never beyond [`COLLECTION_CAP`]).
+    /// The stored slider (0.4..0.9, historically a raw cosine floor) as a calibrated-gate
+    /// strictness: the hub-corrected z minimum a file must clear (`relevance`). The old midpoint
+    /// default 0.62 maps to 4.04 — search's own `Z_MIN` — so saved collections keep their dial
+    /// position and gain the calibration; looser (0.4) means "stand out a bit", tighter (0.9)
+    /// means "near the top of what the library has for this query".
+    pub fn threshold_z_min(threshold: f32) -> f32 {
+        (2.5 + (threshold - 0.4) * 7.0).clamp(2.0, 8.0)
+    }
+
+    /// Files that belong to a collection: embed the query and return the in-scope files that are
+    /// *relevant* — the same calibrated gate search uses (see `relevance`: hub correction, then a
+    /// per-modality z-score, so icons that sit near every query cannot flood the list) — best
+    /// first, at most `cap`. `threshold` only dials the strictness (see [`Self::threshold_z_min`]).
     pub fn collection_hits(&self, query: &str, threshold: f32, cap: usize) -> Result<SemanticResult, String> {
         let cap = cap.clamp(1, COLLECTION_CAP);
         let q = query.trim();
         if q.is_empty() {
             return Ok(SemanticResult { state: self.state_str().into(), hits: vec![] });
         }
-        let vec = {
+        let (vec, hub) = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
                 return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] });
             }
-            match e.embed_query(q) {
+            match e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
                 Ok(v) => v,
                 Err(EmbedError::ModelsMissing) => return Ok(SemanticResult { state: "models_missing".into(), hits: vec![] }),
                 Err(EmbedError::Other(m)) => return Err(m),
             }
         };
         let snap = self.snapshot();
-        let raw = lock(&self.store).search_vectors(&vec, cap * 3, None).map_err(|e| e.to_string())?;
-        let hits = raw
+        let cands = {
+            let store = lock(&self.store);
+            // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
+            store.search_calibrated(&vec, &hub, (cap * 4).max(40)).map_err(|e| e.to_string())?
+        };
+        let gated = relevance::gate_at(
+            cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect(),
+            cap,
+            Self::threshold_z_min(threshold),
+        );
+        let hits = gated
             .into_iter()
-            .filter(|h| h.score >= threshold && snap.in_scope(&h.path))
-            .take(cap)
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet: None, page: None, source: "meaning", boxes: None }
+                SemanticHit {
+                    path: h.path,
+                    score: h.score,
+                    size,
+                    mtime,
+                    snippet: None,
+                    page: locator_page(h.locator.as_deref()),
+                    source: "meaning",
+                    boxes: None,
+                }
             })
             .collect();
         Ok(SemanticResult { state: self.state_str().into(), hits })
@@ -530,8 +557,9 @@ mod tests {
         let d = default_collections();
         let t: Vec<(&str, f32)> = d.iter().map(|c| (c.name.as_str(), c.threshold)).collect();
         assert_eq!(t, [("Receipts", 0.64), ("Whiteboards", 0.61), ("Memes", 0.63), ("Documents to sign", 0.63), ("Screenshots", 0.0)]);
-        // every query collection sits above the best-scoring real photo (0.62) of the eval set
-        assert!(d.iter().filter(|c| c.rule.is_none()).all(|c| c.threshold > 0.6));
+        // kept for dial continuity: the numbers are strictness dials now (see `threshold_z_min`),
+        // and every query collection maps to about search's own gate strictness (z ~ 4)
+        assert!(d.iter().filter(|c| c.rule.is_none()).all(|c| (0.6..0.7).contains(&c.threshold)));
     }
 
     #[test]
@@ -550,20 +578,31 @@ mod tests {
     }
 
     #[test]
-    fn collection_hits_apply_threshold_scope_and_cap() {
+    fn collection_hits_use_the_calibrated_gate_scope_and_cap() {
         let t = tier(&[r"C:\Pics"]);
-        add(&t, 1, r"C:\Pics\a.jpg", 1, 1, "h1", mix(1, 2, 0.1)); // cos to "cat" (axis 1) ~ 0.995
-        add(&t, 2, r"C:\Pics\b.jpg", 1, 1, "h2", mix(1, 2, 0.9)); // ~ 0.62
-        add(&t, 3, r"C:\Pics\c.jpg", 1, 1, "h3", mix(1, 2, 1.4)); // ~ 0.17
-        add(&t, 4, r"C:\Old\d.jpg", 1, 1, "h4", unit(1)); // out of scope
+        // The fake query "cat" embeds to unit(1) and the hub to unit(2), so `adj = raw - dot(unit(2), blob)`:
+        add(&t, 1, r"C:\Pics\a.jpg", 1, 1, "h1", mix(1, 2, 0.1)); // raw ~0.995, adj ~0.90 -> passes
+        add(&t, 2, r"C:\Pics\f.jpg", 1, 1, "h6", mix(1, 3, 0.2)); // raw ~0.98, orthogonal to the hub, adj ~0.98 -> best
+        add(&t, 3, r"C:\Pics\b.jpg", 1, 1, "h2", mix(1, 2, 0.9)); // raw ~0.62 but adj < 0: hub junk, dropped
+        add(&t, 4, r"C:\Pics\c.jpg", 1, 1, "h3", mix(1, 2, 1.4)); // far: dropped
+        add(&t, 5, r"C:\Pics\e.jpg", 1, 1, "h5", unit(5)); // orthogonal to both: adj 0, dropped
+        add(&t, 6, r"C:\Old\d.jpg", 1, 1, "h4", unit(1)); // out of scope
         let r = t.collection_hits("cat", 0.5, 10).unwrap();
         let names: Vec<_> = r.hits.iter().map(|h| h.path.rsplit('\\').next().unwrap()).collect();
-        assert_eq!(names, ["a.jpg", "b.jpg"], "score >= 0.5, in scope, best first");
-        assert!(r.hits[0].score > r.hits[1].score);
-        assert_eq!(t.collection_hits("cat", 0.0, 2).unwrap().hits.len(), 2, "cap");
-        assert_eq!(t.collection_hits("cat", 0.0, 100_000).unwrap().hits.len(), 3, "cap is clamped, scope still applies");
+        assert_eq!(names, ["f.jpg", "a.jpg"], "calibrated best-first: hub junk and ordinary files stay out");
+        assert_eq!(t.collection_hits("cat", 0.5, 1).unwrap().hits.len(), 1, "cap");
+        assert_eq!(t.collection_hits("cat", 0.0, 100_000).unwrap().hits.len(), 2, "cap is clamped, gate still applies");
         assert!(t.collection_hits("  ", 0.0, 5).unwrap().hits.is_empty());
-        assert!(t.collection_hits("cat", 0.999_9, 5).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn threshold_maps_to_gate_strictness() {
+        let z = Tier1::threshold_z_min;
+        assert!((z(0.62) - 4.04).abs() < 1e-4, "the stored default dials search's own strictness");
+        assert_eq!(z(0.4), 2.5);
+        assert!((z(0.9) - 6.0).abs() < 1e-4);
+        assert!((z(1.0) - 6.7).abs() < 1e-4);
+        assert_eq!(z(-1.0), 2.0, "sanitize allows -1; the mapping clamps loose");
     }
 
     #[test]
