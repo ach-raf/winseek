@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Hit } from "./types";
+import type { Backend, Hit, HitBox } from "./types";
 import { Preview } from "./Preview";
 import { FileIcon } from "./FileIcon";
-import { formatDate, formatSize } from "./format";
+import { formatDate, formatSize, kindOf } from "./format";
 import { activeSection, moveMosaic, mosaicMetrics, packMosaic, railEntries, tileBox } from "./libraryLogic";
 
 const PAD = 22;
@@ -19,6 +19,10 @@ export interface GridItem {
   mtime: number | null;
   /** Semantic score (collections), shown in the tooltip. */
   score?: number;
+  /** What the search preview shows for a meaning hit (collections pass the collection's hits through). */
+  snippet?: string | null;
+  page?: number | null;
+  boxes?: HitBox[] | null;
 }
 export interface GallerySection {
   key: string;
@@ -41,6 +45,13 @@ export interface LibActions {
 
 const toHit = (i: GridItem): Hit => ({ name: i.name, path: i.path, is_dir: false, size: i.size, mtime: i.mtime });
 
+/** Everything that is not a picture / video: its name stays visible on the tile (a wall of
+ *  anonymous document icons is unreadable). */
+const isDocTile = (name: string) => {
+  const k = kindOf(name, false);
+  return k !== "image" && k !== "video";
+};
+
 function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: number }) {
   const src = backend.iconUrl(item.path, false, true, px);
   const [bad, setBad] = useState(false);
@@ -48,21 +59,25 @@ function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: nu
   return <img src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />;
 }
 
-/** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized. */
-export function Gallery({ backend, sections, rail, actions, empty }: {
+/** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized.
+ *  `preview` = the search-style preview pane on the right, open by default (collections); Space collapses
+ *  and reopens it, and an empty pane shows a hint instead of vanishing. */
+export function Gallery({ backend, sections, rail, actions, empty, preview = false }: {
   backend: Backend;
   sections: GallerySection[];
   /** Year / month rail on the right (timeline). */
   rail?: boolean;
   actions: LibActions;
   empty: React.ReactNode;
+  preview?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
   const [scrollTop, setScrollTop] = useState(0);
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [sel, setSel] = useState(0);
-  const [pvOpen, setPvOpen] = useState(false);
+  // With a permanent preview pane (collections) it starts open; Space collapses and reopens it.
+  const [pvOpen, setPvOpen] = useState(preview);
   const [pvItem, setPvItem] = useState<GridItem | null>(null);
 
   const flat = useMemo(() => sections.flatMap((s) => s.items), [sections]);
@@ -196,7 +211,7 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
                     key={it.path}
                     role="option"
                     aria-selected={k === sel}
-                    className={"tl" + (t.w === 2 && t.h === 2 ? " w2" : t.w === 2 ? " wide" : "") + (k === sel ? " sel" : "")}
+                    className={"tl" + (t.w === 2 && t.h === 2 ? " w2" : t.w === 2 ? " wide" : "") + (isDocTile(it.name) ? " doc" : "") + (k === sel ? " sel" : "")}
                     style={{ left: PAD + t.col * (cell + GAP), top: b.y, width: t.w * cell + (t.w - 1) * GAP, height: b.h }}
                     tabIndex={-1}
                     title={`${it.name}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}${it.mtime ? ` · ${formatDate(it.mtime)}` : ""}`}
@@ -234,11 +249,17 @@ export function Gallery({ backend, sections, rail, actions, empty }: {
           </span>
         </div>
       </div>
-      {pvOpen && pvItem && (
+      {pvOpen && (preview || pvItem) && (pvItem ? (
         <div className="lg-pv">
-          <Preview backend={backend} hit={toHit(pvItem)} query="" onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} onCopyPath={() => actions.copy(pvItem.path)} />
+          <Preview backend={backend} hit={toHit(pvItem)} query="" snippet={pvItem.snippet} page={pvItem.page} boxes={pvItem.boxes}
+                   onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} onCopyPath={() => actions.copy(pvItem.path)} />
         </div>
-      )}
+      ) : (
+        <aside className="lg-pv lg-pv-empty">
+          <b>Nothing selected</b>
+          <span>Pick a photo or document to see it here.</span>
+        </aside>
+      ))}
       {rail && railList.length > 0 && (
         <nav className="lg-rail" ref={railRef} aria-label="Jump to month">
           {railList.map((y) => (

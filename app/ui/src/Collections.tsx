@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./types";
 import { Gallery, type GallerySection, type GridItem, type LibActions } from "./Gallery";
 import { baseName } from "./Semantic";
+import { kindOf } from "./format";
 import { isScreenshot } from "./libraryLogic";
 import { IChevL, IPlus } from "./icons";
 
@@ -15,8 +16,9 @@ interface Eval {
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const CAP = 500;
-/** EmbeddingGemma-2 image/query cosines: photos reach ~0.62, collection members sit ~0.61-0.75
- *  (measured with `winseek-eval route`), so the useful slider range is narrow and high. */
+/** The slider is a strictness dial over the calibrated gate (hub-corrected, per-modality z-score —
+ *  the same relevance machinery search uses), not a raw cosine. 0.62 sits at search's own
+ *  strictness; lower keeps a bit more, higher only what stands out most for this query. */
 const THRESHOLD_MIN = 0.4;
 const THRESHOLD_MAX = 0.9;
 const NEW_THRESHOLD = 0.62;
@@ -92,8 +94,23 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     if (c.rule === "screenshots") return shots.map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime }));
     return (evals[c.name]?.hits ?? [])
       .filter((h) => !hidden.has(h.path))
-      .map((h) => ({ path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null, score: h.score }));
+      .map((h) => ({
+        path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null,
+        score: h.score, snippet: h.snippet ?? null, page: h.page ?? null, boxes: h.boxes ?? null,
+      }));
   }, [evals, hidden, shots]);
+
+  /** Pictures and videos first (what the grid is good at), then everything a document icon stands for. */
+  const sections: GallerySection[] = useMemo(() => {
+    const items = sel ? hitsOf(sel) : [];
+    if (!sel || sel.rule || items.length === 0) return [{ key: sel?.name ?? "", label: null, items }];
+    const isPic = (i: GridItem) => ["image", "video"].includes(kindOf(i.name, false));
+    const photos = items.filter(isPic), docs = items.filter((i) => !isPic(i));
+    return [
+      { key: `${sel.name}:photos`, label: photos.length ? "Photos" : null, items: photos },
+      { key: `${sel.name}:docs`, label: docs.length ? "Documents" : null, items: docs },
+    ].filter((s) => s.items.length > 0);
+  }, [sel, hitsOf]);
 
   const save = useCallback(async (next: Collection[]): Promise<boolean> => {
     try {
@@ -115,8 +132,6 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     return () => window.clearTimeout(t);
   }, [thr, sel, list, save]);
 
-  const items = useMemo(() => (sel ? hitsOf(sel) : []), [sel, hitsOf]);
-  const sections: GallerySection[] = useMemo(() => [{ key: sel?.name ?? "", label: null, items }], [items, sel?.name]);
   const ev = sel && !sel.rule ? evals[sel.name] : undefined;
 
   const emptyMsg = !sel ? null
@@ -124,7 +139,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     : ev?.status === "loading" || !ev ? <><span className="spin" aria-label="Loading" /><span>Searching…</span></>
     : ev.status === "off" ? <><strong>Search by meaning is not set up</strong><span>Download the models in the popup (Ctrl+,) and this collection fills itself.</span></>
     : ev.status === "error" ? <><strong>Could not search</strong><span>{ev.error}</span></>
-    : <><strong>Nothing matches yet</strong><span>Lower the threshold, or wait for indexing to reach more photos.</span></>;
+    : <><strong>Nothing matches yet</strong><span>Lower the strictness, or wait for indexing to reach more photos.</span></>;
 
   const count = (c: Collection) => {
     if (c.rule === "screenshots") return shots.length;
@@ -207,7 +222,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           {!(draft.orig && list?.find((c) => c.name === draft.orig)?.rule) && (
             <>
               <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a photo of a paper receipt" /></label>
-              <label>Minimum match: <b>{draft.threshold.toFixed(2)}</b>
+              <label>Strictness: <b>{draft.threshold.toFixed(2)}</b>
                 <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
               </label>
             </>
@@ -232,8 +247,8 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
             <p>{sel.rule === "screenshots" ? "Files whose name looks like a screenshot." : `“${sel.query}”`}</p>
           </div>
           {!sel.rule && (
-            <label className="co-thr" title="Minimum cosine match for a photo to belong to the collection">
-              Match ≥ <b>{(thr ?? sel.threshold).toFixed(2)}</b>
+            <label className="co-thr" title="How far a file must stand out from your library to belong here (the calibrated gate search uses). Higher = fewer, closer fits.">
+              Strictness <b>{(thr ?? sel.threshold).toFixed(2)}</b>
               <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
             </label>
           )}
@@ -251,7 +266,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
         </header>
         {formErr && <div className="co-err" role="alert">{formErr}</div>}
         <div className="co-grid">
-          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} />
+          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} preview />
         </div>
       </div>
     );
