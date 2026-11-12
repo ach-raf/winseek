@@ -10,6 +10,7 @@ import { Folders, pausedText } from "./Setup";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import { filterSections, type SettingsSection } from "./settingsNav";
+import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./accent";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
 import { IChevL, ISearch } from "./icons";
@@ -129,6 +130,28 @@ function VersionRow({ backend, onError }: { backend: Backend; onError: (e: unkno
   useEffect(() => { backend.appVersion().then(setV).catch(onError); }, [backend, onError]);
   if (!v) return null;
   return <Row title="Version" desc={`winseek for Windows ${v}`} hint={`winseek v${v}`}><span className="val">{v}</span></Row>;
+}
+
+/** Accent colour swatches (Settings › General). Applies at once and is remembered; the other
+ *  window follows through the storage event (main.tsx). */
+function AccentRow() {
+  const [id, setId] = useState<AccentId>(() => loadAccent());
+  const change = (next: AccentId) => {
+    setId(next);
+    applyAccent(next);
+    saveAccent(next);
+  };
+  return (
+    <Row title="Accent colour" desc="The highlight colour across winseek.">
+      <div className="acc-swatches" role="radiogroup" aria-label="Accent colour">
+        {ACCENTS.map((a) => (
+          <button key={a.id} role="radio" aria-checked={id === a.id} aria-label={a.label}
+                  title={a.label} className={"acc-sw" + (id === a.id ? " on" : "")}
+                  style={{ background: a.hex }} onClick={() => change(a.id)} />
+        ))}
+      </div>
+    </Row>
+  );
 }
 
 const PROFILES: { id: Profile; label: string; blurb: string }[] = [
@@ -724,6 +747,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "general" && (
             <>
               <Grp title="General">
+                <AccentRow />
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
                 <VersionRow backend={backend} onError={onError} />
