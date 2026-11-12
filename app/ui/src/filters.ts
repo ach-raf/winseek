@@ -6,7 +6,7 @@
 // Every recognised phrase becomes a chip; the rest is the free text. A chip the user removed (its key is in
 // `off`) is not a filter any more and its words go back to being plain search text.
 
-export type KindId = "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
+export type KindId = "files" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
 export type ChipType = "kind" | "ext" | "date" | "size";
 
 export interface Chip {
@@ -35,6 +35,7 @@ const KB = 1024, MB = KB * 1024, GB = MB * 1024, TB = GB * 1024;
 const DAY = 86400000;
 
 const KIND_WORDS: Record<string, KindId> = {
+  files: "files",
   photo: "images", photos: "images", picture: "images", pictures: "images", pic: "images", pics: "images",
   image: "images", images: "images",
   doc: "docs", docs: "docs", document: "docs", documents: "docs",
@@ -46,7 +47,7 @@ const KIND_WORDS: Record<string, KindId> = {
   setting: "settings", settings: "settings",
 };
 const KIND_LABEL: Record<KindId, string> = {
-  images: "Images", docs: "Docs", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps", settings: "Settings",
+  files: "Files", images: "Images", docs: "Docs", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps", settings: "Settings",
 };
 const EXT_WORDS = new Set([
   "pdf", "docx", "xlsx", "pptx", "csv", "txt", "md", "png", "jpg", "jpeg", "gif", "heic", "mp4", "mkv", "mp3", "flac", "wav", "zip", "exe", "msi",

@@ -60,6 +60,15 @@ test("docs yesterday, folders, apps", () => {
   assert.equal(parseQuery("apps", { now: NOW }).kind, "apps");
 });
 
+test("files chip: the plural is a kind, the singular stays text", () => {
+  // "files" -> Files chip (everything but folders); "file" alone must not hijack e.g. "file explorer".
+  const p = parseQuery("my files", { now: NOW });
+  assert.equal(p.kind, "files");
+  assert.equal(p.text, "my");
+  assert.deepEqual(p.chips, [{ key: "kind:files", type: "kind", label: "Files" }]);
+  assert.equal(parseQuery("file explorer", { now: NOW }).kind, null);
+});
+
 test("explicit sizes", () => {
   assert.deepEqual(parseQuery(">100mb", { now: NOW }).size, { min: 104857600, max: null });
   assert.deepEqual(parseQuery("report <5mb", { now: NOW }).size, { min: null, max: 5242880 });

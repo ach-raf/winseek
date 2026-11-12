@@ -54,6 +54,7 @@ impl PipeSource {
 /// UI filter chip -> query suffix (Tier 0 query syntax).
 fn filter_clause(filter: &str) -> &'static str {
     match filter {
+        "files" => "file:",
         "images" => "ext:jpg;jpeg;png;gif;heic;webp;bmp;svg;tif;tiff",
         "docs" => "ext:pdf;doc;docx;xls;xlsx;ppt;pptx;txt;md;rtf;odt;csv",
         "video" => "ext:mp4;mkv;mov;avi;webm;wmv;m4v",
@@ -208,5 +209,14 @@ mod tests {
         assert_eq!((e.fs.as_str(), e.monitor.as_str()), ("exFAT", "folder_watch"));
         let old = volume_detail(winseek_ipc::VolumeStatus { fs: String::new(), ..winseek_ipc::VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Live, fs: String::new(), monitor: Monitor::Usn } });
         assert_eq!((old.fs.as_str(), old.monitor.as_str()), ("", ""));
+    }
+
+    #[test]
+    fn filter_clauses_map_to_index_terms() {
+        // The Files chip is the bare file: filter (everything but folders); folders is its inverse.
+        assert_eq!(filter_clause("files"), "file:");
+        assert_eq!(filter_clause("folders"), "folder:");
+        assert_eq!(filter_clause("all"), "");
+        assert!(filter_clause("images").starts_with("ext:"));
     }
 }

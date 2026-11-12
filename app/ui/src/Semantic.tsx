@@ -6,12 +6,13 @@ export const baseName = (path: string) => path.slice(path.lastIndexOf("\\") + 1)
 const key = (path: string) => path.toLowerCase();
 export { key as pathKey };
 
-const KIND_OF: Record<KindId, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null, settings: null };
+/** "files" is handled before this table: every meaning hit is a file, so the Files chip passes all. */
+const KIND_OF: Record<Exclude<KindId, "files">, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null, settings: null };
 
 /** Do the parsed chips let this meaning hit through? Date / size only count when the hit carries them. */
 export function semAccepts(h: SemanticHit, p: Parsed): boolean {
   const name = baseName(h.path);
-  if (p.kind && KIND_OF[p.kind] !== kindOf(name, false)) return false;
+  if (p.kind && p.kind !== "files" && KIND_OF[p.kind] !== kindOf(name, false)) return false;
   if (p.ext && !name.toLowerCase().endsWith("." + p.ext) && !(p.ext === "jpg" && name.toLowerCase().endsWith(".jpeg"))) return false;
   const probe = { is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null };
   const known = { date: probe.mtime === null ? null : p.date, size: probe.size === null ? null : p.size };

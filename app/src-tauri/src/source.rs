@@ -169,6 +169,7 @@ impl MockSource {
 
 fn matches_filter(e: &Entry, filter: &str) -> bool {
     match filter {
+        "files" => !e.is_dir,
         "images" => e.kind == 1,
         "docs" => e.kind == 2,
         "video" => e.kind == 3,

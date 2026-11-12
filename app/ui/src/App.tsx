@@ -35,6 +35,7 @@ const PAGE_CAP = 60;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
+  { id: "files", label: "Files" },
   { id: "apps", label: "Apps" },
   { id: "settings", label: "Settings" }, // launcher-only scope: no name-index rows
   { id: "images", label: "Images" },
@@ -143,7 +144,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The last section is remembered across sessions of the popup.
   const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
-    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "meaning"; }
+    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "general"; }
   });
   const setSettingsSection = useCallback((s: SettingsSection) => {
     setSettingsSectionRaw(s);
@@ -463,7 +464,7 @@ export default function App({ backend }: { backend: Backend }) {
     if (!countsOn) { setNameCounts(null); return; }
     let dead = false;
     const t = window.setTimeout(() => {
-      const kinds: Filter[] = ["all", "images", "docs", "video", "audio", "folders"];
+      const kinds: Filter[] = ["all", "files", "images", "docs", "video", "audio", "folders"];
       // limit 0 = count only: the service neither builds rows nor caches a result list for these
       Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 0, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
         .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })

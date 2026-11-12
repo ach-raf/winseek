@@ -91,7 +91,7 @@ function rangeTerms(all: string[]): (e: E) => boolean {
   return (e) => tests.every((f) => f(e));
 }
 const isRangeTerm = (t: string) => /^(size|dm):/.test(t);
-const okFilter = (e: E, f: Filter) => f === "all" || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
+const okFilter = (e: E, f: Filter) => f === "all" || (f === "files" && !e.dir) || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 // ---- search-by-meaning simulation ----

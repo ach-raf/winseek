@@ -241,8 +241,8 @@ export interface PreviewInfo {
   thumb: string | null;
 }
 /** "settings" is a launcher-only scope (the name index is not searched); "apps" filters the name
- *  index to exe/msi AND keeps the launcher's app rows. */
-export type Filter = "all" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
+ *  index to exe/msi AND keeps the launcher's app rows; "files" is everything but folders. */
+export type Filter = "all" | "files" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
 export type Sort = "rel" | "name" | "size" | "date" | "name_desc" | "size_asc" | "date_asc";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";
