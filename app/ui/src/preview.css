@@ -28,10 +28,11 @@
 .pbox.stale, .meta.stale, .pv-parse.stale { opacity: .55; }
 .pv-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg-3); font-size: 13px; padding: 16px; text-align: center; }
 
-/* breadcrumbs */
-.crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; align-content: flex-start; font-size: 12.5px; line-height: 1.5; color: var(--fg-2); min-width: 0; max-height: 3em; overflow: hidden; }
-.crumbs .cr { display: inline-flex; align-items: center; gap: 4px; }
-.crumbs b { font-weight: 600; color: var(--fg); padding: 2px 7px; border-radius: 6px; background: var(--bg3); }
+/* breadcrumbs: up to two FULL chip rows, never a sliced pill (the old 3em cap cut the second
+ * row in half). Row height = 1.45em line + 2 × 2.5px chip padding, so the cap is exact. */
+.crumbs { display: flex; flex-wrap: wrap; gap: 3px 6px; align-items: center; align-content: flex-start; font-size: 12.5px; line-height: 1.45; color: var(--fg-2); min-width: 0; max-height: calc(2 * (1.45em + 5px) + 3px); overflow: hidden; }
+.crumbs .cr { display: inline-flex; align-items: center; gap: 5px; }
+.crumbs b { font-weight: 600; color: var(--fg); padding: 2.5px 8px; border-radius: 6px; background: var(--bg3); }
 .crumbs i { font-style: normal; color: var(--fg-3); }
 
 /* why it is here (bounded: a long snippet must not push the facts around) */
