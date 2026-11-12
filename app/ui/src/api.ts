@@ -19,6 +19,7 @@ function tauriBackend(t: TauriGlobal): Backend {
   return {
     search: (a) => inv("search", a),
     status: () => inv("status"),
+    appVersion: () => inv<string>("app_version").catch(() => null),
     driveSpace: (letters) => inv("drive_space", { letters }),
     recent: (limit) => inv("recent", { limit }),
     openPath: (path) => inv("open_path", { path }),

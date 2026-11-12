@@ -54,6 +54,13 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
   };
   return (
     <Grp title={`Folders to index${known.length > 0 ? ` · ${known.length}` : ""}`}>
+      {/* the add box leads: it is the primary action, the list below is what is already there */}
+      <div className="grow addrow">
+        <input className="gin" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
+               spellCheck={false} autoComplete="off"
+               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+        <button className="gbtn" onClick={add} disabled={!text.trim()}>Add</button>
+      </div>
       {known.length > 0 && (
         <div className="glist">
           {known.map((p) => (
@@ -71,12 +78,6 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
         </div>
       )}
       {known.length === 0 && <div className="grow none">No folders yet</div>}
-      <div className="grow addrow">
-        <input className="gin" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
-               spellCheck={false} autoComplete="off"
-               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
-        <button className="gbtn" onClick={add} disabled={!text.trim()}>Add</button>
-      </div>
     </Grp>
   );
 }

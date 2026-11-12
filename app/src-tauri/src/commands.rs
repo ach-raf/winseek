@@ -158,3 +158,9 @@ pub fn copy_path(path: String) -> Result<(), String> {
     child.wait().map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// The running app's version (Settings › General): the workspace/Cargo version the exe was built from.
+#[tauri::command]
+pub fn app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}

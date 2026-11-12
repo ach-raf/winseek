@@ -596,6 +596,7 @@ export const mockBackend: Backend = {
       return { letter: v.letter, files: 0, folders: 0, state: "scanning", done: Math.floor(total * p), total };
     });
   },
+  async appVersion() { return null; }, // the browser mock has no package info; Settings hides the row
   async recent(limit) { return [...DB].filter((e) => !e.dir).sort((a, b) => b.mtime - a.mtime).slice(0, limit).map(toHit); },
   async openPath(p) { console.info("[mock] open", p); },
   async revealPath(p) { console.info("[mock] reveal", p); },

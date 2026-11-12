@@ -12,6 +12,9 @@ export const IMag = ({ size = 20, className = "mag" }: P) => <S size={size} w={2
 export const ISearch = ({ size, className }: P) => <S size={size} w={2} className={className}><circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" /></S>;
 export const IX = ({ size = 11, className }: P) => <S size={size} w={2.6} className={className}><path d="M6 6l12 12M18 6 6 18" /></S>;
 export const IExpand = ({ size = 17, className }: P) => <S size={size} className={className}><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></S>;
+/** Corners pointing inward: "collapse into the popup" — the counterpart of IExpand, so the full
+ *  window's back-to-popup button never reads as maximize (IMax is a plain square: wrong verb). */
+export const IContract = ({ size = 17, className }: P) => <S size={size} className={className}><path d="M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5" /></S>;
 export const ITime = ({ size, className }: P) => <S size={size} className={className}><rect x="3.5" y="4.5" width="17" height="15" rx="3" /><path d="m3.5 15 4.5-4 4 3.5 3-2.5 5.5 4.5" /><circle cx="15.5" cy="9" r="1.2" /></S>;
 export const IColl = ({ size, className }: P) => <S size={size} className={className}><rect x="3.5" y="3.5" width="7" height="7" rx="2" /><rect x="13.5" y="3.5" width="7" height="7" rx="2" /><rect x="3.5" y="13.5" width="7" height="7" rx="2" /><rect x="13.5" y="13.5" width="7" height="7" rx="2" /></S>;
 export const IClean = ({ size, className }: P) => <S size={size} className={className}><path d="M4 7h16M9 7V4.5h6V7M6.5 7l1 12.5h9l1-12.5M10 11v5M14 11v5" /></S>;

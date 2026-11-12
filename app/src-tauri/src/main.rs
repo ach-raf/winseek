@@ -87,6 +87,7 @@ fn main() {
             agent::agent_mcp_path,
             commands::search,
             commands::status,
+            commands::app_version,
             commands::drive_space,
             commands::recent,
             commands::open_path,

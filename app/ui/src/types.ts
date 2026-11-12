@@ -360,6 +360,8 @@ export interface NearState {
 export interface Backend {
   search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter }): Promise<SearchResult>;
   status(): Promise<VolumeStatus[]>;
+  /** The app's own version (Settings › General); null in the browser mock. */
+  appVersion(): Promise<string | null>;
   /** Capacity of the given drive letters; a drive that does not answer is left out. */
   driveSpace(letters: string[]): Promise<DriveSpace[]>;
   recent(limit: number): Promise<Hit[]>;

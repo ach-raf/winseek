@@ -123,6 +123,14 @@ function AutostartRow({ backend, onError }: { backend: Backend; onError: (e: unk
   );
 }
 
+/** The app's own version (Settings › General). Hidden in the browser mock, which has no package info. */
+function VersionRow({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [v, setV] = useState<string | null>(null);
+  useEffect(() => { backend.appVersion().then(setV).catch(onError); }, [backend, onError]);
+  if (!v) return null;
+  return <Row title="Version" desc={`winseek for Windows ${v}`} hint={`winseek v${v}`}><span className="val">{v}</span></Row>;
+}
+
 const PROFILES: { id: Profile; label: string; blurb: string }[] = [
   { id: "low", label: "Light", blurb: "Least graphics memory. Slower on images and documents." },
   { id: "balanced", label: "Balanced", blurb: "Search runs on the processor; image and document models use the graphics card only while they work." },
@@ -718,6 +726,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
               <Grp title="General">
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
+                <VersionRow backend={backend} onError={onError} />
               </Grp>
               <Performance backend={backend} onError={onError} />
               <ShortcutsBlock backend={backend} onError={onError} />

@@ -1,6 +1,6 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { DriveSpace, VolumeStatus } from "./types";
-import { IClean, IColl, IGear, ILogo, ISearch, ITime, IMin, IMax, ICls } from "./icons";
+import { IClean, IColl, IContract, IGear, ILogo, ISearch, ITime, IMin, ICls } from "./icons";
 
 export type Page = "search" | "timeline" | "collections" | "cleanup" | "settings";
 
@@ -90,7 +90,7 @@ export function WindowControls({ onMin, onRestore, onClose }: { onMin?: () => vo
   return (
     <div className="wc">
       {onMin && <button title="Minimize" aria-label="Minimize" tabIndex={-1} onClick={onMin}><IMin /></button>}
-      <button title="Back to popup (F11)" aria-label="Back to popup" tabIndex={-1} onClick={onRestore}><IMax /></button>
+      <button title="Back to popup (F11)" aria-label="Back to popup" tabIndex={-1} onClick={onRestore}><IContract /></button>
       <button title="Close" aria-label="Close" tabIndex={-1} onClick={onClose}><ICls /></button>
     </div>
   );
