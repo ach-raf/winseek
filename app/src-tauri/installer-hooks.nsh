@@ -1,7 +1,7 @@
 ; winseek NSIS hooks (Tauri bundler). The install is per-machine, so the installer is already
 ; elevated: the name service is registered here and the app's first-run panel never needs its own
 ; UAC prompt. searchd.exe ships as a resource next to the app; `--install` / `--uninstall` are the
-; same code paths as the app's "Install name service" button (docs/specs/2026-10-13-service-first-run.md):
+; same code paths as the app's "Install name service" button:
 ; protected %ProgramData%\winseek DACL, LocalSystem auto-start service, interactive users may start it.
 
 !macro NSIS_HOOK_PREINSTALL

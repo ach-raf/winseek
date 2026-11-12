@@ -1,6 +1,6 @@
 //! View mode of the popup window: the compact Spotlight popup or the larger full window.
 //! There is no true full screen — the modes differ only in size (780x560 vs 1280x800, the
-//! demo's proportions in docs/redesign/winseek-redesign.html). The user's default lives in
+//! demo's proportions). The user's default lives in
 //! `%LOCALAPPDATA%\winseek\ui.json` (`{ "default_view": "compact" | "full" }`); the mode in use
 //! can be flipped at any time (F11 in the UI) without touching the saved default.
 

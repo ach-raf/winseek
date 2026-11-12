@@ -1,4 +1,4 @@
-//! winseek-index — Tier 0 name index (pure Rust, no Win32). See docs/PLAN.md.
+//! winseek-index — Tier 0 name index (pure Rust, no Win32).
 //!
 //! * [`store`]: SoA record store, builder, live mutation, name-sorted order
 //! * [`fold`]: case folding

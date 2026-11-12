@@ -1,6 +1,6 @@
 //! Folder-watch volumes (FAT, FAT32, exFAT, ReFS without a journal): `FindFirstFileExW`
 //! worklist scan + overlapped `ReadDirectoryChangesW`, rescanning on overflow or error.
-//! See docs/specs/2026-10-14-p3-nonntfs.md §2 (Everything's FAT folder index / RDC monitor).
+//! (Everything's FAT folder index / RDC monitor).
 
 use std::collections::HashMap;
 use std::io;

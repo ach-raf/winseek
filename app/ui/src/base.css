@@ -1,4 +1,4 @@
-/* ===== winseek v4 design tokens — source of truth: docs/redesign/winseek-redesign.html =====
+/* ===== winseek v4 design tokens =====
    Light + dark follow the OS. Accent is the demo's amber (#ffc533, dark ink). */
 :root {
   color-scheme: light dark;

@@ -13,7 +13,7 @@
 //! 3. Gate: `z >= Z_MIN` and `adj >= ADJ_MIN`. Nothing passes -> nothing is shown.
 //!
 //! Measured on this machine's real index (1,453 images + 2,630 texts, 20 hand-labelled queries,
-//! see RUNLOG 2026-10-15): precision of the shown meaning hits 0.19 -> 0.69, relevant hits shown
+//! see the gate sweep): precision of the shown meaning hits 0.19 -> 0.69, relevant hits shown
 //! 31 -> 59; "email" went from 3/8 (LocalSend / Instagram screenshots) to 7/8 (Gmail icons,
 //! email templates).
 
@@ -148,7 +148,7 @@ mod tests {
 
     #[test]
     fn thresholds_are_the_measured_ones() {
-        // Changing these needs a new measurement (scratch gate sweep, RUNLOG 2026-10-15).
+        // Changing these needs a new measurement (scratch gate sweep).
         assert_eq!((Z_MIN, ADJ_MIN, MIN_POPULATION), (4.0, 0.07, 30));
         assert_eq!(HUB_PROMPTS.len(), 48);
     }

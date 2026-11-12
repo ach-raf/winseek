@@ -1,9 +1,9 @@
 //! Blocking client for Infinity-Parser2 on llama-server's `POST /v1/chat/completions`, plus the
 //! pure output handling: tolerant JSON parsing (fences, wrapper objects, truncation salvage),
 //! plain text for FTS/embedding, markdown, tables, and the stored bbox locator.
-//! See docs/specs/2026-10-14-p3-parser.md section A.
+
 //!
-//! Bboxes come back normalised to 0-1000 (RUNLOG 2026-10-14), not in pixels.
+//! Bboxes come back normalised to 0-1000, not in pixels.
 
 use std::io::Read;
 use std::time::Duration;

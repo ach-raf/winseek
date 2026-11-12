@@ -288,7 +288,7 @@ pub fn page_word_boxes(pdfium: &Pdfium, path: &Path, page: u32, terms: &[String]
 pub(crate) mod testutil {
     use super::*;
 
-    /// A dev copy of the pinned pdfium (see CLAUDE-level notes): `WINSEEK_PDFIUM` or `D:\tools\pdfium-7881`.
+    /// A dev copy of the pinned pdfium: `WINSEEK_PDFIUM` or `D:\tools\pdfium-7881`.
     /// `None` when it cannot be loaded; PDF tests then skip.
     pub fn pdfium() -> Option<&'static Pdfium> {
         let dev = Path::new(r"D:\tools\pdfium-7881\bin\pdfium.dll");

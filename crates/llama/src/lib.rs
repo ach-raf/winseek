@@ -1,6 +1,6 @@
 //! winseek-llama: prebuilt llama.cpp manager (pinned manifest, GPU detect,
 //! resumable verified download, zip install, llama-server spawn/health).
-//! See docs/PLAN.md "llama.cpp distribution".
+//!
 
 pub mod backend;
 pub mod embed;

@@ -1,4 +1,4 @@
-/* ===== search surface (v4): compact popup + full window. Source: docs/redesign/winseek-redesign.html ===== */
+/* ===== search surface (v4): compact popup + full window. ===== */
 
 /* ---- layout glue ---- */
 .shell > .main-col { min-height: 0; }

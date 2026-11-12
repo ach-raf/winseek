@@ -10,7 +10,4 @@ node_modules/
 /models/
 /llama-bin/
 
-# local tooling / caches
-.claude/
 .vite/
-design-mockups/

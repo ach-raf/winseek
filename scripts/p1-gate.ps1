@@ -6,7 +6,7 @@
 .PARAMETER Keep      do not detach/delete the VHDX at the end
 .PARAMETER Everything  also diff `es.exe -path <L>:\` against the index listing (needs es.exe on PATH)
 .NOTES
-  PowerShell 5.1 compatible. Output is also written to docs/bench/p1-gate-<date>.txt.
+  PowerShell 5.1 compatible. 
   Run from an elevated prompt:  powershell -ExecutionPolicy Bypass -File scripts\p1-gate.ps1
 #>
 param([switch]$NoBuild, [switch]$Keep, [switch]$Everything)

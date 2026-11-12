@@ -1,4 +1,4 @@
-/* ===== Settings / Setup / first-run / status panels (v4). Spec: docs/redesign/winseek-redesign.html (.set .snav .scont .grp .gcard .grow .sw .seg .gbtn .sfind) =====
+/* ===== Settings / Setup / first-run / status panels (v4). Classes: (.set .snav .scont .grp .gcard .grow .sw .seg .gbtn .sfind) =====
    Light + dark come from the base.css tokens; nothing here hard-codes a theme colour except the switch knob. */
 
 /* ---- shared panel shell: first-run counter, name-service setup, Settings ---- */

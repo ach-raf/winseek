@@ -2,7 +2,7 @@
 //!
 //! Images go in as `{"content":[{"type":"image_url",...}]}` inputs. Never use a bare
 //! `image_url` part (400) nor `/embedding` + `image_data` (silently ignores the image,
-//! llama.cpp #30082). See docs/PLAN.md "Inference: llama.cpp only".
+//! llama.cpp #30082).
 
 use std::io::Read;
 use std::time::Duration;

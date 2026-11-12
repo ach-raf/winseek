@@ -1,6 +1,6 @@
 //! Launcher state: the in-memory catalog (apps + settings pages + system commands), selection
 //! history with prefix learning, config persistence, and the Tauri commands the UI calls.
-//! Spec: docs/specs/2026-10-20-launcher-prd.md (R1, R5-R8).
+//!
 
 pub mod aliases;
 pub mod apps;

@@ -1,4 +1,4 @@
-// Shared v4 icon set (stroke icons from docs/redesign/winseek-redesign.html). Size via the `size` prop or CSS.
+// Shared v4 icon set. Size via the `size` prop or CSS.
 import type { ReactNode } from "react";
 
 type P = { size?: number; className?: string };
