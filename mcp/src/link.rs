@@ -205,7 +205,7 @@ mod tests {
         // Point WINSEEK_APP at a path that does not exist (dev checkout without a built app).
         let saved = std::env::var_os("WINSEEK_APP");
         std::env::set_var("WINSEEK_APP", "Z:\\definitely-not-here\\winseek-app.exe");
-        let err = start_app().err().expect("should fail: no app exe");
+        let err = start_app().expect_err("should fail: no app exe");
         match saved {
             Some(v) => std::env::set_var("WINSEEK_APP", v),
             None => std::env::remove_var("WINSEEK_APP"),

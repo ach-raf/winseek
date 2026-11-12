@@ -113,8 +113,8 @@ mod tests {
     fn iso_date_range_is_the_local_day() {
         let (from, to) = date_range("2026-10-20", NOW, TZ).unwrap();
         assert_eq!((from, to), (day_ms(2026, 10, 20) - 3_600_000, day_ms(2026, 10, 21) - 3_600_000));
-        assert_eq!(date_range("2026-13-01", NOW, TZ).is_err(), true);
-        assert_eq!(date_range("gibberish", NOW, TZ).is_err(), true);
+        assert!(date_range("2026-13-01", NOW, TZ).is_err());
+        assert!(date_range("gibberish", NOW, TZ).is_err());
     }
 
     #[test]

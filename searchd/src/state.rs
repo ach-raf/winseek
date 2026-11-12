@@ -31,10 +31,13 @@ const QUERY_CACHE_ITEMS: usize = 2_000_000;
 
 /// One cached query: the full ordered slot list plus the index generation it was scanned
 /// under. Any index mutation bumps the generation, so a stale entry never answers twice.
+type CacheEntry = (u64, Arc<Vec<u32>>);
+type CacheKey = (String, Sort);
+
 #[derive(Default)]
 struct QCache {
-    map: HashMap<(String, Sort), (u64, Arc<Vec<u32>>)>,
-    lru: VecDeque<(String, Sort)>,
+    map: HashMap<CacheKey, CacheEntry>,
+    lru: VecDeque<CacheKey>,
 }
 
 impl QCache {
