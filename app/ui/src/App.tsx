@@ -20,7 +20,7 @@ import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
-import { kindOf } from "./format";
+import { kindOf, formatSize } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
 const ROW_H = 54;
@@ -110,6 +110,17 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
   const totalRef = useRef(0);
   const [space, setSpace] = useState<DriveSpace[]>([]);
+  // Drive scope: a row of buttons while it fits, one chip with a menu in the popup or with many drives.
+  const [driveOpen, setDriveOpen] = useState(false);
+  const drivePickRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!driveOpen) return;
+    const away = (e: MouseEvent) => { if (!drivePickRef.current?.contains(e.target as Node)) setDriveOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setDriveOpen(false); } };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", esc, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc, true); };
+  }, [driveOpen]);
   const [liveVer, setLiveVer] = useState(0); // bumped when a live refresh found the results changed // shows the "row N of M" tag while the list moves
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
@@ -1255,13 +1266,13 @@ export default function App({ backend }: { backend: Backend }) {
   // Free space per drive for the sidebar card (full window only; a minute old is fine).
   const driveKey = status.map((v) => v.letter).join("");
   useEffect(() => {
-    if (!full || !driveKey) return;
+    if (!driveKey) return;
     let dead = false;
     const load = () => backend.driveSpace(driveKey.split("").filter((l) => /[A-Za-z]/.test(l))).then((s) => { if (!dead) setSpace(s); }).catch(() => { /* the card falls back to file counts */ });
     void load();
     const t = window.setInterval(load, 60000);
     return () => { dead = true; window.clearInterval(t); };
-  }, [backend, full, driveKey]);
+  }, [backend, driveKey]);
   // A click on a drive in that card: its folders, biggest first ("what is taking the space").
   const showDrive = (letter: string) => {
     setPage("search");
@@ -1293,6 +1304,8 @@ export default function App({ backend }: { backend: Backend }) {
       ))}
     </div>
   ) : null;
+
+  const driveMenu = !full || status.length > 3;
 
   // ---- filter row ----
   const countOf = (f: Filter): number | undefined => {
@@ -1343,7 +1356,30 @@ export default function App({ backend }: { backend: Backend }) {
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
       )}
-      {status.length > 0 && (
+      {status.length > 0 && (driveMenu ? (
+        <div className="dpick" ref={drivePickRef}>
+          <button className={"sortb" + (drive ? " set" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={driveOpen} title="Limit the search to one drive"
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => setDriveOpen((o) => !o)}>
+            {drive ? `Drive ${drive}:` : "All drives"}
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
+          </button>
+          {driveOpen && (
+            <div className="dmenu" role="listbox" aria-label="Drive">
+              {[{ letter: "" }, ...status].map((v) => {
+                const sp = space.find((x) => x.letter.toUpperCase() === v.letter.toUpperCase());
+                return (
+                  <button key={v.letter || "all"} role="option" aria-selected={drive === v.letter} className={drive === v.letter ? "on" : ""} tabIndex={-1}
+                          onMouseDown={(e) => e.preventDefault()}
+                          onClick={() => { setDrive(v.letter); setDriveOpen(false); inputRef.current?.focus(); }}>
+                    <span>{v.letter ? `${v.letter}:` : "All drives"}</span>
+                    {sp && <i>{formatSize(sp.free)} free</i>}
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      ) : (
         <div className="dseg" title="Limit to one drive">
           <button className={!drive ? "on" : ""} tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => { setDrive(""); inputRef.current?.focus(); }}>All drives</button>
           {status.map((v) => (
@@ -1351,7 +1387,7 @@ export default function App({ backend }: { backend: Backend }) {
                     onClick={() => { setDrive(v.letter); inputRef.current?.focus(); }}>{v.letter}:</button>
           ))}
         </div>
-      )}
+      ))}
     </nav>
   );
 
@@ -1457,7 +1493,8 @@ export default function App({ backend }: { backend: Backend }) {
           </header>
         )}
 
-        {frow}
+        {/* a panel (Settings, setup, first run) has the popup to itself: the type filters belong to results */}
+        {!showPanel && frow}
 
         {panels}
 

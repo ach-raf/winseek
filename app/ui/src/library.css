@@ -89,7 +89,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 /* ---------- clean up ---------- */
 .cl { flex: 1; min-height: 0; display: flex; flex-direction: column; position: relative; }
 .cl .sum { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; padding-top: 8px; }
-.cl .card { padding: 16px 18px; border-radius: 14px; background: var(--bg2); min-width: 0; }
+.cl .card { padding: 16px; border-radius: 14px; background: var(--bg2); min-width: 0; }
 .cl .sum .card small { font-size: 12.5px; color: var(--fg3); }
 .cl .sum .card b { display: block; font-size: 28px; font-weight: 700; letter-spacing: -.03em; margin-top: 2px; font-variant-numeric: tabular-nums; }
 .cl .sum .card.hl { background: var(--sel); }
@@ -125,7 +125,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .gr { flex: 1; min-height: 0; display: flex; border-top: 1px solid var(--line); }
 .gr-side { flex: none; width: 340px; display: flex; flex-direction: column; border-right: 1px solid var(--line); min-height: 0; }
 .gr-list, .bg-list { flex: 1; min-height: 0; overflow-y: auto; outline: 0; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-.gr-item { position: absolute; left: 8px; right: 8px; display: flex; align-items: center; gap: 12px; padding: 0 12px; text-align: left; border-radius: 12px; }
+.gr-item { position: absolute; left: 8px; right: 8px; display: flex; align-items: center; gap: 12px; padding: 0 14px; text-align: left; border-radius: 12px; }
 .gr-item:hover { background: var(--bg2); }
 .gr-item.on { background: var(--sel); }
 .gr-thumbs { display: flex; align-items: center; flex: none; }
@@ -167,7 +167,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 
 /* drill-in: large files */
 .bg { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
-.bg-row { position: absolute; left: 12px; right: 12px; display: flex; align-items: center; gap: 12px; padding: 0 12px; border-radius: 12px; }
+.bg-row { position: absolute; left: 12px; right: 12px; display: flex; align-items: center; gap: 12px; padding: 0 10px; border-radius: 12px; }
 .bg-row:hover { background: var(--bg2); }
 .bg-row.on { background: var(--sel); }
 .bg-row .ic { width: 32px; height: 32px; display: grid; place-items: center; flex: none; }

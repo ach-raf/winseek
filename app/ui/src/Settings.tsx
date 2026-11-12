@@ -22,11 +22,15 @@ function parseNames(text: string): string[] {
   return text.split(/[,;\r\n]+/).map((s) => s.trim().replace(/^"(.*)"$/, "$1").replace(/^[\\/]+|[\\/]+$/g, "")).filter(Boolean);
 }
 
+/** Skipped names shown before "Show all". */
+const IG_PEEK = 28;
+
 function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [ig, setIg] = useState<IgnoreList | null>(null);
   const [filter, setFilter] = useState("");
   const [text, setText] = useState("");
   const [bad, setBad] = useState<string | null>(null);
+  const [more, setMore] = useState(false); // the full list of names is opened on request (it never scrolls inside the card)
   useEffect(() => { backend.tier1GetIgnore().then(setIg).catch(onError); }, [backend, onError]);
 
   const save = useCallback((list: string[] | null) => { backend.tier1SetIgnore(list).then(setIg).catch(onError); }, [backend, onError]);
@@ -71,13 +75,18 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
       </div>
       <div className="grow stack">
         <ul className="ig-list" aria-label="Ignored names">
-          {shown.map((n) => (
+          {(more || filter.trim() ? shown : shown.slice(0, IG_PEEK)).map((n) => (
             <li key={n} className={defaults.has(lc(n)) ? "" : "custom"} title={defaults.has(lc(n)) ? n : `${n} (added by you)`}>
               <span>{n}</span>
               <button className="ig-x" onClick={() => remove(n)} aria-label={`Stop ignoring ${n}`} title="Remove"><XIcon size={10} /></button>
             </li>
           ))}
           {ig && shown.length === 0 && <li className="none">{ig.list.length ? "No name matches the filter" : "Nothing is ignored"}</li>}
+          {!filter.trim() && shown.length > IG_PEEK && (
+            <li className="none">
+              <button className="ig-more" onClick={() => setMore((m) => !m)}>{more ? "Show fewer" : `Show all ${fmt(shown.length)}`}</button>
+            </li>
+          )}
         </ul>
       </div>
     </Grp>
@@ -501,6 +510,16 @@ const NAV: { id: SettingsSection; label: string }[] = [
   { id: "status", label: "Status" },
 ];
 
+/** A hidden catalog id ("app:d:\\games\\x\\steam.exe", "setting:bluetooth") as a name plus where it is. */
+function hiddenLabel(id: string): { name: string; where: string } {
+  const cut = id.indexOf(":");
+  const kind = cut > 0 ? id.slice(0, cut) : "";
+  const rest = cut > 0 ? id.slice(cut + 1) : id;
+  const slash = rest.lastIndexOf("\\");
+  if (slash < 0) return { name: rest, where: kind === "setting" ? "Windows setting" : kind === "cmd" || kind === "command" ? "Command" : "App" };
+  return { name: rest.slice(slash + 1).replace(/\.(exe|lnk)$/i, ""), where: rest.slice(0, slash) };
+}
+
 /** Launcher (apps / settings / commands) switches, extra program folders, hidden items, counts. */
 function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [cfg, setCfg] = useState<LaunchCfg | null>(null);
@@ -554,7 +573,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
         {cfg.folders.length > 0 && (
           <div className="glist">
             {cfg.folders.map((p) => (
-              <div className="grow frow" key={p}>
+              <div className="grow prow" key={p}>
                 <span className="fpath" title={p}>{p}</span>
                 <button className="fl-rm" onClick={() => save({ folders: cfg.folders.filter((x) => x !== p) })} aria-label={`Remove ${p}`}><XIcon /></button>
               </div>
@@ -577,12 +596,14 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
             {scanning ? "Scanning…" : "Re-scan apps"}
           </button>
         </Row>
-        {cfg.hidden.map((id) => (
-          <div className="grow frow" key={id}>
-            <span className="fpath" title={id}>{id}</span>
-            <button className="gbtn" onClick={() => save({ hidden: cfg.hidden.filter((x) => x !== id) })}>Unhide</button>
-          </div>
-        ))}
+        {cfg.hidden.map((id) => {
+          const h = hiddenLabel(id);
+          return (
+            <Row key={id} title={<>{h.name} <em>hidden from results</em></>} desc={h.where} hint={id}>
+              <button className="gbtn" onClick={() => save({ hidden: cfg.hidden.filter((x) => x !== id) })}>Unhide</button>
+            </Row>
+          );
+        })}
         <Row title="Usage history" desc="Results you pick get a boost next time. Clearing forgets that, not the catalog.">
           <button className="gbtn" onClick={() => backend.launchClearHistory().catch(onError)}>Clear</button>
         </Row>
@@ -618,11 +639,12 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   }, [section]);
   // Arrow keys walk the sidebar; the popup's global key handler skips everything inside panels.
   const navKey = (e: React.KeyboardEvent) => {
-    if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
+    const fwd = e.key === "ArrowDown" || e.key === "ArrowRight", back = e.key === "ArrowUp" || e.key === "ArrowLeft";
+    if (!fwd && !back) return;
     e.preventDefault();
     const items = Array.from(navRef.current?.querySelectorAll<HTMLElement>(".nv") ?? []);
     const at = items.indexOf(document.activeElement as HTMLElement);
-    const next = items[(at + (e.key === "ArrowDown" ? 1 : items.length - 1)) % items.length];
+    const next = items[(at + (fwd ? 1 : items.length - 1)) % items.length];
     next?.focus();
   };
   // Ctrl+1..7 jump to a section (PRD B8); the section heading takes the focus. Ctrl+F finds a setting.

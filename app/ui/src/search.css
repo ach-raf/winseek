@@ -206,7 +206,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .frow .dseg { flex: none; }
 .frow .dseg button { padding: 0 8px; }
 /* compact popup: the sort chip joins the row (780px wide), so let it wrap instead of clipping */
-.shell:not(.full) .frow { flex-wrap: wrap; row-gap: 2px; }
+.shell:not(.full) .frow { flex-wrap: nowrap; }
 
 /* ---- compact rows (full window): one line per file with a Location column, like a file manager ---- */
 .colh.dense, .shell.full .vlist.dense .row { grid-template-columns: 22px minmax(0, 1.15fr) minmax(0, 1fr) 104px 76px; }
@@ -228,3 +228,19 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* ---- rows that would not load: say so, offer the retry ---- */
 .lerr { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 10px; padding: 7px 8px 7px 12px; border-radius: 10px; background: var(--bg3); border: 1px solid var(--line); box-shadow: 0 8px 22px rgb(0 0 0 / .28); font-size: 12.5px; color: var(--fg2); white-space: nowrap; }
 .lerr button { height: 26px; padding: 0 10px; border-radius: 7px; background: var(--acc); color: var(--acc-fg, #1a1400); font-weight: 600; font-size: 12px; }
+
+/* drive scope as one chip + menu (popup, or more drives than fit as buttons) */
+.dpick { position: relative; flex: none; }
+.dpick .sortb.set { color: var(--fg); background: var(--bg3); }
+.dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: 0 14px 34px -8px rgb(0 0 0 / .5); display: flex; flex-direction: column; gap: 1px; }
+.dmenu button { height: 32px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-radius: 7px; font-size: 13px; font-weight: 500; color: var(--fg2); text-align: left; white-space: nowrap; }
+.dmenu button:hover { background: var(--bg3); color: var(--fg); }
+.dmenu button.on { color: var(--fg); font-weight: 600; background: var(--bg3); }
+.dmenu button i { font-style: normal; font-size: 12px; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
+.frow .fc { overflow: hidden; text-overflow: ellipsis; }
+
+/* the full window's page gutter (--gut, shell.css): filter pills, column heads and row content start on it */
+.shell.full .frow { padding: 0 var(--gut) 12px; }
+.shell.full .list { padding: 4px 12px 14px; }
+.shell.full .colh, .shell.full .colh.dense { padding: 8px 24px 6px var(--gut); }
+.shell.full .sh { padding-left: var(--gut); padding-right: var(--gut); }

@@ -71,7 +71,7 @@
 .settings.embedded .scont { padding: 0 32px 28px 20px; }
 /* The page is wide: cards flow into as many ~460px columns as fit, so a section fills the window
    instead of a single strip down the left with half the screen empty. */
-.settings.embedded .scols { columns: 440px; column-gap: 20px; }
+.settings.embedded .scols { columns: 380px; column-gap: 20px; }
 .settings.embedded .grp { max-width: none; break-inside: avoid; margin-bottom: 20px; }
 .settings.embedded .grp h3 { margin-top: 0; }
 .settings.embedded .scols > :not(.grp) { break-inside: avoid; }
@@ -145,11 +145,12 @@
 .addrow .nums { flex: 1; min-width: 0; color: var(--fg3); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 /* folder lists */
-.glist { max-height: 288px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; margin: 0 -16px; padding: 0 16px; }
+/* No inner scrolling: the page is the only thing that scrolls. */
+.glist { margin: 0 -16px; padding: 0 16px; }
 .glist::-webkit-scrollbar { width: 10px; }
 .glist::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
 .gcard > .glist + .grow { border-top: 1px solid var(--line); }
-.grow.frow { padding: 9px 0; gap: 12px; }
+.grow.prow { padding: 9px 0; gap: 12px; min-height: 48px; }
 .fpath { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; font-size: 13.5px; font-weight: 500; }
 .fpath span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fpath input[type="checkbox"] { accent-color: var(--acc); width: 15px; height: 15px; margin: 0; flex: none; }
@@ -160,7 +161,7 @@ div.fpath, span.fpath { display: block; overflow: hidden; text-overflow: ellipsi
 
 /* ignored names: chips */
 .ig-err { padding: 0 0 8px; }
-.ig-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; max-height: 140px; overflow-y: auto; align-content: flex-start; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.ig-list { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 5px; align-content: flex-start; }
 .ig-list li { display: inline-flex; align-items: center; gap: 2px; height: 26px; padding: 0 3px 0 10px; border-radius: 13px; background: var(--bg3); font: 12px/1 var(--mono); color: var(--fg2); max-width: 100%; }
 .ig-list li span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ig-list li.custom { color: var(--fg); box-shadow: inset 0 0 0 1px var(--acc); }
@@ -170,7 +171,7 @@ div.fpath, span.fpath { display: block; overflow: hidden; text-overflow: ellipsi
 
 /* inline code / agents */
 code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; background: var(--bg3); color: var(--fg); }
-.agent-snip { display: block; padding: 8px 10px; border-radius: 9px; background: var(--bg3); white-space: pre-wrap; word-break: break-all; max-height: 88px; overflow: auto; line-height: 1.45; }
+.agent-snip { display: block; padding: 8px 10px; border-radius: 9px; background: var(--bg3); white-space: pre-wrap; word-break: break-all; line-height: 1.45; }
 .agent-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .agent-log li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; min-width: 0; }
 .agent-log li.none { color: var(--fg3); }
@@ -205,3 +206,44 @@ code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; backgro
 .cheat-cols li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; min-width: 0; }
 .cheat-keys { flex: none; display: inline-flex; gap: 3px; min-width: 74px; }
 .cheat-label { color: var(--fg2); min-width: 0; }
+
+/* ---- full window: sections are tabs across the top (the app already has a sidebar; a second one
+   beside it squeezed the settings into a strip) ---- */
+.settings.embedded .set { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr) auto; }
+.settings.embedded .snav { grid-row: 1; grid-column: 1; flex-direction: row; gap: 4px; padding: 0 var(--gut, 22px) 12px; overflow: visible; flex-wrap: wrap; border-bottom: 1px solid var(--line); }
+.settings.embedded .snav .nv { width: auto; height: 32px; padding: 0 13px; border-radius: 8px; white-space: nowrap; }
+.settings.embedded .snav .nv.on { background: var(--fg); color: var(--bg); font-weight: 600; }
+.settings.embedded .scont { grid-column: 1; grid-row: 2; padding: 18px var(--gut, 22px) 28px; }
+.settings.embedded .set-foot { grid-column: 1; grid-row: 3; padding: 8px var(--gut, 22px) 12px; }
+.ig-more { height: 26px; padding: 0 11px; border-radius: 13px; font-size: 12px; font-weight: 600; color: var(--fg); background: none; box-shadow: inset 0 0 0 1px var(--line); }
+.ig-more:hover { background: var(--bg3); }
+
+/* rows: one rhythm. Every row is at least 56px so one-line and two-line rows sit on the same grid; notes align with the card text. */
+.grow { min-height: 56px; padding: 11px 0; }
+.grow.stack, .grow.kv, .grow.none, .grow.addrow { min-height: 0; }
+.grow.kv { padding: 12px 0; }
+.grow.none { padding: 14px 0; }
+.firstrun .gnote { margin: 8px 16px 0; }
+.grp h3 { margin: 0 0 10px; padding: 0 16px; }
+.settings.embedded .grp { margin-bottom: 24px; }
+.grow .gtxt b em { margin-left: 6px; }
+
+/* Text column: headings, tab labels, notes and the footer share the cards' inner edge (gutter + 16px); boxes share the gutter. */
+.settings.embedded .tbar h1 { margin-left: 16px; }
+.settings.embedded .snav .nv { padding: 0 16px; }
+.settings.embedded .set-foot { padding-left: calc(var(--gut, 22px) + 16px); padding-right: calc(var(--gut, 22px) + 16px); }
+
+/* small alignments: the remove glyph sits on the card's inner edge; log times never break in two */
+.fl-rm { margin-right: -7px; }
+.agent-log li > :first-child { white-space: nowrap; flex: none; }
+
+/* The scrollbar always has its lane, so cards do not shift when a section starts to scroll; right edges
+   (find box, cards, footer) share one line in the popup, and cards end on the gutter in the full window. */
+.scont { scrollbar-gutter: stable; }
+.settings:not(.embedded) .tbar { padding: 0 26px 0 14px; }
+.settings:not(.embedded) .scont { padding: 0 16px 20px 14px; }
+.settings:not(.embedded) .set-foot { padding: 8px 26px 12px 30px; }
+.settings.embedded .scont { padding-right: calc(var(--gut, 22px) - 10px); }
+
+/* setup panel: its title and intro sit on the same text column as the card headings and rows below them */
+.firstrun.setup > h2, .firstrun.setup > p { padding-left: 16px; }

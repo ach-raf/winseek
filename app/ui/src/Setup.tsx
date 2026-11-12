@@ -57,7 +57,7 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
       {known.length > 0 && (
         <div className="glist">
           {known.map((p) => (
-            <div className="grow frow" key={p}>
+            <div className="grow prow" key={p}>
               <label className="fpath" title={p}>
                 <input type="checkbox" checked={on(p)} onChange={() => toggle(p)} />
                 <span>{p}</span>

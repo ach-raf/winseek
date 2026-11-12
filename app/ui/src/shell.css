@@ -47,3 +47,7 @@
 .idx .d.tight .meter i { background: var(--warn); }
 .idx .d.tight span { color: var(--warn); font-weight: 600; }
 .idx .meter.scan i { background: var(--acc); }
+
+/* ---- one gutter for every page of the full window: titles, tabs, cards, lists and footers start on the same line ---- */
+.shell.full { --gut: 22px; }
+.shell.full .tbar { padding-left: var(--gut); }
