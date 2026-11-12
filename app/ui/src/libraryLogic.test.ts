@@ -145,3 +145,40 @@ test("moveMosaic: up/down pick the nearest tile in the next row band", () => {
   assert.equal(moveMosaic(m, mt, 100, 4, 0, "ArrowUp", 20), 0);
   assert.equal(moveMosaic(m, mt, 100, 4, 3, "ArrowRight", 20), 4);
 });
+
+test("timeline views: app graphics only in their own view", async () => {
+  const { countViews, inView, parseTimelineView } = await import("./libraryLogic.ts");
+  const items = [{ class: "photo" }, { class: "photo" }, { class: "screenshot" }, { class: "graphic" }, { class: "graphic" }, { class: "graphic" }] as const;
+  assert.deepEqual(countViews([...items]), { all: 3, photos: 2, screenshots: 1, graphics: 3 });
+  assert.equal(inView("graphic", "all"), false);
+  assert.equal(inView("screenshot", "all"), true);
+  assert.equal(inView("screenshot", "photos"), false);
+  assert.equal(inView("graphic", "graphics"), true);
+  assert.equal(parseTimelineView("screenshots"), "screenshots");
+  assert.equal(parseTimelineView("nonsense"), "all");
+  assert.equal(parseTimelineView(null), "all");
+});
+
+test("collection ideas: several phrasings each, taken names drop out", async () => {
+  const { COLLECTION_IDEAS, freshIdeas } = await import("./libraryLogic.ts");
+  for (const i of COLLECTION_IDEAS) {
+    const parts = i.query.split(",").map((p) => p.trim());
+    assert.ok(parts.length >= 2 && parts.length <= 5, `${i.name}: 2..5 phrasings (the backend searches at most 6 incl. the whole text)`);
+    assert.ok(parts.every((p) => p.split(/\s+/).length >= 2), `${i.name}: one-word parts are not searched alone`);
+  }
+  assert.equal(freshIdeas(["medical ", "FOOD"]).some((i) => i.name === "Medical" || i.name === "Food"), false);
+  assert.equal(freshIdeas([]).length, COLLECTION_IDEAS.length);
+});
+
+test("oldScreenshots: only screenshots past the age, biggest first", async () => {
+  const { oldScreenshots } = await import("./libraryLogic.ts");
+  const day = 24 * 3600 * 1000, now = 1000 * day;
+  const items = [
+    { id: "new", class: "screenshot" as const, mtime: now - 10 * day, size: 9 },
+    { id: "old-small", class: "screenshot" as const, mtime: now - 200 * day, size: 1 },
+    { id: "old-big", class: "screenshot" as const, mtime: now - 400 * day, size: 5 },
+    { id: "photo", class: "photo" as const, mtime: now - 900 * day, size: 99 },
+  ];
+  assert.deepEqual(oldScreenshots(items, now).map((i) => i.id), ["old-big", "old-small"]);
+  assert.deepEqual(oldScreenshots(items, now, 5).map((i) => i.id), ["new", "old-big", "old-small"]);
+});

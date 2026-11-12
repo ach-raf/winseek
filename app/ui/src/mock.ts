@@ -895,7 +895,11 @@ export const mockBackend: Backend = {
   async libraryImages(): Promise<LibImage[]> {
     await sleep(30);
     const live = livePaths();
-    return LIB.filter((f) => f.kind === 1 && live.has(f.path)).sort((a, b) => b.mtime - a.mtime).map((f) => ({ path: f.path, size: f.size, mtime: f.mtime }));
+    return LIB.filter((f) => f.kind === 1 && live.has(f.path)).sort((a, b) => b.mtime - a.mtime).map((f) => ({
+      path: f.path, size: f.size, mtime: f.mtime, w: f.w, h: f.h,
+      // a slice of the mock library plays the app graphics a real Documents folder is full of
+      class: hash01("g|" + f.path) < 0.18 ? "graphic" as const : f.tile?.theme === "screenshot" ? "screenshot" as const : "photo" as const,
+    }));
   },
   async libraryCollections() { return collections.map((c) => ({ ...c })); },
   async librarySetCollections(list) {
@@ -911,14 +915,15 @@ export const mockBackend: Backend = {
     collections = out;
     return out.map((c) => ({ ...c }));
   },
-  async libraryCollection(query, threshold, cap) {
+  async libraryCollection(query, threshold, cap, exclude, graphics) {
+    const gone = new Set((exclude ?? []).map((p) => p.toLowerCase()));
     const st = t1Status().state;
     if (!modelsInstalled || st === "unavailable") return { state: st === "unavailable" ? "unavailable" : "models_missing", hits: [] };
     await sleep(80 + Math.random() * 80);
     const q = query.toLowerCase();
     const want = /receipt|invoice/.test(q) ? "receipt" : /whiteboard/.test(q) ? "whiteboard" : /meme|funny/.test(q) ? "meme" : /sign|contract|form/.test(q) ? "document" : /screenshot/.test(q) ? "screenshot" : null;
     const live = livePaths();
-    const hits = LIB.filter((f) => f.kind === 1 && f.tile && live.has(f.path))
+    const hits = LIB.filter((f) => f.kind === 1 && f.tile && live.has(f.path) && !gone.has(f.path.toLowerCase()) && (graphics || hash01("g|" + f.path) >= 0.18))
       .map((f) => {
         const h = hash01(q + "|" + f.path);
         // the range real EmbeddingGemma-2 image/query cosines live in (members ~0.61-0.75, photos ~0.46-0.62)

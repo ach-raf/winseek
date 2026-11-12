@@ -116,7 +116,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     libraryImages: () => inv<LibImage[]>("library_images"),
     libraryCollections: () => inv<Collection[]>("library_collections"),
     librarySetCollections: (list) => inv<Collection[]>("library_set_collections", { list }),
-    libraryCollection: (query, threshold, cap) => inv<SemanticResult>("library_collection", { query, threshold, cap }),
+    libraryCollection: (query, threshold, cap, exclude, graphics) =>
+      inv<SemanticResult>("library_collection", { query, threshold, cap, exclude: exclude ?? [], graphics: graphics ?? false }),
     libraryDupGroups: () => inv<DupGroup[]>("library_dup_groups"),
     libraryNearStart: (threshold) => inv("library_near_start", { threshold }),
     libraryNearPoll: () => inv<NearState>("library_near_poll"),

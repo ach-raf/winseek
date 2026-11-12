@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./types";
-import { Gallery, type GallerySection, type GridItem, type LibActions } from "./Gallery";
+import { Gallery, type GallerySection, type GridExtra, type GridItem, type LibActions } from "./Gallery";
 import { baseName } from "./Semantic";
 import { kindOf } from "./format";
-import { isScreenshot } from "./libraryLogic";
+import { freshIdeas } from "./libraryLogic";
 import { IChevL, IPlus } from "./icons";
 
 interface Eval {
@@ -22,7 +22,7 @@ const CAP = 500;
 const THRESHOLD_MIN = 0.4;
 const THRESHOLD_MAX = 0.9;
 const NEW_THRESHOLD = 0.62;
-const sigOf = (c: Collection, gen: number) => `${c.query}|${c.threshold}|${gen}`;
+const sigOf = (c: Collection, gen: number) => `${c.query}|${c.threshold}|${c.graphics ? 1 : 0}|${(c.exclude ?? []).join("\n")}|${gen}`;
 
 interface Draft {
   /** Name of the collection being edited; null = new. */
@@ -30,11 +30,13 @@ interface Draft {
   name: string;
   query: string;
   threshold: number;
+  graphics: boolean;
+  exclude: string[];
 }
 
 export function Collections({ backend, images, hidden, t1, gen, epoch, actions, onError }: {
   backend: Backend;
-  /** Visible timeline images (for the name-rule collections). */
+  /** The user's own pictures, app graphics left out (for the screenshots collection). */
   images: LibImage[];
   hidden: ReadonlySet<string>;
   t1: Tier1Status | null;
@@ -64,7 +66,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
       if (sigs.current[c.name] === sig) continue;
       setEvals((m) => ({ ...m, [c.name]: { status: "loading", hits: m[c.name]?.hits ?? [], sig } }));
       try {
-        const r = await backend.libraryCollection(c.query, c.threshold, CAP);
+        const r = await backend.libraryCollection(c.query, c.threshold, CAP, c.exclude ?? [], c.graphics ?? false);
         if (run.current !== my) return;
         const off = r.state === "models_missing" || r.state === "unavailable";
         if (!off) sigs.current[c.name] = sig; // "off" is re-asked next time (the models may arrive)
@@ -87,13 +89,14 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   const sel = list?.find((c) => c.name === selName) ?? null;
 
   const shots = useMemo(
-    () => images.filter((i) => isScreenshot(baseName(i.path))),
+    () => images.filter((i) => i.class === "screenshot"),
     [images],
   );
   const hitsOf = useCallback((c: Collection): GridItem[] => {
     if (c.rule === "screenshots") return shots.map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime }));
+    const gone = new Set((c.exclude ?? []).map((p) => p.toLowerCase()));
     return (evals[c.name]?.hits ?? [])
-      .filter((h) => !hidden.has(h.path))
+      .filter((h) => !hidden.has(h.path) && !gone.has(h.path.toLowerCase()))
       .map((h) => ({
         path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null,
         score: h.score, snippet: h.snippet ?? null, page: h.page ?? null, boxes: h.boxes ?? null,
@@ -134,17 +137,38 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
 
   const ev = sel && !sel.rule ? evals[sel.name] : undefined;
 
+  // "Not in this collection": the file (and its copies) leaves for good; the strip under the header undoes the last one.
+  const [lastGone, setLastGone] = useState<{ coll: string; path: string } | null>(null);
+  useEffect(() => { setLastGone(null); }, [selName]);
+  const removeFrom = useCallback((item: GridItem) => {
+    if (!sel || sel.rule || !list) return;
+    const exclude = [...(sel.exclude ?? []).filter((p) => p.toLowerCase() !== item.path.toLowerCase()), item.path];
+    setLastGone({ coll: sel.name, path: item.path });
+    void save(list.map((c) => (c.name === sel.name ? { ...c, exclude } : c)));
+  }, [sel, list, save]);
+  const undoRemove = useCallback(() => {
+    if (!lastGone || !list) return;
+    setLastGone(null);
+    void save(list.map((c) => (c.name === lastGone.coll ? { ...c, exclude: (c.exclude ?? []).filter((p) => p !== lastGone.path) } : c)));
+  }, [lastGone, list, save]);
+  const extra: GridExtra | undefined = useMemo(
+    () => (sel && !sel.rule ? { label: "Not in this collection", key: "x", run: removeFrom } : undefined),
+    [sel, removeFrom],
+  );
+
   const emptyMsg = !sel ? null
-    : sel.rule ? <><strong>No screenshots yet</strong><span>Files named like “Screenshot (12).png” appear here.</span></>
+    : sel.rule ? <><strong>No screenshots yet</strong><span>Screen captures appear here as they are indexed.</span></>
     : ev?.status === "loading" || !ev ? <><span className="spin" aria-label="Loading" /><span>Searching…</span></>
     : ev.status === "off" ? <><strong>Search by meaning is not set up</strong><span>Download the models in the popup (Ctrl+,) and this collection fills itself.</span></>
     : ev.status === "error" ? <><strong>Could not search</strong><span>{ev.error}</span></>
-    : <><strong>Nothing matches yet</strong><span>Lower the strictness, or wait for indexing to reach more photos.</span></>;
+    : <><strong>Nothing matches yet</strong><span>Lower the strictness, or describe it another way: several short phrases separated by commas work better than one long sentence.</span></>;
 
   const count = (c: Collection) => {
     if (c.rule === "screenshots") return shots.length;
     const e = evals[c.name];
-    return e && e.status === "ready" ? e.hits.filter((h) => !hidden.has(h.path)).length : null;
+    if (!e || e.status !== "ready") return null;
+    const gone = new Set((c.exclude ?? []).map((p) => p.toLowerCase()));
+    return e.hits.filter((h) => !hidden.has(h.path) && !gone.has(h.path.toLowerCase())).length;
   };
 
   const submit = async () => {
@@ -152,6 +176,10 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     const c: Collection = { name: draft.name, query: draft.query, threshold: draft.threshold };
     const old = draft.orig ? list.find((x) => x.name === draft.orig) : undefined;
     if (old?.rule) c.rule = old.rule;
+    else {
+      if (draft.graphics) c.graphics = true;
+      if (draft.exclude.length) c.exclude = draft.exclude;
+    }
     const next = draft.orig ? list.map((x) => (x.name === draft.orig ? c : x)) : [...list, c];
     if (await save(next)) { setSelName(c.name.trim()); setDraft(null); }
   };
@@ -161,8 +189,11 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     if (await save(list.filter((c) => c.name !== sel.name))) { setSelName(null); setConfirmDel(false); }
   };
 
-  const newCollection = () => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD }); setFormErr(null); };
-  const editCollection = (c: Collection) => { setDraft({ orig: c.name, name: c.name, query: c.query, threshold: c.threshold }); setFormErr(null); };
+  const newCollection = () => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD, graphics: false, exclude: [] }); setFormErr(null); };
+  const editCollection = (c: Collection) => {
+    setDraft({ orig: c.name, name: c.name, query: c.query, threshold: c.threshold, graphics: c.graphics ?? false, exclude: c.exclude ?? [] });
+    setFormErr(null);
+  };
 
   const gridRef = useRef<HTMLDivElement>(null);
   // The card grid is a keyboard widget: arrows move between cards, Enter opens one, Ctrl+N starts a new collection.
@@ -200,19 +231,21 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   const peek = (c: Collection): GridItem[] => {
     if (c.rule === "screenshots") return shots.slice(0, 4).map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime }));
     const out: GridItem[] = [];
+    const gone = new Set((c.exclude ?? []).map((p) => p.toLowerCase()));
     for (const h of evals[c.name]?.hits ?? []) {
-      if (hidden.has(h.path)) continue;
+      if (hidden.has(h.path) || gone.has(h.path.toLowerCase())) continue;
       out.push({ path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null });
       if (out.length === 4) break;
     }
     return out;
   };
-  const blurb = (c: Collection) => (c.rule === "screenshots" ? "Files whose name looks like a screenshot" : c.query);
+  const blurb = (c: Collection) => (c.rule === "screenshots" ? "Everything captured from a screen" : c.query);
 
   const embedded = t1?.stats?.done;
   const back = () => { setSelName(null); setDraft(null); setFormErr(null); };
 
   if (draft) {
+    const ideas = draft.orig ? [] : freshIdeas(list?.map((c) => c.name) ?? []);
     return (
       <div className="page-body co">
         <form className="co-form" onSubmit={(e) => { e.preventDefault(); void submit(); }}
@@ -221,10 +254,30 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           <label>Name<input autoFocus value={draft.name} maxLength={60} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Receipts" /></label>
           {!(draft.orig && list?.find((c) => c.name === draft.orig)?.rule) && (
             <>
-              <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a photo of a paper receipt" /></label>
+              <label>Describe what to find<input value={draft.query} onChange={(e) => setDraft({ ...draft, query: e.target.value })} placeholder="a paper receipt, an invoice, a utility bill" />
+                <small>Name things you could see in the picture. Several kinds? Separate them with commas: each one is searched on its own.</small>
+              </label>
+              {ideas.length > 0 && (
+                <div className="co-ideas" role="group" aria-label="Ideas">
+                  {ideas.map((i) => (
+                    <button type="button" key={i.name} className={"co-idea" + (draft.query === i.query ? " on" : "")} title={i.query}
+                            onClick={() => setDraft({ ...draft, name: i.name, query: i.query })}>{i.name}</button>
+                  ))}
+                </div>
+              )}
               <label>Strictness: <b>{draft.threshold.toFixed(2)}</b>
                 <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={draft.threshold} onChange={(e) => setDraft({ ...draft, threshold: Number(e.target.value) })} />
               </label>
+              <label className="co-check">
+                <input type="checkbox" checked={draft.graphics} onChange={(e) => setDraft({ ...draft, graphics: e.target.checked })} />
+                <span>Include icons and app graphics<small>Off: only your photos, screenshots and documents.</small></span>
+              </label>
+              {draft.exclude.length > 0 && (
+                <div className="co-gone">
+                  <span>You removed {draft.exclude.length.toLocaleString("en-US")} file{draft.exclude.length === 1 ? "" : "s"} from this collection.</span>
+                  <button type="button" className="btn sm" onClick={() => setDraft({ ...draft, exclude: [] })}>Let them back in</button>
+                </div>
+              )}
             </>
           )}
           {formErr && <div className="co-err" role="alert">{formErr}</div>}
@@ -244,7 +297,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           <button className="btn co-back" onClick={back} title="Back to collections (Esc)"><IChevL size={14} />Collections</button>
           <div className="co-title">
             <h2>{sel.name}</h2>
-            <p>{sel.rule === "screenshots" ? "Files whose name looks like a screenshot." : `“${sel.query}”`}</p>
+            <p title={sel.rule ? undefined : sel.query}>{sel.rule === "screenshots" ? "Everything captured from a screen." : `“${sel.query}”`}</p>
           </div>
           {!sel.rule && (
             <label className="co-thr" title="How far a file must stand out from your library to belong here (the calibrated gate search uses). Higher = fewer, closer fits.">
@@ -265,8 +318,14 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           </div>
         </header>
         {formErr && <div className="co-err" role="alert">{formErr}</div>}
+        {lastGone && lastGone.coll === sel.name && (
+          <div className="co-undo" role="status">
+            <span>Removed “{baseName(lastGone.path)}” from {sel.name}. It will not come back.</span>
+            <button className="btn sm" onClick={undoRemove}>Undo</button>
+          </div>
+        )}
         <div className="co-grid">
-          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} preview />
+          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} preview extra={extra} noun="item" />
         </div>
       </div>
     );
@@ -297,7 +356,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
         </button>
       </div>
       {formErr && <div className="co-err" role="alert">{formErr}</div>}
-      <p className="co-note">Each collection is a saved search by meaning. {embedded !== undefined && `${embedded.toLocaleString("en-US")} photos understood so far; collections refresh as indexing goes on.`}</p>
+      <p className="co-note">Each collection is a saved description: winseek keeps it filled from your photos, screenshots and documents (icons and app graphics stay out). Press X on anything that does not belong and it stays out. {embedded !== undefined && `${embedded.toLocaleString("en-US")} files understood so far.`}</p>
     </div>
   );
 }

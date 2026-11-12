@@ -326,14 +326,24 @@ export interface LibImage {
   size: number;
   /** Modified time, unix ms. */
   mtime: number;
+  /** Pixel size; 0 when the file could not be read. */
+  w: number;
+  h: number;
+  /** "graphic" = app / game / web assets (icons, logos, sprites): hidden unless asked for. */
+  class: ImgClass;
 }
+export type ImgClass = "photo" | "screenshot" | "graphic";
 /** A saved semantic query. `rule: "screenshots"` selects by file name instead of by meaning. */
 export interface Collection {
   name: string;
   query: string;
-  /** Minimum cosine score for a file to belong. */
+  /** Strictness dial (0.4 loose .. 0.9 strict). */
   threshold: number;
   rule?: "screenshots" | null;
+  /** Files removed from the collection by hand (full paths); their copies stay out too. */
+  exclude?: string[];
+  /** Also let icons and app graphics in. */
+  graphics?: boolean;
 }
 export interface DupMember {
   path: string;
@@ -469,8 +479,8 @@ export interface Backend {
   libraryCollections(): Promise<Collection[]>;
   /** Validates and saves the list; resolves to what was stored. */
   librarySetCollections(list: Collection[]): Promise<Collection[]>;
-  /** Best matches of a phrase with score >= threshold (at most `cap`, <= 500). */
-  libraryCollection(query: string, threshold: number, cap: number): Promise<SemanticResult>;
+  /** What belongs to a description at this strictness (at most `cap`, <= 500), minus `exclude`. */
+  libraryCollection(query: string, threshold: number, cap: number, exclude?: string[], graphics?: boolean): Promise<SemanticResult>;
   /** Byte-identical files (same content hash), biggest saving first. */
   libraryDupGroups(): Promise<DupGroup[]>;
   /** Start (or restart) the background near-duplicate scan. */

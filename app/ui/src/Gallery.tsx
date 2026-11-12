@@ -43,6 +43,14 @@ export interface LibActions {
   recycle(paths: string[]): Promise<void>;
 }
 
+/** One more thing a grid can do with the selected file (a collection's "Not in this collection"). */
+export interface GridExtra {
+  label: string;
+  /** Single key, shown as the hint (matched case-insensitively). */
+  key: string;
+  run(item: GridItem): void;
+}
+
 const toHit = (i: GridItem): Hit => ({ name: i.name, path: i.path, is_dir: false, size: i.size, mtime: i.mtime });
 
 /** Everything that is not a picture / video: its name stays visible on the tile (a wall of
@@ -62,7 +70,7 @@ function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: nu
 /** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized.
  *  `preview` = the search-style preview pane on the right, open by default (collections); Space collapses
  *  and reopens it, and an empty pane shows a hint instead of vanishing. */
-export function Gallery({ backend, sections, rail, actions, empty, preview = false }: {
+export function Gallery({ backend, sections, rail, actions, empty, preview = false, extra, noun = "photo" }: {
   backend: Backend;
   sections: GallerySection[];
   /** Year / month rail on the right (timeline). */
@@ -70,6 +78,9 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   actions: LibActions;
   empty: React.ReactNode;
   preview?: boolean;
+  extra?: GridExtra;
+  /** What one item is called in the count ("photo", "item"). */
+  noun?: string;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -166,6 +177,9 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
       case "Escape": if (pvOpen) { e.preventDefault(); setPvOpen(false); } break;
       case "Enter": if (cur) { e.preventDefault(); actions.open(cur.path); } break;
       case "Delete": if (cur) { e.preventDefault(); actions.recycle([cur.path]); } break;
+      default:
+        if (extra && cur && e.key.toLowerCase() === extra.key.toLowerCase()) { e.preventDefault(); extra.run(cur); }
+        break;
       case "F10": if (e.shiftKey && cur) { e.preventDefault(); const r = root.current!.getBoundingClientRect(); actions.menu(cur.path, r.left + 80, r.top + 80); } break;
     }
   };
@@ -234,7 +248,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
           </div>
         </div>
         <div className="lg-info" aria-live="polite">
-          <span>{flat.length.toLocaleString("en-US")} photo{flat.length === 1 ? "" : "s"}</span>
+          <span>{flat.length.toLocaleString("en-US")} {noun}{flat.length === 1 ? "" : "s"}</span>
           {cur && (
             <span className="lg-cur" title={cur.path}>
               {cur.name}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}
@@ -242,9 +256,14 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
           )}
           <span className="sp" />
           <span className="hints">
+            {extra && cur && (
+              <button className="lg-act" tabIndex={-1} onClick={() => { extra.run(cur); root.current?.focus({ preventScroll: true }); }}>
+                <kbd>{extra.key.toUpperCase()}</kbd> {extra.label}
+              </button>
+            )}
             <span><kbd>Space</kbd> Preview</span>
             <span><kbd>↵</kbd> Open</span>
-            <span><kbd>Ctrl ↵</kbd> Reveal</span>
+            {!extra && <span><kbd>Ctrl ↵</kbd> Reveal</span>}
             <span><kbd>Del</kbd> Recycle</span>
           </span>
         </div>

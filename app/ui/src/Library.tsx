@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, LibImage, VolumeStatus } from "./types";
+import { TIMELINE_VIEWS, countViews, inView, parseTimelineView, type TimelineView } from "./libraryLogic";
 import { Gallery, type GallerySection, type LibActions } from "./Gallery";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
@@ -69,6 +70,14 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const [loadErr, setLoadErr] = useState<string | null>(null);
   // Files sent to the Recycle Bin from here. They vanish from every list at once; an undo brings them back.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
+  // What the timeline shows: your pictures by default; app graphics only when asked for.
+  const [tlView, setTlViewRaw] = useState<TimelineView>(() => {
+    try { return parseTimelineView(localStorage.getItem("winseek.timelineView")); } catch { return "all"; }
+  });
+  const setTlView = useCallback((v: TimelineView) => {
+    setTlViewRaw(v);
+    try { localStorage.setItem("winseek.timelineView", v); } catch { /* remembered only when storage works */ }
+  }, []);
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
@@ -195,12 +204,16 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   }, [tab]);
 
   const visible = useMemo(() => (images ?? []).filter((i) => !hidden.has(i.path)), [images, hidden]);
+  // Your own pictures: what collections and clean-up work on (app graphics are never offered there).
+  const personal = useMemo(() => visible.filter((i) => i.class !== "graphic"), [visible]);
+  const viewCounts = useMemo(() => countViews(visible), [visible]);
+  const shown = useMemo(() => visible.filter((i) => inView(i.class, tlView)), [visible, tlView]);
   const sections: GallerySection[] = useMemo(
-    () => groupByMonth(visible).map((s) => ({
+    () => groupByMonth(shown).map((s) => ({
       key: s.key, label: s.label, year: s.year, month: s.month,
       items: s.items.map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime })),
     })),
-    [visible],
+    [shown],
   );
 
   const emptyTimeline = images === null
@@ -209,10 +222,14 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
       ? <><strong>Could not read the photo index</strong><span>{loadErr}</span></>
       : t1?.state === "models_missing"
         ? <><strong>Nothing indexed yet</strong><span>Photos appear here once search by meaning is set up (Ctrl+, in the popup).</span></>
-        : <><strong>No photos indexed yet</strong><span>Pictures, Desktop and Downloads are indexed in the background; they show up as they are read.</span></>;
+        : visible.length > 0
+          ? <><strong>Nothing in this view</strong><span>{tlView === "graphics" ? "No icons or app graphics were found in your folders." : "Switch the view above to see what else was indexed."}</span></>
+          : <><strong>No photos indexed yet</strong><span>Pictures, Desktop and Downloads are indexed in the background; they show up as they are read.</span></>;
 
   const sub = tab === "timeline"
-    ? (images === null ? "" : `${visible.length.toLocaleString("en-US")} photos and videos`)
+    ? (images === null ? "" : tlView === "graphics"
+      ? `${shown.length.toLocaleString("en-US")} icons and app graphics`
+      : `${shown.length.toLocaleString("en-US")} ${tlView === "screenshots" ? "screenshots" : tlView === "photos" ? "photos" : "photos and screenshots"}`)
     : SUBS[tab];
 
   const onPage = (p: Page) => {
@@ -228,14 +245,23 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         <h1>{TITLES[tab]}</h1>
         {sub && <span className="hsub">{sub}</span>}
         <span className="sp" />
+        {tab === "timeline" && images !== null && visible.length > 0 && (
+          <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
+            {TIMELINE_VIEWS.map((v) => (
+              <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
+                {v.label}<i>{viewCounts[v.id].toLocaleString("en-US")}</i>
+              </button>
+            ))}
+          </div>
+        )}
         {chrome}
       </div>
       <main className="lib-body">
         {tab === "timeline" && <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} />}
         {tab === "collections" && (
-          <Collections backend={backend} images={visible} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} />
+          <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} />
         )}
-        {tab === "cleanup" && <Cleanup backend={backend} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} />}
+        {tab === "cleanup" && <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} />}
       </main>
       {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
       {toast && (

@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, DupGroup, DupMember, Hit, NearState } from "./types";
+import type { Backend, DupGroup, DupMember, Hit, LibImage, NearState } from "./types";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { baseName } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
-import { freedBytes, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
+import { OLD_SHOT_DAYS, freedBytes, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
 import { IChevL, ICheck } from "./icons";
 
-type View = "home" | "exact" | "similar" | "large";
+type View = "home" | "exact" | "similar" | "large" | "shots";
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const NEAR_THRESHOLD = 0.95;
 const BIG_N = 200;
@@ -30,8 +30,10 @@ const dirName = (p: string) => {
   return parts.length >= 2 ? parts[parts.length - 2] : parts[0] ?? "";
 };
 
-export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
+export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError }: {
   backend: Backend;
+  /** The user's own pictures (app graphics left out, recycled files already gone). */
+  images: LibImage[];
   hidden: ReadonlySet<string>;
   actions: LibActions;
   epoch: number;
@@ -57,6 +59,10 @@ export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
 
   const vis = useMemo(() => (groups ? visibleGroups(groups, hidden) : null), [groups, hidden]);
   const rows = useMemo(() => (files ? files.filter((f) => !hidden.has(f.path)) : null), [files, hidden]);
+  const shots: Hit[] = useMemo(
+    () => oldScreenshots(images, Date.now()).map((i) => ({ name: baseName(i.path), path: i.path, is_dir: false, size: i.size, mtime: i.mtime })),
+    [images],
+  );
 
   // Esc inside a drill-in goes back to the overview (the window-level handler in Library yields to a handled key).
   useEffect(() => {
@@ -97,11 +103,27 @@ export function Cleanup({ backend, hidden, actions, epoch, gen, onError }: {
     return <div className="cl"><Similar backend={backend} hidden={hidden} actions={actions} epoch={epoch} onError={onError} bar={bar} /></div>;
   }
   if (view === "large") {
-    return <div className="cl"><Large backend={backend} rows={rows} actions={actions} bar={bar} /></div>;
+    return (
+      <div className="cl">
+        <Large backend={backend} rows={rows} actions={actions} bar={bar} title="Large and untouched" thumbs={false}
+               summary={(n, total) => `The ${n} largest files in your profile · ${formatSize(total)} together`}
+               empty={<><strong>No large files to show</strong><span>The list comes from the name service; it may not be running.</span></>} />
+      </div>
+    );
+  }
+  if (view === "shots") {
+    return (
+      <div className="cl">
+        <Large backend={backend} rows={shots} actions={actions} bar={bar} title="Old screenshots" thumbs
+               summary={(n, total) => `${n.toLocaleString("en-US")} screenshots older than ${Math.round(OLD_SHOT_DAYS / 30)} months · ${formatSize(total)} together`}
+               empty={<><strong>No old screenshots</strong><span>Screen captures older than {Math.round(OLD_SHOT_DAYS / 30)} months show up here.</span></>} />
+      </div>
+    );
   }
   return (
     <Home
-      backend={backend} groups={vis} rows={rows} actions={actions}
+      backend={backend} groups={vis} rows={rows} shots={shots} actions={actions}
+      onShots={() => setView("shots")}
       onReview={(id) => { setOpenGroup(id); setView("exact"); }}
       onSimilar={() => setView("similar")}
       onLarge={() => setView("large")}
@@ -120,10 +142,12 @@ interface PickRow {
   path: string;
 }
 
-function Home({ backend, groups, rows, actions, onReview, onSimilar, onLarge }: {
+function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLarge, onShots }: {
   backend: Backend;
   groups: DupGroup[] | null;
   rows: Hit[] | null;
+  shots: Hit[];
+  onShots: () => void;
   actions: LibActions;
   onReview: (id: string) => void;
   onSimilar: () => void;
@@ -168,7 +192,17 @@ function Home({ backend, groups, rows, actions, onReview, onSimilar, onLarge }: 
     path: f.path,
   })), [rows, backend]);
 
-  // What a pick means: a duplicates row = everything but the kept copy; a large-file row = that file.
+  const shotRows: PickRow[] = useMemo(() => shots.slice(0, HOME_ROWS).map((f) => ({
+    key: "s:" + f.path,
+    name: f.name,
+    sub: `${f.mtime ? `${formatDate(f.mtime)} · ` : ""}${dirName(f.path)}`,
+    right: formatSize(f.size),
+    icon: <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={96} cls="ic" />,
+    path: f.path,
+  })), [shots, backend]);
+  const shotTotal = useMemo(() => shots.reduce((a, f) => a + (f.size ?? 0), 0), [shots]);
+
+  // What a pick means: a duplicates row = everything but the kept copy; a large-file / screenshot row = that file.
   const live = useMemo(() => {
     const paths: string[] = [];
     let freed = 0, n = 0;
@@ -185,8 +219,14 @@ function Home({ backend, groups, rows, actions, onReview, onSimilar, onLarge }: 
       freed += f.size ?? 0;
       n++;
     }
+    for (const f of shots) {
+      if (!picked.has("s:" + f.path)) continue;
+      paths.push(f.path);
+      freed += f.size ?? 0;
+      n++;
+    }
     return { paths, freed, n };
-  }, [picked, groups, rows, dupInfo]);
+  }, [picked, groups, rows, shots, dupInfo]);
 
   const toggle = useCallback((key: string) => setPicked((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; }), []);
 
@@ -244,6 +284,21 @@ function Home({ backend, groups, rows, actions, onReview, onSimilar, onLarge }: 
               {rows !== null && rows.length > 0 && rows.length <= HOME_ROWS && <button className="btn sm" onClick={onLarge}>Open list</button>}
             </div>
           </section>
+          {shots.length > 0 && (
+            <section className="card">
+              <h4>Old screenshots<span>{shots.length.toLocaleString("en-US")} older than {Math.round(OLD_SHOT_DAYS / 30)} months · {formatSize(shotTotal)}</span></h4>
+              <PickList
+                label="Old screenshots" rows={shotRows} picked={picked}
+                onToggle={toggle}
+                onOpen={(r) => actions.open(r.path)}
+                onDelete={(r) => void actions.recycle([r.path])}
+                onMenu={(r, x, y) => actions.menu(r.path, x, y)}
+              />
+              <div className="cl-foot">
+                <button className="btn sm" onClick={onShots}>{shots.length > HOME_ROWS ? `See all ${shots.length.toLocaleString("en-US")}` : "Open list"}</button>
+              </div>
+            </section>
+          )}
         </div>
       </div>
       {live.n > 0 && (
@@ -602,9 +657,14 @@ function Pane({ backend, c, role, badge, other, actions }: {
 
 const BIG_H = 58;
 
-function Large({ backend, rows, actions, bar }: {
+function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
   backend: Backend; rows: Hit[] | null; actions: LibActions;
   bar: (title: string, summary: string, extra?: React.ReactNode) => React.ReactNode;
+  title: string;
+  summary: (n: number, totalBytes: number) => string;
+  empty: React.ReactNode;
+  /** Picture thumbnails instead of file-type icons. */
+  thumbs: boolean;
 }) {
   const [sel, setSel] = useState(0);
   const [top, setTop] = useState(0);
@@ -622,10 +682,8 @@ function Large({ backend, rows, actions, bar }: {
   const n = rows?.length ?? 0;
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, n - 1))); }, [n]);
 
-  if (rows === null) return <>{bar("Large and untouched", "")}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
-  if (rows.length === 0) {
-    return <>{bar("Large and untouched", "")}<div className="lg-empty"><strong>No large files to show</strong><span>The list comes from the name service; it may not be running.</span></div></>;
-  }
+  if (rows === null) return <>{bar(title, "")}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
+  if (rows.length === 0) return <>{bar(title, "")}<div className="lg-empty">{empty}</div></>;
   const total = rows.reduce((a, f) => a + (f.size ?? 0), 0);
   const [from, to] = uniformRange(rows.length, BIG_H, top, h);
   const cur = rows[sel];
@@ -645,9 +703,9 @@ function Large({ backend, rows, actions, bar }: {
 
   return (
     <>
-      {bar("Large and untouched", `The ${rows.length} largest files in your profile · ${formatSize(total)} together`)}
+      {bar(title, summary(rows.length, total))}
       <div className="bg">
-        <div className="bg-list" ref={box} tabIndex={0} data-autofocus onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label="Large files">
+        <div className="bg-list" ref={box} tabIndex={0} data-autofocus onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label={title}>
           <div style={{ height: rows.length * BIG_H, position: "relative" }}>
             {rows.slice(from, to).map((f, k) => {
               const i = from + k;
@@ -656,7 +714,9 @@ function Large({ backend, rows, actions, bar }: {
                 <div key={f.path} role="option" aria-selected={i === sel} className={"bg-row" + (i === sel ? " on" : "")} style={{ top: i * BIG_H, height: BIG_H }}
                      onClick={() => setSel(i)} onDoubleClick={() => actions.open(f.path)}
                      onContextMenu={(e) => { e.preventDefault(); setSel(i); actions.menu(f.path, e.clientX, e.clientY); }}>
-                  <span className="ic"><FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} /></span>
+                  {thumbs
+                    ? <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={96} cls="ic" />
+                    : <span className="ic"><FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} /></span>}
                   <span className="bg-name"><b title={f.name}>{f.name}</b><span className="bg-path" title={f.path}>{head}{tail}</span></span>
                   <span className="bg-size">{formatSize(f.size)}</span>
                   <span className="bg-date">{formatDate(f.mtime)}</span>

@@ -312,3 +312,76 @@ export function freedBytes(members: { size: number }[], keep: number): number {
 export function totalReclaimable(groups: { reclaimable: number }[]): number {
   return groups.reduce((a, g) => a + g.reclaimable, 0);
 }
+
+// ---- timeline views ---------------------------------------------------------------------------------------
+
+export type TimelineView = "all" | "photos" | "screenshots" | "graphics";
+type ImgClassName = "photo" | "screenshot" | "graphic";
+
+/** "all" is everything of yours: photos and screenshots. App graphics only show in their own view. */
+export const TIMELINE_VIEWS: { id: TimelineView; label: string; hint: string }[] = [
+  { id: "all", label: "All", hint: "Your photos and screenshots" },
+  { id: "photos", label: "Photos", hint: "Camera pictures and saved images" },
+  { id: "screenshots", label: "Screenshots", hint: "Screen captures" },
+  { id: "graphics", label: "App graphics", hint: "Icons, logos and other images that came with apps and games. Hidden everywhere else." },
+];
+
+export function parseTimelineView(s: string | null | undefined): TimelineView {
+  return TIMELINE_VIEWS.some((v) => v.id === s) ? (s as TimelineView) : "all";
+}
+
+export function inView(cls: ImgClassName, view: TimelineView): boolean {
+  switch (view) {
+    case "all": return cls !== "graphic";
+    case "photos": return cls === "photo";
+    case "screenshots": return cls === "screenshot";
+    case "graphics": return cls === "graphic";
+  }
+}
+
+export function countViews(items: { class: ImgClassName }[]): Record<TimelineView, number> {
+  const out: Record<TimelineView, number> = { all: 0, photos: 0, screenshots: 0, graphics: 0 };
+  for (const i of items) {
+    if (i.class === "graphic") out.graphics++;
+    else { out.all++; if (i.class === "photo") out.photos++; else out.screenshots++; }
+  }
+  return out;
+}
+
+// ---- collections: ready-made ideas ------------------------------------------------------------------------
+
+export interface CollectionIdea {
+  name: string;
+  /** Several phrasings, comma-separated: each one is searched on its own. */
+  query: string;
+}
+
+/** Descriptions that work well with the search model: concrete things one can see, a few phrasings each. */
+export const COLLECTION_IDEAS: CollectionIdea[] = [
+  { name: "Medical", query: "a medical document, a doctor's prescription, a lab test result, a vaccination certificate, an x-ray or medical scan" },
+  { name: "IDs and passports", query: "an identity card, a passport page, a driving licence, a residence permit" },
+  { name: "Bills and invoices", query: "an invoice, a utility bill, a paper receipt, a bank statement" },
+  { name: "Tickets and bookings", query: "a boarding pass, a train or concert ticket, a hotel booking confirmation" },
+  { name: "Handwritten notes", query: "a handwritten note, a page of handwriting, a whiteboard with notes" },
+  { name: "Maps and directions", query: "a map, a screenshot of a navigation app, a floor plan" },
+  { name: "Charts and tables", query: "a chart or graph, a spreadsheet table, a dashboard with statistics" },
+  { name: "Chats", query: "a screenshot of a chat conversation, a text message thread" },
+  { name: "Pets", query: "a photo of a dog, a photo of a cat, a pet animal at home" },
+  { name: "Food", query: "a photo of a meal, a plate of food, a restaurant menu" },
+];
+
+/** Ideas whose name is not taken yet. */
+export function freshIdeas(taken: string[]): CollectionIdea[] {
+  const have = new Set(taken.map((n) => n.trim().toLowerCase()));
+  return COLLECTION_IDEAS.filter((i) => !have.has(i.name.toLowerCase()));
+}
+
+// ---- clean-up: old screenshots ----------------------------------------------------------------------------
+
+export const OLD_SHOT_DAYS = 180;
+
+/** Screenshots not touched for `days`, biggest first. */
+export function oldScreenshots<T extends { class: ImgClassName; mtime: number; size: number }>(items: T[], now: number, days = OLD_SHOT_DAYS): T[] {
+  const before = now - days * 24 * 3600 * 1000;
+  return items.filter((i) => i.class === "screenshot" && i.mtime < before).sort((a, b) => b.size - a.size);
+}
