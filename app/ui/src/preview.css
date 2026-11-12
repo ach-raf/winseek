@@ -1,51 +1,60 @@
 /* ===== preview pane (v4): .pv and everything inside it ===== */
 .pv {
   flex: 1; min-width: 0; min-height: 0; width: 100%; height: 100%;
-  display: flex; flex-direction: column; padding: 18px 20px 20px;
+  display: flex; flex-direction: column; padding: 16px 18px 16px;
   border-left: 1px solid var(--line); overflow: auto; background: var(--bg);
   animation: fade 160ms var(--ease);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
 }
-/* One centred column; wide (Quick Look) panes cap it. */
-.pv-col { flex: 1 0 auto; display: flex; flex-direction: column; gap: 16px; width: 100%; max-width: 720px; margin: 0 auto; min-width: 0; }
-.pv h2 { margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.015em; line-height: 1.25; word-break: break-word; }
+/* One centred column; wide (Quick Look) panes cap it. The column is a fixed skeleton: the stage
+ * flexes, everything below it keeps its height across selections, so nothing jumps around. */
+.pv-col { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 720px; margin: 0 auto; min-width: 0; }
+.pv h2 {
+  margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.015em; line-height: 1.25;
+  overflow-wrap: anywhere; /* the full filename, wrapped — never clipped */
+  display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; min-height: calc(2 * 1.25em);
+}
+/* The Quick Look pane is as wide as the results area: names fit one line there. */
+.cols.ql > .pv h2 { min-height: 1.25em; }
 .pv .kind { font-size: 13px; color: var(--fg-3); margin-top: 3px; }
 .pv-title { min-width: 0; }
 
-/* stage */
+/* stage: whatever room is left after the fixed rows below it (no aspect ratio — a photo must not
+ * resize the column when the next selection is a document) */
 .pbox {
-  position: relative; flex: none; aspect-ratio: 4 / 3; border-radius: 12px; overflow: hidden; background: var(--bg2);
+  position: relative; flex: 1 1 0; min-height: 100px; border-radius: 12px; overflow: hidden; background: var(--bg2);
   display: grid; place-items: center; box-shadow: inset 0 0 0 1px var(--line); transition: opacity 120ms;
 }
-.pbox.tall { aspect-ratio: 4 / 5; }
-.pbox.stale { opacity: .55; }
+.pbox.stale, .meta.stale, .pv-parse.stale { opacity: .55; }
 .pv-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg-3); font-size: 13px; padding: 16px; text-align: center; }
 
 /* breadcrumbs */
-.crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; font-size: 12.5px; color: var(--fg-2); min-width: 0; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 2px 4px; align-items: center; align-content: flex-start; font-size: 12.5px; line-height: 1.5; color: var(--fg-2); min-width: 0; max-height: 3em; overflow: hidden; }
 .crumbs .cr { display: inline-flex; align-items: center; gap: 4px; }
 .crumbs b { font-weight: 600; color: var(--fg); padding: 2px 7px; border-radius: 6px; background: var(--bg3); }
 .crumbs i { font-style: normal; color: var(--fg-3); }
 
-/* why it is here */
-.whyb { padding: 12px 14px; border-radius: 12px; background: var(--sel); font-size: 14px; line-height: 1.4; color: var(--fg); }
+/* why it is here (bounded: a long snippet must not push the facts around) */
+.whyb { padding: 12px 14px; border-radius: 12px; background: var(--sel); font-size: 14px; line-height: 1.4; color: var(--fg); max-height: 6em; overflow: hidden; }
 .whyb b { display: block; font-size: 12px; font-weight: 600; color: var(--fg-2); margin-bottom: 3px; }
 
-/* facts */
-.meta { display: grid; margin: 0; }
-.meta > div { display: flex; justify-content: space-between; gap: 16px; padding: 8px 0; font-size: 13px; border-top: 1px solid var(--line); }
+/* facts: as many per row as the pane's width allows (the drive letter is already the first crumb;
+ * EXIF "None" / GPS "No" are not rows) */
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); column-gap: 18px; margin: 0; }
+.meta > div { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; min-width: 0; border-top: 1px solid var(--line); }
+.meta > div.wide { grid-column: 1 / -1; }
 .meta dt { color: var(--fg-3); flex: none; }
 .meta dd { margin: 0; font-weight: 500; text-align: right; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
 
 /* buttons */
 .pv .btn {
-  height: 38px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  height: 36px; padding: 0 12px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
   border: 0; border-radius: 10px; font-size: 13.5px; font-weight: 600; background: var(--bg3); color: var(--fg); white-space: nowrap;
 }
 .pv .btn:hover:not(:disabled) { filter: brightness(.97); }
 .pv .btn:active:not(:disabled) { filter: brightness(.93); }
 .pv .btn:disabled { opacity: .45; }
-.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: auto; padding-top: 4px; }
+.btns { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; padding-top: 4px; }
 .pv .btn.pri { grid-column: 1 / -1; height: 42px; background: var(--acc); color: var(--acc-ink); font-size: 14.5px; }
 .pv .btn.pri:hover:not(:disabled) { filter: brightness(1.07); }
 .pv .btn.pri kbd { background: color-mix(in oklab, var(--acc-ink) 14%, transparent); color: var(--acc-ink); }

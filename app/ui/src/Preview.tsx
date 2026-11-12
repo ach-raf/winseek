@@ -3,7 +3,7 @@ import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, coverScale, crumbParts, driveOf, extOf, fitScale, kindLabel, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, coverScale, crumbParts, extOf, fitScale, kindLabel, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -92,8 +92,11 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
 
   const shown = info && info.path === hit.path ? info : null;
   const stale = loading && !!info;
-  const kind = (shown ?? info)?.kind ?? null;
-  const tall = kind === "pdf" || kind === "text" || kind === "document";
+  // While the next file's info is on its way, the previous facts stay (dimmed): the column below
+  // the stage keeps its height, so moving through a list never bounces the layout around.
+  const lastShown = useRef<PreviewInfo | null>(null);
+  if (shown) lastShown.current = shown;
+  const metaInfo = shown ?? (stale ? lastShown.current : null);
   const label = kindLabel(shown?.kind ?? null, shown?.ext ?? extOf(hit.name), hit.is_dir);
   const crumbs = crumbParts(hit.path, hit.is_dir);
   const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
@@ -101,7 +104,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
   return (
     <aside className="pv" aria-label={`Preview of ${hit.name}`}>
       <div className="pv-col">
-        <div className={"pbox" + (tall ? " tall" : "") + (stale ? " stale" : "")}>
+        <div className={"pbox" + (stale ? " stale" : "")}>
           {err ? (
             <div className="pv-msg" role="alert">{err}</div>
           ) : info ? (
@@ -123,10 +126,10 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
         {snippet && (
           <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
         )}
-        {shown && <Meta info={shown} folderSize={hit.is_dir ? hit.size : null} />}
-        {shown && parser !== null && (shown.kind === "image" || (shown.kind === "pdf" && shown.pdf?.engine && shown.pdf.pages !== null)) && (
-          <ParseBar backend={backend} path={shown.path} available={parser} registerApi={registerApi}
-                    page={shown.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, shown.pdf?.pages ?? null)) : null} />
+        {metaInfo && <Meta info={metaInfo} folderSize={hit.is_dir ? hit.size : null} dim={stale} />}
+        {metaInfo && parser !== null && (metaInfo.kind === "image" || (metaInfo.kind === "pdf" && metaInfo.pdf?.engine && metaInfo.pdf.pages !== null)) && (
+          <ParseBar backend={backend} path={metaInfo.path} available={parser} dim={stale} registerApi={registerApi}
+                    page={metaInfo.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, metaInfo.pdf?.pages ?? null)) : null} />
         )}
         <div className="btns">
           <button className="btn pri" tabIndex={-1} onMouseDown={keep} onClick={onOpen} title={tooltip("preview.open")}>Open <kbd>↵</kbd></button>
@@ -138,28 +141,31 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
   );
 }
 
-function Meta({ info, folderSize }: { info: PreviewInfo; folderSize?: number | null }) {
-  const rows: [string, string][] = [];
-  if (info.mtime !== null) rows.push(["Modified", formatDate(info.mtime)]);
-  if (info.size !== null && info.kind !== "folder") rows.push(["Size", formatSize(info.size)]);
+/** Compact facts, two per row, so the pane fits without a scrollbar. Noise is left out: the drive
+ *  letter is already the first crumb, and "EXIF: None" / "GPS: No" say nothing worth a row. */
+function Meta({ info, folderSize, dim }: { info: PreviewInfo; folderSize?: number | null; dim?: boolean }) {
+  const cells: [string, string][] = [];
+  if (info.mtime !== null) cells.push(["Modified", formatDate(info.mtime)]);
+  if (info.size !== null && info.kind !== "folder") cells.push(["Size", formatSize(info.size)]);
   // A folder's size comes with the search row (the index adds up everything inside it).
-  if (info.kind === "folder" && folderSize != null) rows.push(["Contains", formatSize(folderSize)]);
-  const drive = driveOf(info.path);
-  if (drive) rows.push(["Drive", drive]);
-  if (info.ctime !== null) rows.push(["Created", formatDate(info.ctime)]);
+  if (info.kind === "folder" && folderSize != null) cells.push(["Contains", formatSize(folderSize)]);
+  if (info.ctime !== null) cells.push(["Created", formatDate(info.ctime)]);
   const im = info.image;
-  if (im?.width && im.height) rows.push(["Dimensions", `${im.width} × ${im.height}`]);
-  if (info.kind === "text" && info.text) rows.push(["Encoding", info.text.encoding]);
-  if (info.kind === "pdf" && info.pdf?.pages) rows.push(["Pages", String(info.pdf.pages)]);
-  if (im) {
-    const ex = im.exif;
-    if (ex) {
-      if (ex.date) rows.push(["Taken", ex.date]);
-      if (ex.camera) rows.push(["Camera", ex.camera]);
-      rows.push(["GPS", ex.gps ? "Yes" : "No"]);
-    } else rows.push(["EXIF", "None"]);
-  }
-  return <dl className="meta">{rows.map(([k, v]) => (<div key={k}><dt>{k}</dt><dd>{v}</dd></div>))}</dl>;
+  if (im?.width && im.height) cells.push(["Dimensions", `${im.width} × ${im.height}`]);
+  if (info.kind === "text" && info.text) cells.push(["Encoding", info.text.encoding]);
+  if (info.kind === "pdf" && info.pdf?.pages) cells.push(["Pages", String(info.pdf.pages)]);
+  const ex = im?.exif;
+  if (ex?.date) cells.push(["Taken", ex.date]);
+  if (ex?.camera) cells.push(["Camera", ex.camera]);
+  return (
+    <dl className={"meta" + (dim ? " stale" : "")}>
+      {cells.map(([k, v], i) => (
+        <div key={k} className={i === cells.length - 1 && cells.length % 2 === 1 ? "wide" : undefined}>
+          <dt>{k}</dt><dd>{v}</dd>
+        </div>
+      ))}
+    </dl>
+  );
 }
 
 function Body({ backend, info, query, start, page, boxes, onPage, registerApi }: {
@@ -397,8 +403,8 @@ function PdfView({ backend, info, query, page, boxes, onPage, registerApi }: {
 
 // ---- on-demand document parser: extract text, copy a table, copy as Markdown ----------------------------------
 
-function ParseBar({ backend, path, page, available, registerApi }: {
-  backend: Backend; path: string; page: number | null; available: boolean; registerApi: (patch: Partial<PreviewApi>) => void;
+function ParseBar({ backend, path, page, available, dim, registerApi }: {
+  backend: Backend; path: string; page: number | null; available: boolean; dim?: boolean; registerApi: (patch: Partial<PreviewApi>) => void;
 }) {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [busy, setBusy] = useState(false);
@@ -420,7 +426,7 @@ function ParseBar({ backend, path, page, available, registerApi }: {
 
   if (!available) {
     return (
-      <div className="pv-parse">
+      <div className={"pv-parse" + (dim ? " stale" : "")}>
         <div className="pv-parse-bar">
           <button className="btn quiet pv-btn" tabIndex={-1} disabled title="The document parser is an optional download">Install the document parser in Setup</button>
         </div>
@@ -471,7 +477,7 @@ function ParseBar({ backend, path, page, available, registerApi }: {
     <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={busy} onClick={() => void action()} title={title}>{label}</button>
   );
   return (
-    <div className="pv-parse">
+    <div className={"pv-parse" + (dim ? " stale" : "")}>
       <div className="pv-parse-bar">
         {btn("Extract text", extract, `Read the text on this page with the document parser (${hint("preview.extract")})`)}
         {btn("Copy table", copyTable, "Copy the table on this page, ready to paste into a spreadsheet")}
