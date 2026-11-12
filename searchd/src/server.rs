@@ -86,6 +86,10 @@ fn respond(sh: &Shared, req: Request) -> Response {
                 None => Response::Error { id, message: format!("volume {v}: is not indexed") },
             }
         }
+        Request::Usage { id, path, top_files } => match state::usage(sh, &path, top_files) {
+            Ok(usage) => Response::UsageResult { id, usage },
+            Err(message) => Response::Error { id, message },
+        },
         Request::Subscribe { id, .. } => Response::Error { id, message: "subscribe handled elsewhere".into() },
     }
 }

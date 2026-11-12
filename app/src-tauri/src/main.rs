@@ -90,6 +90,7 @@ fn main() {
             commands::app_version,
             commands::drive_space,
             commands::recent,
+            commands::disk_usage,
             commands::open_path,
             commands::open_terminal,
             commands::reveal_path,

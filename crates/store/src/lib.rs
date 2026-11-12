@@ -1146,6 +1146,25 @@ impl Store {
         per_modality: usize,
         skip: &HashSet<String>,
     ) -> Result<Vec<Candidate>> {
+        self.calibrated(queries, hub, per_modality, skip, None)
+    }
+
+    /// Every content that passes the relevance gate for `query` (see [`relevance`]), with no
+    /// count limit: what "Show all" lists. Costs the same single pass over the vectors as
+    /// [`Store::search_calibrated`]; only the contents that pass are looked up further.
+    pub fn search_relevant(&self, query: &[f32], hub: &[f32]) -> Result<Vec<Candidate>> {
+        self.calibrated(&[query], hub, usize::MAX, &HashSet::new(), Some(relevance::Z_MIN))
+    }
+
+    /// `passing`: keep only the contents that pass the gate at this strictness.
+    fn calibrated(
+        &self,
+        queries: &[&[f32]],
+        hub: &[f32],
+        per_modality: usize,
+        skip: &HashSet<String>,
+        passing: Option<f32>,
+    ) -> Result<Vec<Candidate>> {
         if let Some(bad) = queries.iter().map(|q| q.len()).chain([hub.len()]).find(|n| *n != self.dims) {
             return Err(Error::BadVector { expected: self.dims, got: bad });
         }
@@ -1225,7 +1244,8 @@ impl Store {
                 .collect();
             let key = |i: &Pick<'_>| i.4.unwrap_or(i.1);
             picked.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.0.cmp(b.0)));
-            for (hash, adj, raw, chunk, z) in picked.into_iter().take(per_modality) {
+            let keep = |adj: f32, z: Option<f32>| passing.is_none_or(|zm| adj >= relevance::ADJ_MIN && z.is_none_or(|z| z >= zm));
+            for (hash, adj, raw, chunk, z) in picked.into_iter().filter(|p| keep(p.1, p.4)).take(per_modality) {
                 let locator: Option<String> = self
                     .conn
                     .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?

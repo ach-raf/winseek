@@ -72,6 +72,8 @@ fn sort_of(sort: &str) -> Sort {
         "date_asc" => Sort::MtimeAsc,
         "name_desc" => Sort::NameDesc,
         "date" => Sort::MtimeDesc,
+        "type" => Sort::TypeAsc,
+        "type_desc" => Sort::TypeDesc,
         _ => Sort::NameAsc, // "name" and "rel" (no relevance ranking in Tier 0)
     }
 }
@@ -171,6 +173,15 @@ impl NameSource for PipeSource {
         match self.call(&Request::Rescan { id: self.id(), volume }) {
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Ok(()),
+            Err(e) => Err(format!("The name service did not answer: {e}")),
+        }
+    }
+
+    fn usage(&self, path: &str, top_files: u32) -> Result<winseek_ipc::UsageTree, String> {
+        match self.call(&Request::Usage { id: self.id(), path: path.into(), top_files }) {
+            Ok(Response::UsageResult { usage, .. }) => Ok(usage),
+            Ok(Response::Error { message, .. }) => Err(message),
+            Ok(_) => Err("Unexpected answer from the name service.".into()),
             Err(e) => Err(format!("The name service did not answer: {e}")),
         }
     }

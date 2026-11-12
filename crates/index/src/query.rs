@@ -108,6 +108,10 @@ pub enum Order {
     MtimeAsc,
     /// Exact reverse of `SizeDesc` (smallest first).
     SizeAsc,
+    /// File type A to Z (folders first, then by extension, ties by name).
+    TypeAsc,
+    /// Exact reverse of `TypeAsc`.
+    TypeDesc,
 }
 
 /// Which stored column a meta order sorts by.
@@ -115,6 +119,8 @@ pub enum Order {
 pub enum MetaKey {
     Mtime,
     Size,
+    /// File type then name; the list reads A to Z (its reverse is Z to A).
+    Ext,
 }
 
 /// Every match of a query as a set of positions in the name-sorted order array.
@@ -520,7 +526,35 @@ impl Index {
                 Some(t) if self.is_dir(i) => t.get(i as usize).copied().unwrap_or(0).min(i64::MAX as u64) as i64,
                 _ => self.size(i).unwrap_or(0).min(i64::MAX as u64) as i64,
             },
+            // `Ext` needs the name ranks; `sort_keys` builds those itself.
+            MetaKey::Ext => 0,
         }
+    }
+
+    /// (key, slot) for every slot. The list sorts keys high to low, so the `Ext` key is
+    /// inverted: the first four bytes of the lower-cased extension (folders have none and
+    /// lead), then the name rank, packed into 63 bits.
+    fn sort_keys(&self, slots: &[u32], key: MetaKey, dirs: Option<&[u64]>) -> Vec<(i64, u32)> {
+        if key != MetaKey::Ext {
+            return slots.iter().map(|&i| (self.meta_key(key, i, dirs), i)).collect();
+        }
+        let order_arr = self.clean_order();
+        let rank = self.rank_view(&order_arr);
+        slots
+            .iter()
+            .map(|&i| {
+                let mut ext = 0u64;
+                if !self.is_dir(i) {
+                    if let Some(e) = ext_of(self.name(i)) {
+                        for (k, b) in e.bytes().take(4).enumerate() {
+                            ext |= (b.to_ascii_lowercase() as u64) << (8 * (3 - k));
+                        }
+                    }
+                }
+                let r = (rank.get(i as usize).copied().unwrap_or(0) as u64).min((1 << 31) - 1);
+                (i64::MAX - ((ext << 31) | r) as i64, i)
+            })
+            .collect()
     }
 
     /// Total bytes under every folder (all descendants), indexed by record slot; 0 for
@@ -590,7 +624,7 @@ impl Index {
     /// ascending orders are this list read backwards. Chunks sort on all cores; the final
     /// stable sort only merges those runs.
     pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey, dirs: Option<&[u64]>) -> Vec<u32> {
-        let mut pairs: Vec<(i64, u32)> = slots.into_iter().map(|i| (self.meta_key(key, i, dirs), i)).collect();
+        let mut pairs = self.sort_keys(&slots, key, dirs);
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
         let nt = hw.min(pairs.len() / 65536).max(1);
@@ -610,7 +644,7 @@ impl Index {
 
     /// The first `k` rows of [`Index::sort_slots`] without sorting the rest.
     pub fn top_slots(&self, slots: &[u32], key: MetaKey, k: usize, dirs: Option<&[u64]>) -> Vec<u32> {
-        let mut pairs: Vec<(i64, u32)> = slots.iter().map(|&i| (self.meta_key(key, i, dirs), i)).collect();
+        let mut pairs = self.sort_keys(slots, key, dirs);
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let k = k.min(pairs.len());
         if k < pairs.len() && k > 0 {
@@ -640,6 +674,8 @@ impl Index {
             Order::MtimeAsc => (MetaKey::Mtime, true),
             Order::SizeDesc => (MetaKey::Size, false),
             Order::SizeAsc => (MetaKey::Size, true),
+            Order::TypeAsc => (MetaKey::Ext, false),
+            Order::TypeDesc => (MetaKey::Ext, true),
         };
         let slots = self.match_slots(q);
         let total = slots.len();

@@ -12,7 +12,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use winseek_index::{Index, MetaKey, Query, RankSet, VolKind};
-use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, VolumeState, VolumeStatus};
+use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, UsageEntry, UsageTree, UsageType, VolumeState, VolumeStatus};
 use winseek_usn::{Change, JournalCursor};
 
 use crate::index_ops::{
@@ -101,6 +101,7 @@ enum SortClass {
     Name,
     Mtime,
     Size,
+    Type,
 }
 
 type CacheKey = (String, SortClass);
@@ -506,6 +507,8 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
         Sort::MtimeAsc => (SortClass::Mtime, true, None),
         Sort::SizeDesc => (SortClass::Size, false, None),
         Sort::SizeAsc => (SortClass::Size, true, None),
+        Sort::TypeAsc => (SortClass::Type, false, None),
+        Sort::TypeDesc => (SortClass::Type, true, None),
         Sort::PathAsc => (SortClass::Name, false, Some("path_asc is not supported yet; used name_asc")),
     };
     let lim = limit.min(10_000) as usize;
@@ -528,8 +531,12 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
         let q = Query::parse(query);
         let fresh = Arc::new(match class {
             SortClass::Name => Cached::Names(ix.name_matches(&q)),
-            SortClass::Mtime | SortClass::Size => {
-                let key = if class == SortClass::Mtime { MetaKey::Mtime } else { MetaKey::Size };
+            SortClass::Mtime | SortClass::Size | SortClass::Type => {
+                let key = match class {
+                    SortClass::Mtime => MetaKey::Mtime,
+                    SortClass::Size => MetaKey::Size,
+                    _ => MetaKey::Ext,
+                };
                 let slots = ix.match_slots(&q);
                 // A size sort with folders in it ranks them by what they hold (computed for
                 // exactly this index state; it also refreshes the table the rows read).
@@ -593,6 +600,86 @@ pub fn recent(sh: &Shared, limit: u32) -> Vec<Hit> {
     sh.recent.lock().unwrap().iter().take(limit.min(500) as usize).cloned().collect()
 }
 
+/// Biggest children listed per folder; the rest is summed into `more`.
+const USAGE_ENTRIES: usize = 400;
+
+/// Disk usage of one folder (`path`), or of every volume root when `path` is empty.
+pub fn usage(sh: &Shared, path: &str, top_files: u32) -> Result<UsageTree, String> {
+    let ix = sh.index.read().unwrap();
+    if !ix.has_meta() {
+        return Err("The name index carries no sizes yet.".into());
+    }
+    let top = top_files.min(500) as usize;
+    let entry = |i: u32, c: &winseek_index::ChildUsage| UsageEntry {
+        name: ix.name(i).to_string(),
+        path: ix.full_path(i),
+        is_dir: c.is_dir,
+        kind: c.kind(),
+        size: if c.is_dir { c.bytes } else { ix.size(i).unwrap_or(0) },
+        files: c.files,
+        folders: c.folders,
+        mtime: ix.mtime(i).and_then(filetime_to_unix_ms),
+    };
+    if path.trim().is_empty() {
+        let mut t = UsageTree { path: String::new(), size: 0, files: 0, folders: 0, entries: vec![], more: 0, more_size: 0, types: vec![], biggest: vec![] };
+        let mut types: HashMap<String, (u64, u64)> = HashMap::new();
+        for v in ix.volumes() {
+            let u = ix.folder_usage(v.root, 0);
+            let mut e = UsageEntry {
+                name: format!("{}:", v.letter as char),
+                path: format!("{}:\\", v.letter as char),
+                is_dir: true,
+                kind: 0,
+                size: u.bytes,
+                files: u.files,
+                folders: u.folders,
+                mtime: None,
+            };
+            e.name = e.name.to_uppercase();
+            t.size += u.bytes;
+            t.files += u.files;
+            t.folders += u.folders;
+            for ty in u.types {
+                let s = types.entry(ty.ext).or_default();
+                s.0 += ty.bytes;
+                s.1 += ty.files;
+            }
+            t.entries.push(e);
+        }
+        t.entries.sort_by_key(|e| std::cmp::Reverse(e.size));
+        let mut tv: Vec<UsageType> = types.into_iter().map(|(ext, (bytes, files))| UsageType { kind: winseek_index::category(&ext), ext, bytes, files }).collect();
+        tv.sort_by_key(|t| std::cmp::Reverse(t.bytes));
+        t.types = tv;
+        return Ok(t);
+    }
+    let cur = ix.resolve_path(path).ok_or_else(|| format!("{path} is not in the index."))?;
+    if !ix.is_dir(cur) {
+        return Err(format!("{path} is not a folder."));
+    }
+    let u = ix.folder_usage(cur, top);
+    let mut entries = Vec::with_capacity(u.children.len().min(USAGE_ENTRIES));
+    let (mut more, mut more_size) = (0u64, 0u64);
+    for (k, c) in u.children.iter().enumerate() {
+        if k < USAGE_ENTRIES {
+            entries.push(entry(c.slot, c));
+        } else {
+            more += 1;
+            more_size += c.bytes;
+        }
+    }
+    let biggest = u
+        .biggest
+        .iter()
+        .map(|&(i, sz)| {
+            let mut h = hit_at(&ix, i);
+            h.size = Some(sz);
+            h
+        })
+        .collect();
+    let types = u.types.iter().take(40).map(|t| UsageType { ext: t.ext.clone(), kind: t.kind, bytes: t.bytes, files: t.files }).collect();
+    Ok(UsageTree { path: ix.full_path(cur), size: u.bytes, files: u.files, folders: u.folders, entries, more, more_size, types, biggest })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -609,6 +696,18 @@ mod tests {
         Change::Create(UsnRecord { frn, parent_frn: parent, usn: 0, reason: 0, attrs: 0x20, name: name.into() })
     }
     const CUR: JournalCursor = JournalCursor { journal_id: 7, next_usn: 99 };
+
+    #[test]
+    fn usage_lists_children_and_volumes() {
+        let sh = shared();
+        apply_batch(&sh, b'C', &[create(100, 10, "a.txt")], CUR);
+        let u = usage(&sh, r"C:\Docs", 5).unwrap();
+        assert_eq!((u.files, u.entries.len()), (1, 1));
+        assert_eq!(u.entries[0].name, "a.txt");
+        let all = usage(&sh, "", 0).unwrap();
+        assert_eq!(all.entries[0].name, "C:");
+        assert!(usage(&sh, r"C:\nope", 0).is_err());
+    }
 
     #[test]
     fn batch_updates_index_cursor_recent_and_subscribers() {

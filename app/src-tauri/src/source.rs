@@ -68,6 +68,10 @@ pub trait NameSource: Send + Sync {
     fn detail(&self) -> Tier0Detail;
     /// Ask searchd to rebuild one volume's index from the MFT.
     fn rescan(&self, volume: char) -> Result<(), String>;
+    /// Bytes under every child of a folder (empty path: every volume). Only the real name service knows.
+    fn usage(&self, _path: &str, _top_files: u32) -> Result<winseek_ipc::UsageTree, String> {
+        Err("Disk usage needs the name service, which is not running.".into())
+    }
 }
 
 struct Entry {
@@ -221,6 +225,15 @@ impl NameSource for MockSource {
             "name_desc" => idx.sort_unstable_by(|a, b| e[*b as usize].lower.cmp(&e[*a as usize].lower)),
             "size_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].size.cmp(&e[*b as usize].size)),
             "date_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].mtime.cmp(&e[*b as usize].mtime)),
+            "type" | "type_desc" => {
+                // folders and extension-less names lead, then by extension, ties by name
+                let key = |i: u32| {
+                    let n = &e[i as usize];
+                    let ext = if n.is_dir { "" } else { n.lower.rfind('.').map_or("", |p| &n.lower[p + 1..]) };
+                    (ext, n.lower.as_str())
+                };
+                idx.sort_unstable_by(|a, b| if sort == "type" { key(*a).cmp(&key(*b)) } else { key(*b).cmp(&key(*a)) });
+            }
             _ => {
                 // relevance: prefix match first, then shorter names
                 let q = terms.first().cloned().unwrap_or_default();

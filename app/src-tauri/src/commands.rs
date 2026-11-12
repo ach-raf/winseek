@@ -109,6 +109,33 @@ pub async fn drive_space(letters: Vec<String>) -> Result<Vec<DriveSpace>, String
     blocking(move || letters.iter().filter_map(|l| l.chars().next().and_then(space_of)).collect()).await
 }
 
+/// A folder's disk usage plus, for a drive root or the drive list, what the drive itself has free.
+#[derive(serde::Serialize)]
+pub struct DiskUsage {
+    #[serde(flatten)]
+    pub tree: winseek_ipc::UsageTree,
+    pub drives: Vec<DriveSpace>,
+}
+
+/// Where the space went under `path` (empty: every indexed drive), from the name index.
+#[tauri::command]
+pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, top_files: Option<u32>) -> Result<DiskUsage, String> {
+    let src = state.source();
+    blocking(move || {
+        let tree = src.usage(&path, top_files.unwrap_or(100))?;
+        let at_top = path.trim_end_matches(['\\', '/']).len() <= 2;
+        let drives = if path.trim().is_empty() {
+            tree.entries.iter().filter_map(|e| e.name.chars().next().and_then(space_of)).collect()
+        } else if at_top {
+            path.chars().next().and_then(space_of).into_iter().collect()
+        } else {
+            vec![]
+        };
+        Ok(DiskUsage { tree, drives })
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Result<Vec<Hit>, String> {
     let src = state.source();

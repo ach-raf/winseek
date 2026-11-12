@@ -343,9 +343,9 @@ impl Tier1 {
         let cap = cap.clamp(1, COLLECTION_CAP);
         let q = query.trim();
         if q.is_empty() {
-            return Ok(SemanticResult { state: self.state_str().into(), hits: vec![] });
+            return Ok(SemanticResult::new(self.state_str(), vec![]));
         }
-        let missing = || Ok(SemanticResult { state: "models_missing".into(), hits: vec![] });
+        let missing = || Ok(SemanticResult::new("models_missing", vec![]));
         let (vecs, hub) = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
@@ -398,7 +398,7 @@ impl Tier1 {
                 }
             })
             .collect();
-        Ok(SemanticResult { state: self.state_str().into(), hits })
+        Ok(SemanticResult::new(self.state_str(), hits))
     }
 
     /// Byte-identical files in scope that still exist, biggest saving first.

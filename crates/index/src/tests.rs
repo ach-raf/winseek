@@ -708,3 +708,23 @@ fn size_and_date_filters_and_folder_totals() {
     assert!(top.contains(&"Photos") && top.contains(&"2024") && top.contains(&"a.jpg"), "{top:?}");
     assert_eq!(ix.top_slots(&ix.match_slots(&Query::parse("")), MetaKey::Size, 3, Some(&tot)), sorted[..3]);
 }
+
+#[test]
+fn type_order_groups_by_extension_then_name() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 10, 5, "Docs.v2", true, 0, 0);
+    for (k, n) in ["b.TXT", "a.txt", "z.jpg", "noext", "m.JPG", "c.md"].iter().enumerate() {
+        b.push(C, 100 + k as u64, 5, n, false, 1, 0);
+    }
+    let ix = b.finish();
+    let q = Query::parse("");
+    let names = |order| -> Vec<String> {
+        ix.search(&q, &SearchOptions { offset: 0, limit: 100, order }).items.iter().map(|&i| ix.name(i).to_string()).collect()
+    };
+    // folders lead (a dot in a folder name is not an extension), then no extension, then jpg < md < txt, names within a type
+    assert_eq!(names(Order::TypeAsc), ["Docs.v2", "noext", "m.JPG", "z.jpg", "c.md", "a.txt", "b.TXT"]);
+    let mut rev = names(Order::TypeAsc);
+    rev.reverse();
+    assert_eq!(names(Order::TypeDesc), rev);
+}

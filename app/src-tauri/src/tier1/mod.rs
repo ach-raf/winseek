@@ -32,6 +32,12 @@ use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 use std::sync::{Arc, Condvar, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
+/// The largest quick top-k. A search that asks for more (or for a later page) is "Show all":
+/// every relevant file, in pages; the relevance gate, not a count, decides what is listed.
+const SEM_K_SHALLOW: usize = 200;
+/// Files found by their words alone that "Show all" lists (the FTS row limit; above any real index).
+const TEXT_ALL: usize = 1_000_000;
+
 use serde::Serialize;
 use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::{Manifest, Profile, Table};
@@ -89,6 +95,8 @@ pub struct Tier1 {
     runtime: Mutex<RuntimeInfo>,
     /// Mean embedding of the generic hub prompts (relevance calibration), per query model.
     hub: Mutex<Option<(String, Vec<f32>)>>,
+    /// "Show all": the full hit list of the last such query (see [`Tier1::semantic_page`]).
+    sem_all: Mutex<Option<Arc<SemList>>>,
 }
 
 /// Scopes + compiled ignore list + generation, read together so a walk never mixes versions.
@@ -217,6 +225,49 @@ fn stat(path: &str) -> (Option<u64>, Option<i64>) {
 pub struct SemanticResult {
     pub state: String,
     pub hits: Vec<SemanticHit>,
+    /// Hits in the whole list this page is cut from ("Show all" pages); else the hits returned.
+    pub total: usize,
+    /// More relevant files exist than were returned.
+    pub more: bool,
+}
+
+impl SemanticResult {
+    pub fn new(state: impl Into<String>, hits: Vec<SemanticHit>) -> Self {
+        Self { state: state.into(), total: hits.len(), more: false, hits }
+    }
+}
+
+/// A meaning / text hit before the per-file work (stat, highlight boxes) a returned page pays for.
+struct SemRow {
+    path: String,
+    score: f32,
+    locator: Option<String>,
+    snippet: Option<String>,
+    page: Option<u32>,
+    source: &'static str,
+}
+
+impl SemRow {
+    fn hit(&self, q: &str) -> SemanticHit {
+        let (size, mtime) = stat(&self.path);
+        SemanticHit {
+            path: self.path.clone(),
+            score: self.score,
+            size,
+            mtime,
+            snippet: self.snippet.clone(),
+            page: self.page,
+            source: self.source,
+            boxes: hitbox::hit_boxes(self.locator.as_deref(), q),
+        }
+    }
+}
+
+/// The whole "Show all" list of the last such query, handed out in pages.
+struct SemList {
+    query: String,
+    state: String,
+    rows: Vec<SemRow>,
 }
 
 pub fn lower_thread_priority() {
@@ -259,6 +310,7 @@ impl Tier1 {
             parse_throughput: Mutex::new(progress::Throughput::default()),
             runtime: Mutex::new(RuntimeInfo::default()),
             hub: Mutex::new(None),
+            sem_all: Mutex::new(None),
         })
     }
 
@@ -675,97 +727,129 @@ impl Tier1 {
     /// [`relevance`]), best first, at most `k`; then files whose extracted text contains the query
     /// words (`source: "text"`), which are evidence on their own. Nothing relevant -> no hits.
     pub fn semantic_search(&self, query: &str, k: usize) -> Result<SemanticResult, String> {
-        let k = k.clamp(1, 200);
+        self.semantic_page(query, 0, k)
+    }
+
+    /// [`Tier1::semantic_search`] in pages. A first page of at most [`SEM_K_SHALLOW`] hits is the
+    /// quick top-k the overview shows. Anything else is "Show all": the whole list of relevant
+    /// files is computed once (no count limit: the gate decides), kept, and handed out `k` at a
+    /// time from `offset`; `total` is then exact. Only the returned page pays for the per-file
+    /// work (stat, highlight boxes), so a list of any length answers as fast as a short one.
+    pub fn semantic_page(&self, query: &str, offset: usize, k: usize) -> Result<SemanticResult, String> {
+        let k = k.max(1);
         let q = query.trim();
         if q.is_empty() {
-            return Ok(SemanticResult { state: self.state_str().into(), hits: vec![] });
+            return Ok(SemanticResult::new(self.state_str(), vec![]));
         }
-        let (vec, hub) = {
+        if offset == 0 && k <= SEM_K_SHALLOW {
+            let (state, rows, more) = self.sem_rows(q, Some(k))?;
+            let hits: Vec<SemanticHit> = rows.iter().map(|r| r.hit(q)).collect();
+            return Ok(SemanticResult { state, total: hits.len(), more, hits });
+        }
+        // A later page of the list computed a moment ago; the first page always recomputes
+        // (files may have been indexed or deleted since).
+        let kept = lock(&self.sem_all).clone().filter(|l| offset > 0 && l.query == q);
+        let list = match kept {
+            Some(l) => l,
+            None => {
+                let (state, rows, _) = self.sem_rows(q, None)?;
+                let l = Arc::new(SemList { query: q.to_string(), state, rows });
+                *lock(&self.sem_all) = Some(l.clone());
+                l
+            }
+        };
+        let hits: Vec<SemanticHit> = list.rows.iter().skip(offset).take(k).map(|r| r.hit(q)).collect();
+        Ok(SemanticResult { state: list.state.clone(), total: list.rows.len(), more: offset + hits.len() < list.rows.len(), hits })
+    }
+
+    /// The hits for `q` before the per-file work: `(state, rows, more exist)`. `limit` = the
+    /// top-k of the overview; `None` = every relevant file. Without models the query words found
+    /// in extracted text (documents, PDFs, screenshot OCR) answer alone, state `models_missing`.
+    fn sem_rows(&self, q: &str, limit: Option<usize>) -> Result<(String, Vec<SemRow>, bool), String> {
+        let text_k = limit.map_or(TEXT_ALL, |k| k * 4);
+        let embedded = {
             let mut e = lock(&self.embedder);
             if !e.models_present() {
-                drop(e);
-                return Ok(self.text_only_search(q, k));
-            }
-            let r = e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?)));
-            match r {
-                Ok(v) => v,
-                Err(EmbedError::ModelsMissing) => {
-                    drop(e);
-                    return Ok(self.text_only_search(q, k));
+                None
+            } else {
+                let r = e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?)));
+                match r {
+                    Ok(v) => Some(v),
+                    Err(EmbedError::ModelsMissing) => None,
+                    Err(EmbedError::Other(m)) => return Err(m),
                 }
-                Err(EmbedError::Other(m)) => return Err(m),
             }
         };
         let snap = self.snapshot();
+        let Some((vec, hub)) = embedded else {
+            let raw = lock(&self.store).search_text(&fts_escape(q), text_k).unwrap_or_default();
+            let mut rows: Vec<SemRow> = raw
+                .into_iter()
+                .filter(|h| snap.in_scope(&h.path))
+                .map(|h| SemRow {
+                    page: locator_page(h.locator.as_deref()),
+                    path: h.path,
+                    score: 0.0,
+                    locator: h.locator,
+                    snippet: Some(h.snippet).filter(|s| s.contains('[')),
+                    source: "text",
+                })
+                .collect();
+            let more = limit.is_some_and(|k| rows.len() > k);
+            rows.truncate(limit.unwrap_or(usize::MAX));
+            return Ok(("models_missing".into(), rows, more));
+        };
         let (cands, texts) = {
             let store = lock(&self.store);
-            // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
-            let cands = store.search_calibrated(&vec, &hub, (k * 4).max(40)).map_err(|e| e.to_string())?;
-            let texts = store.search_text(&fts_escape(q), k * 4).unwrap_or_default();
+            let cands = match limit {
+                // Over-fetch: rows outside the current scopes (scopes shrank since indexing) are dropped.
+                Some(k) => store.search_calibrated(&vec, &hub, (k * 4).max(40)),
+                None => store.search_relevant(&vec, &hub),
+            }
+            .map_err(|e| e.to_string())?;
+            let texts = store.search_text(&fts_escape(q), text_k).unwrap_or_default();
             (cands, texts)
         };
-        let gated = relevance::gate(cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect(), k);
+        let in_scope: Vec<_> = cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect();
+        let mut gated = relevance::gate(in_scope, limit.map_or(usize::MAX, |k| k.saturating_add(1)));
+        let mut more = limit.is_some_and(|k| gated.len() > k);
+        gated.truncate(limit.unwrap_or(usize::MAX));
         let text_pages: std::collections::HashMap<String, u32> =
             texts.iter().filter_map(|t| Some((t.path.to_lowercase(), locator_page(t.locator.as_deref())?))).collect();
         let snippets: std::collections::HashMap<String, String> =
             texts.iter().map(|t| (t.path.to_lowercase(), t.snippet.clone())).collect();
         let mut seen = std::collections::HashSet::new();
-        let mut hits: Vec<SemanticHit> = gated
+        let mut rows: Vec<SemRow> = gated
             .into_iter()
             .map(|h| {
-                seen.insert(h.path.to_lowercase());
-                let (size, mtime) = stat(&h.path);
-                let snippet = snippets.get(&h.path.to_lowercase()).filter(|s| s.contains('[')).cloned();
-                let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&h.path.to_lowercase()).copied());
-                let boxes = hitbox::hit_boxes(h.locator.as_deref(), q);
-                SemanticHit { path: h.path, score: h.score, size, mtime, snippet, page, source: "meaning", boxes }
+                let key = h.path.to_lowercase();
+                let snippet = snippets.get(&key).filter(|s| s.contains('[')).cloned();
+                let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&key).copied());
+                seen.insert(key);
+                SemRow { path: h.path, score: h.score, locator: h.locator, snippet, page, source: "meaning" }
             })
             .collect();
         // The words themselves, found inside files (documents, PDFs, screenshot text).
-        let extra = (k / 3).max(3);
+        let cap = limit.map(|k| k + (k / 3).max(3));
         for t in texts.into_iter().filter(|t| snap.in_scope(&t.path) && t.snippet.contains('[')) {
-            if hits.len() >= k + extra || !seen.insert(t.path.to_lowercase()) {
+            if seen.contains(&t.path.to_lowercase()) {
                 continue;
             }
-            let (size, mtime) = stat(&t.path);
-            hits.push(SemanticHit {
+            if cap.is_some_and(|c| rows.len() >= c) {
+                more = true;
+                break;
+            }
+            seen.insert(t.path.to_lowercase());
+            rows.push(SemRow {
                 page: locator_page(t.locator.as_deref()),
-                boxes: hitbox::hit_boxes(t.locator.as_deref(), q),
                 path: t.path,
                 score: 0.0,
-                size,
-                mtime,
+                locator: t.locator,
                 snippet: Some(t.snippet),
                 source: "text",
             });
         }
-        Ok(SemanticResult { state: self.state_str().into(), hits })
-    }
-
-    /// No models yet: the query words found in extracted text (documents, PDFs, screenshot OCR), best
-    /// match first, labelled `source: "text"`. State stays `models_missing` so the UI can offer setup.
-    pub fn text_only_search(&self, q: &str, k: usize) -> SemanticResult {
-        let snap = self.snapshot();
-        let raw = lock(&self.store).search_text(&fts_escape(q), k * 4).unwrap_or_default();
-        let hits = raw
-            .into_iter()
-            .filter(|h| snap.in_scope(&h.path))
-            .take(k)
-            .map(|h| {
-                let (size, mtime) = stat(&h.path);
-                SemanticHit {
-                    page: locator_page(h.locator.as_deref()),
-                    path: h.path,
-                    score: 0.0,
-                    size,
-                    mtime,
-                    snippet: Some(h.snippet).filter(|s| s.contains('[')),
-                    source: "text",
-                    boxes: hitbox::hit_boxes(h.locator.as_deref(), q),
-                }
-            })
-            .collect();
-        SemanticResult { state: "models_missing".into(), hits }
+        Ok((self.state_str().into(), rows, more))
     }
 }
 
@@ -1004,7 +1088,7 @@ pub async fn set_profile(h: tauri::State<'_, Handle>, profile: String) -> Result
 }
 
 #[tauri::command]
-pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usize) -> Result<SemanticResult, String> {
+pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usize, offset: Option<usize>) -> Result<SemanticResult, String> {
     // Only the popup asks, one query at a time: a search still queued behind the embedder when a
     // newer one arrives is dropped (its answer would be thrown away by the UI anyway).
     static LATEST: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1014,9 +1098,9 @@ pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usiz
     tauri::async_runtime::spawn_blocking(move || {
         let _turn = lock(&TURN);
         if LATEST.load(Ordering::SeqCst) != me {
-            return Ok(SemanticResult { state: "superseded".into(), hits: vec![] });
+            return Ok(SemanticResult::new("superseded", vec![]));
         }
-        t.semantic_search(&query, k)
+        t.semantic_page(&query, offset.unwrap_or(0), k)
     })
     .await
     .map_err(|e| e.to_string())?
@@ -1155,6 +1239,29 @@ mod tests {
         assert_eq!(r.hits[0].path, r"C:\Pics\cat.jpg");
         assert!(r.hits[0].score > 0.99);
         assert!(t.semantic_search("  ", 5).unwrap().hits.is_empty());
+    }
+
+    #[test]
+    fn show_all_lists_every_relevant_file_in_pages() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        for i in 0..7u64 {
+            add_done(&t, i + 1, &format!(r"C:\Pics\cat{i}.jpg"), 1);
+        }
+        add_done(&t, 50, r"C:\Pics\dog.jpg", 2);
+        // The overview's quick top-k says that there is more.
+        let top = t.semantic_search("cat", 3).unwrap();
+        assert_eq!((top.hits.len(), top.more), (3, true));
+        // "Show all": every relevant file, the unrelated one never.
+        let all = t.semantic_page("cat", 0, SEM_K_SHALLOW + 1).unwrap();
+        assert_eq!((all.hits.len(), all.total, all.more), (7, 7, false));
+        assert!(all.hits.iter().all(|h| h.path.contains("cat")));
+        // Later pages are cut from the same list, in the same order.
+        let p = t.semantic_page("cat", 2, 3).unwrap();
+        assert_eq!((p.total, p.more), (7, true));
+        assert_eq!(p.hits, all.hits[2..5]);
+        let last = t.semantic_page("cat", 5, 3).unwrap();
+        assert_eq!((last.hits.len(), last.more), (2, false));
+        assert!(t.semantic_page("cat", 7, 3).unwrap().hits.is_empty());
     }
 
     #[test]
