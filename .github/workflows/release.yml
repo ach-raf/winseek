@@ -1,0 +1,83 @@
+name: Release
+
+# Publish by pushing a version tag:  git tag v0.3.0 && git push origin v0.3.0
+# The tag must match the version in Cargo.toml and tauri.conf.json.
+on:
+  push:
+    tags: ["v[0-9]+.[0-9]+.[0-9]+*"]
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # git-cliff needs history
+
+      - name: Check tag matches versions
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v') -replace '-.*$',''
+          $cargo = (Select-String -Path Cargo.toml -Pattern '^version\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
+          $tauri = (Get-Content app/src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          Write-Host "tag=$tag cargo=$cargo tauri=$tauri"
+          if ($tag -ne $cargo -or $tag -ne $tauri) { throw "Tag $tag does not match Cargo.toml ($cargo) / tauri.conf.json ($tauri)" }
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            app/package-lock.json
+            app/ui/package-lock.json
+
+      - name: Install JS dependencies
+        run: |
+          npm ci --prefix app
+          npm ci --prefix app/ui
+
+      - name: UI tests
+        run: npm test --prefix app/ui
+
+      - name: Build installer
+        shell: pwsh
+        run: ./scripts/build-installer.ps1 -SkipNpm
+
+      - name: Checksums
+        shell: pwsh
+        run: |
+          cd target/release/bundle/nsis
+          Get-ChildItem *-setup.exe | ForEach-Object {
+            "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Out-File "$($_.Name).sha256" -Encoding ascii
+          }
+
+      - name: Release notes from commits
+        id: cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          config: cliff.toml
+          args: --latest --strip header
+        env:
+          OUTPUT: RELEASE_NOTES.md
+
+      - name: Publish GitHub release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=""
+          case "${{ github.ref_name }}" in *-*) flags="--prerelease";; esac
+          gh release create "${{ github.ref_name }}" \
+            --title "winseek ${{ github.ref_name }}" \
+            --notes-file RELEASE_NOTES.md $flags \
+            target/release/bundle/nsis/*-setup.exe \
+            target/release/bundle/nsis/*.sha256
