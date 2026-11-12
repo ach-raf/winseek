@@ -235,6 +235,7 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     let mut last_poll = Instant::now();
     while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_millis(200));
+        sh.trim_query_cache();
         if sh.save_now.swap(false, Ordering::Relaxed) || last_save.elapsed() >= SAVE_EVERY {
             save_snapshot(&sh, &snap_path);
             last_save = Instant::now();

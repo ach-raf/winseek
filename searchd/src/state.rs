@@ -9,9 +9,9 @@ use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
-use winseek_index::{Index, Order, SearchOptions, VolKind};
+use winseek_index::{Index, MetaKey, Query, RankSet, VolKind};
 use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, VolumeState, VolumeStatus};
 use winseek_usn::{Change, JournalCursor};
 
@@ -24,37 +24,88 @@ pub const RECENT_CAP: usize = 2000;
 /// Max stat() calls per batch (to refine size/mtime of created/modified files).
 const STAT_BUDGET: usize = 256;
 const SUB_QUEUE: usize = 4096;
-/// Cached whole-query result lists (fast paging): at most this many queries, each with at
-/// most `QUERY_CACHE_ITEMS` matches (~8 MB of slot ids at the cap).
-const QUERY_CACHE_ENTRIES: usize = 4;
-const QUERY_CACHE_ITEMS: usize = 2_000_000;
+/// Cached match sets (instant paging). Name orders keep a 1.8 MB bitmap however many rows
+/// match; meta orders keep a sorted slot list (4 bytes per match), so those are bounded by
+/// `QUERY_CACHE_BYTES` in total and everything is dropped after `QUERY_CACHE_IDLE` unused.
+const QUERY_CACHE_ENTRIES: usize = 6;
+const QUERY_CACHE_BYTES: usize = 96 << 20;
+const QUERY_CACHE_IDLE: Duration = Duration::from_secs(90);
+/// A meta-sorted result bigger than this is not sorted in full for a request near the top:
+/// only the first `META_TOP` rows are (one select pass). A jump past them sorts the rest once.
+const META_FULL_SORT: usize = 1_000_000;
+const META_TOP: usize = 50_000;
 
-/// One cached query: the full ordered slot list plus the index generation it was scanned
-/// under. Any index mutation bumps the generation, so a stale entry never answers twice.
-type CacheEntry = (u64, Arc<Vec<u32>>);
-type CacheKey = (String, Sort);
+/// What a query's result looks like once computed.
+enum Cached {
+    /// Name orders: asc and desc read the same set from either end.
+    Names(RankSet),
+    /// Meta orders: every match, newest / largest first (asc reads it backwards).
+    Sorted(Vec<u32>),
+    /// Meta orders, huge result: only the leading rows are sorted so far.
+    Top { total: usize, items: Vec<u32> },
+}
+
+impl Cached {
+    fn total(&self) -> usize {
+        match self {
+            Cached::Names(s) => s.total(),
+            Cached::Sorted(v) => v.len(),
+            Cached::Top { total, .. } => *total,
+        }
+    }
+    fn bytes(&self) -> usize {
+        match self {
+            Cached::Names(s) => s.mem_bytes(),
+            Cached::Sorted(v) | Cached::Top { items: v, .. } => v.len() * 4,
+        }
+    }
+}
+
+/// Sorts that share one cached result (a direction flip costs nothing).
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+enum SortClass {
+    Name,
+    Mtime,
+    Size,
+}
+
+type CacheKey = (String, SortClass);
+
+struct CacheEntry {
+    /// Index generation the result was computed under: any mutation bumps the generation,
+    /// so a stale entry never answers.
+    gen: u64,
+    data: Arc<Cached>,
+    used: Instant,
+}
 
 #[derive(Default)]
 struct QCache {
     map: HashMap<CacheKey, CacheEntry>,
-    lru: VecDeque<CacheKey>,
 }
 
 impl QCache {
-    fn get(&self, gen: u64, query: &str, sort: Sort) -> Option<Arc<Vec<u32>>> {
-        let (g, items) = self.map.get(&(query.to_string(), sort))?;
-        (*g == gen).then(|| items.clone())
-    }
-    fn put(&mut self, gen: u64, query: &str, sort: Sort, items: Vec<u32>) {
-        self.map.retain(|_, (g, _)| *g == gen); // a new generation invalidates everything older
-        let key = (query.to_string(), sort);
-        self.lru.retain(|k| k != &key);
-        self.lru.push_back(key.clone());
-        self.map.insert(key, (gen, Arc::new(items)));
-        while self.lru.len() > QUERY_CACHE_ENTRIES {
-            let old = self.lru.pop_front().expect("lru tracks the map");
-            self.map.remove(&old);
+    fn get(&mut self, gen: u64, query: &str, class: SortClass) -> Option<Arc<Cached>> {
+        let e = self.map.get_mut(&(query.to_string(), class))?;
+        if e.gen != gen {
+            return None;
         }
+        e.used = Instant::now();
+        Some(e.data.clone())
+    }
+    fn put(&mut self, gen: u64, query: &str, class: SortClass, data: Arc<Cached>) {
+        self.map.retain(|_, e| e.gen == gen); // a new generation invalidates everything older
+        self.map.insert((query.to_string(), class), CacheEntry { gen, data, used: Instant::now() });
+        // Evict least-recently-used entries (never the only one left) over either budget.
+        while self.map.len() > 1
+            && (self.map.len() > QUERY_CACHE_ENTRIES || self.map.values().map(|e| e.data.bytes()).sum::<usize>() > QUERY_CACHE_BYTES)
+        {
+            let oldest = self.map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()).expect("non-empty");
+            self.map.remove(&oldest);
+        }
+    }
+    fn trim_idle(&mut self) {
+        self.map.retain(|_, e| e.used.elapsed() < QUERY_CACHE_IDLE);
     }
 }
 
@@ -129,6 +180,11 @@ impl Shared {
     /// The control flags of a volume (created on first use: volumes can arrive later).
     pub fn ctl(&self, letter: char) -> std::sync::Arc<VolCtl> {
         self.ctl.lock().unwrap().entry(letter).or_default().clone()
+    }
+
+    /// Give back the memory of cached result lists nobody paged through lately (main loop tick).
+    pub fn trim_query_cache(&self) {
+        self.qcache.lock().unwrap().trim_idle();
     }
 
     pub fn has_ctl(&self, letter: char) -> bool {
@@ -369,15 +425,21 @@ pub fn hit_at(ix: &Index, i: u32) -> Hit {
     }
 }
 
-/// Returns (total, hits, note). Every protocol sort is a real order now; `PathAsc` is the
-/// one gap and answers in name order with a note (logged server-side, once).
+/// Returns (total, hits, note). Every protocol sort is a real order; `PathAsc` is the one
+/// gap and answers in name order with a note (logged server-side, once).
+///
+/// The first request of a query computes its match set once and caches it; every further
+/// window - the next page or a scrollbar jump to row 8,000,000 - is a lookup, whatever the
+/// size of the result. `limit == 0` only counts (the type-chip counters) and caches nothing.
 pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> (u64, Vec<Hit>, Option<&'static str>) {
-    let (order, note) = match sort {
-        Sort::NameAsc => (Order::NameAsc, None),
-        Sort::NameDesc => (Order::NameDesc, None),
-        Sort::MtimeDesc => (Order::MtimeDesc, None),
-        Sort::SizeDesc => (Order::SizeDesc, None),
-        Sort::PathAsc => (Order::NameAsc, Some("path_asc is not supported yet; used name_asc")),
+    let (class, reverse, note) = match sort {
+        Sort::NameAsc => (SortClass::Name, false, None),
+        Sort::NameDesc => (SortClass::Name, true, None),
+        Sort::MtimeDesc => (SortClass::Mtime, false, None),
+        Sort::MtimeAsc => (SortClass::Mtime, true, None),
+        Sort::SizeDesc => (SortClass::Size, false, None),
+        Sort::SizeAsc => (SortClass::Size, true, None),
+        Sort::PathAsc => (SortClass::Name, false, Some("path_asc is not supported yet; used name_asc")),
     };
     let lim = limit.min(10_000) as usize;
     let off = offset as usize;
@@ -385,26 +447,46 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
     // The generation is read while holding the read lock, so it always matches the index
     // this scan is about to see (the writer bumps only after a mutation is done).
     let gen = sh.gen.load(Ordering::Relaxed);
-    if let Some(items) = sh.qcache.lock().unwrap().get(gen, query, sort) {
-        let start = off.min(items.len());
-        let end = (off + lim).min(items.len());
-        let hits = items[start..end].iter().map(|&i| hit_at(&ix, i)).collect();
-        return (items.len() as u64, hits, note);
+    let cached = sh.qcache.lock().unwrap().get(gen, query, class);
+    if lim == 0 {
+        let total = cached.map_or_else(|| ix.count(&Query::parse(query)), |c| c.total());
+        return (total as u64, Vec::new(), note);
     }
-    // Scan the whole query once, cache the ordered list, and slice the window: scrolling a
-    // big result set then costs a slice per page instead of a full rescan. Results too big
-    // to keep are scanned in the requested window directly, like before.
-    let full = ix.search_str(query, &SearchOptions { offset: 0, limit: QUERY_CACHE_ITEMS, order });
-    if full.total > QUERY_CACHE_ITEMS {
-        let r = ix.search_str(query, &SearchOptions { offset: off, limit: lim, order });
-        let hits = r.items.iter().map(|&i| hit_at(&ix, i)).collect();
-        return (r.total as u64, hits, note);
-    }
-    sh.qcache.lock().unwrap().put(gen, query, sort, full.items.clone());
-    let start = off.min(full.items.len());
-    let end = (off + lim).min(full.items.len());
-    let hits = full.items[start..end].iter().map(|&i| hit_at(&ix, i)).collect();
-    (full.total as u64, hits, note)
+    // Can the cached result answer this window? (`Top` only covers its sorted prefix.)
+    let usable = cached.filter(|c| match &**c {
+        Cached::Top { items, .. } => !reverse && off + lim <= items.len(),
+        _ => true,
+    });
+    let data = usable.unwrap_or_else(|| {
+        let q = Query::parse(query);
+        let fresh = Arc::new(match class {
+            SortClass::Name => Cached::Names(ix.name_matches(&q)),
+            SortClass::Mtime | SortClass::Size => {
+                let key = if class == SortClass::Mtime { MetaKey::Mtime } else { MetaKey::Size };
+                let slots = ix.match_slots(&q);
+                if slots.len() <= META_FULL_SORT || reverse || off + lim > META_TOP {
+                    Cached::Sorted(ix.sort_slots(slots, key))
+                } else {
+                    Cached::Top { total: slots.len(), items: ix.top_slots(&slots, key, META_TOP) }
+                }
+            }
+        });
+        sh.qcache.lock().unwrap().put(gen, query, class, fresh.clone());
+        fresh
+    });
+    let slots: Vec<u32> = match &*data {
+        Cached::Names(set) => ix.name_page(set, off, lim, reverse),
+        Cached::Sorted(v) | Cached::Top { items: v, .. } => {
+            if reverse {
+                let hi = v.len().saturating_sub(off);
+                v[hi.saturating_sub(lim)..hi].iter().rev().copied().collect()
+            } else {
+                v[off.min(v.len())..(off + lim).min(v.len())].to_vec()
+            }
+        }
+    };
+    let hits = slots.into_iter().map(|i| hit_at(&ix, i)).collect();
+    (data.total() as u64, hits, note)
 }
 
 pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
@@ -544,6 +626,23 @@ mod tests {
         let (_, hits, _) = search(&sh, "txt", 0, 10, Sort::NameAsc);
         assert_eq!(names(hits), ["a.txt", "b.txt", "c.txt", "d.txt", "e.txt"]);
         assert!(search(&sh, "txt", 0, 10, Sort::PathAsc).2.is_some());
+
+        // direction flips read the same cached list backwards; name desc reads the same set from the end
+        let (_, hits, _) = search(&sh, "txt", 0, 10, Sort::MtimeAsc);
+        assert_eq!(names(hits), ["a.txt", "c.txt", "d.txt", "b.txt", "e.txt"]);
+        let (_, hits, _) = search(&sh, "txt", 1, 2, Sort::SizeAsc);
+        assert_eq!(names(hits), ["a.txt", "d.txt"]);
+        let (_, hits, _) = search(&sh, "txt", 1, 3, Sort::NameDesc);
+        assert_eq!(names(hits), ["d.txt", "c.txt", "b.txt"]);
+        // limit 0 only counts: right total, no rows, nothing new in the cache
+        let cached = sh.qcache.lock().unwrap().map.len();
+        assert_eq!(search(&sh, "jpg", 0, 0, Sort::NameAsc), (0, vec![], None));
+        let (total, hits, _) = search(&sh, "a.txt", 0, 0, Sort::SizeDesc);
+        assert_eq!((total, hits.len()), (1, 0));
+        assert_eq!(sh.qcache.lock().unwrap().map.len(), cached);
+        // a window past the end is empty, the total stays
+        assert_eq!(search(&sh, "txt", 99, 5, Sort::NameAsc).0, 5);
+        assert!(search(&sh, "txt", 99, 5, Sort::MtimeDesc).1.is_empty());
     }
 
     #[test]

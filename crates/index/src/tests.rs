@@ -617,3 +617,49 @@ fn incremental_refresh_matches_full_rebuild() {
         assert_eq!(full_rank, inc_rank, "round {round}: rank");
     }
 }
+
+#[test]
+fn match_sets_page_anywhere_and_reverse_exactly() {
+    // Enough rows to span many bitmap words and directory blocks, pushed out of name order.
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    let n = 5000u64;
+    for k in 0..n {
+        let j = (k * 2654435761) % n; // scrambled
+        let name = if j.is_multiple_of(3) { format!("skip_{j:05}.bin") } else { format!("hit_{j:05}.txt") };
+        b.push(C, 100 + k, 5, &name, false, j % 97, (j % 89) as i64);
+    }
+    let ix = b.finish();
+    let q = Query::parse("hit");
+    let all = ix.search(&q, &SearchOptions::default());
+    assert_eq!(all.total, all.items.len());
+    assert_eq!(ix.count(&q), all.total);
+    assert_eq!(ix.count(&Query::parse("")), ix.order_len());
+    let names: Vec<&str> = all.items.iter().map(|&i| ix.name(i)).collect();
+    assert!(names.windows(2).all(|w| w[0] < w[1]), "name order");
+
+    // name windows from one match set tile the full list, forwards and backwards
+    let set = ix.name_matches(&q);
+    assert_eq!(set.total(), all.total);
+    for (off, lim) in [(0, 1), (0, 400), (63, 2), (511, 3), (512, 700), (all.total - 5, 50), (all.total, 9), (all.total + 9, 9)] {
+        let want: Vec<u32> = all.items.iter().skip(off).take(lim).copied().collect();
+        assert_eq!(ix.name_page(&set, off, lim, false), want, "asc window {off}+{lim}");
+        let want: Vec<u32> = all.items.iter().rev().skip(off).take(lim).copied().collect();
+        assert_eq!(ix.name_page(&set, off, lim, true), want, "desc window {off}+{lim}");
+    }
+    // the empty query pages straight off the order array
+    let every = ix.name_matches(&Query::parse(""));
+    assert_eq!(every.total(), ix.order_len());
+    assert_eq!(ix.name_page(&every, 4000, 3, false), ix.search_str("", &SearchOptions { offset: 4000, limit: 3, order: Order::NameAsc }).items);
+
+    // meta: the sorted list, its top-k prefix and the windowed search agree; asc is the exact reverse
+    for (key, desc, asc) in [(MetaKey::Mtime, Order::MtimeDesc, Order::MtimeAsc), (MetaKey::Size, Order::SizeDesc, Order::SizeAsc)] {
+        let sorted = ix.sort_slots(ix.match_slots(&q), key);
+        assert_eq!(sorted.len(), all.total);
+        assert_eq!(ix.top_slots(&ix.match_slots(&q), key, 300), sorted[..300]);
+        assert_eq!(ix.search(&q, &SearchOptions { offset: 1000, limit: 40, order: desc }).items, sorted[1000..1040]);
+        let rev: Vec<u32> = sorted.iter().rev().copied().collect();
+        assert_eq!(ix.search(&q, &SearchOptions { offset: 0, limit: usize::MAX, order: asc }).items, rev);
+        assert_eq!(ix.search(&q, &SearchOptions { offset: 7, limit: 5, order: asc }).items, rev[7..12]);
+    }
+}

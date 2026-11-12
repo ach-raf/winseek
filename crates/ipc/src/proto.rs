@@ -11,6 +11,10 @@ pub enum Sort {
     PathAsc,
     SizeDesc,
     MtimeDesc,
+    /// Smallest first (exact reverse of `SizeDesc`).
+    SizeAsc,
+    /// Oldest first (exact reverse of `MtimeDesc`).
+    MtimeAsc,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

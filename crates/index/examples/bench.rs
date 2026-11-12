@@ -175,4 +175,30 @@ fn main() {
         println!("{:<28} {:>9} {:>9} {:>9}", q, total, pct(&mut lat, 0.5), pct(&mut lat, 0.99));
     }
     println!("{:<28} {:>9} {:>9} {:>9}", "ALL", "", pct(&mut all, 0.5), pct(&mut all, 0.99));
+
+    // Paging a huge result (what a scrollbar jump costs): the match set is built once per
+    // query, then any 400-row window is a lookup.
+    let q = Query::parse("e");
+    let t = Instant::now();
+    let set = ix.name_matches(&q);
+    let build = t.elapsed();
+    let t = Instant::now();
+    let mut rows = 0;
+    for k in 0..1000 {
+        rows += ix.name_page(&set, set.total() / 1000 * k, 400, false).len();
+    }
+    let page = t.elapsed() / 1000;
+    let t = Instant::now();
+    let count = ix.count(&q);
+    let count_t = t.elapsed();
+    let t = Instant::now();
+    let slots = ix.match_slots(&q);
+    let top = ix.top_slots(&slots, MetaKey::Mtime, 50_000).len();
+    let top_t = t.elapsed();
+    let t = Instant::now();
+    let sorted = ix.sort_slots(slots, MetaKey::Mtime).len();
+    let sort_t = t.elapsed();
+    println!("\npaging \"e\": {} matches ({count} counted in {count_t:.1?})", set.total());
+    println!("  name order : match set {build:.1?} ({} KB), then {page:.1?} per 400-row window anywhere ({rows} rows read)", set.mem_bytes() / 1024);
+    println!("  date order : first {top} rows {top_t:.1?} (scan + select); full sort of {sorted} for deep jumps {sort_t:.1?}, then slices");
 }
