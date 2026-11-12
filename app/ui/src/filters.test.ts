@@ -137,3 +137,18 @@ test("date and size chips become exact name-index terms", async () => {
   assert.equal(rangeClause({ date: null, size: { min: null, max: 1048576 } }), "size:0..1048576");
   assert.equal(rangeClause({ date: { from: 5, to: 9 }, size: { min: 1, max: 2 } }), "dm:5..9 size:1..2");
 });
+
+test("a filler word at the end of the query must not crash the parse (age of, just of)", () => {
+  // Regression: "of"/"from"/… as the last token sent dateAt past the array and monthIndex read
+  // .length of undefined — the render throw blanked the whole popup window.
+  for (const q of ["of", "age of", "from", "in", "on", "since", "during"]) {
+    const p = parseQuery(q, { now: NOW });
+    assert.equal(p.text, q, "a trailing filler is plain search text");
+    assert.equal(p.chips.length, 0);
+  }
+  // "photos" is a kind word, so it chips out and only the trailing filler stays as text.
+  const pf = parseQuery("photos of", { now: NOW });
+  assert.equal(pf.kind, "images");
+  assert.equal(pf.text, "of");
+  assert.deepEqual(parseQuery("of march", { now: NOW }).chips.map((c) => c.label), ["Mar 2026"], "a date after the filler still parses");
+});

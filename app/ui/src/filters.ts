@@ -100,6 +100,8 @@ function seasonLabel(name: string, y: number): string {
 /** Date phrase at tokens[i], if any. `lt` are lower-cased tokens. `prefixed` = a filler word ("from", "in") came first. */
 function dateAt(lt: string[], i: number, now: number, prefixed: boolean): Found | null {
   const t = lt[i], n1 = lt[i + 1], n2 = lt[i + 2];
+  // A filler ("of", "from", …) skipped past the end leaves i past the last token: no phrase there.
+  if (t === undefined) return null;
   const nd = new Date(now);
   const y = nd.getFullYear(), mo = nd.getMonth(), d = nd.getDate();
   const today = day(y, mo, d);
