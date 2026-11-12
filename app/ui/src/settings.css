@@ -66,6 +66,12 @@
 .set-foot kbd { margin: 0 1px; }
 @media (max-width: 640px) { .set { grid-template-columns: 150px minmax(0, 1fr); } .sfind { width: 190px; } .scont { padding-right: 16px; } }
 
+/* Full window (embedded beside the sidebar): the content column is ~2x the popup's, so the
+   640px group cap would strand a third of it as dead space. Wider cards, symmetric gutter. */
+.settings.embedded .scont { padding: 0 32px 28px 20px; }
+.settings.embedded .grp { max-width: 820px; }
+.settings.embedded .set-foot { padding: 8px 32px 12px 20px; }
+
 /* ---- groups, cards, rows ---- */
 .grp { max-width: 640px; margin-bottom: 22px; }
 .grp:focus-within h3, .grp h3:focus { outline: 0; }

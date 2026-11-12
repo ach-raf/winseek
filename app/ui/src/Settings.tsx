@@ -645,7 +645,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     trapKey(e);
   };
   return (
-    <section className="firstrun settings" aria-label="Settings"
+    <section className={"firstrun settings" + (embedded ? " embedded" : "")} aria-label="Settings"
              onKeyDown={(e) => {
                if (e.key === "Escape") {
                  e.preventDefault(); e.stopPropagation();

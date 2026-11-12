@@ -28,6 +28,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .qchip button { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--fg3); }
 .qchip button:hover { background: var(--bg3); color: var(--fg); }
 
+/* clear-the-search button (X at the right end of the field, popup + full window) */
+.clr { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 7px; color: var(--fg3); }
+.clr:hover { background: var(--bg3); color: var(--fg); }
+
 /* ---- filter row ---- */
 .frow { display: flex; align-items: center; gap: 6px; flex: none; padding: 0 16px 12px; border-bottom: 1px solid var(--line); }
 .shell.full .frow { padding: 0 18px 12px; }
@@ -194,3 +198,5 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .frow .fc { padding: 0 9px; gap: 5px; flex: 0 1 auto; min-width: 0; }
 .frow .dseg { flex: none; }
 .frow .dseg button { padding: 0 8px; }
+/* compact popup: the sort chip joins the row (780px wide), so let it wrap instead of clipping */
+.shell:not(.full) .frow { flex-wrap: wrap; row-gap: 2px; }

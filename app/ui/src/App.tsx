@@ -21,9 +21,12 @@ import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { kindOf } from "./format";
+import { vlist } from "./vlist";
 
 const ROW_H = 54;
-const PAGE = 80;
+// Rows fetched per request. One block covers the whole visible window on a scroll jump, and
+// searchd caches the query's ordered results, so each further block is a cheap slice.
+const PAGE = 400;
 const OVERSCAN = 6;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -89,7 +92,19 @@ interface Data {
 export default function App({ backend }: { backend: Backend }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
-  const [sort, setSort] = useState<Sort>("rel");
+  // Sort order is remembered across sessions of the popup, so "Date modified" stays picked.
+  const [sort, setSort] = useState<Sort>(() => {
+    try {
+      const v = localStorage.getItem("winseek.sort");
+      return SORTS.some((s) => s.id === v) ? (v as Sort) : "rel";
+    } catch {
+      return "rel";
+    }
+  });
+  const changeSort = useCallback((s: Sort) => {
+    setSort(s);
+    try { localStorage.setItem("winseek.sort", s); } catch { /* remembered only when storage works */ }
+  }, []);
   const [sel, setSel] = useState(0);
   const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
   const [loaded, setLoaded] = useState(false);
@@ -313,8 +328,9 @@ export default function App({ backend }: { backend: Backend }) {
     }
   }, [backend, data.recent, data.full, data.total, scopedQ, sort, effFilter]);
 
-  const first = Math.max(0, Math.floor(scrollTop / ROW_H) - OVERSCAN);
-  const last = Math.min(data.total - 1, Math.ceil((scrollTop + viewH) / ROW_H) + OVERSCAN);
+  const vl = vlist(data.total, ROW_H, scrollTop, viewH, OVERSCAN);
+  const first = vl.first;
+  const last = vl.last;
   useEffect(() => { if (last >= first) ensurePages(first, last); }, [first, last, ensurePages]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query (debounced, newest wins).
@@ -397,7 +413,17 @@ export default function App({ backend }: { backend: Backend }) {
     return () => { dead = true; off?.(); };
   }, [backend]);
   useEffect(() => { document.documentElement.classList.toggle("view-full", viewMode === "full"); }, [viewMode]);
-  useEffect(() => { if (viewMode !== "full") setPage("search"); }, [viewMode]); // the pages are a full-window thing
+  // Settings survives a view flip: the popup's Settings panel and the full-window Settings
+  // page are the same surface, so flipping translates between the two representations
+  // (`settingsOpen` in the popup, the "settings" page in the full window).
+  useEffect(() => {
+    if (viewMode === "full") {
+      if (settingsOpen) { setSettingsOpen(false); setPage("settings"); }
+    } else {
+      setPage("search"); // the pages are a full-window thing
+      if (page === "settings") setSettingsOpen(true);
+    }
+  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps — runs on mode flips only
   const flipView = useCallback(() => {
     void backend.viewSetCurrent(toggleMode(viewMode)).then(setViewMode).catch(() => {});
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -771,7 +797,7 @@ export default function App({ backend }: { backend: Backend }) {
         }
         if (matchesKey(e, "Alt+S")) {
           e.preventDefault();
-          setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length].id);
+          changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length].id);
           inputRef.current?.focus();
           return;
         }
@@ -1018,7 +1044,7 @@ export default function App({ backend }: { backend: Backend }) {
       ? `Recent · ${FILTERS.find((f) => f.id === filter)?.label}`
       : null;
   const sortLabel = SORTS.find((s) => s.id === sort)!.label;
-  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
+  const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
   const rowHandlers: ItemHandlers = useMemo(() => ({
@@ -1038,7 +1064,7 @@ export default function App({ backend }: { backend: Backend }) {
       const h = data.rows[i];
       if (!h) {
         out.push(
-          <div key={i} className="row skeleton" style={{ transform: `translateY(${i * ROW_H}px)` }}>
+          <div key={i} className="row skeleton" style={{ transform: `translateY(${i * ROW_H - vl.voff}px)` }}>
             <span className="ic" />
             <div className="tx"><span className="sk w1" /><span className="sk w2" /></div>
           </div>,
@@ -1048,11 +1074,11 @@ export default function App({ backend }: { backend: Backend }) {
       const why = data.recent ? "" : whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score);
       out.push(
         <HitRow key={i} hit={h} i={i} sel={i === sel} query={parsed.text} backend={backend} h={rowHandlers}
-                renaming={renaming && i === sel} y={i * ROW_H} title={why ? `${h.path}\n${why}` : h.path} />,
+                renaming={renaming && i === sel} y={i * ROW_H - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
       );
     }
     return out;
-  }, [first, last, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
+  }, [first, last, vl.voff, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -1129,7 +1155,7 @@ export default function App({ backend }: { backend: Backend }) {
             ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
         </button>
       )}
-      {full && !isRecent && (
+      {!isRecent && (
         <button className="sortb" tabIndex={-1} title={tooltip("popup.sort")} onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
@@ -1170,6 +1196,13 @@ export default function App({ backend }: { backend: Backend }) {
         autoFocus
         aria-label="Search"
       />
+      {query !== "" && (
+        <button className="clr" tabIndex={-1} aria-label="Clear the search" title="Clear the search"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => { setQuery(""); histAt.current = -1; inputRef.current?.focus(); }}>
+          <IX size={13} />
+        </button>
+      )}
     </>
   );
   const winControls = <WindowControls onMin={() => void backend.minimize()} onRestore={flipView} onClose={() => void backend.hide()} />;
@@ -1262,7 +1295,7 @@ export default function App({ backend }: { backend: Backend }) {
             )}
 
             <div className="list vlist" hidden={showPanel || !showList} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
-              <div className="spacer-v" style={{ height: data.total * ROW_H }}>{visible}</div>
+              <div className="spacer-v" style={{ height: vl.height }}>{visible}</div>
               {loaded && data.total === 0 && (
                 <div className="none">
                   <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>
