@@ -30,6 +30,8 @@ export const IMin = () => <svg width="11" height="11" viewBox="0 0 11 11" stroke
 export const IMax = () => <svg width="11" height="11" viewBox="0 0 11 11" stroke="currentColor" fill="none" aria-hidden><rect x="1.5" y="1.5" width="8" height="8" /></svg>;
 export const ICls = () => <svg width="11" height="11" viewBox="0 0 11 11" stroke="currentColor" fill="none" aria-hidden><path d="M1 1l9 9M10 1 1 10" /></svg>;
 export const IChevL = ({ size = 15, className }: P) => <S size={size} w={2.2} className={className}><path d="m15 18-6-6 6-6" /></S>;
+export const IUp = ({ size = 15, className }: P) => <S size={size} w={2.2} className={className}><path d="m6 14 6-6 6 6" /><path d="M12 8v12" /></S>;
+export const IRefresh = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><path d="M20 12a8 8 0 1 1-2.6-5.9" /><path d="M20 4v5h-5" /></S>;
 export const IFolder = () => (
   <svg viewBox="0 0 32 32" aria-hidden>
     <path d="M3 9a3 3 0 0 1 3-3h6.2a2 2 0 0 1 1.5.7L15.5 9H26a3 3 0 0 1 3 3v2H3z" fill="#e3a21a" />

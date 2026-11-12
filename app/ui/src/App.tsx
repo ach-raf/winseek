@@ -11,7 +11,7 @@ import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, expandable, fmtMs, isGrid, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, isGrid, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
@@ -53,11 +53,12 @@ const SORTS: { id: Sort; label: string }[] = [
 // Every order, including the reversed ones the column headers reach (the chip cycles the four above).
 const SORT_LABEL: Record<Sort, string> = {
   rel: "Best match", name: "Name", date: "Date modified", size: "Size",
-  name_desc: "Name, Z to A", date_asc: "Oldest first", size_asc: "Smallest first",
+  name_desc: "Name, Z to A", date_asc: "Oldest first", size_asc: "Smallest first", type: "Type, A to Z", type_desc: "Type, Z to A",
 };
 // Column headers of the full window: first click = `a`, a click on the active column flips to `b`.
-const COLS: { label: string; a: Sort; b: Sort; up: Sort; hint: string }[] = [
+const COLS: { label: string; a: Sort; b: Sort; up: Sort; hint: string; dense?: boolean }[] = [
   { label: "Name", a: "name", b: "name_desc", up: "name", hint: "Sort by name" },
+  { label: "Type", a: "type", b: "type_desc", up: "type", hint: "Sort by type", dense: true },
   { label: "Modified", a: "date", b: "date_asc", up: "date_asc", hint: "Sort by date modified" },
   { label: "Size", a: "size", b: "size_asc", up: "size_asc", hint: "Sort by size" },
 ];
@@ -259,7 +260,8 @@ export default function App({ backend }: { backend: Backend }) {
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
   // Text found inside files (documents, PDFs, screenshot OCR) is searchable before the models exist, so the
   // meaning search runs whenever Tier 1 is up; without models it answers with text hits only.
-  const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext);
+  const [expand, setExpand] = useState<Expand>(null);
+  const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed) && onDrive(h.path, drive)), [sem.hits, parsed, drive]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
@@ -268,8 +270,28 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- Spotlight overview --------------------------------------------------
   // A typed search shows sections (Top Hit, Files, Images, Documents) with "Show all"; the recent list, a sort
   // other than best match, and "Show all files" use the full virtualised list instead.
-  const [expand, setExpand] = useState<Expand>(null);
   useEffect(() => { setExpand(null); }, [query, filter, drive]);
+  // "Show all" on Photos: every picture whose name matches, not just the first page of the list (400 rows).
+  // Read in 5,000-row pages; the grid fills as they arrive.
+  const [photosAll, setPhotosAll] = useState<Hit[] | null>(null);
+  const [photosBusy, setPhotosBusy] = useState(false);
+  useEffect(() => {
+    if (expand !== "images" || isRecent) { setPhotosAll(null); return; }
+    let dead = false;
+    (async () => {
+      const out: Hit[] = [];
+      for (;;) {
+        const r = await backend.search({ query: scopedQ, offset: out.length, limit: 5000, sort: "name", filter: "images" });
+        if (dead) return;
+        for (const h of r.hits) out.push(h);
+        const done = r.hits.length === 0 || out.length >= r.total;
+        setPhotosAll(out.slice());
+        setPhotosBusy(!done);
+        if (done) break;
+      }
+    })().catch((e) => { if (!dead) setPhotosBusy(false); console.error(e); });
+    return () => { dead = true; setPhotosBusy(false); };
+  }, [backend, expand, isRecent, scopedQ, epoch]);
   // What the overview sections are built from: every row of a fully loaded list, else the first page. (The
   // paged row store is sparse and can span millions of indexes; nothing may loop over it.)
   const headRows = useMemo(
@@ -295,11 +317,11 @@ export default function App({ backend }: { backend: Backend }) {
     () => (isRecent
       ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
       : buildOverview({
-        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
+        names: settingsScope ? [] : photosAll ?? headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, detached: !!photosAll, imageNameTotal: photosAll && !photosBusy ? undefined : nameCounts?.images, semMore: sem.more, text: parsed.text,
         expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, photosAll, photosBusy, nameCounts, data.total, semHits, sem.more, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -878,6 +900,8 @@ export default function App({ backend }: { backend: Backend }) {
     if (el) el.scrollIntoView({ block: "nearest" });
     else if (osel === 0) ovRef.current?.scrollTo({ top: 0 });
   }, [overview, osel, oselKey]);
+  // Opening or leaving "Show all" starts at the top of the new list, wherever the old one was scrolled to.
+  useEffect(() => { ovRef.current?.scrollTo({ top: 0 }); }, [expand]);
   const ovGo = useCallback((i: number) => { const it = ov.flat[i]; if (it) setOselKey(it.key); }, [ov.flat]);
 
   const openSemMenu = useCallback(async (path: string, x: number, y: number) => {
@@ -1332,7 +1356,7 @@ export default function App({ backend }: { backend: Backend }) {
                     if (k) dropChip(k.key); // a tab click overrides the kind found in the text
                     setFilter(f.id); inputRef.current?.focus();
                   }}>
-            {f.label}{n !== undefined && n > 0 && <i>{n.toLocaleString("en-US")}</i>}
+            {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
           </button>
         );
       })}
@@ -1504,11 +1528,11 @@ export default function App({ backend }: { backend: Backend }) {
             {full && !isRecent && (
               <div className={"colh" + (dense ? " dense" : "")}>
                 <span />
-                {COLS.map((c, ci) => {
+                {COLS.filter((c) => !c.dense || dense).map((c, ci) => {
                   const on = sort === c.a || sort === c.b;
                   return (
                     <Fragment key={c.label}>
-                    <button tabIndex={-1} className={on ? "on" : ""} onMouseDown={keep}
+                    <button tabIndex={-1} className={(on ? "on" : "") + (c.dense ? " ty" : "")} onMouseDown={keep}
                             aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[sort]}` : ""}`}
                             title={on ? `${SORT_LABEL[sort]}. Click to reverse.` : c.hint}
                             onClick={() => { changeSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
@@ -1560,7 +1584,7 @@ export default function App({ backend }: { backend: Backend }) {
             )}
 
             {!showPanel && overview && (ov.flat.length > 0 ? (
-              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}
+              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || photosBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} armed={armed} />
             ) : loaded && !waitingSem ? (
               <div className="none">

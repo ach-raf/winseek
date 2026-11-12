@@ -41,6 +41,8 @@ export interface OvSection {
   total: number;
   /** More than shown: offer "Show all". */
   more: boolean;
+  /** `total` is only what was read so far (a quick top-k): "Show all" names no number. */
+  open?: boolean;
 }
 
 /** Photo grid columns in the compact popup (the full window shows 5, the app grid 6 / 8). */
@@ -96,6 +98,12 @@ export function buildOverview(opts: {
   calc?: string;
   /** Columns of the Photos grid (4 in the popup, 5 in the full window); two rows are shown. */
   photoCols?: number;
+  /** `names` is not the row store (the expanded Photos list): its items carry no row index. */
+  detached?: boolean;
+  /** How many pictures match by name in all (the Images chip count); the rows loaded here are only the first page. */
+  imageNameTotal?: number;
+  /** `sem` is a quick top-k and relevant files were left out of it: "Show all" has more. */
+  semMore?: boolean;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
   const launch = opts.launch ?? [];
@@ -207,16 +215,15 @@ export function buildOverview(opts: {
       seen.add(k(h.path));
       list.push({ hit: semHit(h), sem: h });
     }
-    // A grid of many thousands of tiles would jank the render: the expanded grid shows the first
-    // EXPAND_CAP; the Images filter and its list remain the "show everything" surface.
-    const EXPAND_CAP = 240;
-    const cap = expand ? Math.min(list.length, EXPAND_CAP) : Math.min(list.length, photoCols * GRID_ROWS);
+    // "Show all" shows every photo; the grid draws only the tiles near the viewport (Overview's Windowed).
+    const cap = expand ? list.length : Math.min(list.length, photoCols * GRID_ROWS);
+    const total = opts.imageNameTotal === undefined ? list.length : Math.max(list.length, opts.imageNameTotal + list.filter((x) => x.idx === undefined).length);
     const items = list.slice(0, cap).map((x, i): OvItem => ({
       key: x.idx !== undefined ? "n" + x.idx : "s:" + x.hit.path,
       section: "images",
       hit: x.hit,
       sem: x.sem,
-      nameIdx: x.idx,
+      nameIdx: opts.detached ? undefined : x.idx,
       col: i % photoCols,
     }));
     if (items.length) {
@@ -224,9 +231,9 @@ export function buildOverview(opts: {
         id: "images",
         title: "Photos",
         items,
-        total: list.length,
-        more: !expand && list.length > items.length,
-        note: expand && list.length > cap ? `Showing the first ${cap.toLocaleString("en-US")}` : undefined,
+        total,
+        more: !expand && (total > items.length || !!opts.semMore),
+        open: !expand && !!opts.semMore,
       });
     }
   }
@@ -236,7 +243,7 @@ export function buildOverview(opts: {
     const cap = expand ? list.length : DOCS;
     const items = list.slice(0, cap).map((h): OvItem => ({ key: "s:" + h.path, section: "docs", hit: semHit(h), sem: h }));
     if (items.length) {
-      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, more: list.length > items.length });
+      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, more: !expand && (list.length > items.length || !!opts.semMore), open: !expand && !!opts.semMore });
     }
   }
 
@@ -308,6 +315,13 @@ export function nicePath(path: string): { head: string; tail: string } {
   if (!parts.length) return { head: "", tail: dir };
   const last = parts[parts.length - 1];
   return parts.length === 1 ? { head: "", tail: last } : { head: parts.slice(0, -1).join(" \u203a "), tail: " \u203a " + last };
+}
+
+/** A filter chip's count, short enough that the popup's chip row never clips it: 842, 1.3k, 12k, 4.2M. */
+export function chipCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 999_500) return n < 1e4 ? (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k" : Math.round(n / 1e3) + "k";
+  return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
 }
 
 /** "Today", "Yesterday", "3 days ago", "2 weeks ago", "5 months ago", "2 years ago" (calendar days). */

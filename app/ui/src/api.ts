@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, DiskUsage, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -58,7 +58,7 @@ function tauriBackend(t: TauriGlobal): Backend {
         thumb: i.kind === "text" ? null : big(i.kind === "folder"),
       };
     },
-    semanticSearch: (query, k) => inv<SemanticResult>("semantic_search", { query, k }),
+    semanticSearch: (query, k, offset) => inv<SemanticResult>("semantic_search", { query, k, offset: offset ?? 0 }),
     parserPresent: () => inv<boolean>("parser_present"),
     parseDocument: (path, page) => inv<ParsedDoc>("parse_document", { path, page: page ?? null }),
     copyTextHtml: (text, html) => inv("copy_text_html", { text, html: html ?? null }),
@@ -122,6 +122,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     libraryNearStart: (threshold) => inv("library_near_start", { threshold }),
     libraryNearPoll: () => inv<NearState>("library_near_poll"),
     libraryBigFiles: (limit) => inv<Hit[]>("library_big_files", { limit }),
+    diskUsage: (path, topFiles) => inv<DiskUsage>("disk_usage", { path, topFiles: topFiles ?? 100 }),
     libraryDims: (paths) => inv<([number, number] | null)[]>("library_dims", { paths }),
   };
 }

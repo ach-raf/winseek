@@ -90,34 +90,59 @@ export interface SemanticState {
   /** The query these hits were computed for. */
   query: string;
   hits: SemanticHit[];
+  /** The quick top-k left relevant files out: "Show all" has more than `hits`. */
+  more: boolean;
+  /** "Show all" is still reading pages. */
+  loading: boolean;
 }
 
+const NO_HITS: SemanticState = { query: "", hits: [], more: false, loading: false };
 const DEBOUNCE_MS = 150;
 const SEM_K = 24;
 const SEM_K_FILTERED = 80; // chips thin the hits out afterwards, so ask for more
+/** "Show all" / the Images and Documents tabs list every relevant file, read in pages of this size
+ *  (over 200, which is what tells the backend to list everything rather than a top-k). */
+const SEM_PAGE = 1000;
 
 /**
  * Semantic hits for the query, ~150 ms after typing stops. The previous hits stay on screen
  * until the new ones arrive (no flicker / reshuffle); disabling or clearing the query drops them.
  * `reload` re-runs the search for the same query (popup re-shown, file deleted).
  */
-export function useSemantic(backend: Backend, query: string, enabled: boolean, filter: Filter, reload: number, filtered = false): SemanticState {
-  const [state, setState] = useState<SemanticState>({ query: "", hits: [] });
+export function useSemantic(backend: Backend, query: string, enabled: boolean, filter: Filter, reload: number, filtered = false, all = false): SemanticState {
+  const [state, setState] = useState<SemanticState>(NO_HITS);
   const seq = useRef(0);
   const q = query.trim();
   const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs");
   useEffect(() => {
     const my = ++seq.current;
     if (!active) {
-      setState((s) => (s.hits.length ? { query: "", hits: [] } : s));
+      setState((s) => (s.hits.length || s.loading ? NO_HITS : s));
       return;
     }
-    const t = window.setTimeout(() => {
-      backend.semanticSearch(q, filtered ? SEM_K_FILTERED : SEM_K).then((r) => {
-        if (my === seq.current) setState({ query: q, hits: r.hits });
-      }).catch(() => { if (my === seq.current) setState({ query: q, hits: [] }); });
+    const t = window.setTimeout(async () => {
+      try {
+        if (!all) {
+          const r = await backend.semanticSearch(q, filtered ? SEM_K_FILTERED : SEM_K);
+          if (my === seq.current) setState({ query: q, hits: r.hits, more: !!r.more, loading: false });
+          return;
+        }
+        // Every relevant file, a page at a time: the first page is on screen at once and the rest
+        // fills in behind it. The backend computes the list once and cuts the pages from it.
+        let hits: SemanticHit[] = [];
+        for (;;) {
+          const r = await backend.semanticSearch(q, SEM_PAGE, hits.length);
+          if (my !== seq.current || r.state === "superseded") return;
+          hits = hits.concat(r.hits);
+          const done = r.hits.length === 0 || hits.length >= (r.total ?? hits.length);
+          setState({ query: q, hits, more: false, loading: !done });
+          if (done) return;
+        }
+      } catch {
+        if (my === seq.current) setState((s) => (s.query === q && all ? { ...s, loading: false } : { query: q, hits: [], more: false, loading: false }));
+      }
     }, DEBOUNCE_MS);
     return () => window.clearTimeout(t);
-  }, [backend, q, active, reload, filtered]);
+  }, [backend, q, active, reload, filtered, all]);
   return state;
 }

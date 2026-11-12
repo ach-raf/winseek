@@ -70,6 +70,10 @@ export interface ParsedDoc {
 export interface SemanticResult {
   state: string;
   hits: SemanticHit[];
+  /** Hits in the whole list this page is cut from ("Show all" pages); else the hits returned. */
+  total?: number;
+  /** More relevant files exist than were returned. */
+  more?: boolean;
 }
 export interface PlanItem {
   name: string;
@@ -243,7 +247,7 @@ export interface PreviewInfo {
 /** "settings" is a launcher-only scope (the name index is not searched); "apps" filters the name
  *  index to exe/msi AND keeps the launcher's app rows; "files" is everything but folders. */
 export type Filter = "all" | "files" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
-export type Sort = "rel" | "name" | "size" | "date" | "name_desc" | "size_asc" | "date_asc";
+export type Sort = "rel" | "name" | "size" | "date" | "name_desc" | "size_asc" | "date_asc" | "type" | "type_desc";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";
 
@@ -417,7 +421,8 @@ export interface Backend {
   tier1SetIndexCode(on: boolean): Promise<boolean>;
   /** Never rejects with anything but a user-readable string ("File not found"). */
   previewInfo(path: string): Promise<PreviewInfo>;
-  semanticSearch(query: string, k: number): Promise<SemanticResult>;
+  /** The best `k` hits; with `k` over 200 or an `offset`, a page of every relevant file ("Show all"). */
+  semanticSearch(query: string, k: number, offset?: number): Promise<SemanticResult>;
   /** Are the document parser's files installed? The preview offers its actions only then. */
   parserPresent(): Promise<boolean>;
   /** Read an image or one PDF page (1-based, ignored for images) with the document parser. Takes a few seconds. */
@@ -488,6 +493,8 @@ export interface Backend {
   libraryNearPoll(): Promise<NearState>;
   /** The largest files under the user's profile (name index, sorted by size). */
   libraryBigFiles(limit: number): Promise<Hit[]>;
+  /** Where the space went under a folder ("" = every drive), from the name index; also what the drive itself has free. */
+  diskUsage(path: string, topFiles?: number): Promise<DiskUsage>;
   /** Pixel sizes read from the file headers (null: unknown format). */
   libraryDims(paths: string[]): Promise<([number, number] | null)[]>;
   /** The tray's "Status" item asks the popup to show the status page. */
@@ -521,3 +528,19 @@ export interface Backend {
 
 /** Bytes on one drive (sidebar card). */
 export interface DriveSpace { letter: string; total: number; free: number }
+/** One child of a folder in the disk-usage view. `kind`: 0 other, 1 pictures, 2 video, 3 audio, 4 documents, 5 archives, 6 code, 7 programs and system (a folder: what most of its bytes are). */
+export interface UsageEntry { name: string; path: string; is_dir: boolean; kind: number; size: number; files: number; folders: number; mtime: number | null }
+export interface UsageType { ext: string; kind: number; bytes: number; files: number }
+export interface DiskUsage {
+  path: string;
+  size: number;
+  files: number;
+  folders: number;
+  entries: UsageEntry[];
+  /** Children the service left out of `entries`, and the bytes they hold together. */
+  more: number;
+  more_size: number;
+  types: UsageType[];
+  biggest: Hit[];
+  drives: DriveSpace[];
+}

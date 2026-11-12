@@ -1,4 +1,5 @@
-import { memo, useEffect, useRef, type ReactNode } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
 import { nicePath, relDate } from "./overviewLogic";
@@ -115,6 +116,13 @@ function PathSub({ path }: { path: string }) {
   return <div className="sub path"><span className="head">{head}</span><span className="tail">{tail}</span></div>;
 }
 
+/** The compact rows' Type column: "Folder", or the extension in capitals ("File" without one). */
+export function typeCell(name: string, isDir: boolean): string {
+  if (isDir) return "Folder";
+  const e = extOf(name);
+  return e ? e.toUpperCase() : "File";
+}
+
 /** A file / folder row (also the virtualised list's row): 36 px icon, name + folder, date, size, "Open ↵" when selected. */
 export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, renaming, top, app, sem, title, y }: {
   hit: Hit; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers; renaming: boolean;
@@ -144,6 +152,7 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
           ? <div className="sub snip" title="Found inside the file"><Snippet text={snippet} /></div>
           : <PathSub path={hit.path} />}
       </div>
+      <span className="ty">{typeCell(hit.name, hit.is_dir)}</span>
       <span className="dt">{relDate(hit.mtime)}</span>
       <span className="sz" title={hit.is_dir && hit.size !== null ? "Everything inside this folder" : undefined}>{formatSize(hit.size)}</span>
       <span className="go">{app ? "Launch" : "Open"} <kbd>{"↵"}</kbd></span>
@@ -203,7 +212,7 @@ const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem;
          data-sel={sel ? "1" : undefined} data-i={i} title={it.hit.path}
          onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
-      {src ? <img src={src} alt="" loading="lazy" draggable={false} /> : <FileIcon name={it.hit.name} isDir={false} src={null} />}
+      {src ? <img src={src} alt="" loading="lazy" decoding="async" draggable={false} /> : <FileIcon name={it.hit.name} isDir={false} src={null} />}
       <span className="cap"><Highlight text={it.hit.name} query={query} /></span>
     </div>
   );
@@ -221,12 +230,88 @@ function CalcCard({ it, i, sel, expr, h }: { it: OvItem; i: number; sel: boolean
   );
 }
 
-function SectionHead({ s, expanded, onBack, onExpand }: { s: OvSection; expanded: boolean; onBack: () => void; onExpand: (id: SectionId) => void }): ReactNode {
+/** Lists at least this long are windowed: only the rows near the viewport are in the page. */
+const WIN_MIN = 80;
+/** Drawn before the first measurement (enough to see a second row of any grid). */
+const WIN_FIRST = 48;
+/** Rows kept drawn above and below the viewport, so a fast scroll never shows a gap. */
+const WIN_OVERSCAN = 4;
+
+/**
+ * A list or tile grid of any length that costs what is on screen: the rows near the viewport are
+ * drawn, the rest is two spacers of the same height, so the scrollbar still spans everything.
+ * The row height and the column count are read from the drawn items (the CSS stays in charge of
+ * the layout); every item must carry `data-i` and all rows must be equally tall.
+ */
+function Windowed({ scrollRef, count, className, render }: {
+  scrollRef: React.RefObject<HTMLDivElement | null>; count: number; className: string;
+  render: (from: number, to: number) => ReactNode;
+}) {
+  const box = useRef<HTMLDivElement>(null);
+  const [g, setG] = useState({ cols: 1, stride: 0, gap: 0, top: 0, viewH: 0 });
+  const [scrollTop, setScrollTop] = useState(0);
+  const on = count >= WIN_MIN;
+
+  const measure = useCallback(() => {
+    const el = box.current, sc = scrollRef.current;
+    if (!el || !sc) return;
+    const els = el.querySelectorAll<HTMLElement>(":scope > [data-i]");
+    if (!els.length) return;
+    const y0 = els[0].getBoundingClientRect().top;
+    let cols = 1;
+    while (cols < els.length && Math.abs(els[cols].getBoundingClientRect().top - y0) < 0.5) cols++;
+    if (cols >= els.length) return; // a single row is drawn: no second one to take the height from
+    const stride = els[cols].getBoundingClientRect().top - y0; // fractional on purpose: it is multiplied by thousands of rows
+    const cs = getComputedStyle(el);
+    const gap = parseFloat(cs.rowGap) || 0;
+    const top = el.getBoundingClientRect().top + (parseFloat(cs.paddingTop) || 0) - sc.getBoundingClientRect().top + sc.scrollTop;
+    const viewH = sc.clientHeight;
+    setG((p) => (p.cols === cols && Math.abs(p.stride - stride) < 0.01 && p.gap === gap && Math.abs(p.top - top) < 0.5 && p.viewH === viewH
+      ? p : { cols, stride, gap, top, viewH }));
+  }, [scrollRef]);
+
+  useLayoutEffect(() => { if (on) measure(); }, [on, measure, className]);
+  useEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc || !on) return;
+    const onScroll = () => setScrollTop(sc.scrollTop);
+    onScroll();
+    sc.addEventListener("scroll", onScroll, { passive: true });
+    const ro = new ResizeObserver(measure);
+    ro.observe(sc);
+    if (box.current) ro.observe(box.current);
+    return () => { sc.removeEventListener("scroll", onScroll); ro.disconnect(); };
+  }, [scrollRef, on, measure]);
+
+  let from = 0, to = count, before = 0, after = 0;
+  if (on && !g.stride) to = Math.min(count, WIN_FIRST);
+  else if (on) {
+    const rows = Math.ceil(count / g.cols);
+    const y = scrollTop - g.top;
+    const a = Math.max(0, Math.min(rows - 1, Math.floor(y / g.stride) - WIN_OVERSCAN));
+    const b = Math.max(a, Math.min(rows - 1, Math.ceil((y + g.viewH) / g.stride) + WIN_OVERSCAN));
+    from = a * g.cols;
+    to = Math.min(count, (b + 1) * g.cols);
+    // A spacer stands for whole rows; the gap after it is the grid's own.
+    before = a * g.stride - g.gap;
+    after = (rows - 1 - b) * g.stride - g.gap;
+  }
+  return (
+    <div ref={box} className={className + (on ? " win" : "")}>
+      {before > 0 && <div className="win-pad" style={{ height: before }} />}
+      {render(from, to)}
+      {after > 0 && <div className="win-pad" style={{ height: after }} />}
+    </div>
+  );
+}
+
+function SectionHead({ s, expanded, loading, onBack, onExpand }: { s: OvSection; expanded: boolean; loading: boolean; onBack: () => void; onExpand: (id: SectionId) => void }): ReactNode {
   return (
     <div className="sh">
       {expanded ? (
         <button className="back" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={onBack} aria-label={`Back to all results from ${s.title}`}>
           <IChevL size={14} /><span>{s.title}</span><i>{s.total.toLocaleString("en-US")}</i>
+          {loading && <i className="busy" role="status">finding more</i>}
         </button>
       ) : (
         <span>{s.title}</span>
@@ -236,7 +321,7 @@ function SectionHead({ s, expanded, onBack, onExpand }: { s: OvSection; expanded
           {s.note}
           {s.more && (
             <button className="more" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => onExpand(s.id)}>
-              Show all{s.total > s.items.length ? ` ${s.total.toLocaleString("en-US")}` : ""}
+              Show all{!s.open && s.total > s.items.length ? ` ${s.total.toLocaleString("en-US")}` : ""}
             </button>
           )}
         </small>
@@ -245,8 +330,10 @@ function SectionHead({ s, expanded, onBack, onExpand }: { s: OvSection; expanded
   );
 }
 
-export function Overview({ sections, sel, renaming, query, backend, expanded, handlers, onExpand, onBack, scrollRef, armed }: {
+export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, scrollRef, armed }: {
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
+  /** "Show all" is still reading pages: the list keeps growing. */
+  loading?: boolean;
   handlers: ItemHandlers; onExpand: (id: SectionId) => void; onBack: () => void;
   scrollRef: React.RefObject<HTMLDivElement | null>; armed: string | null;
 }) {
@@ -262,20 +349,23 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, ha
         }
         return (
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
-            <SectionHead s={s} expanded={expanded} onBack={onBack} onExpand={onExpand} />
+            <SectionHead s={s} expanded={expanded} loading={expanded && !!loading} onBack={onBack} onExpand={onExpand} />
             {s.id === "images" ? (
-              <div className="grid photos">
-                {s.items.map((it, j) => <Tile key={it.key} it={it} i={start + j} sel={start + j === sel} query={query} backend={backend} h={handlers} />)}
-              </div>
+              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" render={(from, to) =>
+                s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />
             ) : s.id === "mostused" ? (
               <div className="grid apps">
                 {s.items.map((it, j) => <AppTile key={it.key} it={it} i={start + j} sel={start + j === sel} backend={backend} h={handlers} />)}
               </div>
             ) : (
-              s.items.map((it, j) => it.launch
-                ? <LaunchRow key={it.key} it={it} i={start + j} sel={start + j === sel} query={query} backend={backend} h={handlers} armed={armed} />
-                : <HitRow key={it.key} hit={it.hit} i={start + j} sel={start + j === sel} query={query} backend={backend} h={handlers}
-                          renaming={renaming && start + j === sel} top={s.id === "top"} app={s.id === "apps"} sem={it.sem} />)
+              <Windowed scrollRef={scrollRef} count={s.items.length} className="rows" render={(from, to) =>
+                s.items.slice(from, to).map((it, j0) => {
+                  const j = from + j0;
+                  return it.launch
+                    ? <LaunchRow key={it.key} it={it} i={start + j} sel={start + j === sel} query={query} backend={backend} h={handlers} armed={armed} />
+                    : <HitRow key={it.key} hit={it.hit} i={start + j} sel={start + j === sel} query={query} backend={backend} h={handlers}
+                              renaming={renaming && start + j === sel} top={s.id === "top"} app={s.id === "apps"} sem={it.sem} />;
+                })} />
             )}
           </section>
         );

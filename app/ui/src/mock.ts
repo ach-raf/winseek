@@ -1,6 +1,7 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
+import { mockDiskUsage } from "./mockUsage";
 import type { ViewMode, ViewState } from "./viewMode";
 import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
 
@@ -577,6 +578,10 @@ export const mockBackend: Backend = {
     else if (s === "size_asc") m.sort((a, b) => (toHit(a).size ?? 0) - (toHit(b).size ?? 0));
     else if (s === "date") m.sort((a, b) => b.mtime - a.mtime);
     else if (s === "date_asc") m.sort((a, b) => a.mtime - b.mtime);
+    else if (s === "type" || s === "type_desc") {
+      const ty = (e: (typeof m)[number]) => (toHit(e).is_dir ? "" : e.lower.slice(e.lower.lastIndexOf(".") + 1));
+      m.sort((a, b) => (ty(a).localeCompare(ty(b)) || a.lower.localeCompare(b.lower)) * (s === "type" ? 1 : -1));
+    }
     else m.sort((a, b) => Number(b.lower.startsWith(terms[0])) - Number(a.lower.startsWith(terms[0])) || a.lower.length - b.lower.length);
     await sleep(8);
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
@@ -733,7 +738,7 @@ export const mockBackend: Backend = {
   async tier1GetIndexCode() { return indexCode; },
   async tier1SetIndexCode(on) { await sleep(30); indexCode = on; return indexCode; },
   previewInfo: mockPreview,
-  async semanticSearch(query, k) {
+  async semanticSearch(query, k, offset = 0) {
     const st = t1Status().state;
     if (st === "unavailable") return { state: "unavailable", hits: [] };
     const textHits = (): SemanticHit[] => {
@@ -754,7 +759,9 @@ export const mockBackend: Backend = {
     };
     if (!modelsInstalled) {
       await sleep(30);
-      return { state: "models_missing", hits: textHits().slice(0, Math.max(1, Math.min(k, 200))) };
+      const all = textHits();
+      const hits = all.slice(offset, offset + Math.max(1, k));
+      return { state: "models_missing", hits, total: all.length, more: offset + hits.length < all.length };
     }
     await sleep(60 + Math.random() * 60);
     const q = query.toLowerCase().trim();
@@ -764,7 +771,7 @@ export const mockBackend: Backend = {
     // rank high (the overview shows a file once, in its best section).
     // Every third hit also carries OCR-style text, like a screenshot or scanned page would.
     const OCR = ["Invoice no. 2025-0142 total due 240.00 EUR", "Meeting notes: budget review and next steps", "Receipt Paris cafe 12.50 EUR thank you"];
-    const hits: SemanticHit[] = DB.filter((e) => e.kind === 1 && inScope(e.path))
+    const all: SemanticHit[] = DB.filter((e) => e.kind === 1 && inScope(e.path))
       .map((e): SemanticHit => {
         const h = hash01(q + "|" + e.path);
         const text = hash01(e.path) < 0.34 ? OCR[Math.floor(hash01(e.path + "t") * OCR.length)] : null;
@@ -781,9 +788,11 @@ export const mockBackend: Backend = {
       .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
       // Like the app's calibrated gate: only what clearly stands out is returned, never "the least unrelated".
       .filter((h) => h.score >= 0.28)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, Math.max(1, Math.min(k, 200)));
-    return { state: st, hits };
+      .sort((a, b) => b.score - a.score);
+    // Like the app: a small first page is the quick top-k, anything else a page of the whole list.
+    const hits = all.slice(offset, offset + Math.max(1, k));
+    const deep = offset > 0 || k > 200;
+    return { state: st, hits, total: deep ? all.length : hits.length, more: offset + hits.length < all.length };
   },
   async parserPresent() { await sleep(20); return parserHave(); },
   async parseDocument(path, page): Promise<ParsedDoc> {
@@ -963,6 +972,10 @@ export const mockBackend: Backend = {
   async libraryBigFiles(limit) {
     await sleep(40);
     return DB.filter((e) => !e.dir && e.path.startsWith("C:\\Users\\User\\")).sort((a, b) => b.size - a.size).slice(0, limit).map(toHit);
+  },
+  async diskUsage(path, topFiles) {
+    await sleep(60);
+    return mockDiskUsage(path, topFiles);
   },
   async libraryDims(paths) { return paths.map((p) => { const f = libByPath.get(p); return f && f.w ? [f.w, f.h] as [number, number] : null; }); },
   async onOpenStatus() { return () => {}; },

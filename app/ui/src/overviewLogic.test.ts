@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, expandable, fmtMs, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
 
 const isImage = (n: string) => /\.(jpe?g|png|webp)$/i.test(n);
@@ -39,6 +39,15 @@ test("overview: Show all photos lists every image and nothing else", () => {
   const s = Array.from({ length: 14 }, (_, i) => sem(`p${i}.jpg`));
   const r = buildOverview({ names: [hit("p.txt")], nameTotal: 1, sem: s, text: "p", expand: "images", isImage });
   assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["images", 14, false]]);
+});
+
+test("overview: a quick top-k that left relevant files out offers Show all without a number", () => {
+  const s = [sem("p0.jpg"), sem("p1.jpg"), sem("notes.pdf")];
+  const sec = (semMore: boolean, expand: "images" | null = null) =>
+    buildOverview({ names: [hit("x.txt")], nameTotal: 1, sem: s, text: "x", expand, isImage, semMore }).sections;
+  assert.deepEqual(sec(true).filter((x) => x.id === "images" || x.id === "docs").map((x) => [x.id, x.more, !!x.open]), [["images", true, true], ["docs", true, true]]);
+  assert.deepEqual(sec(false).filter((x) => x.id === "images" || x.id === "docs").map((x) => [x.id, x.more, !!x.open]), [["images", false, false], ["docs", false, false]]);
+  assert.deepEqual(sec(true, "images").map((x) => [x.id, x.more, !!x.open]), [["images", false, false]], "the opened section is the whole list");
 });
 
 test("overview: three or more name-matched images become photo tiles and leave Files", () => {
@@ -227,4 +236,9 @@ test("fmtMs: a decimal under 10 ms, whole numbers above", () => {
   assert.equal(fmtMs(0.37), "0.4");
   assert.equal(fmtMs(0), "0.1");
   assert.equal(fmtMs(42.6), "43");
+});
+
+test("chipCount keeps filter chip counts short", () => {
+  assert.deepEqual([0, 842, 999, 1000, 1257, 9999, 12_345, 999_999, 1_000_000, 4_240_000].map(chipCount),
+    ["0", "842", "999", "1k", "1.3k", "10k", "12k", "1M", "1M", "4.2M"]);
 });

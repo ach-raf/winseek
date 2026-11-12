@@ -6,6 +6,7 @@ import { baseName } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
 import { IChevL, ICheck } from "./icons";
+import { Space } from "./Space";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
@@ -41,6 +42,7 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
   gen: number;
   onError: (e: unknown) => void;
 }) {
+  const [mode, setMode] = useState<"tidy" | "space">("tidy");
   const [view, setView] = useState<View>("home");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
   const [groups, setGroups] = useState<DupGroup[] | null>(null);
@@ -121,13 +123,26 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
     );
   }
   return (
-    <Home
-      backend={backend} groups={vis} rows={rows} shots={shots} actions={actions}
-      onShots={() => setView("shots")}
-      onReview={(id) => { setOpenGroup(id); setView("exact"); }}
-      onSimilar={() => setView("similar")}
-      onLarge={() => setView("large")}
-    />
+    <div className="cl">
+      <div className="cl-modes">
+        <div className="dseg" role="tablist" aria-label="Clean up">
+          <button role="tab" aria-selected={mode === "tidy"} className={mode === "tidy" ? "on" : ""} onClick={() => setMode("tidy")}>Suggestions</button>
+          <button role="tab" aria-selected={mode === "space"} className={mode === "space" ? "on" : ""} onClick={() => setMode("space")}>Disk space</button>
+        </div>
+        <span className="cl-sumtxt">{mode === "tidy" ? "Duplicates, big files and old screenshots" : "See which folders and file types fill your drives"}</span>
+      </div>
+      {mode === "space" ? (
+        <Space backend={backend} hidden={hidden} actions={actions} epoch={epoch} />
+      ) : (
+        <Home
+          backend={backend} groups={vis} rows={rows} shots={shots} actions={actions}
+          onShots={() => setView("shots")}
+          onReview={(id) => { setOpenGroup(id); setView("exact"); }}
+          onSimilar={() => setView("similar")}
+          onLarge={() => setView("large")}
+        />
+      )}
+    </div>
   );
 }
 
