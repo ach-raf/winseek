@@ -19,7 +19,10 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib-main .btn:disabled { opacity: .5; }
 
 /* ---------- timeline: virtualized mosaic ---------- */
-.lg { flex: 1; min-height: 0; display: flex; outline: 0; }
+/* min-width: 0 — the status bar's current-file line (nowrap) must not push the selected file's
+ * name length up through the flex chain: without it, .lg-main grows per selection, the mosaic
+ * repacks (tiles swell and shrink), and the fixed 380px preview pane is shoved out of the window. */
+.lg { flex: 1; min-height: 0; min-width: 0; display: flex; outline: 0; }
 .lg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lg-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .lg-space { position: relative; width: 100%; }
