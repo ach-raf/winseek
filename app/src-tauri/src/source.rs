@@ -207,6 +207,9 @@ impl NameSource for MockSource {
             "name" => idx.sort_unstable_by(|a, b| e[*a as usize].lower.cmp(&e[*b as usize].lower)),
             "size" => idx.sort_unstable_by(|a, b| e[*b as usize].size.cmp(&e[*a as usize].size)),
             "date" => idx.sort_unstable_by(|a, b| e[*b as usize].mtime.cmp(&e[*a as usize].mtime)),
+            "name_desc" => idx.sort_unstable_by(|a, b| e[*b as usize].lower.cmp(&e[*a as usize].lower)),
+            "size_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].size.cmp(&e[*b as usize].size)),
+            "date_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].mtime.cmp(&e[*b as usize].mtime)),
             _ => {
                 // relevance: prefix match first, then shorter names
                 let q = terms.first().cloned().unwrap_or_default();

@@ -67,6 +67,9 @@ fn filter_clause(filter: &str) -> &'static str {
 fn sort_of(sort: &str) -> Sort {
     match sort {
         "size" => Sort::SizeDesc,
+        "size_asc" => Sort::SizeAsc,
+        "date_asc" => Sort::MtimeAsc,
+        "name_desc" => Sort::NameDesc,
         "date" => Sort::MtimeDesc,
         _ => Sort::NameAsc, // "name" and "rel" (no relevance ranking in Tier 0)
     }

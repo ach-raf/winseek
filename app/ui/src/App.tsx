@@ -21,13 +21,16 @@ import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { kindOf } from "./format";
-import { vlist } from "./vlist";
+import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
 const ROW_H = 54;
 // Rows fetched per request. One block covers the whole visible window on a scroll jump, and
 // searchd caches the query's ordered results, so each further block is a cheap slice.
 const PAGE = 400;
 const OVERSCAN = 6;
+// Result pages kept in memory (nearest the visible window win): a scrollbar sweep over millions of
+// rows must not pile up every page it passed.
+const PAGE_CAP = 60;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
@@ -44,6 +47,17 @@ const SORTS: { id: Sort; label: string }[] = [
   { id: "name", label: "Name" },
   { id: "date", label: "Date modified" },
   { id: "size", label: "Size" },
+];
+// Every order, including the reversed ones the column headers reach (the chip cycles the four above).
+const SORT_LABEL: Record<Sort, string> = {
+  rel: "Best match", name: "Name", date: "Date modified", size: "Size",
+  name_desc: "Name, Z to A", date_asc: "Oldest first", size_asc: "Smallest first",
+};
+// Column headers of the full window: first click = `a`, a click on the active column flips to `b`.
+const COLS: { label: string; a: Sort; b: Sort; up: Sort; hint: string }[] = [
+  { label: "Name", a: "name", b: "name_desc", up: "name", hint: "Sort by name" },
+  { label: "Modified", a: "date", b: "date_asc", up: "date_asc", hint: "Sort by date modified" },
+  { label: "Size", a: "size", b: "size_asc", up: "size_asc", hint: "Sort by size" },
 ];
 
 const SCAN_PAGE = 2000;
@@ -96,7 +110,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [sort, setSort] = useState<Sort>(() => {
     try {
       const v = localStorage.getItem("winseek.sort");
-      return SORTS.some((s) => s.id === v) ? (v as Sort) : "rel";
+      return v && v in SORT_LABEL ? (v as Sort) : "rel";
     } catch {
       return "rel";
     }
@@ -112,6 +126,9 @@ export default function App({ backend }: { backend: Backend }) {
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const [renaming, setRenaming] = useState(false); // inline rename of the selected row
   const [scrollTop, setScrollTop] = useState(0);
+  // Exact list offset for wheel / keyboard moves on lists too long for the scrollbar to address (see vlist.ts).
+  const [pin, setPin] = useState<number | null>(null);
+  const [scrolling, setScrolling] = useState(false); // shows the "row N of M" tag while the list moves
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
   // First run: panel shown while on demo data with the service missing/stopped. Typing hides it (clearing the
@@ -205,6 +222,14 @@ export default function App({ backend }: { backend: Backend }) {
   const listRef = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
   const inflight = useRef(new Set<number>());
+  const pagesRef = useRef(new Set<number>()); // result pages present in rowsRef (paged lists only)
+  const wantRef = useRef<[number, number]>([0, -1]); // rows the list is showing right now
+  const emptyTries = useRef(new Map<number, number>());
+  const pumpRef = useRef<() => void>(() => {});
+  const pinRef = useRef<number | null>(null);
+  const pinTop = useRef(-1); // the scrollTop we set for the current pin (a different one = the user dragged)
+  const voffRef = useRef(0);
+  const scrollTimer = useRef<number | undefined>(undefined);
   const rowsRef = useRef<(Hit | undefined)[]>([]);
   const toastTimer = useRef<number | undefined>(undefined);
   // One-level undo (last rename or recycle). Ctrl+Z triggers it only while the search box is empty or
@@ -250,6 +275,12 @@ export default function App({ backend }: { backend: Backend }) {
   // other than best match, and "Show all files" use the full virtualised list instead.
   const [expand, setExpand] = useState<Expand>(null);
   useEffect(() => { setExpand(null); }, [query, filter, drive]);
+  // What the overview sections are built from: every row of a fully loaded list, else the first page. (The
+  // paged row store is sparse and can span millions of indexes; nothing may loop over it.)
+  const headRows = useMemo(
+    () => (data.recent || data.full ? data.rows : data.rows.slice(0, PAGE)),
+    [data.rows, data.recent, data.full],
+  );
   const overview = sort === "rel" && expand !== "files"; // home (Most used + Recent files) is an overview too
   // The calculator Top Hit belongs to "all" only — a type filter means "show me that kind of file".
   const calcResult = useMemo(() => (settingsScope || expand || effFilter !== "all" ? null : calc(parsed.text)), [parsed.text, settingsScope, expand, effFilter]);
@@ -259,21 +290,21 @@ export default function App({ backend }: { backend: Backend }) {
     [launch, settingsScope, effFilter, drive], // eslint-disable-line react-hooks/exhaustive-deps
   );
   const portable = useMemo(
-    () => (lcfg?.portable === false ? [] : portableApps(data.rows.filter((h): h is Hit => !!h), parsed.text, launch)),
-    [lcfg, data.rows, data.ver, parsed.text, launch], // eslint-disable-line react-hooks/exhaustive-deps
+    () => (lcfg?.portable === false ? [] : portableApps(headRows.filter((h): h is Hit => !!h), parsed.text, launch)),
+    [lcfg, headRows, parsed.text, launch],
   );
   // Tile grids per layout: photos 4 / 5 columns, apps 6 / 8.
   const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, mostused: full ? 8 : 6 }), [full]);
   const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
   const ov = useMemo(
     () => (isRecent
-      ? buildHome({ mru: mruHits, recent: data.recent ? data.rows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
+      ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
       : buildOverview({
-        names: settingsScope ? [] : data.rows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
+        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, text: parsed.text,
         expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, data.rows, data.ver, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, data.total, semHits, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -285,6 +316,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     const my = ++seq.current;
     inflight.current.clear();
+    emptyTries.current.clear();
     (async () => {
       if (isRecent) {
         const all = await backend.recent(drive ? 300 : 40);
@@ -304,34 +336,102 @@ export default function App({ backend }: { backend: Backend }) {
         // millions of names and must not allocate a slot for each on every keystroke.
         const rows: (Hit | undefined)[] = r.hits.slice();
         rowsRef.current = rows;
+        pagesRef.current = new Set([0]);
         setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false, full: false, partial: false, ver: 0 });
       }
       setLoaded(true);
       setSel(0);
       setScrollTop(0);
+      pinRef.current = null;
+      setPin(null);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
   }, [backend, scopedQ, drive, effFilter, rangeKey, sort, isRecent, epoch]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const ensurePages = useCallback((first: number, last: number) => {
+  // Page loader: only ever fetches what the list shows *now*. While the scrollbar is dragged across millions
+  // of rows the positions it passed are never requested (two requests at most are in flight; when one lands
+  // the window is looked at again), so the rows under the thumb arrive at once instead of queueing behind
+  // every page on the way.
+  const pump = useCallback(() => {
     if (data.recent || data.full) return;
     const my = seq.current;
-    for (let p = Math.floor(first / PAGE); p <= Math.floor(last / PAGE); p++) {
-      if (rowsRef.current[p * PAGE] || inflight.current.has(p) || p * PAGE >= data.total) continue;
+    const [f, l] = wantRef.current;
+    for (let p = Math.floor(f / PAGE); p <= Math.floor(l / PAGE) && inflight.current.size < 2; p++) {
+      if (pagesRef.current.has(p) || inflight.current.has(p) || p * PAGE >= data.total) continue;
+      if ((emptyTries.current.get(p) ?? 0) >= 3) continue; // the service keeps answering nothing: stop asking
       inflight.current.add(p);
       backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
         if (my !== seq.current) return;
-        const rows = rowsRef.current;
-        r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
-        setData((d) => ({ ...d, ver: d.ver + 1 }));
-      }).catch(console.error);
+        inflight.current.delete(p);
+        if (r.hits.length === 0) {
+          emptyTries.current.set(p, (emptyTries.current.get(p) ?? 0) + 1);
+        } else {
+          const rows = rowsRef.current;
+          r.hits.forEach((h, i) => (rows[p * PAGE + i] = h));
+          pagesRef.current.add(p);
+          const [f2, l2] = wantRef.current;
+          for (const d of pagesToEvict(pagesRef.current, Math.floor(f2 / PAGE), Math.floor(l2 / PAGE), PAGE_CAP)) {
+            pagesRef.current.delete(d);
+            for (let i = d * PAGE; i < (d + 1) * PAGE; i++) delete rows[i];
+          }
+          setData((d) => ({ ...d, ver: d.ver + 1 }));
+        }
+        pumpRef.current();
+      }).catch((e) => { if (my === seq.current) inflight.current.delete(p); console.error(e); });
     }
   }, [backend, data.recent, data.full, data.total, scopedQ, sort, effFilter]);
+  pumpRef.current = pump;
 
-  const vl = vlist(data.total, ROW_H, scrollTop, viewH, OVERSCAN);
+  const vl = vlist(data.total, ROW_H, scrollTop, viewH, OVERSCAN, pin);
   const first = vl.first;
   const last = vl.last;
-  useEffect(() => { if (last >= first) ensurePages(first, last); }, [first, last, ensurePages]);
+  voffRef.current = vl.voff;
+  useEffect(() => {
+    wantRef.current = [first, last];
+    if (last >= first) pump();
+  }, [first, last, pump]);
+
+  /** Put list offset `voff` (px into the whole list) at the top of the viewport, exactly. */
+  const scrollToVoff = useCallback((voff: number) => {
+    const el = listRef.current;
+    if (!el) return;
+    if (!vlistClipped(data.total, ROW_H)) { el.scrollTop = voff; return; }
+    const v = Math.max(0, Math.min(voff, data.total * ROW_H - el.clientHeight));
+    el.scrollTop = scrollTopFor(data.total, ROW_H, el.clientHeight, v);
+    pinTop.current = el.scrollTop;
+    pinRef.current = v;
+    voffRef.current = v;
+    setPin(v);
+    setScrollTop(el.scrollTop);
+  }, [data.total]);
+
+  const onListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    const st = e.currentTarget.scrollTop;
+    // A scroll position we did not set = the user moved the scrollbar: back to the proportional mapping.
+    if (pinRef.current !== null && Math.abs(st - pinTop.current) > 1.5) { pinRef.current = null; setPin(null); }
+    setScrollTop(st);
+    setScrolling(true);
+    window.clearTimeout(scrollTimer.current);
+    scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
+  }, []);
+
+  // Past the scrollbar's resolution the wheel is applied to the list offset directly (one notch must stay a
+  // few rows, not a few thousand).
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el || !vlistClipped(data.total, ROW_H)) return;
+    const onWheel = (e: WheelEvent) => {
+      if (e.ctrlKey || e.deltaY === 0) return;
+      e.preventDefault();
+      const d = e.deltaMode === 1 ? e.deltaY * ROW_H : e.deltaMode === 2 ? e.deltaY * el.clientHeight : e.deltaY;
+      scrollToVoff(voffRef.current + d);
+      setScrolling(true);
+      window.clearTimeout(scrollTimer.current);
+      scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [data.total, scrollToVoff]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query (debounced, newest wins).
   // Not for home, and not while a date / size filter is active (those are applied here, so the totals would lie).
@@ -341,7 +441,8 @@ export default function App({ backend }: { backend: Backend }) {
     let dead = false;
     const t = window.setTimeout(() => {
       const kinds: Filter[] = ["all", "images", "docs", "video", "audio", "folders"];
-      Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 1, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
+      // limit 0 = count only: the service neither builds rows nor caches a result list for these
+      Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 0, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
         .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })
         .catch(() => { if (!dead) setNameCounts(null); });
     }, 140);
@@ -624,10 +725,24 @@ export default function App({ backend }: { backend: Backend }) {
   enterRef.current = enter;
 
   const removeRow = useCallback((i: number) => {
-    const rows = rowsRef.current.slice();
-    rows.splice(i, 1);
+    // The paged store is sparse (indexes up to the result count): shift only the rows that exist.
+    const old = rowsRef.current;
+    const rows: (Hit | undefined)[] = [];
+    for (const k in old) {
+      const j = Number(k);
+      if (j < i) rows[j] = old[j];
+      else if (j > i) rows[j - 1] = old[j];
+    }
     rowsRef.current = rows;
     setData((d) => ({ ...d, rows, total: Math.max(0, d.total - 1) }));
+    // Pages from the removed row on are one row short at their end; reload them once the index has seen
+    // the change (asking right away could bring the removed file back).
+    const my = seq.current, from = Math.floor(i / PAGE);
+    window.setTimeout(() => {
+      if (my !== seq.current) return;
+      for (const p of [...pagesRef.current]) if (p >= from) pagesRef.current.delete(p);
+      pumpRef.current();
+    }, 1500);
   }, []);
 
   const pushUndo = useCallback((u: Undo, msg: string) => {
@@ -725,10 +840,10 @@ export default function App({ backend }: { backend: Backend }) {
     setSel(n);
     const el = listRef.current;
     if (!el || n >= data.total) return; // semantic rows scroll into view in an effect
-    const top = n * ROW_H, bottom = top + ROW_H;
-    if (top < el.scrollTop) el.scrollTop = top;
-    else if (bottom > el.scrollTop + el.clientHeight) el.scrollTop = bottom - el.clientHeight;
-  }, [data.total, selCount]);
+    const top = n * ROW_H, bottom = top + ROW_H, cur = voffRef.current;
+    if (top < cur) scrollToVoff(top);
+    else if (bottom + 8 > cur + el.clientHeight) scrollToVoff(bottom + 8 - el.clientHeight); // 8 = the list's top padding + air
+  }, [data.total, selCount, scrollToVoff]);
 
   useEffect(() => {
     setSel((s) => (s >= selCount ? Math.max(0, selCount - 1) : s));
@@ -771,7 +886,7 @@ export default function App({ backend }: { backend: Backend }) {
           return;
         }
         const r = el.getBoundingClientRect();
-        void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - el.scrollTop + ROW_H / 2);
+        void openMenu(sel, r.left + 120, r.top + 4 + sel * ROW_H - voffRef.current + ROW_H / 2);
       };
       menuAtRef.current = menuAtSelection;
       const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir, gridCols)); };
@@ -1043,7 +1158,7 @@ export default function App({ backend }: { backend: Backend }) {
     : query.trim() === ""
       ? `Recent · ${FILTERS.find((f) => f.id === filter)?.label}`
       : null;
-  const sortLabel = SORTS.find((s) => s.id === sort)!.label;
+  const sortLabel = SORT_LABEL[sort];
   const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
@@ -1064,7 +1179,7 @@ export default function App({ backend }: { backend: Backend }) {
       const h = data.rows[i];
       if (!h) {
         out.push(
-          <div key={i} className="row skeleton" style={{ transform: `translateY(${i * ROW_H - vl.voff}px)` }}>
+          <div key={i} className="row skeleton" style={{ transform: `translateY(${vl.top + i * ROW_H - vl.voff}px)` }}>
             <span className="ic" />
             <div className="tx"><span className="sk w1" /><span className="sk w2" /></div>
           </div>,
@@ -1074,11 +1189,11 @@ export default function App({ backend }: { backend: Backend }) {
       const why = data.recent ? "" : whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score);
       out.push(
         <HitRow key={i} hit={h} i={i} sel={i === sel} query={parsed.text} backend={backend} h={rowHandlers}
-                renaming={renaming && i === sel} y={i * ROW_H - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
+                renaming={renaming && i === sel} y={vl.top + i * ROW_H - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
       );
     }
     return out;
-  }, [first, last, vl.voff, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
+  }, [first, last, vl.voff, vl.top, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -1282,7 +1397,25 @@ export default function App({ backend }: { backend: Backend }) {
         <div className={"cols" + (quickLook ? " ql" : "")} hidden={showPanel}>
           <div className="lcol">
             {full && !isRecent && (
-              <div className="colh"><span /><span>Name</span><span>Modified</span><span>Size</span></div>
+              <div className="colh">
+                <span />
+                {COLS.map((c) => {
+                  const on = sort === c.a || sort === c.b;
+                  return (
+                    <button key={c.label} tabIndex={-1} className={on ? "on" : ""} onMouseDown={keep}
+                            aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[sort]}` : ""}`}
+                            title={on ? `${SORT_LABEL[sort]}. Click to reverse.` : c.hint}
+                            onClick={() => { changeSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
+                      {c.label}
+                      {on && (
+                        <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                          <path d={sort === c.up ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+                        </svg>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
             )}
             {!showPanel && showList && (heading || expand === "files") && (
               <div className="sh">
@@ -1294,7 +1427,7 @@ export default function App({ backend }: { backend: Backend }) {
               </div>
             )}
 
-            <div className="list vlist" hidden={showPanel || !showList} ref={listRef} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)} role="listbox">
+            <div className="list vlist" hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
               <div className="spacer-v" style={{ height: vl.height }}>{visible}</div>
               {loaded && data.total === 0 && (
                 <div className="none">
@@ -1303,6 +1436,12 @@ export default function App({ backend }: { backend: Backend }) {
                 </div>
               )}
             </div>
+
+            {!showPanel && showList && scrolling && data.total > 2000 && (
+              <div className="pos" aria-hidden="true">
+                <b>{(Math.min(data.total, Math.floor(vl.voff / ROW_H) + 1)).toLocaleString("en-US")}</b> of {data.total.toLocaleString("en-US")}
+              </div>
+            )}
 
             {!showPanel && overview && (ov.flat.length > 0 ? (
               <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand}

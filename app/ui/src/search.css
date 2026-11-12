@@ -163,7 +163,14 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .shell.full .row.sel .dt { display: block; }
 .shell.full .row.sel .dt, .shell.full .row.sel .sz { color: var(--fg2); }
 .colh { display: grid; grid-template-columns: 36px 1fr 104px 76px; gap: 12px; padding: 8px 22px 6px 20px; font-size: 12px; font-weight: 600; color: var(--fg3); border-bottom: 1px solid var(--line); flex: none; }
-.colh span:nth-child(n+3) { text-align: right; }
+.colh button { display: inline-flex; align-items: center; gap: 4px; justify-self: start; margin: -3px -6px; padding: 3px 6px; border-radius: 6px; font: inherit; color: inherit; white-space: nowrap; }
+.colh button:nth-child(n+3) { justify-self: end; }
+.colh button:hover { background: var(--bg3); color: var(--fg); }
+.colh button.on { color: var(--fg); }
+.colh button.on svg { color: var(--acc); }
+/* "row N of M" while a long list moves: where am I in nine million rows */
+.pos { position: absolute; right: 22px; top: 44px; z-index: 3; padding: 5px 10px; border-radius: 8px; background: var(--bg3); border: 1px solid var(--line); box-shadow: 0 6px 18px rgb(0 0 0 / .22); font-size: 12px; color: var(--fg2); font-variant-numeric: tabular-nums; pointer-events: none; white-space: nowrap; }
+.pos b { font-weight: 600; color: var(--fg); }
 .pv-none { border-left: 1px solid var(--line); display: grid; place-items: center; min-width: 0; }
 .pv-none .none { padding: 20px; }
 /* Quick Look (Space): the preview takes the whole results area */

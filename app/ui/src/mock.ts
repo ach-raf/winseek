@@ -537,14 +537,31 @@ const launchCbs = new Set<() => void>();
 export const mockBackend: Backend = {
   async search({ query, offset, limit, sort, filter }) {
     const t0 = performance.now();
+    // ?big=9000000: every typed search matches that many synthetic rows (row N is "file 000000N"), to exercise
+    // the huge-list path (scrollbar jumps, paging, eviction) without a real index.
+    const big = Number(params.get("big") ?? 0);
+    if (big > 0 && query.trim() !== "" && filter === "all") {
+      const rev = sort === "name_desc" || sort === "date_asc" || sort === "size_asc";
+      const hits: Hit[] = [];
+      for (let i = offset; i < Math.min(big, offset + limit); i++) {
+        const n = rev ? big - 1 - i : i;
+        const name = `file ${String(n).padStart(8, "0")}.txt`;
+        hits.push({ name, path: `C:\\Data\\bucket ${Math.floor(n / 1000)}\\${name}`, is_dir: false, size: (big - n) * 3, mtime: Date.now() - n * 60_000 });
+      }
+      await sleep(8);
+      return { total: big, hits, elapsed_us: Math.round((performance.now() - t0) * 1000) };
+    }
     const all = query.toLowerCase().split(/\s+/).filter(Boolean);
     const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
     const terms = all.filter((t) => !t.startsWith("ext:"));
     const m = DB.filter((e) => okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t))); // a term with a backslash is a path match (the drive scope)
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
+    else if (s === "name_desc") m.sort((a, b) => b.lower.localeCompare(a.lower));
     else if (s === "size") m.sort((a, b) => b.size - a.size);
+    else if (s === "size_asc") m.sort((a, b) => a.size - b.size);
     else if (s === "date") m.sort((a, b) => b.mtime - a.mtime);
+    else if (s === "date_asc") m.sort((a, b) => a.mtime - b.mtime);
     else m.sort((a, b) => Number(b.lower.startsWith(terms[0])) - Number(a.lower.startsWith(terms[0])) || a.lower.length - b.lower.length);
     await sleep(8);
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
