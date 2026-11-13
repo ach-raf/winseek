@@ -16,6 +16,7 @@ mod source;
 mod status;
 mod textdec;
 mod tier1;
+mod updates;
 mod view;
 mod watcher;
 
@@ -91,7 +92,9 @@ fn main() {
             commands::drive_space,
             commands::recent,
             commands::disk_usage,
+            commands::disk_usage_detail,
             commands::open_path,
+            shell::deeplink::open_at_position,
             commands::open_terminal,
             commands::reveal_path,
             commands::copy_path,
@@ -117,6 +120,11 @@ fn main() {
             service::start_service,
             service::accent_palette,
             tier1::tier1_status,
+            tier1::estimate::tier1_estimate,
+            updates::updates_get,
+            updates::updates_set_enabled,
+            updates::updates_check_now,
+            updates::updates_open_page,
             tier1::tier1_set_scopes,
             tier1::tier1_remove_folder,
             tier1::tier1_pause,
@@ -189,10 +197,14 @@ fn main() {
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));
+            let progress = MenuItemBuilder::with_id("progress", "Meaning index: up to date").enabled(false).build(app)?;
+            app.manage(watcher::ProgressItem(progress.clone()));
+            let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
+            app.manage(updates::TrayItem(update.clone()));
             let library = MenuItemBuilder::with_id("library", "Library").build(app)?;
             let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &library, &pause, &status, &quit]).build()?;
+            let menu = MenuBuilder::new(app).items(&[&show, &library, &progress, &pause, &status, &update, &quit]).build()?;
             let popup_combo = app.state::<hotkeys::Hotkeys>().current().popup.unwrap_or_default();
             let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
                 .tooltip(format!("winseek ({})", if popup_combo.is_empty() { "no hotkey".into() } else { popup_combo }))
@@ -223,6 +235,7 @@ fn main() {
                         }
                         watcher::refresh_pause_item(app);
                     }
+                    "update" => updates::tray_clicked(app),
                     "quit" => app.exit(0),
                     _ => {}
                 })
@@ -241,6 +254,7 @@ fn main() {
             }
             tray.build(app)?;
             watcher::spawn(app.handle().clone());
+            updates::spawn(app.handle().clone());
             launch::Launcher::start_background(app.handle().clone());
             autostart::init_default();
             models::auto_download(app.handle().clone());

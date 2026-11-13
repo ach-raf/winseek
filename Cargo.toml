@@ -11,6 +11,7 @@ members = [
     "tools/eval",
     "searchd",
     "mcp",
+    "cli",
     "app/src-tauri",
 ]
 

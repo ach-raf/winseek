@@ -69,7 +69,11 @@ pub trait NameSource: Send + Sync {
     /// Ask searchd to rebuild one volume's index from the MFT.
     fn rescan(&self, volume: char) -> Result<(), String>;
     /// Bytes under every child of a folder (empty path: every volume). Only the real name service knows.
-    fn usage(&self, _path: &str, _top_files: u32) -> Result<winseek_ipc::UsageTree, String> {
+    fn usage(&self, _path: &str, _limit: u32) -> Result<winseek_ipc::UsageTree, String> {
+        Err("Disk usage needs the name service, which is not running.".into())
+    }
+    /// File types and biggest files under a folder.
+    fn usage_detail(&self, _path: &str, _top_files: u32) -> Result<winseek_ipc::UsageDetail, String> {
         Err("Disk usage needs the name service, which is not running.".into())
     }
 }

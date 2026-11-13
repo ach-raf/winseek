@@ -177,8 +177,17 @@ impl NameSource for PipeSource {
         }
     }
 
-    fn usage(&self, path: &str, top_files: u32) -> Result<winseek_ipc::UsageTree, String> {
-        match self.call(&Request::Usage { id: self.id(), path: path.into(), top_files }) {
+    fn usage_detail(&self, path: &str, top_files: u32) -> Result<winseek_ipc::UsageDetail, String> {
+        match self.call(&Request::UsageDetail { id: self.id(), path: path.into(), top_files }) {
+            Ok(Response::UsageDetailResult { detail, .. }) => Ok(detail),
+            Ok(Response::Error { message, .. }) => Err(message),
+            Ok(_) => Err("Unexpected answer from the name service.".into()),
+            Err(e) => Err(format!("The name service did not answer: {e}")),
+        }
+    }
+
+    fn usage(&self, path: &str, limit: u32) -> Result<winseek_ipc::UsageTree, String> {
+        match self.call(&Request::Usage { id: self.id(), path: path.into(), limit }) {
             Ok(Response::UsageResult { usage, .. }) => Ok(usage),
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Err("Unexpected answer from the name service.".into()),

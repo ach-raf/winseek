@@ -16,10 +16,13 @@ winseek-ipc = { path = "../../crates/ipc" }
 winseek-store = { path = "../../crates/store" }
 winseek-llama = { path = "../../crates/llama" }
 sha2 = "0.10"
+# Daily update check (anonymous GET of the public releases list)
+ureq = "2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "bmp", "gif"] }
 windows = { version = "0.62", features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
+    "Win32_Graphics_Imaging",
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",

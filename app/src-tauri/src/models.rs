@@ -664,6 +664,7 @@ mod tests {
                 size: tgz.len() as u64,
                 member: "bin/pdfium.dll".into(),
             },
+            ffmpeg: None,
             models: vec![ModelEntry {
                 id: embedder::MODEL_ID.into(),
                 profile: ModelProfile::Default,

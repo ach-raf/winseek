@@ -256,6 +256,14 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
     let mut kind = if md.is_dir() { Kind::Folder } else { classify(&ext) };
     let size = (!md.is_dir()).then_some(md.len());
     let (mut image, mut text, mut pdf_info) = (None, None, None);
+    // Credential files are never previewed; a cloud placeholder gets the plain card (reading it
+    // would make the provider download it).
+    if winseek_store::hard_denied(path) {
+        return Err("Preview is blocked for credential and key files.".into());
+    }
+    if kind != Kind::Folder && crate::tier1::guard::check_readable(p).is_err() {
+        kind = Kind::Other;
+    }
     match kind {
         Kind::Pdf => {
             pdf_info = Some(match pdf::runtime() {
@@ -344,6 +352,7 @@ static PAGE_CACHE: std::sync::Mutex<PageCache> = std::sync::Mutex::new(PageCache
 
 /// `path` page `page` (1-based) as a PNG about `width` px wide, cached.
 pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<Vec<u8>>, String> {
+    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| "This file cannot be read (credential file or cloud-only placeholder).".to_string())?;
     pdf_page_png_with(&PAGE_CACHE, path, page, width, |p, n, w| {
         let rt = pdf::runtime().map_err(|e| e.to_string())?;
         pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
@@ -404,6 +413,7 @@ fn pdf_boxes(path: &str, page: u32, query: &str) -> Result<Vec<HitBox>, String> 
     if ext_of(path) != "pdf" {
         return Err("Not a PDF file".into());
     }
+    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| "This file cannot be read (credential file or cloud-only placeholder).".to_string())?;
     let md = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
     if md.len() > pdf::MAX_FILE_BYTES {
         return Err("The file is too large to read.".into());
@@ -464,6 +474,9 @@ fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>>
     let Ok(md) = std::fs::metadata(p) else { return status_only(404) };
     if !md.is_file() {
         return status_only(404);
+    }
+    if crate::tier1::guard::check_readable(p).is_err() {
+        return status_only(403);
     }
     let total = md.len();
     let b = Response::builder()

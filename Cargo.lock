@@ -5084,11 +5084,21 @@ dependencies = [
  "tauri-plugin-global-shortcut",
  "tauri-plugin-single-instance",
  "tempfile",
+ "ureq",
  "windows",
  "winseek-ipc",
  "winseek-llama",
  "winseek-store",
  "zip",
+]
+
+[[package]]
+name = "winseek-cli"
+version = "0.2.18"
+dependencies = [
+ "serde",
+ "serde_json",
+ "winseek-ipc",
 ]
 
 [[package]]

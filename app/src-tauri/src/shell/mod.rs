@@ -2,6 +2,7 @@
 //! Menu/drag/clipboard/file-op COM work runs on the main (STA) thread; icon work never does.
 
 mod clipboard;
+pub mod deeplink;
 mod drag;
 mod fileop;
 pub mod icons;

@@ -45,7 +45,8 @@
     "shortDescription": "Instant file name search + search by meaning",
     "resources": {
       "../../target/release/searchd.exe": "searchd.exe",
-      "../../target/release/winseek-mcp.exe": "winseek-mcp.exe"
+      "../../target/release/winseek-mcp.exe": "winseek-mcp.exe",
+      "../../target/release/winseek-cli.exe": "winseek-cli.exe"
     },
     "windows": {
       "nsis": {

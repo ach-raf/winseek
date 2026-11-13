@@ -88,6 +88,21 @@ pub struct DriveSpace {
     pub letter: String,
     pub total: u64,
     pub free: u64,
+    /// The volume label ("" when the drive has none).
+    pub label: String,
+}
+
+fn volume_label(root: &[u16]) -> String {
+    use windows::core::PCWSTR;
+    use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
+    let mut buf = [0u16; 261];
+    // SAFETY: `root` is NUL-terminated and outlives the call; `buf` is a valid writable buffer.
+    let ok = unsafe { GetVolumeInformationW(PCWSTR(root.as_ptr()), Some(&mut buf), None, None, None, None) }.is_ok();
+    if !ok {
+        return String::new();
+    }
+    let n = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+    String::from_utf16_lossy(&buf[..n])
 }
 
 fn space_of(letter: char) -> Option<DriveSpace> {
@@ -100,7 +115,7 @@ fn space_of(letter: char) -> Option<DriveSpace> {
     let (mut free, mut total) = (0u64, 0u64);
     // SAFETY: `root` is NUL-terminated and outlives the call; the out pointers are valid u64s.
     unsafe { GetDiskFreeSpaceExW(PCWSTR(root.as_ptr()), Some(&mut free), Some(&mut total), None) }.ok()?;
-    (total > 0).then(|| DriveSpace { letter: letter.to_ascii_uppercase().to_string(), total, free })
+    (total > 0).then(|| DriveSpace { letter: letter.to_ascii_uppercase().to_string(), total, free, label: volume_label(&root) })
 }
 
 /// Free and total bytes of the given drive letters (a drive that does not answer is left out).
@@ -109,7 +124,7 @@ pub async fn drive_space(letters: Vec<String>) -> Result<Vec<DriveSpace>, String
     blocking(move || letters.iter().filter_map(|l| l.chars().next().and_then(space_of)).collect()).await
 }
 
-/// A folder's disk usage plus, for a drive root or the drive list, what the drive itself has free.
+/// A folder's disk usage plus, for the drive list and a drive root, what the drives themselves have free.
 #[derive(serde::Serialize)]
 pub struct DiskUsage {
     #[serde(flatten)]
@@ -117,12 +132,12 @@ pub struct DiskUsage {
     pub drives: Vec<DriveSpace>,
 }
 
-/// Where the space went under `path` (empty: every indexed drive), from the name index.
+/// What each child of `path` holds (empty path: every indexed drive), from the name index.
 #[tauri::command]
-pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, top_files: Option<u32>) -> Result<DiskUsage, String> {
+pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, limit: Option<u32>) -> Result<DiskUsage, String> {
     let src = state.source();
     blocking(move || {
-        let tree = src.usage(&path, top_files.unwrap_or(100))?;
+        let tree = src.usage(&path, limit.unwrap_or(0))?;
         let at_top = path.trim_end_matches(['\\', '/']).len() <= 2;
         let drives = if path.trim().is_empty() {
             tree.entries.iter().filter_map(|e| e.name.chars().next().and_then(space_of)).collect()
@@ -134,6 +149,13 @@ pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, top_fil
         Ok(DiskUsage { tree, drives })
     })
     .await?
+}
+
+/// File types and biggest files under `path`.
+#[tauri::command]
+pub async fn disk_usage_detail(state: tauri::State<'_, AppState>, path: String, top_files: Option<u32>) -> Result<winseek_ipc::UsageDetail, String> {
+    let src = state.source();
+    blocking(move || src.usage_detail(&path, top_files.unwrap_or(100))).await?
 }
 
 #[tauri::command]
