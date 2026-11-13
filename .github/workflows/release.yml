@@ -76,7 +76,8 @@ jobs:
             [ -n "$tag" ] || continue
             [ "$tag" = "$NEW_TAG" ] && continue
             if git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null; then
-              args="--range ${tag}..${NEW_TAG} --strip header"
+              # git-cliff takes the range as a POSITIONAL argument (no --range flag).
+              args="--strip header ${tag}..${NEW_TAG}"
               echo "Notes span ${tag}..${NEW_TAG} (newest surviving release)"
               break
             fi
