@@ -386,7 +386,7 @@ function Tree({ backend, rows, sel, focus, onPick, onToggle, onEnter, onMenu }: 
               key={r.key} role="treeitem" aria-expanded={e.is_dir ? !!r.open : undefined} aria-selected={on}
               className={"su-tr" + (on ? " on" : "") + (e.path === focus ? " foc" : "")}
               style={{ top: y, height: ROW_H, ...pad, ...kc(e.kind) }}
-              onClick={() => onPick(e)} onDoubleClick={() => onEnter(e)}
+              onClick={() => { onPick(e); if (e.is_dir && (e.files > 0 || e.folders > 0)) onToggle(e.path); }} onDoubleClick={() => onEnter(e)}
               onContextMenu={(ev) => { ev.preventDefault(); onPick(e); onMenu(e, ev.clientX, ev.clientY); }}
               title={`${e.path}\n${formatSize(e.size)} · ${num(e.files)} file${e.files === 1 ? "" : "s"}`}
             >
