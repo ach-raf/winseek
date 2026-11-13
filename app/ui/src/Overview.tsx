@@ -1,8 +1,9 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { ThumbImg } from "./ThumbImg";
 import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
-import { nicePath, relDate } from "./overviewLogic";
+import { matchPct, nicePath, reasonOf, relDate } from "./overviewLogic";
 import { launchPath } from "./launchLogic";
 import { FileIcon } from "./FileIcon";
 import { IChevL } from "./icons";
@@ -133,7 +134,8 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
   const kind = kindOf(hit.name, hit.is_dir);
   const thumb = kind === "image" || kind === "video";
   const snippet = sem?.snippet;
-  const pct = sem && sem.source !== "text" && sem.source !== "code" ? Math.max(1, Math.min(99, Math.round(sem.score * 100))) : null;
+  const pct = matchPct(sem);
+  const reason = reasonOf(sem, kind === "image");
   return (
     <div className={"row" + (top ? " top" : "") + (sel ? " sel" : "")} role="option" aria-selected={sel} style={y === undefined ? undefined : { transform: `translateY(${y}px)` }}
          data-sel={sel ? "1" : undefined} data-i={i} title={title ?? hit.path}
@@ -142,11 +144,11 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
       <FileIcon name={hit.name} isDir={hit.is_dir} variant={app ? "app" : undefined} thumb={thumb}
                 src={backend.iconUrl(hit.path, hit.is_dir, thumb, iconSize(!!top))} />
       <div className="tx">
-        <div className="nm">
+        <div className={"nm" + (pct !== null && !renaming ? " hasp" : "")}>
           {renaming
             ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={(n) => h.onRenameCommit(i, n)} onCancel={h.onRenameCancel} />
-            : <Highlight text={hit.name} query={query} />}
-          {pct !== null && <span className="pct">{pct}% match</span>}
+            : pct !== null ? <span className="nmt"><Highlight text={hit.name} query={query} /></span> : <Highlight text={hit.name} query={query} />}
+          {pct !== null && <span className="pct" title={reason ?? undefined}>{pct}% match</span>}
         </div>
         {snippet
           ? <div className="sub snip" title="Found inside the file"><Snippet text={snippet} /></div>
@@ -207,12 +209,17 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
 /** Photos: a 4:3 tile; the file name shows on hover / selection. */
 const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers }) {
   const src = backend.iconUrl(it.hit.path, false, true, 256);
+  const sem = it.sem;
+  const pct = matchPct(sem);
+  const reason = reasonOf(sem, true);
+  const ph = <FileIcon name={it.hit.name} isDir={false} src={null} />;
   return (
     <div className={"tile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={it.hit.name}
          data-sel={sel ? "1" : undefined} data-i={i} title={it.hit.path}
          onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
-      {src ? <img src={src} alt="" loading="lazy" decoding="async" draggable={false} /> : <FileIcon name={it.hit.name} isDir={false} src={null} />}
+      {src ? <ThumbImg src={src} bad={ph} /> : ph}
+      {pct !== null && <span className="tpct" title={reason ?? undefined}>{pct}% match</span>}
       <span className="cap"><Highlight text={it.hit.name} query={query} /></span>
     </div>
   );
@@ -305,7 +312,16 @@ function Windowed({ scrollRef, count, className, render }: {
   );
 }
 
-function SectionHead({ s, expanded, loading, onBack, onExpand }: { s: OvSection; expanded: boolean; loading: boolean; onBack: () => void; onExpand: (id: SectionId) => void }): ReactNode {
+function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak }: { s: OvSection; expanded: boolean; loading: boolean; onBack: () => void; onExpand: (id: SectionId) => void; onToggleWeak?: () => void }): ReactNode {
+  if (s.fold) {
+    return (
+      <div className="sh">
+        <button className="more weak-toggle" tabIndex={-1} aria-expanded={s.fold.open} onMouseDown={(e) => e.preventDefault()} onClick={onToggleWeak}>
+          {s.fold.open ? "▾" : "▸"} {s.title}
+        </button>
+      </div>
+    );
+  }
   return (
     <div className="sh">
       {expanded ? (
@@ -330,11 +346,11 @@ function SectionHead({ s, expanded, loading, onBack, onExpand }: { s: OvSection;
   );
 }
 
-export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, scrollRef, armed }: {
+export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, scrollRef, armed }: {
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
   /** "Show all" is still reading pages: the list keeps growing. */
   loading?: boolean;
-  handlers: ItemHandlers; onExpand: (id: SectionId) => void; onBack: () => void;
+  handlers: ItemHandlers; onExpand: (id: SectionId) => void; onBack: () => void; onToggleWeak?: () => void;
   scrollRef: React.RefObject<HTMLDivElement | null>; armed: string | null;
 }) {
   let base = 0;
@@ -349,8 +365,8 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
         }
         return (
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
-            <SectionHead s={s} expanded={expanded} loading={expanded && !!loading} onBack={onBack} onExpand={onExpand} />
-            {s.id === "images" ? (
+            <SectionHead s={s} expanded={expanded} loading={expanded && !!loading} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} />
+            {s.fold && !s.items.length ? null : s.id === "images" ? (
               <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" render={(from, to) =>
                 s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />
             ) : s.id === "mostused" ? (

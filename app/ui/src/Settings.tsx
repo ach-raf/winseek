@@ -3,7 +3,7 @@ import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCf
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
-import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
+import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage, waitingText } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { eventToCombo } from "./hotkeyLogic";
 import { Folders, pausedText } from "./Setup";
@@ -292,7 +292,7 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
     : pr ? pausedText(pr)
     : reading ? "Reading documents"
     : indexing ? "Indexing"
-    : s && s.pending > 0 ? "Waiting for work" : "All caught up";
+    : s && s.pending > 0 ? (st ? waitingText(st) : "Waiting for work") : "All caught up";
   const live = !off && !pr;
   const files = m?.files ?? [];
   const embedOk = files.length > 0 && files.every((f) => f.bytes != null && f.bytes === f.expected_bytes);
@@ -395,7 +395,9 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
   return (
     <>
       <Names t0={page.tier0} busy={busy} onRescan={rescan} />
-      <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding} />
+      <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
+                     onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
+                     onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }} />
       <ModelsPane m={page.models} />
     </>
   );

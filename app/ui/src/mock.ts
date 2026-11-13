@@ -273,6 +273,12 @@ function mockStatusPage(): StatusPage {
       eta_s: rate && queue > 0 ? Math.ceil(queue / rate) : null,
       can_rebuild: t1.state !== "unavailable",
       ocr_unavailable: params.get("noocr") === "1",
+      waiting: [],
+      ffmpeg: null,
+      failed_reasons: s && s.failed > 0 ? [{ reason: "decode: The image format could not be determined", count: s.failed, examples: ["C:\Users\you\Pictures\broken.jpg"] }] : [],
+      skipped_reasons: s && s.skipped > 0
+        ? [{ reason: "no_text", count: s.skipped, examples: ["C:\Users\you\Documents\scan.pdf", "C:\Users\you\Documents\blank.docx"] }]
+        : [],
     },
     models: {
       llama_build: "b11588",
@@ -914,6 +920,7 @@ export const mockBackend: Backend = {
     void runDownload(groups ?? ["llama", "embedder", "pdfium", ...(includeParser ? ["parser" as const] : [])]);
   },
   async modelsCancel() { dlCancel = true; },
+  async ffmpegRetry() {},
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },

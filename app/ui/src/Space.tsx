@@ -26,12 +26,39 @@ const TABS: { id: Tab; label: string }[] = [
  * Where the space went, the WizTree way: a folder tree with sizes on the left, a treemap of the chosen folder on the right.
  * Everything comes from the name index through one cached roll-up, so opening a folder takes a few milliseconds.
  */
-export function Space({ backend, hidden, actions, epoch }: {
+const LS_MAP = "winseek.space.map";
+const MAP_MIN = 120;
+const TREE_MIN = 200;
+const readMapPref = (): { open: boolean; h: number } => {
+  try {
+    const j = JSON.parse(localStorage.getItem(LS_MAP) ?? "null");
+    if (j && typeof j === "object") return { open: j.open !== false, h: Number.isFinite(j.h) ? Math.max(MAP_MIN, j.h) : 300 };
+  } catch { /* no storage: defaults */ }
+  return { open: true, h: 300 };
+};
+
+export function Space({ backend, hidden, actions, epoch, lead }: {
   backend: Backend;
   hidden: ReadonlySet<string>;
   actions: LibActions;
   epoch: number;
+  lead?: React.ReactNode; // the mode tabs from the Clean up screen, shown at the start of the single top bar
 }) {
+  const [mapPref, setMapPref] = useState(readMapPref);
+  const setMap = useCallback((p: { open: boolean; h: number }) => {
+    setMapPref(p);
+    try { localStorage.setItem(LS_MAP, JSON.stringify(p)); } catch { /* ignore */ }
+  }, []);
+  const bodyEl = useRef<HTMLDivElement>(null);
+  const dragMap = (e: React.PointerEvent) => {
+    e.preventDefault();
+    const y0 = e.clientY, h0 = mapPref.h;
+    const max = Math.max(MAP_MIN, (bodyEl.current?.clientHeight ?? 600) - TREE_MIN - 40);
+    let h = h0;
+    const mv = (ev: PointerEvent) => { h = Math.round(Math.max(MAP_MIN, Math.min(max, h0 + (y0 - ev.clientY)))); setMapPref({ open: true, h }); };
+    const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); setMap({ open: true, h }); };
+    window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
+  };
   const [root, setRoot] = useState("");          // where the tree starts ("" = the drive list)
   const [focus, setFocus] = useState("");        // the folder the treemap shows
   const [sel, setSel] = useState<string | null>(null);
@@ -158,6 +185,7 @@ export function Space({ backend, hidden, actions, epoch }: {
   if (atHome) {
     return (
       <div className="su" ref={rootEl} tabIndex={0} data-autofocus onKeyDown={onKey}>
+        {lead && <header className="su-top">{lead}</header>}
         {err && !homeData && <div className="lg-empty"><strong>Could not read the disk index</strong><span>{err}</span><button className="btn pri" onClick={() => fetchDir("", true)}>Try again</button></div>}
         {!homeData && !err && <div className="lg-empty"><span className="spin" aria-label="Loading" /></div>}
         {homeData && <Drives data={homeData} onGo={(p) => enterRoot(p)} />}
@@ -173,18 +201,25 @@ export function Space({ backend, hidden, actions, epoch }: {
 
   return (
     <div className="su" ref={rootEl} tabIndex={0} data-autofocus onKeyDown={onKey}>
-      <header className="su-head">
+      <header className="su-top">
+        {lead}
         <button className="btn sm su-up" onClick={up} title="Up one level (Backspace)"><IUp size={15} />Up</button>
         <Crumbs path={focus} onGo={(p) => (p === "" ? enterRoot("") : showFolder(p))} />
         <span className="su-sp" />
+        {shownMap && <Summary data={shownMap} />}
         <button className="btn sm su-ref" onClick={again} title="Read the index again"><IRefresh size={14} />Refresh</button>
       </header>
       {err && <div className="su-err" role="alert">{err} <button className="gd-link" onClick={again}>Try again</button></div>}
-      {shownMap && <Summary data={shownMap} />}
-      <div className="su-body">
+      <div className="su-body" ref={bodyEl}>
         <aside className="su-side">
-          <div className="dseg su-tabs" role="tablist" aria-label="What to list">
-            {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>)}
+          <div className="su-bar">
+            <div className="dseg su-tabs" role="tablist" aria-label="What to list">
+              {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>)}
+            </div>
+            <Selected
+              entry={selRow} hit={selHit} actions={actions}
+              onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={recycle}
+            />
           </div>
           {tab === "tree" && (
             <Tree
@@ -195,16 +230,18 @@ export function Space({ backend, hidden, actions, epoch }: {
           )}
           {tab === "types" && <div className="su-list"><Types detail={detailView} total={shownMap?.size ?? 0} /></div>}
           {tab === "files" && <div className="su-list"><Biggest backend={backend} detail={detailView} base={focus} sel={sel} onSel={setSel} onOpen={(h) => actions.open(h.path)} onMenu={(h, x, y) => actions.menu(h.path, x, y)} /></div>}
-          <Selected
-            entry={selRow} hit={selHit} total={shownMap?.size ?? 0} actions={actions}
-            onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={recycle}
-          />
         </aside>
-        <section className="su-map" aria-label="Treemap">
-          {shownMap
-            ? <Treemap data={shownMap} sel={mapSel} dim={!mapData} onSel={(e) => { setSel(e.path); if (root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
-            : <div className="su-tm"><div className="su-none"><span className="spin" aria-label="Loading" /></div></div>}
-          {shownMap && <Legend data={shownMap} />}
+        <section className={"su-map" + (mapPref.open ? "" : " shut")} style={mapPref.open ? { height: mapPref.h } : undefined} aria-label="Treemap">
+          {mapPref.open && <div className="su-grip" role="separator" aria-orientation="horizontal" aria-label="Resize the treemap" title="Drag to resize" onPointerDown={dragMap} />}
+          <div className="su-mh">
+            <button className="su-mt" aria-expanded={mapPref.open} onClick={() => setMap({ ...mapPref, open: !mapPref.open })} title={mapPref.open ? "Hide the treemap" : "Show the treemap"}>
+              <IChevL size={13} />Treemap
+            </button>
+            {shownMap && <Legend data={shownMap} />}
+          </div>
+          {mapPref.open && (shownMap
+            ? <Treemap data={shownMap} get={get} want={fetchDir} sel={mapSel} dim={!mapData} onSel={(e) => { setSel(e.path); if (root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
+            : <div className="su-tm"><div className="su-none"><span className="spin" aria-label="Loading" /></div></div>)}
         </section>
       </div>
     </div>
@@ -237,10 +274,8 @@ function Summary({ data }: { data: DiskUsage }) {
   const kinds = useMemo(() => kindTotals(data), [data]);
   return (
     <div className="su-sum">
-      <div className="su-big">
-        <b>{formatSize(data.size) || "0 B"}</b>
-        <span>{num(data.files)} file{data.files === 1 ? "" : "s"} · {num(data.folders)} folder{data.folders === 1 ? "" : "s"}</span>
-      </div>
+      <b>{formatSize(data.size) || "0 B"}</b>
+      <span>{num(data.files)} file{data.files === 1 ? "" : "s"} · {num(data.folders)} folder{data.folders === 1 ? "" : "s"}</span>
       {drive && <Capacity drive={drive} indexed={data.size} kinds={kinds} />}
     </div>
   );
@@ -251,12 +286,12 @@ function Capacity({ drive, indexed, kinds }: { drive: DriveSpace; indexed: numbe
   const used = Math.max(0, drive.total - drive.free);
   const other = Math.max(0, used - indexed);
   return (
-    <div className="su-cap">
+    <div className="su-cap" title={`${formatSize(used)} used of ${formatSize(drive.total)} · ${formatSize(drive.free)} free${other > drive.total * 0.02 ? ` · ${formatSize(other)} is system space and files the list cannot see` : ""}`}>
       <div className="su-capbar" role="img" aria-label={`${formatSize(used)} used of ${formatSize(drive.total)}`}>
         {kinds.map((b, k) => (b > 0 ? <i key={k} style={{ width: `${pct(b, drive.total)}%`, background: `var(--k${k})` }} title={`${KINDS[k].label}: ${formatSize(b)}`} /> : null))}
         {other > 0 && <i className="oth" style={{ width: `${pct(other, drive.total)}%` }} title={`Other used space: ${formatSize(other)}`} />}
       </div>
-      <span>{formatSize(used)} used of {formatSize(drive.total)} · <b>{formatSize(drive.free)} free</b>{other > drive.total * 0.02 ? ` · ${formatSize(other)} is system space and files the list cannot see` : ""}</span>
+      <span><b>{formatSize(drive.free)}</b> free of {formatSize(drive.total)}</span>
     </div>
   );
 }
@@ -362,9 +397,39 @@ function Tree({ backend, rows, sel, focus, onPick, onToggle, onEnter, onMenu }: 
 // ---- treemap ----------------------------------------------------------------------------------------------------
 
 const GAP = 3;
+const HEAD = 20;
+const MAX_DEPTH = 3;
 
-function Treemap({ data, sel, dim, onSel, onOpen, onMenu }: {
-  data: DiskUsage; sel: string | null; dim: boolean;
+interface TNode { key: string; x: number; y: number; w: number; h: number; e?: UsageEntry; rest?: Rest; frame?: boolean }
+
+/** Nested layout: big folders open into their own children (read on demand), down to MAX_DEPTH levels. */
+function layoutTree(data: DiskUsage, get: (p: string) => DiskUsage | undefined, box: { x: number; y: number; w: number; h: number }): { nodes: TNode[]; need: string[] } {
+  const nodes: TNode[] = [];
+  const need = new Set<string>();
+  const walk = (d: DiskUsage, r: { x: number; y: number; w: number; h: number }, depth: number) => {
+    for (const t of squarify(tileItems(d, r, depth === 0 ? 1100 : 600), r)) {
+      const x = t.x + GAP / 2, y = t.y + GAP / 2, w = Math.max(0, t.w - GAP), h = Math.max(0, t.h - GAP);
+      const it: TileItem = t.item;
+      if ("rest" in it) { nodes.push({ key: "rest:" + d.path + ":" + depth, x, y, w, h, rest: it as Rest }); continue; }
+      const e = it as UsageEntry;
+      if (e.is_dir && depth < MAX_DEPTH && w > 120 && h > 70 && e.size > 0) {
+        const cd = get(e.path);
+        if (cd) {
+          nodes.push({ key: e.path, x, y, w, h, e, frame: true });
+          walk(cd, { x: x + 2, y: y + HEAD, w: w - 4, h: h - HEAD - 2 }, depth + 1);
+          continue;
+        }
+        need.add(e.path);
+      }
+      nodes.push({ key: e.path, x, y, w, h, e });
+    }
+  };
+  walk(data, box, 0);
+  return { nodes, need: [...need] };
+}
+
+function Treemap({ data, get, want, sel, dim, onSel, onOpen, onMenu }: {
+  data: DiskUsage; get: (p: string) => DiskUsage | undefined; want: (p: string) => void; sel: string | null; dim: boolean;
   onSel: (e: UsageEntry) => void; onOpen: (e: UsageEntry) => void; onMenu: (e: UsageEntry, x: number, y: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
@@ -377,47 +442,50 @@ function Treemap({ data, sel, dim, onSel, onOpen, onMenu }: {
     return () => ro.disconnect();
   }, []);
 
-  const tiles = useMemo(() => {
-    const r = { x: 0, y: 0, w: d.w, h: d.h };
-    return squarify(tileItems(data, r), r);
-  }, [data, d.w, d.h]);
-  const total = data.entries.reduce((a, e) => a + e.size, 0) + data.more_size;
+  const lay = useMemo(() => layoutTree(data, get, { x: 0, y: 0, w: d.w, h: d.h }), [data, get, d.w, d.h]);
+  useEffect(() => { lay.need.forEach(want); }, [lay, want]);
   const selLow = sel?.toLowerCase();
 
   return (
     <div className={"su-tm" + (dim ? " dim" : "")} ref={box}>
-      {tiles.map((t) => {
-        const it: TileItem = t.item;
-        const w = Math.max(0, t.w - GAP), h = Math.max(0, t.h - GAP);
-        const st: CSSProperties = { left: t.x + GAP / 2, top: t.y + GAP / 2, width: w, height: h };
-        if ("rest" in it) {
-          const r = it as Rest;
+      {lay.nodes.map((n) => {
+        const st: CSSProperties = { left: n.x, top: n.y, width: n.w, height: n.h };
+        if (n.rest) {
+          const r = n.rest;
           return (
-            <div key="rest" className="su-tile rest" style={st} title={`${num(r.count)} smaller items · ${formatSize(r.size)} together`}>
-              {w > 90 && h > 34 && <span className="su-tl"><b>{num(r.count)} smaller items</b><em>{formatSize(r.size)}</em></span>}
+            <div key={n.key} className="su-tile rest" style={st} title={`${num(r.count)} smaller items · ${formatSize(r.size)} together`}>
+              {n.w > 90 && n.h > 34 && <span className="su-tl"><b>{num(r.count)} smaller items</b><em>{formatSize(r.size)}</em></span>}
             </div>
           );
         }
-        const e = it as UsageEntry;
+        const e = n.e!;
+        const on = e.path.toLowerCase() === selLow;
+        const tip = `${e.name}\n${formatSize(e.size)} · ${formatPct(pct(e.size, data.size))} of this folder${e.is_dir ? ` · ${num(e.files)} files` : ""}`;
+        const common = {
+          title: tip, tabIndex: -1,
+          onClick: (ev: React.MouseEvent) => { ev.stopPropagation(); onSel(e); },
+          onDoubleClick: (ev: React.MouseEvent) => { ev.stopPropagation(); onOpen(e); },
+          onContextMenu: (ev: React.MouseEvent) => { ev.preventDefault(); ev.stopPropagation(); onSel(e); onMenu(e, ev.clientX, ev.clientY); },
+        };
+        if (n.frame) {
+          return (
+            <div key={n.key} className={"su-frame" + (on ? " on" : "")} style={{ ...st, ...kc(e.kind) }} {...common}>
+              <span className="su-fh"><b>{e.name}</b><em>{formatSize(e.size)}</em></span>
+            </div>
+          );
+        }
         return (
-          <button
-            key={e.path} style={{ ...st, ...kc(e.kind) }}
-            className={"su-tile" + (e.is_dir ? " dir" : "") + (e.path.toLowerCase() === selLow ? " on" : "")}
-            title={`${e.name}\n${formatSize(e.size)} · ${formatPct(pct(e.size, total))}${e.is_dir ? ` · ${num(e.files)} files` : ""}`}
-            tabIndex={-1}
-            onClick={() => onSel(e)} onDoubleClick={() => onOpen(e)}
-            onContextMenu={(ev) => { ev.preventDefault(); onSel(e); onMenu(e, ev.clientX, ev.clientY); }}
-          >
-            {w > 64 && h > 30 && (
+          <button key={n.key} style={{ ...st, ...kc(e.kind) }} className={"su-tile" + (e.is_dir ? " dir" : "") + (on ? " on" : "")} {...common}>
+            {n.w > 56 && n.h > 28 && (
               <span className="su-tl">
                 <b>{e.name}</b>
-                {h > 48 && <em>{formatSize(e.size)}{w > 150 ? ` · ${formatPct(pct(e.size, total))}` : ""}</em>}
+                {n.h > 46 && <em>{formatSize(e.size)}</em>}
               </span>
             )}
           </button>
         );
       })}
-      {tiles.length === 0 && d.w > 0 && <div className="su-none">{data.entries.length === 0 ? "This folder is empty." : "Nothing in here takes up space."}</div>}
+      {lay.nodes.length === 0 && d.w > 0 && <div className="su-none">{data.entries.length === 0 ? "This folder is empty." : "Nothing in here takes up space."}</div>}
     </div>
   );
 }
@@ -426,9 +494,8 @@ function Legend({ data }: { data: DiskUsage }) {
   const kinds = useMemo(() => kindTotals(data), [data]);
   const shown = KINDS.filter((k) => kinds[k.id] > 0).sort((a, b) => kinds[b.id] - kinds[a.id]);
   return (
-    <div className="su-legend">
+    <div className="su-legend" title="Outlined blocks are folders · double-click to open">
       {shown.map((k) => <span key={k.id}><i style={{ background: `var(--k${k.id})` }} />{k.label}<em>{formatSize(kinds[k.id])}</em></span>)}
-      <span className="su-hint">Bright blocks are folders · double-click to open</span>
     </div>
   );
 }
@@ -484,26 +551,25 @@ function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
   );
 }
 
-function Selected({ entry, hit, total, actions, onEnter, onShow, onRecycle }: {
-  entry: UsageEntry | null; hit: Hit | null; total: number; actions: LibActions;
+/** One slim strip: size and share are already on the tree row, so only what the row lacks (file count, date) is repeated. */
+function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
+  entry: UsageEntry | null; hit: Hit | null; actions: LibActions;
   onEnter: (p: string) => void; onShow: (h: Hit) => void; onRecycle: (p: string) => void;
 }) {
   const path = entry?.path ?? hit?.path;
-  if (!path) return <div className="su-sel idle">Select a folder or file to see what you can do with it.</div>;
+  if (!path) return <div className="su-sel idle">Select a folder or file</div>;
   const name = entry?.name ?? hit!.name;
-  const size = entry?.size ?? hit!.size ?? 0;
   const mtime = entry?.mtime ?? hit?.mtime ?? null;
   const isDir = !!entry?.is_dir;
   const meta = [
-    formatSize(size) || "0 B",
-    total > 0 && path.toLowerCase() !== "" ? `${formatPct(pct(size, total))} of this folder` : null,
+    hit && !entry ? formatSize(hit.size ?? 0) || "0 B" : null,
     isDir ? `${num(entry!.files)} files` : null,
-    mtime ? `Modified ${formatDate(mtime)}` : null,
+    mtime ? formatDate(mtime) : null,
   ].filter(Boolean).join(" · ");
   const isRoot = /^[A-Za-z]:\\?$/.test(path);
   return (
     <div className="su-sel">
-      <div className="su-st"><b title={name}>{name}</b><small title={path}>{path}</small><small>{meta}</small></div>
+      <div className="su-st" title={path}><b>{name}</b>{meta && <small>{meta}</small>}</div>
       <div className="su-sb">
         {isDir && <button className="btn sm" onClick={() => onEnter(path)}>Open here</button>}
         {hit && <button className="btn sm" onClick={() => onShow(hit)}>Show in folder</button>}

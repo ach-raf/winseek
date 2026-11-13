@@ -11,7 +11,7 @@ import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, isGrid, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
@@ -140,7 +140,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Quick Look. `pv` is the (debounced) hit it shows. `navigated`: the user has moved through the results with the
   // keyboard since the last keystroke in the box, so Space means "Quick Look", not a space.
   const [pvOpen, setPvOpen] = useState(false);
-  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; at: number | null; boxes: HitBox[] | null } | null>(null);
+  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; at: number | null; boxes: HitBox[] | null; pct: number | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The last section is remembered across sessions of the popup.
@@ -261,6 +261,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Text found inside files (documents, PDFs, screenshot OCR) is searchable before the models exist, so the
   // meaning search runs whenever Tier 1 is up; without models it answers with text hits only.
   const [expand, setExpand] = useState<Expand>(null);
+  const [weakOpen, setWeakOpen] = useState(false);
   const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed) && onDrive(h.path, drive)), [sem.hits, parsed, drive]);
@@ -270,7 +271,7 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- Spotlight overview --------------------------------------------------
   // A typed search shows sections (Top Hit, Files, Images, Documents) with "Show all"; the recent list, a sort
   // other than best match, and "Show all files" use the full virtualised list instead.
-  useEffect(() => { setExpand(null); }, [query, filter, drive]);
+  useEffect(() => { setExpand(null); setWeakOpen(false); }, [query, filter, drive]);
   // "Show all" on Photos: every picture whose name matches, not just the first page of the list (400 rows).
   // Read in 5,000-row pages; the grid fills as they arrive.
   const [photosAll, setPhotosAll] = useState<Hit[] | null>(null);
@@ -319,9 +320,9 @@ export default function App({ backend }: { backend: Backend }) {
       : buildOverview({
         names: settingsScope ? [] : photosAll ?? headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, detached: !!photosAll, imageNameTotal: photosAll && !photosBusy ? undefined : nameCounts?.images, semMore: sem.more, text: parsed.text,
         expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
-        photoCols: gridCols.images,
+        photoCols: gridCols.images, weakOpen,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, photosAll, photosBusy, nameCounts, data.total, semHits, sem.more, parsed.text, expand, launchSel, portable, calcResult, settingsScope], // eslint-disable-line react-hooks/exhaustive-deps
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, photosAll, photosBusy, nameCounts, data.total, semHits, sem.more, parsed.text, expand, launchSel, portable, calcResult, settingsScope, weakOpen], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -647,7 +648,9 @@ export default function App({ backend }: { backend: Backend }) {
       if (e.button !== 0) return;
       const t = e.target as HTMLElement | null;
       if (!t || !t.closest(".sbar.pop, .tbar, .side")) return;
-      if (t.closest("button, input, textarea, select, .rename")) return;
+      // Only empty bar background drags: the search field (icon, chips, text, clear), the filter row,
+      // segmented tabs, chips and every control keep their own press (caret, text selection, click).
+      if (t.closest("button, input, textarea, select, a, [role=tab], [role=button], .rename, .field, .qchip, .dseg, .seg, .frow")) return;
       e.preventDefault(); // a titlebar press: no text selection, no focus change
       backend.movePopup().catch(fail);
     };
@@ -655,30 +658,6 @@ export default function App({ backend }: { backend: Backend }) {
     return () => window.removeEventListener("mousedown", onDown);
   }, [backend, fail]);
 
-  // Dragging from inside the search field needs a small move threshold, so a plain click still
-  // places the caret and selects text; past it, the window drag takes over.
-  useEffect(() => {
-    let sx = 0, sy = 0;
-    const cleanup = () => {
-      window.removeEventListener("mousemove", mv);
-      window.removeEventListener("mouseup", cleanup);
-    };
-    const mv = (e: MouseEvent) => {
-      if (Math.hypot(e.clientX - sx, e.clientY - sy) <= 6) return;
-      cleanup();
-      backend.movePopup().catch(fail);
-    };
-    const onDown = (e: MouseEvent) => {
-      if (e.button !== 0) return;
-      const t = e.target as HTMLElement | null;
-      if (!t || !t.closest(".sbar input")) return;
-      sx = e.clientX; sy = e.clientY;
-      window.addEventListener("mousemove", mv);
-      window.addEventListener("mouseup", cleanup);
-    };
-    window.addEventListener("mousedown", onDown);
-    return () => window.removeEventListener("mousedown", onDown);
-  }, [backend, fail]);
   const refocus = useCallback(() => requestAnimationFrame(() => inputRef.current?.focus()), []);
   const openLibrary = useCallback(() => { backend.openLibrary().then(() => backend.hide()).catch(fail); }, [backend, fail]);
   /** Settings opened straight on the Status section (tray item, Ctrl+Shift+L). */
@@ -698,7 +677,10 @@ export default function App({ backend }: { backend: Backend }) {
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
   const curBoxes = semSel?.boxes ?? (current ? semMap.get(pathKey(current.path))?.boxes : null) ?? null;
   const curAt = semSel?.at ?? (current ? semMap.get(pathKey(current.path))?.at : null) ?? null;
-  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}` : "";
+  const curPct = matchPct(semSel ?? (current ? semMap.get(pathKey(current.path)) : undefined));
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}|${curPct ?? ""}` : "";
+  const pctRef = useRef(curPct);
+  pctRef.current = curPct;
   const currentRef = useRef(current);
   currentRef.current = current;
   const snippetRef = useRef(curSnippet);
@@ -716,7 +698,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     const c = currentRef.current;
     if (!c || isLaunchSel) { pvShown.current = false; setPv(null); return; }
-    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, at: atRef.current, boxes: boxesRef.current }); };
+    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, at: atRef.current, boxes: boxesRef.current, pct: pctRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
@@ -1592,7 +1574,7 @@ export default function App({ backend }: { backend: Backend }) {
 
             {!showPanel && overview && (ov.flat.length > 0 ? (
               <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || photosBusy}
-                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} scrollRef={ovRef} armed={armed} />
+                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} scrollRef={ovRef} armed={armed} />
             ) : loaded && !waitingSem ? (
               <div className="none">
                 {isRecent ? (
@@ -1610,7 +1592,7 @@ export default function App({ backend }: { backend: Backend }) {
 
           {/* full window: the preview is always there; compact: only as Quick Look (Space) */}
           {(full || quickLook) && (pvPane ? (
-            <Preview backend={backend} hit={pv!.hit} query={parsed.text} snippet={pv!.snippet} page={pv!.page} start={pv!.at ?? undefined} boxes={pv!.boxes} apiRef={previewApi}
+            <Preview backend={backend} hit={pv!.hit} query={parsed.text} snippet={pv!.snippet} page={pv!.page} start={pv!.at ?? undefined} boxes={pv!.boxes} matchPct={pv!.pct} apiRef={previewApi}
                      onOpen={() => void act("open", pv!.hit)} onReveal={() => void act("reveal", pv!.hit)} onCopyPath={() => void act("copy", pv!.hit)} />
           ) : (
             <aside className="pv-none">

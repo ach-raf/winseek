@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts src/hotkeyLogic.test.ts src/viewMode.test.ts src/settingsNav.test.ts src/iconLogic.test.ts src/vlist.test.ts src/spaceLogic.test.ts src/estimateLogic.test.ts"
+    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts src/hotkeyLogic.test.ts src/viewMode.test.ts src/settingsNav.test.ts src/iconLogic.test.ts src/vlist.test.ts src/spaceLogic.test.ts src/estimateLogic.test.ts src/thumbQueue.test.ts"
   },
   "dependencies": {
     "@fontsource-variable/figtree": "^5.3.0",

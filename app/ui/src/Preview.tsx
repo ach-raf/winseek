@@ -38,6 +38,8 @@ export interface PreviewProps {
   page?: number | null;
   /** Where the query words sit on the image / on that PDF page (fractions 0-1); drawn over the picture. */
   boxes?: HitBox[] | null;
+  /** "NN% match" of a meaning hit: the same number as its row badge. */
+  matchPct?: number | null;
   onOpen: () => void;
   onReveal: () => void;
   onCopyPath: () => void;
@@ -50,7 +52,7 @@ export interface PreviewProps {
  * dropped and its media elements are unmounted, which aborts their downloads). The previous content stays,
  * dimmed, until the new one arrives so arrowing through results does not flash.
  */
-export function Preview({ backend, hit, query, snippet, start, page, boxes, onOpen, onReveal, onCopyPath, apiRef }: PreviewProps) {
+export function Preview({ backend, hit, query, snippet, start, page, boxes, matchPct, onOpen, onReveal, onCopyPath, apiRef }: PreviewProps) {
   // Children (PDF view, image stage, parse bar) contribute their piece of the keyboard API.
   const apiParts = useRef<Partial<PreviewApi>>({});
   const registerApi = useCallback((patch: Partial<PreviewApi>) => { apiParts.current = { ...apiParts.current, ...patch }; }, []);
@@ -117,6 +119,9 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
         <div className="pv-title">
           <h2 title={hit.name}>{hit.name}</h2>
           <div className="kind">{label}</div>
+          {matchPct != null && (
+            <span className="pv-pct" title="How closely this file matches what you typed">{matchPct}% match{page ? ` · page ${page}` : ""}</span>
+          )}
         </div>
         <div className="crumbs" title={hit.path}>
           {crumbs.map((p, i) => i === crumbs.length - 1

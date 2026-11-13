@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
 
 const isImage = (n: string) => /\.(jpe?g|png|webp)$/i.test(n);
@@ -241,4 +241,13 @@ test("fmtMs: a decimal under 10 ms, whole numbers above", () => {
 test("chipCount keeps filter chip counts short", () => {
   assert.deepEqual([0, 842, 999, 1000, 1257, 9999, 12_345, 999_999, 1_000_000, 4_240_000].map(chipCount),
     ["0", "842", "999", "1k", "1.3k", "10k", "12k", "1M", "1M", "4.2M"]);
+});
+
+test("matchPct is the one number behind the badge and the preview pill", () => {
+  assert.equal(matchPct({ score: 0.714, source: "meaning" }), 71);
+  assert.equal(matchPct({ score: 0.001, source: "meaning" }), 1);
+  assert.equal(matchPct({ score: 0.994, source: "meaning" }), 99);
+  assert.equal(matchPct({ score: 1, source: "meaning" }), 100, "the best result of the list reads 100%");
+  assert.equal(matchPct({ score: 0, source: "text" }), null);
+  assert.equal(matchPct(undefined), null);
 });

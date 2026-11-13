@@ -2,6 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import type { Backend, Hit, HitBox } from "./types";
 import { Preview } from "./Preview";
 import { FileIcon } from "./FileIcon";
+import { ThumbImg } from "./ThumbImg";
 import { formatDate, formatSize, kindOf } from "./format";
 import { activeSection, moveMosaic, mosaicMetrics, packMosaic, railEntries, tileBox } from "./libraryLogic";
 
@@ -64,9 +65,9 @@ const isDocTile = (name: string) => {
 
 function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: number }) {
   const src = backend.iconUrl(item.path, false, true, px);
-  const [bad, setBad] = useState(false);
-  if (!src || bad) return <span className="lg-ph"><FileIcon name={item.name} isDir={false} src={null} /></span>;
-  return <img src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />;
+  const ph = <span className="lg-ph"><FileIcon name={item.name} isDir={false} src={null} /></span>;
+  if (!src) return ph;
+  return <ThumbImg src={src} bad={ph} />;
 }
 
 /** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized.

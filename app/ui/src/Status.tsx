@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusTier0, StatusTier1, VolumeDetail } from "./types";
+import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusFfmpeg, StatusTier1, StatusWaiting, VolumeDetail } from "./types";
 import { formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 import { Grp, Row } from "./settingsUi";
@@ -94,22 +94,103 @@ export function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<strin
   );
 }
 
+const plural = (n: number, one: string, many: string) => `${fmt(n)} ${n === 1 ? one : many}`;
+
+/** Where the automatic download of the audio / video tool stands, in plain words. */
+function ffmpegText(f: StatusFfmpeg | null): string {
+  if (f?.state === "downloading") {
+    const pct = f.total > 0 ? ` (${Math.min(99, Math.floor((f.downloaded / f.total) * 100))}%)` : "";
+    return `waiting for the audio and video tool, which is downloading${pct}`;
+  }
+  if (f?.state === "failed") return `waiting for the audio and video tool: the download failed${f.error ? ` (${f.error})` : ""}. Check the internet connection, then press Retry`;
+  return "waiting for the audio and video tool, which downloads by itself";
+}
+
+/** What one group of queued files is waiting for, in plain words. */
+function waitingLine(w: StatusWaiting, f: StatusFfmpeg | null): string {
+  return w.why === "pdf_reader_missing" ? `${plural(w.count, "PDF is", "PDFs are")} waiting for the PDF reader to download`
+    : w.why === "pdf_reader_broken" ? `${plural(w.count, "PDF is", "PDFs are")} waiting: the PDF reader is installed but could not be loaded`
+    : w.why === "ffmpeg_missing" ? `${plural(w.count, w.kind === "audio" ? "audio file is" : "video is", w.kind === "audio" ? "audio files are" : "videos are")} ${ffmpegText(f)}`
+    : `${plural(w.count, "file is", "files are")} waiting`;
+}
+
+/** The State line while files are queued and nothing is running: why, in plain words. */
+export function waitingText(t: StatusTier1): string {
+  const blocked = t.waiting.reduce((a, w) => a + w.count, 0);
+  if (t.waiting.length > 0 && blocked >= t.queue) return "Waiting. " + t.waiting.map((w) => waitingLine(w, t.ffmpeg)).join("; ");
+  if (t.error) return `Retrying after an error (${fmt(t.queue)} queued)`;
+  const rest = t.queue - blocked;
+  return t.waiting.length > 0
+    ? `Starting the next batch of ${fmt(rest)} files. ${t.waiting.map((w) => waitingLine(w, t.ffmpeg)).join("; ")}`
+    : `Starting the next batch (${fmt(t.queue)} queued)`;
+}
+
+/** Plain-words name for a skip reason code or a failure message. */
+export function reasonLabel(r: string): string {
+  switch (r) {
+    case "": return "No reason recorded";
+    case "no_ffmpeg": return "Audio and video: ffmpeg is not installed (they are queued again once it is)";
+    case "cloud_only": return "Online-only cloud files (not downloaded to this PC)";
+    case "no_heic_codec": return "HEIC photos: the Windows HEIF codec is not installed";
+    case "too_large": return "Too large to read";
+    case "binary": return "Binary file, no text inside";
+    case "no_text": return "No readable text";
+    case "legacy_office": return "Old Office format (.doc, .xls, .ppt)";
+    case "encrypted": return "Encrypted or password-protected";
+    case "no_audio_model": return "Audio: the model has no audio support";
+    case "no_media_content": return "Audio or video with no usable sound or picture";
+    case "denied": return "Credential or system file (never read)";
+    case "zip_bomb": return "Archive that expands suspiciously large";
+    case "changed": return "Changed while being read";
+    case "not_notebook": return "Not a valid notebook";
+    default: return r;
+  }
+}
+
+/** A count with the reasons behind it: hover shows the first, the arrow opens every reason with example files. */
+function Reasons({ k, total, groups, title }: { k: string; total: number | null; groups: StatusReason[]; title: string }) {
+  if (total == null || total === 0 || groups.length === 0) return <Kv k={k} title={title}>{total == null ? "—" : fmt(total)}</Kv>;
+  const shown = groups.reduce((a, g) => a + g.count, 0);
+  return (
+    <details className="reasons">
+      <summary className="grow kv" title={groups.map((g) => `${fmt(g.count)}  ${reasonLabel(g.reason)}`).join("\n")}>
+        <div className="gtxt"><b>{k}</b></div>
+        <span className="val">{fmt(total)}</span>
+      </summary>
+      <ul>
+        {groups.map((g) => (
+          <li key={g.reason} title={g.examples.join("\n")}>
+            <span className="n">{fmt(g.count)}</span>
+            <span className="why">{reasonLabel(g.reason)}
+              {g.examples.length > 0 && <small>{g.examples.map((p) => p.split(/[\\/]/).pop()).join(", ")}</small>}
+            </span>
+          </li>
+        ))}
+        {total > shown && <li><span className="n">{fmt(total - shown)}</span><span className="why">Other reasons</span></li>}
+      </ul>
+    </details>
+  );
+}
+
 function stateLine(t: StatusTier1): string {
   return t.state === "unavailable" ? "Unavailable"
     : t.state === "models_missing"
       ? "Not set up. The model files are not downloaded yet." + (t.stats?.text_only ? " Text inside files is already searchable." : "")
     : t.paused_reason ? pausedText(t.paused_reason)
     : t.state === "indexing" ? "Indexing in the background"
-    : t.queue > 0 ? "Waiting for work" : "All caught up";
+    : t.queue > 0 ? waitingText(t) : "All caught up";
 }
 
-export function StatusMeaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean }) {
+export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmpeg }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean; onResume?: () => void; onRetryFfmpeg?: () => void }) {
   const [ask, setAsk] = useState(false);
   const s = t1.stats;
   useEffect(() => { if (!t1.can_rebuild) setAsk(false); }, [t1.can_rebuild]);
   return (
     <Grp title="Search by meaning" label="Meaning">
-      <Row title="State" desc={<span className={"st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</span>} />
+      <Row title="State" desc={<span className={"st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</span>}>
+        {t1.paused_reason === "user" && onResume && <button className="gbtn pri" onClick={onResume}>Resume</button>}
+        {t1.ffmpeg?.state === "failed" && onRetryFfmpeg && <button className="gbtn pri" onClick={onRetryFfmpeg}>Retry</button>}
+      </Row>
       {t1.state === "unavailable" ? (
         t1.error && <div className="grow"><span className="fr-error" role="alert">{t1.error}</span></div>
       ) : (
@@ -126,8 +207,8 @@ export function StatusMeaning({ t1, onRebuild, rebuilding }: { t1: StatusTier1; 
           <Kv k="Text searchable, waiting for models" title="Their text is already searchable; the meaning vectors are added once the models are installed">
             {s ? fmt(s.text_only) : "—"}
           </Kv>
-          <Kv k="Failed">{s ? fmt(s.failed) : "—"}</Kv>
-          <Kv k="Skipped" title="Unsupported or legacy format, too large, no text, or ignored">{s ? fmt(s.skipped) : "—"}</Kv>
+          <Reasons k="Failed" total={s ? s.failed : null} groups={t1.failed_reasons} title="Files that could not be read or embedded" />
+          <Reasons k="Skipped" total={s ? s.skipped : null} groups={t1.skipped_reasons} title="Unsupported or legacy format, too large, no text, or ignored" />
           <Kv k="Files in scope">{s ? fmt(s.files) : "—"}</Kv>
           <Kv k="Speed" title="Files per second over the last minute">{t1.rate != null ? formatRate(t1.rate) : "—"}</Kv>
           <Kv k="Screenshot text recognition" title="Reads text in screenshots with Windows OCR">

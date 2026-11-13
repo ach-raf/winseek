@@ -180,6 +180,31 @@ export interface StatusTier1 {
   can_rebuild: boolean;
   /** No Windows OCR language is installed, so screenshot text is not read. */
   ocr_unavailable: boolean;
+  /** Queued files that cannot run yet, and what they wait for. */
+  waiting: StatusWaiting[];
+  /** Failed files grouped by error message, biggest group first. */
+  failed_reasons: StatusReason[];
+  /** Skipped files grouped by reason code, biggest group first. */
+  skipped_reasons: StatusReason[];
+  /** The audio / video tool (ffmpeg): where its automatic download stands; null when nothing waits for it. */
+  ffmpeg: StatusFfmpeg | null;
+}
+export interface StatusFfmpeg {
+  state: "idle" | "downloading" | "failed";
+  downloaded: number;
+  total: number;
+  error: string | null;
+}
+export interface StatusWaiting {
+  kind: "pdf" | "audio" | "video" | string;
+  count: number;
+  why: "pdf_reader_missing" | "pdf_reader_broken" | "ffmpeg_missing" | string;
+}
+export interface StatusReason {
+  reason: string;
+  count: number;
+  /** A few example paths. */
+  examples: string[];
 }
 export interface StatusModelFile {
   name: string;
@@ -493,6 +518,8 @@ export interface Backend {
   modelsDownload(includeParser?: boolean, groups?: ModelGroup[]): Promise<void>;
   /** Aborts but keeps partial files; a later modelsDownload resumes. */
   modelsCancel(): Promise<void>;
+  /** Try the audio / video tool (ffmpeg) download again now. */
+  ffmpegRetry(): Promise<void>;
   onModelsProgress(cb: (p: ModelsProgress) => void): Promise<() => void>;
   onModelsDone(cb: (d: ModelsDone) => void): Promise<() => void>;
   /** Fired when the app swaps from demo data to the real searchd source. */

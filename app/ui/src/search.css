@@ -80,6 +80,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sub.snip { color: var(--fg2); }
 .row.sel .sub { color: var(--fg2); }
 .pct { margin-left: 8px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: var(--bg3); color: var(--fg2); vertical-align: 1px; }
+/* a long name shrinks with an ellipsis; the "NN% match" badge always stays visible */
+.nm.hasp { display: flex; align-items: center; min-width: 0; }
+.nm.hasp .nmt { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nm.hasp .pct { flex: none; }
+.pv-pct { display: inline-block; margin-top: 6px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; background: color-mix(in oklab, var(--acc) 28%, var(--bg3)); color: var(--fg); }
 .row.sel .pct { background: color-mix(in oklab, var(--acc) 40%, var(--bg)); color: var(--fg); }
 .dt, .sz { font-size: 12.5px; color: var(--fg3); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .sz { display: none; }
@@ -266,3 +271,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .shell.full .list { padding: 4px 12px 14px; }
 .shell.full .colh, .shell.full .colh.dense { padding: 8px 24px 6px var(--gut); }
 .shell.full .sh { padding-left: var(--gut); padding-right: var(--gut); }
+
+/* ---- photo tiles: queued thumbnails (ThumbImg) + match badge ---- */
+.th-wait { position: absolute; inset: 0; background: linear-gradient(110deg, var(--bg3) 30%, color-mix(in oklab, var(--bg3) 82%, var(--fg)) 50%, var(--bg3) 70%); background-size: 220% 100%; animation: th-shimmer 1.4s linear infinite; }
+@keyframes th-shimmer { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+.th-in { animation: th-fade .14s ease-out; }
+@keyframes th-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .th-wait, .th-in { animation: none; } }
+.tile .tpct { position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); pointer-events: none; }

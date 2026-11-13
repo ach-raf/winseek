@@ -2,7 +2,7 @@ import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types";
 import { pickTop } from "./launchLogic.ts";
 
 /** Result overview: a Top result, then a few rows per section with "Show all"; home = Most used + Recent files. */
-export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "mostused" | "recent";
+export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "mostused" | "recent";
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
 export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
 
@@ -41,6 +41,8 @@ export interface OvSection {
   total: number;
   /** More than shown: offer "Show all". */
   more: boolean;
+  /** "Weaker matches": a folded section; `items` is empty until it is opened. */
+  fold?: { open: boolean };
   /** `total` is only what was read so far (a quick top-k): "Show all" names no number. */
   open?: boolean;
 }
@@ -64,6 +66,27 @@ export const baseName = (path: string) => path.slice(path.lastIndexOf("\\") + 1)
 const stem = (name: string) => { const d = name.lastIndexOf("."); return (d > 0 ? name.slice(0, d) : name).toLowerCase(); };
 
 export const semHit = (h: SemanticHit): Hit => ({ name: baseName(h.path), path: h.path, is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null });
+
+/** Results scoring below this share of the best one are folded under "Weaker matches". */
+export const WEAK_RATIO = 0.5;
+
+/** The "NN% match" a hit shows (row badge, photo tile, preview pill): one definition so they agree.
+ *  `score` is the final ranking score relative to the best result of the list (1 = the top one), so the
+ *  badge reads 100% on top and never rises down the list. Hits without a score (code, words only
+ *  before the models are installed) show none. */
+export function matchPct(sem: Pick<SemanticHit, "score" | "source"> | undefined | null): number | null {
+  return sem && sem.source !== "code" && sem.score > 0 ? Math.max(1, Math.min(100, Math.round(sem.score * 100))) : null;
+}
+
+/** Why a hit is in the list, in plain words, where we know it ("Matches the text on page 3"). */
+export function reasonOf(sem: Pick<SemanticHit, "source" | "page" | "at"> | undefined | null, image: boolean): string | null {
+  if (!sem || sem.source === "code") return null;
+  const clock = (t: number) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, "0")}`;
+  const where = sem.page ? ` on page ${sem.page}` : sem.at != null ? ` at ${clock(sem.at)}` : "";
+  if (sem.source === "text") return `Has your words${where}`;
+  if (image) return "Matches the picture";
+  return `Matches the ${sem.page ? "text" : "meaning"}${where}`;
+}
 
 /** A name result good enough to be the Top result: its name (without extension) is, or starts with, what was typed. */
 export function strongName(name: string, text: string): boolean {
@@ -104,6 +127,8 @@ export function buildOverview(opts: {
   imageNameTotal?: number;
   /** `sem` is a quick top-k and relevant files were left out of it: "Show all" has more. */
   semMore?: boolean;
+  /** "Weaker matches" (Documents, expanded) is unfolded. */
+  weakOpen?: boolean;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
   const launch = opts.launch ?? [];
@@ -240,10 +265,20 @@ export function buildOverview(opts: {
 
   if (!expand || expand === "docs") {
     const list = docs.filter((h) => !shownPaths.has(k(h.path)));
-    const cap = expand ? list.length : DOCS;
-    const items = list.slice(0, cap).map((h): OvItem => ({ key: "s:" + h.path, section: "docs", hit: semHit(h), sem: h }));
+    // Strong matches first; anything under WEAK_RATIO of the best score is folded ("Weaker matches").
+    const strong = list.filter((h) => !(h.score > 0 && h.score < WEAK_RATIO));
+    const weak = list.filter((h) => h.score > 0 && h.score < WEAK_RATIO);
+    const cap = expand ? strong.length : DOCS;
+    const items = strong.slice(0, cap).map((h): OvItem => ({ key: "s:" + h.path, section: "docs", hit: semHit(h), sem: h }));
     if (items.length) {
-      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, more: !expand && (list.length > items.length || !!opts.semMore), open: !expand && !!opts.semMore });
+      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, more: !expand && (strong.length > items.length || weak.length > 0 || !!opts.semMore), open: !expand && !!opts.semMore });
+    }
+    if (expand === "docs" && weak.length) {
+      const open = !!opts.weakOpen;
+      sections.push({
+        id: "weak", title: `Weaker matches (${weak.length.toLocaleString("en-US")})`, total: weak.length, more: false, fold: { open },
+        items: open ? weak.map((h): OvItem => ({ key: "s:" + h.path, section: "weak", hit: semHit(h), sem: h })) : [],
+      });
     }
   }
 

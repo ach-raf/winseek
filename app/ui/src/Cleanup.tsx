@@ -91,6 +91,13 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
     </div>
   );
 
+  const modeTabs = (
+    <div className="dseg" role="tablist" aria-label="Clean up">
+      <button role="tab" aria-selected={mode === "tidy"} className={mode === "tidy" ? "on" : ""} onClick={() => setMode("tidy")}>Suggestions</button>
+      <button role="tab" aria-selected={mode === "space"} className={mode === "space" ? "on" : ""} onClick={() => setMode("space")}>Disk space</button>
+    </div>
+  );
+
   if (view === "exact") {
     return (
       <div className="cl">
@@ -126,15 +133,14 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
   }
   return (
     <div className="cl">
-      <div className="cl-modes">
-        <div className="dseg" role="tablist" aria-label="Clean up">
-          <button role="tab" aria-selected={mode === "tidy"} className={mode === "tidy" ? "on" : ""} onClick={() => setMode("tidy")}>Suggestions</button>
-          <button role="tab" aria-selected={mode === "space"} className={mode === "space" ? "on" : ""} onClick={() => setMode("space")}>Disk space</button>
+      {mode === "tidy" && (
+        <div className="cl-modes">
+          {modeTabs}
+          <span className="cl-sumtxt">Duplicates, big files and old screenshots</span>
         </div>
-        <span className="cl-sumtxt">{mode === "tidy" ? "Duplicates, big files and old screenshots" : "See which folders and file types fill your drives"}</span>
-      </div>
+      )}
       {mode === "space" ? (
-        <Space backend={backend} hidden={hidden} actions={actions} epoch={epoch} />
+        <Space backend={backend} hidden={hidden} actions={actions} epoch={epoch} lead={modeTabs} />
       ) : (
         <Home
           backend={backend} groups={vis} rows={rows} shots={shots} actions={actions}
