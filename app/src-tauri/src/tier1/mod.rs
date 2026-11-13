@@ -178,7 +178,12 @@ pub struct StatusDto {
 #[derive(Debug, Clone, Serialize, PartialEq)]
 pub struct SemanticHit {
     pub path: String,
+    /// The final score relative to the best hit of the list (1.0 = the top one): the badge.
     pub score: f32,
+    /// The final score itself, on the gate's scale (a meaning hit starts at `Z_MIN`, the words add
+    /// their bonus; words alone = the bonus). Comparable between lists of one query, so the UI can
+    /// add what it knows (the file name) and still rank by one number.
+    pub rank: f32,
     /// On-disk size in bytes (None when the file cannot be stat-ed).
     pub size: Option<u64>,
     /// Modified time, unix ms.
@@ -248,6 +253,8 @@ impl SemanticResult {
 struct SemRow {
     path: String,
     score: f32,
+    /// `score` before [`finalize_scores`] made it relative.
+    rank: f32,
     locator: Option<String>,
     snippet: Option<String>,
     page: Option<u32>,
@@ -260,6 +267,7 @@ impl SemRow {
         SemanticHit {
             path: self.path.clone(),
             score: self.score,
+            rank: self.rank,
             size,
             mtime,
             snippet: self.snippet.clone(),
@@ -789,7 +797,7 @@ impl Tier1 {
         let mut rows: Vec<SemRow> = raw
             .into_iter()
             .filter(|h| snap.in_scope(&h.path))
-            .map(|h| SemRow { page: None, path: h.path, score: 0.0, locator: None, snippet: Some(h.snippet).filter(|s| s.contains('[')), source: "code" })
+            .map(|h| SemRow { page: None, path: h.path, score: 0.0, rank: 0.0, locator: None, snippet: Some(h.snippet).filter(|s| s.contains('[')), source: "code" })
             .collect();
         let more = limit.is_some_and(|k| rows.len() > k);
         rows.truncate(limit.unwrap_or(usize::MAX));
@@ -827,6 +835,7 @@ impl Tier1 {
                     page: locator_page(h.locator.as_deref()),
                     path: h.path,
                     score: 0.0,
+                    rank: 0.0,
                     locator: h.locator,
                     snippet: Some(h.snippet).filter(|s| s.contains('[')),
                     source: "text",
@@ -848,9 +857,7 @@ impl Tier1 {
             (cands, texts)
         };
         let in_scope: Vec<_> = cands.into_iter().filter(|c| snap.in_scope(&c.path)).collect();
-        let mut gated = relevance::gate(in_scope, limit.map_or(usize::MAX, |k| k.saturating_add(1)));
-        let mut more = limit.is_some_and(|k| gated.len() > k);
-        gated.truncate(limit.unwrap_or(usize::MAX));
+        let gated = relevance::gate(in_scope, usize::MAX);
         let text_pages: std::collections::HashMap<String, u32> =
             texts.iter().filter_map(|t| Some((t.path.to_lowercase(), locator_page(t.locator.as_deref())?))).collect();
         let snippets: std::collections::HashMap<String, String> =
@@ -874,7 +881,7 @@ impl Tier1 {
                 // One final score per file: how far it stands out for the query (the gate's z), plus the words bonus.
                 let score = h.rank() + if has_words.contains(key.as_str()) { words } else { 0.0 };
                 seen.insert(key);
-                SemRow { path: h.path, score, locator: h.locator, snippet, page, source: "meaning" }
+                SemRow { path: h.path, score, rank: score, locator: h.locator, snippet, page, source: "meaning" }
             })
             .collect();
         // The words themselves, found inside files (documents, PDFs, screenshot text), fused with
@@ -888,6 +895,7 @@ impl Tier1 {
                 page: locator_page(t.locator.as_deref()),
                 path: t.path,
                 score: words,
+                rank: words,
                 locator: t.locator,
                 snippet: Some(t.snippet),
                 source: "text",
@@ -898,15 +906,32 @@ impl Tier1 {
         let pos: std::collections::HashMap<&str, usize> = order.iter().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
         rows.sort_by_key(|r| pos.get(r.path.to_lowercase().as_str()).copied().unwrap_or(usize::MAX));
         finalize_scores(&mut rows);
-        if let Some(k) = limit {
-            let cap = k + (k / 3).max(3);
-            if rows.len() > cap {
-                more = true;
-                rows.truncate(cap);
-            }
-        }
+        let more = limit.is_some_and(|k| top_per_kind(&mut rows, k));
         Ok((self.state_str().into(), rows, more))
     }
+}
+
+/// The overview's quick list: the best `k` meaning hits among the pictures and the best `k` among
+/// everything else, each followed by a few words-only hits (at most `k + max(k / 3, 3)` rows per
+/// kind). Pictures and documents are shown in separate sections, so one kind must not use up the
+/// other's places: the picture section then starts with the same pictures as "Show all". Rows stay
+/// in their order. Returns whether anything was left out.
+fn top_per_kind(rows: &mut Vec<SemRow>, k: usize) -> bool {
+    let cap = k + (k / 3).max(3);
+    let (mut meaning, mut all) = ([0usize; 2], [0usize; 2]);
+    let before = rows.len();
+    rows.retain(|r| {
+        let g = usize::from(crawler::is_supported_image(&r.path));
+        let keep = if r.source == "meaning" { meaning[g] < k } else { all[g] < cap };
+        if keep {
+            all[g] += 1;
+            if r.source == "meaning" {
+                meaning[g] += 1;
+            }
+        }
+        keep
+    });
+    rows.len() < before
 }
 
 /// Words bonus of the final score, on the gate's z scale (meaning hits sit at `Z_MIN` = 4 and up).
@@ -1311,7 +1336,7 @@ mod tests {
     use super::*;
 
     fn srow(path: &str, score: f32, source: &'static str) -> SemRow {
-        SemRow { path: path.into(), score, locator: None, snippet: None, page: None, source }
+        SemRow { path: path.into(), score, rank: score, locator: None, snippet: None, page: None, source }
     }
     fn paths(rows: &[SemRow]) -> Vec<&str> {
         rows.iter().map(|r| r.path.as_str()).collect()
@@ -1326,6 +1351,20 @@ mod tests {
         assert_eq!(got, [100, 99, 50, 13]);
         assert!(rows.windows(2).all(|p| p[0].score >= p[1].score));
         assert_eq!(paths(&rows), ["a", "b", "c", "w"], "order is untouched");
+    }
+
+    #[test]
+    fn quick_list_keeps_the_best_of_each_kind() {
+        // Five documents outrank the pictures; with k = 2 the pictures still get their two places.
+        let mut rows: Vec<SemRow> = (0..5).map(|i| srow(&format!("d{i}.pdf"), 9.0 - i as f32, "meaning")).collect();
+        rows.extend((0..4).map(|i| srow(&format!("p{i}.jpg"), 4.9 - i as f32 * 0.1, "meaning")));
+        rows.push(srow("w.txt", 1.0, "text"));
+        assert!(top_per_kind(&mut rows, 2), "something was left out");
+        assert_eq!(paths(&rows), ["d0.pdf", "d1.pdf", "p0.jpg", "p1.jpg", "w.txt"]);
+        // Nothing over the limit: nothing dropped, "more" stays false.
+        let mut rows = vec![srow("a.jpg", 5.0, "meaning"), srow("b.pdf", 4.5, "meaning")];
+        assert!(!top_per_kind(&mut rows, 2));
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]

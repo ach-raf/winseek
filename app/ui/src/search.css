@@ -60,6 +60,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sh .more:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 .sh .back { display: inline-flex; align-items: baseline; gap: 6px; margin: -3px 0 -3px -6px; padding: 3px 8px 3px 2px; border-radius: 6px; font: inherit; color: var(--fg2); }
 .sh .back svg { align-self: center; }
+.sh > span > i { font-style: normal; font-weight: 400; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.sh > span > i.busy::before { content: "\00b7  "; }
 .sh .back i { font-style: normal; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
 .sh .back:hover { background: var(--bg3); color: var(--fg); }
 .sh .back i.busy { color: var(--fg3); }
@@ -138,8 +140,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .tile > .ic { width: 40%; height: auto; aspect-ratio: 1; }
 .tile.sel { outline: 3px solid var(--acc); outline-offset: 2px; }
 .tile .cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 9px 7px; font-size: 11.5px; font-weight: 500; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.7)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .12s; }
-.tile:hover .cap, .tile.sel .cap { opacity: 1; }
+.tile:hover .cap, .tile.sel .cap, .tile.named .cap { opacity: 1; }
 .tile mark { background: none; color: #fff; }
+/* a tile that is there for its name: the word that put it there stands out */
+.tile.named mark { background: rgba(255,255,255,.26); border-radius: 3px; padding: 0 2px; margin: 0 -2px; }
 
 .calc { margin: 8px 4px 2px; padding: 16px 20px; border-radius: 12px; background: var(--bg2); display: flex; align-items: center; gap: 18px; cursor: default; }
 .calc.sel { box-shadow: inset 0 0 0 2px var(--sel-line); }
@@ -278,4 +282,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .th-in { animation: th-fade .14s ease-out; }
 @keyframes th-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .th-wait, .th-in { animation: none; } }
-.tile .tpct { position: absolute; top: 6px; left: 6px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); pointer-events: none; }
+.tile .tpct { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 12px); display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); pointer-events: none; white-space: nowrap; overflow: hidden; }
+.tile .tpct b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.tile .tpct i { font-style: normal; font-weight: 500; opacity: .78; font-variant-numeric: tabular-nums; }
+.tile .tpct b::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--acc); }
+.tile .tpct.k-name b::before { background: #fff; }
+.tile .tpct.k-both b::before { box-shadow: 8px 0 0 #fff; margin-right: 13px; }
+.tile .tpct.k-text b::before { border-radius: 1px; }

@@ -1,6 +1,7 @@
 import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
-import { backspaceDropsChip, hasRanges, nameQuery, parseQuery, rangeClause } from "./filters";
+import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
+import { wordQuery } from "./pictureRank";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -32,13 +33,16 @@ const OVERSCAN = 6;
 // Result pages kept in memory (nearest the visible window win): a scrollbar sweep over millions of
 // rows must not pile up every page it passed.
 const PAGE_CAP = 60;
+// Pictures whose name has the typed word, read for the overview's grid (two rows; the rest is "Show all").
+const PIC_HEAD = 60;
+const PIC_PAGE = 5000;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
   { id: "files", label: "Files" },
   { id: "apps", label: "Apps" },
   { id: "settings", label: "Settings" }, // launcher-only scope: no name-index rows
-  { id: "images", label: "Images" },
+  { id: "images", label: "Pictures" },
   { id: "docs", label: "Documents" },
   { id: "video", label: "Video" },
   { id: "audio", label: "Audio" },
@@ -245,7 +249,8 @@ export default function App({ backend }: { backend: Backend }) {
   // The date / size chips ride along as index terms, so they are exact over the whole index (no client scan).
   const scopedQ = `${scopeDrive(nameQ, drive)} ${rangeClause(parsed)}`.trim(); // what the name index gets: the words plus the drive scope
   // "settings" is a launcher-only scope, not a name-index filter — via the word in the query or the tab.
-  const effFilter: Filter = parsed.kind && parsed.kind !== "settings" ? parsed.kind : filter;
+  // One kind scope, whether it came from a word in the query ("cat image") or from the tab: both run the same code below.
+  const effFilter: Filter = kindScope(parsed.kind, filter);
   const settingsScope = parsed.kind === "settings" || filter === "settings";
   const rangeKey = JSON.stringify([parsed.date, parsed.size]);
   const chipLabels = useMemo(() => parsed.chips.map((c) => c.label), [parsed]);
@@ -264,7 +269,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [weakOpen, setWeakOpen] = useState(false);
   const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
-  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed) && onDrive(h.path, drive)), [sem.hits, parsed, drive]);
+  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed, effFilter) && onDrive(h.path, drive)), [sem.hits, parsed, effFilter, drive]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
   const selCount = data.total;
 
@@ -272,27 +277,61 @@ export default function App({ backend }: { backend: Backend }) {
   // A typed search shows sections (Top Hit, Files, Images, Documents) with "Show all"; the recent list, a sort
   // other than best match, and "Show all files" use the full virtualised list instead.
   useEffect(() => { setExpand(null); setWeakOpen(false); }, [query, filter, drive]);
-  // "Show all" on Photos: every picture whose name matches, not just the first page of the list (400 rows).
-  // Read in 5,000-row pages; the grid fills as they arrive.
-  const [photosAll, setPhotosAll] = useState<Hit[] | null>(null);
-  const [photosBusy, setPhotosBusy] = useState(false);
+  // Pictures asked for (the tab, or a kind word like "cat image") with something typed: the grid is the whole
+  // ranked list, the very list "Show all" on the Pictures section opens.
+  const picScope = effFilter === "images" && parsed.text.trim() !== "" && sort === "rel" && !settingsScope;
+  const ovExpand: Expand = settingsScope ? "settings" : expand ?? (picScope ? "images" : null);
+  const picsOpen = ovExpand === "images";
+  // The pictures whose name has the typed words as words ("cat.jpg", "my cat 2021.png", not "intricate.png"):
+  // the index answers that exactly (`ws:` terms), so the grid never pages through mid-word matches to find them.
+  // The overview reads the first of them; the opened list reads them all, in pages, and fills as they arrive.
+  const picQ = `${scopeDrive(wordQuery(nameQ), drive)} ${rangeClause(parsed)}`.trim();
+  const picWords = picQ !== scopedQ;
+  const picsWanted = !isRecent && !settingsScope && sort === "rel" && (effFilter === "all" || effFilter === "images");
+  const [picNames, setPicNames] = useState<{ q: string; hits: Hit[]; total: number; done: boolean } | null>(null);
   useEffect(() => {
-    if (expand !== "images" || isRecent) { setPhotosAll(null); return; }
+    if (!picsWanted) { setPicNames(null); return; }
+    let dead = false;
+    const t = window.setTimeout(async () => {
+      try {
+        const out: Hit[] = [];
+        for (;;) {
+          const r = await backend.search({ query: picQ, offset: out.length, limit: picsOpen ? PIC_PAGE : PIC_HEAD, sort: "name", filter: "images" });
+          if (dead) return;
+          for (const h of r.hits) out.push(h);
+          const done = !picsOpen || r.hits.length === 0 || out.length >= r.total;
+          setPicNames({ q: picQ, hits: out.slice(), total: r.total, done });
+          if (done) break;
+        }
+      } catch (e) {
+        if (!dead) setPicNames((p) => p && { ...p, done: true });
+        console.error(e);
+      }
+    }, picsOpen ? 0 : 120);
+    return () => { dead = true; window.clearTimeout(t); };
+  }, [backend, picsWanted, picsOpen, picQ, epoch]);
+  const picNamesNow = picNames?.q === picQ ? picNames : null;
+  // The names that only hold the letters inside another word are read when their fold is opened, or when the
+  // word search found nothing at all (then they are all there is to show).
+  const tailWanted = picsOpen && picWords && (weakOpen || (!!picNamesNow && picNamesNow.done && picNamesNow.total === 0));
+  const [picTail, setPicTail] = useState<{ hits: Hit[]; done: boolean } | null>(null);
+  useEffect(() => {
+    if (!tailWanted) { setPicTail(null); return; }
     let dead = false;
     (async () => {
       const out: Hit[] = [];
       for (;;) {
-        const r = await backend.search({ query: scopedQ, offset: out.length, limit: 5000, sort: "name", filter: "images" });
+        const r = await backend.search({ query: scopedQ, offset: out.length, limit: PIC_PAGE, sort: "name", filter: "images" });
         if (dead) return;
         for (const h of r.hits) out.push(h);
         const done = r.hits.length === 0 || out.length >= r.total;
-        setPhotosAll(out.slice());
-        setPhotosBusy(!done);
+        setPicTail({ hits: out.slice(), done });
         if (done) break;
       }
-    })().catch((e) => { if (!dead) setPhotosBusy(false); console.error(e); });
-    return () => { dead = true; setPhotosBusy(false); };
-  }, [backend, expand, isRecent, scopedQ, epoch]);
+    })().catch((e) => { if (!dead) setPicTail((p) => p && { ...p, done: true }); console.error(e); });
+    return () => { dead = true; };
+  }, [backend, tailWanted, scopedQ, epoch]);
+  const picsBusy = (picsOpen && !!picNames && !picNames.done) || (!!picTail && !picTail.done);
   // What the overview sections are built from: every row of a fully loaded list, else the first page. (The
   // paged row store is sparse and can span millions of indexes; nothing may loop over it.)
   const headRows = useMemo(
@@ -312,17 +351,18 @@ export default function App({ backend }: { backend: Backend }) {
     [lcfg, headRows, parsed.text, launch],
   );
   // Tile grids per layout: photos 4 / 5 columns, apps 6 / 8.
-  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, mostused: full ? 8 : 6 }), [full]);
+  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, namepics: full ? 5 : 4, mostused: full ? 8 : 6 }), [full]);
   const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
   const ov = useMemo(
     () => (isRecent
       ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
       : buildOverview({
-        names: settingsScope ? [] : photosAll ?? headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, detached: !!photosAll, imageNameTotal: photosAll && !photosBusy ? undefined : nameCounts?.images, semMore: sem.more, text: parsed.text,
-        expand: settingsScope ? "settings" : expand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
+        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, semMore: sem.more, text: parsed.text,
+        picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
+        expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, photosAll, photosBusy, nameCounts, data.total, semHits, sem.more, parsed.text, expand, launchSel, portable, calcResult, settingsScope, weakOpen], // eslint-disable-line react-hooks/exhaustive-deps
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen], // eslint-disable-line react-hooks/exhaustive-deps
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -677,7 +717,8 @@ export default function App({ backend }: { backend: Backend }) {
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
   const curBoxes = semSel?.boxes ?? (current ? semMap.get(pathKey(current.path))?.boxes : null) ?? null;
   const curAt = semSel?.at ?? (current ? semMap.get(pathKey(current.path))?.at : null) ?? null;
-  const curPct = matchPct(semSel ?? (current ? semMap.get(pathKey(current.path)) : undefined));
+  // A picture tile carries its own final score (meaning + name); everything else the meaning hit's.
+  const curPct = ovItem?.pct !== undefined ? ovItem.pct : matchPct(semSel ?? (current ? semMap.get(pathKey(current.path)) : undefined));
   const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}|${curPct ?? ""}` : "";
   const pctRef = useRef(curPct);
   pctRef.current = curPct;
@@ -942,7 +983,7 @@ export default function App({ backend }: { backend: Backend }) {
         if (fi >= 0) {
           e.preventDefault();
           const k = parsed.chips.find((c) => c.type === "kind");
-          if (k) dropChip(k.key); // a filter key overrides the kind found in the text (like the tab click)
+          if (k && parsed.kind !== FILTERS[fi].id) dropChip(k.key); // a filter key overrides the kind found in the text (like the tab click)
           setFilter(FILTERS[fi].id);
           inputRef.current?.focus();
           return;
@@ -1288,14 +1329,10 @@ export default function App({ backend }: { backend: Backend }) {
     return () => { dead = true; window.clearInterval(t); };
   }, [backend, driveKey]);
   // A click on a drive in that card: its folders, biggest first ("what is taking the space").
+  const [spaceAt, setSpaceAt] = useState<{ letter: string; n: number } | undefined>(undefined);
   const showDrive = (letter: string) => {
-    setPage("search");
-    setQuery("");
-    setOff(new Set());
-    setDrive(letter);
-    setFilter("folders");
-    changeSort("size");
-    inputRef.current?.focus();
+    setSpaceAt((s) => ({ letter, n: (s?.n ?? 0) + 1 }));
+    setPage("cleanup");
   };
 
   // ---- nothing found: the filters that are narrowing the search, each one click to lift ----
@@ -1342,7 +1379,7 @@ export default function App({ backend }: { backend: Backend }) {
                   onMouseDown={(e) => e.preventDefault()}
                   onClick={() => {
                     const k = parsed.chips.find((c) => c.type === "kind");
-                    if (k) dropChip(k.key); // a tab click overrides the kind found in the text
+                    if (k && parsed.kind !== f.id) dropChip(k.key); // a tab click overrides the kind found in the text; the same kind is already in force
                     setFilter(f.id); inputRef.current?.focus();
                   }}>
             {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
@@ -1411,7 +1448,7 @@ export default function App({ backend }: { backend: Backend }) {
       <IMag />
       {parsed.chips.map((c) => (
         <span key={c.key} className="qchip" title="Understood from your search">
-          <span>{c.type}</span>{c.label}
+          <span>{c.type === "kind" ? "only" : c.type}</span>{c.label}
           <button tabIndex={-1} aria-label={`Remove filter ${c.label}`} title="Remove this filter (its words are searched as text)"
                   onMouseDown={(e) => e.preventDefault()} onClick={() => dropChip(c.key)}>
             <IX />
@@ -1422,7 +1459,7 @@ export default function App({ backend }: { backend: Backend }) {
         ref={inputRef}
         value={query}
         onChange={(e) => { histAt.current = -1; setQuery(e.target.value); }}
-        placeholder="Search apps, files and photos"
+        placeholder="Search apps, files and pictures"
         spellCheck={false}
         autoComplete="off"
         autoFocus
@@ -1483,7 +1520,7 @@ export default function App({ backend }: { backend: Backend }) {
 
   return (
     <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
-      {full && <Sidebar page={page} onPage={(p) => { setPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
+      {full && <Sidebar page={page} onPage={(p) => { setSpaceAt(undefined); setPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
 
       <div className="main-col" hidden={full && page !== "search"}>
         {full ? (
@@ -1573,7 +1610,7 @@ export default function App({ backend }: { backend: Backend }) {
             )}
 
             {!showPanel && overview && (ov.flat.length > 0 ? (
-              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || photosBusy}
+              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} scrollRef={ovRef} armed={armed} />
             ) : loaded && !waitingSem ? (
               <div className="none">
@@ -1631,7 +1668,7 @@ export default function App({ backend }: { backend: Backend }) {
       )}
       {full && (page === "timeline" || page === "collections" || page === "cleanup") && (
         <div className="main-col">
-          <Library backend={backend} embedded tab={page} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
+          <Library backend={backend} embedded tab={page} drive={spaceAt} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
         </div>
       )}
 

@@ -387,6 +387,7 @@ impl Tier1 {
             .map(|h| {
                 let (size, mtime) = stat(&h.path);
                 SemanticHit {
+                    rank: h.rank(),
                     path: h.path,
                     score: h.score,
                     size,

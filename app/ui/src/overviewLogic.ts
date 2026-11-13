@@ -1,8 +1,9 @@
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types";
 import { pickTop } from "./launchLogic.ts";
+import { picReason, queryWords, rankPictures, type NameMatch, type Pic } from "./pictureRank.ts";
 
 /** Result overview: a Top result, then a few rows per section with "Show all"; home = Most used + Recent files. */
-export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "mostused" | "recent";
+export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "namepics" | "mostused" | "recent";
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
 export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
 
@@ -19,7 +20,7 @@ export interface OvItem {
   key: string;
   section: SectionId;
   hit: Hit;
-  /** The meaning / text hit behind this item (photos, related documents, or a top result found by meaning). */
+  /** The meaning / text hit behind this item (pictures, related documents, or a top result found by meaning). */
   sem?: SemanticHit;
   /** Index into the name results, when the item is one. */
   nameIdx?: number;
@@ -29,6 +30,10 @@ export interface OvItem {
   launch?: LaunchHit;
   /** The calculator Top result carries the result string (Enter copies it). */
   calc?: string;
+  /** Pictures: the final score relative to the best picture (1-100), why it is listed, and how the typed words sit in its name. */
+  pct?: number | null;
+  why?: string | null;
+  named?: NameMatch | null;
 }
 
 export interface OvSection {
@@ -41,8 +46,10 @@ export interface OvSection {
   total: number;
   /** More than shown: offer "Show all". */
   more: boolean;
-  /** "Weaker matches": a folded section; `items` is empty until it is opened. */
+  /** "Weaker matches" / "Other names containing ...": a folded section; `items` is empty until it is opened. */
   fold?: { open: boolean };
+  /** Show `total` next to the title (a section that is the whole list, with no "Show all"). */
+  count?: boolean;
   /** `total` is only what was read so far (a quick top-k): "Show all" names no number. */
   open?: boolean;
 }
@@ -52,8 +59,8 @@ export const GRID_COLS = 4;
 const GRID_ROWS = 2;
 /** Sections drawn as a tile grid: arrow keys walk them by column. */
 export type GridCols = Partial<Record<SectionId, number>>;
-export const DEFAULT_COLS: GridCols = { images: GRID_COLS, mostused: 6 };
-export const isGrid = (s: SectionId | undefined): boolean => s === "images" || s === "mostused";
+export const DEFAULT_COLS: GridCols = { images: GRID_COLS, namepics: GRID_COLS, mostused: 6 };
+export const isGrid = (s: SectionId | undefined): boolean => s === "images" || s === "namepics" || s === "mostused";
 
 const FILES_WITH_MEANING = 4;
 const FILES_ALONE = 8;
@@ -119,15 +126,19 @@ export function buildOverview(opts: {
   portable?: Hit[];
   /** When the query is pure arithmetic, the calculator result takes the Top result slot. */
   calc?: string;
-  /** Columns of the Photos grid (4 in the popup, 5 in the full window); two rows are shown. */
+  /** Columns of the Pictures grid (4 in the popup, 5 in the full window); two rows are shown. */
   photoCols?: number;
-  /** `names` is not the row store (the expanded Photos list): its items carry no row index. */
-  detached?: boolean;
-  /** How many pictures match by name in all (the Images chip count); the rows loaded here are only the first page. */
-  imageNameTotal?: number;
+  /** Pictures whose name has the typed words as words (the index's `ws:` answer), beyond the rows in `names`. */
+  picNames?: Hit[];
+  /** How many such pictures there are in all; `picNames` may be only the first of them. */
+  picTotal?: number;
+  /** Every picture whose name contains the letters, once read (the tail is cut from it); undefined = not read. */
+  picTail?: Hit[];
+  /** How many pictures contain the letters in their name in all (the Pictures tab count). */
+  picNameTotal?: number;
   /** `sem` is a quick top-k and relevant files were left out of it: "Show all" has more. */
   semMore?: boolean;
-  /** "Weaker matches" (Documents, expanded) is unfolded. */
+  /** The folded section of the opened list ("Weaker matches", "Other names containing ...") is unfolded. */
   weakOpen?: boolean;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
@@ -197,15 +208,27 @@ export function buildOverview(opts: {
   const docs = rest.filter((h) => !isImage(baseName(h.path)));
   const hasMeaning = imgs.length + docs.length > 0;
 
-  // Name-matched images become photo tiles too, like the demo: once three or more match by name
-  // they leave the Files list and show as a grid; the meaning photos join them.
-  const nameImgs: { hit: Hit; idx: number }[] = [];
+  // Pictures: one ranked list (pictureRank). What the picture shows is the base score and a name
+  // that has the typed word as a word is a boost; names that only hold the letters inside another
+  // word ("intricate" for "cat") are not in the grid at all: they stay ordinary Files rows in the
+  // overview and fold under the grid when the pictures are opened.
+  const picSrc: { hit: Hit; idx?: number }[] = [];
   for (let i = 0; i < names.length; i++) {
     const h = names[i];
-    if (!h || shownPaths.has(k(h.path)) || !isImage(baseName(h.path))) continue;
-    nameImgs.push({ hit: h, idx: i });
+    if (h && !shownPaths.has(k(h.path)) && isImage(baseName(h.path))) picSrc.push({ hit: h, idx: i });
   }
-  const photosFromNames = !expand && nameImgs.length >= 3;
+  for (const h of opts.picNames ?? []) if (!shownPaths.has(k(h.path))) picSrc.push({ hit: h });
+  for (const h of opts.picTail ?? []) if (!shownPaths.has(k(h.path))) picSrc.push({ hit: h });
+  const pics = rankPictures({ sem: imgs, names: picSrc, text });
+  const inGrid = new Set(pics.ranked.map((p) => k(p.hit.path)));
+  const wordNamed = (p: Pic) => p.name === "word" || p.name === "start";
+  // Pictures the index counts as word matches, and the ranked ones it does not count.
+  const namedShown = pics.ranked.filter(wordNamed).length;
+  const picTotal = Math.max(namedShown, opts.picTotal ?? 0);
+  const picItem = (section: SectionId) => (p: Pic, i: number): OvItem => ({
+    key: "i:" + k(p.hit.path), section, hit: p.hit, sem: p.sem, nameIdx: p.idx, col: i % photoCols,
+    pct: p.pct, why: picReason(p, text), named: p.name,
+  });
 
   if (!expand) {
     const cap = hasMeaning ? FILES_WITH_MEANING : FILES_ALONE;
@@ -214,52 +237,44 @@ export function buildOverview(opts: {
       const h = names[i];
       if (!h) break;
       if (shownPaths.has(k(h.path))) continue; // the Top result (file or resolved app exe) is not repeated
-      if (photosFromNames && isImage(baseName(h.path))) continue; // photo tiles below
+      if (inGrid.has(k(h.path))) continue; // a picture tile below
       items.push({ key: "n" + i, section: "files", hit: h, nameIdx: i });
       shownPaths.add(k(h.path));
     }
-    const hidden = (top?.nameIdx !== undefined ? 1 : 0) + (photosFromNames ? nameImgs.length : 0);
+    const hidden = (top?.nameIdx !== undefined ? 1 : 0) + picTotal;
     const total = Math.max(items.length, nameTotal - hidden);
     if (items.length) sections.push({ id: "files", title: "Files", items, total, more: total > items.length });
   }
 
   if (!expand || expand === "images") {
-    // Name-hit photos first (they matched the query), then the meaning photos; a path shows once.
-    const list: { hit: Hit; sem?: SemanticHit; idx?: number }[] = [];
-    const seen = new Set<string>();
-    const taken = (p: string) => seen.has(k(p)) || shownPaths.has(k(p));
-    if (photosFromNames || expand === "images") {
-      for (const x of nameImgs) {
-        if (taken(x.hit.path)) continue;
-        seen.add(k(x.hit.path));
-        list.push({ hit: x.hit, idx: x.idx });
-      }
-    }
-    for (const h of imgs) {
-      if (taken(h.path)) continue;
-      seen.add(k(h.path));
-      list.push({ hit: semHit(h), sem: h });
-    }
-    // "Show all" shows every photo; the grid draws only the tiles near the viewport (Overview's Windowed).
+    // "Show all" is this same list, complete; the grid draws only the tiles near the viewport (Overview's Windowed).
+    const list = pics.ranked;
     const cap = expand ? list.length : Math.min(list.length, photoCols * GRID_ROWS);
-    const total = opts.imageNameTotal === undefined ? list.length : Math.max(list.length, opts.imageNameTotal + list.filter((x) => x.idx === undefined).length);
-    const items = list.slice(0, cap).map((x, i): OvItem => ({
-      key: x.idx !== undefined ? "n" + x.idx : "s:" + x.hit.path,
-      section: "images",
-      hit: x.hit,
-      sem: x.sem,
-      nameIdx: opts.detached ? undefined : x.idx,
-      col: i % photoCols,
-    }));
+    const total = Math.max(list.length, picTotal + (list.length - namedShown));
+    const items = list.slice(0, cap).map(picItem("images"));
     if (items.length) {
       sections.push({
         id: "images",
-        title: "Photos",
+        title: "Pictures",
         items,
         total,
         more: !expand && (total > items.length || !!opts.semMore),
         open: !expand && !!opts.semMore,
+        count: !!expand,
       });
+    }
+    const words = queryWords(text);
+    if (expand === "images" && words.length) {
+      // Names holding the letters inside another word. Counted from the index totals until they are read.
+      const semPart = list.filter((p) => p.name === "part").length;
+      const tailTotal = opts.picTail ? pics.tail.length : Math.max(pics.tail.length, (opts.picNameTotal ?? 0) - picTotal - semPart);
+      if (tailTotal > 0) {
+        const open = !!opts.weakOpen || !items.length; // nothing better to show: do not hide the only results
+        sections.push({
+          id: "namepics", title: `Other names containing \u201c${words.join(" ")}\u201d (${tailTotal.toLocaleString("en-US")})`, total: tailTotal, more: false, fold: { open },
+          items: open ? pics.tail.map(picItem("namepics")) : [],
+        });
+      }
     }
   }
 
@@ -382,7 +397,7 @@ export const scopeDrive = (q: string, drive: string): string => (drive ? `${q} $
 export const onDrive = (path: string, drive: string): boolean => !drive || path.toLowerCase().startsWith(drive.toLowerCase() + ":");
 
 /**
- * Keyboard movement through the overview. Up / down step row by row; inside a tile grid (Photos, Most used)
+ * Keyboard movement through the overview. Up / down step row by row; inside a tile grid (Pictures, Most used)
  * they move a whole grid row (leaving the grid at its edges), left / right move one tile. `next` / `prev` jump
  * a section. `cols` = the columns of each grid section as currently laid out.
  */

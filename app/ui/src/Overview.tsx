@@ -4,6 +4,7 @@ import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
 import { matchPct, nicePath, reasonOf, relDate } from "./overviewLogic";
+import { picBadge } from "./pictureRank";
 import { launchPath } from "./launchLogic";
 import { FileIcon } from "./FileIcon";
 import { IChevL } from "./icons";
@@ -206,20 +207,29 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
   );
 });
 
-/** Photos: a 4:3 tile; the file name shows on hover / selection. */
+/** Pictures: a 4:3 tile. The badge says what put it there (what the picture shows, its name, or both) and
+ *  how well it scores; a tile that is there for its name keeps the name on, with the word marked. */
+const BADGE = { both: "Picture", picture: "Picture", text: "Text inside", name: "Name" } as const;
 const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers }) {
   const src = backend.iconUrl(it.hit.path, false, true, 256);
   const sem = it.sem;
-  const pct = matchPct(sem);
-  const reason = reasonOf(sem, true);
+  const pct = it.pct !== undefined ? it.pct : matchPct(sem);
+  const reason = it.why !== undefined ? it.why : reasonOf(sem, true);
+  const kind = picBadge({ sem, name: it.named ?? null });
+  const named = it.named === "word" || it.named === "start" || it.section === "namepics";
   const ph = <FileIcon name={it.hit.name} isDir={false} src={null} />;
   return (
-    <div className={"tile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={it.hit.name}
-         data-sel={sel ? "1" : undefined} data-i={i} title={it.hit.path}
+    <div className={"tile" + (sel ? " sel" : "") + (named ? " named" : "")} role="option" aria-selected={sel} aria-label={it.hit.name}
+         data-sel={sel ? "1" : undefined} data-i={i} title={reason ? `${it.hit.path}
+${reason}` : it.hit.path}
          onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
       {src ? <ThumbImg src={src} bad={ph} /> : ph}
-      {pct !== null && <span className="tpct" title={reason ?? undefined}>{pct}% match</span>}
+      {(kind || pct !== null) && (
+        <span className={"tpct" + (kind ? " k-" + kind : "")}>
+          {kind && <b>{BADGE[kind]}</b>}{pct !== null && <i>{pct}%</i>}
+        </span>
+      )}
       <span className="cap"><Highlight text={it.hit.name} query={query} /></span>
     </div>
   );
@@ -330,7 +340,7 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak }: {
           {loading && <i className="busy" role="status">finding more</i>}
         </button>
       ) : (
-        <span>{s.title}</span>
+        <span>{s.title}{s.count && <i>{s.total.toLocaleString("en-US")}</i>}{s.count && loading && <i className="busy" role="status">finding more</i>}</span>
       )}
       {(s.note || s.more) && (
         <small>
@@ -365,8 +375,8 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
         }
         return (
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
-            <SectionHead s={s} expanded={expanded} loading={expanded && !!loading} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} />
-            {s.fold && !s.items.length ? null : s.id === "images" ? (
+            <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} />
+            {s.fold && !s.items.length ? null : s.id === "images" || s.id === "namepics" ? (
               <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" render={(from, to) =>
                 s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />
             ) : s.id === "mostused" ? (

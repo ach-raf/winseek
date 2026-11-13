@@ -5,6 +5,8 @@
 //! * `!term` negates; `!"a b"` too
 //! * `*` / `?` in a term: whole-name wildcard match (whole *path* if the term has `\`)
 //! * a term containing `\` (or `/`) is matched against the full path (substring)
+//! * `ws:cat` the name has a word that starts with `cat` (`my cat.jpg`, `cat_food.png`, `Cats.png`;
+//!   not `intricate.png`); see `fold::word_start` for what starts a word
 //! * `ext:jpg;png` (also `,`), `file:`, `folder:` (alone = filter, `folder:foo` = filter + term)
 //! * `size:>100mb`, `size:<=4kb`, `size:1mb..2gb`, `size:0` (files only; b/kb/mb/gb/tb, 1024-based)
 //! * `dm:A..B` date modified in unix milliseconds, `[A, B)`; either end may be left out
@@ -20,6 +22,8 @@ use crate::store::*;
 pub enum Cond {
     /// Substring; `needle` is folded. `ascii` = needle is pure ASCII (fast path).
     Text { needle: String, ascii: bool, path: bool },
+    /// Like `Text` on the name, but the match must begin a word. `needle` is folded.
+    Word { needle: String, chars: Vec<char>, ascii: bool },
     /// Whole match with `*`/`?`; pattern is folded.
     Glob { pat: Vec<char>, pat8: Option<Vec<u8>>, path: bool },
     Ext(Vec<String>),
@@ -277,7 +281,7 @@ impl Query {
             let mut prefix = None;
             if j < n && ch[j] == ':' && j > start {
                 let w: String = ch[start..j].iter().collect::<String>().to_ascii_lowercase();
-                if matches!(w.as_str(), "ext" | "file" | "folder" | "size" | "dm") {
+                if matches!(w.as_str(), "ext" | "file" | "folder" | "size" | "dm" | "ws") {
                     prefix = Some(w);
                     i = j + 1;
                 }
@@ -309,6 +313,17 @@ impl Query {
                         terms.push(Term { cond: Cond::Ext(list), negate });
                     }
                 }
+                Some("ws") => {
+                    // A path fragment or a wildcard has no word to start: ordinary term.
+                    let folded = fold_string(&text);
+                    if folded.is_empty() {
+                    } else if folded.contains(['\\', '/', '*', '?']) {
+                        terms.extend(text_term(&text, negate));
+                    } else {
+                        let cond = Cond::Word { ascii: folded.is_ascii(), chars: folded.chars().collect(), needle: folded };
+                        terms.push(Term { cond, negate });
+                    }
+                }
                 Some(p @ ("size" | "dm")) => {
                     // A value that does not parse is ordinary text ("size:huge" finds that name).
                     match if p == "size" { parse_size(&text) } else { parse_mtime(&text) } {
@@ -332,8 +347,8 @@ impl Query {
         terms.sort_by_key(|t| match &t.cond {
             Cond::File | Cond::Folder | Cond::Size { .. } | Cond::Mtime { .. } => 0,
             Cond::Ext(_) => 1,
-            Cond::Text { ascii: true, path: false, .. } => 2,
-            Cond::Text { path: false, .. } => 3,
+            Cond::Text { ascii: true, path: false, .. } | Cond::Word { ascii: true, .. } => 2,
+            Cond::Text { path: false, .. } | Cond::Word { .. } => 3,
             Cond::Glob { path: false, .. } => 4,
             Cond::Text { .. } => 5,
             Cond::Glob { .. } => 6,
@@ -393,6 +408,16 @@ impl Index {
                         }
                         Err(_) => false,
                     }
+                }
+            }
+            Cond::Word { needle, chars, ascii } => {
+                let hay = self.name_bytes(i);
+                if hay.is_ascii() {
+                    *ascii && find_word_ascii_ci(hay, needle.as_bytes())
+                } else {
+                    sc.chars.clear();
+                    sc.chars.extend(std::str::from_utf8(hay).unwrap_or("").chars());
+                    find_word(&sc.chars, chars)
                 }
             }
             Cond::Glob { pat, pat8, path } => {

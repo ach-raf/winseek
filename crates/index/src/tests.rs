@@ -180,6 +180,38 @@ fn query_features() {
 }
 
 #[test]
+fn word_start_term() {
+    let mut b = IndexBuilder::new(false);
+    b.add_volume(C, 5);
+    let files = [
+        "cat.jpg", "my cat 2021.png", "cat_food.png", "Cats.png", "myCat.png", "IMG2021cat.jpg", "black-cat.gif",
+        "intricate details.png", "location.jpg", "education.png", "Çatı.png", "kırmızı çatı.png", "açatı.png", "日本語.png",
+    ];
+    for (i, name) in files.iter().enumerate() {
+        b.push(C, 100 + i as u64, 5, name, false, 0, 0);
+    }
+    let ix = b.finish();
+    let base = |q: &str| -> Vec<String> { names(&ix, q).iter().map(|p| p.rsplit('\\').next().unwrap().to_string()).collect() };
+    assert_eq!(base("cat").len(), 10, "the plain term finds every name with the letters");
+    let mut words = base("ws:cat");
+    words.sort();
+    assert_eq!(words, ["Cats.png", "IMG2021cat.jpg", "black-cat.gif", "cat.jpg", "cat_food.png", "my cat 2021.png", "myCat.png"]);
+    assert!(base("ws:CAT").len() == 7 && base("WS:cat").len() == 7, "case does not matter");
+    // every term is its own condition; a word term combines with the others
+    assert_eq!(base("ws:cat ws:food"), ["cat_food.png"]);
+    assert_eq!(base("ws:cat ext:jpg").len(), 2);
+    assert_eq!(base("cat !ws:cat").len(), 3, "intricate, location, education");
+    // beyond ASCII: folded, and a word starts after a space
+    let mut tr = base("ws:çatı");
+    tr.sort();
+    assert_eq!(tr, ["kırmızı çatı.png", "Çatı.png"]);
+    assert_eq!(base("ws:本"), ["日本語.png"], "no spaces in this script: any letter starts a word");
+    // nothing to start a word with: an ordinary term
+    assert_eq!(base("ws:c?t.jpg"), ["cat.jpg"]);
+    assert_eq!(base("ws:").len(), files.len());
+}
+
+#[test]
 fn case_insensitive_unicode() {
     let ix = sample();
     assert_eq!(names(&ix, "ÉTÉ"), vec!["C:\\Users\\Alice\\Été.txt".to_string()]);

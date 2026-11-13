@@ -50,30 +50,34 @@ test("overview: a quick top-k that left relevant files out offers Show all witho
   assert.deepEqual(sec(true, "images").map((x) => [x.id, x.more, !!x.open]), [["images", false, false]], "the opened section is the whole list");
 });
 
-test("overview: three or more name-matched images become photo tiles and leave Files", () => {
-  const names = ["budget.xlsx", "a.png", "b.png", "c.png", "notes.txt"].map(hit);
-  const r = buildOverview({ names, nameTotal: 5, sem: [], text: "budget", expand: null, isImage });
-  assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["top", 1, false], ["files", 1, false], ["images", 3, false]]);
-  const tiles = r.sections.find((x) => x.id === "images")!.items;
-  assert.ok(tiles.every((x) => x.nameIdx !== undefined), "name tiles keep their row index (rename / recycle)");
-  assert.deepEqual(tiles.map((x) => x.col), [0, 1, 2], "tiles keep their grid column");
+test("overview: pictures named with the typed word become tiles and leave Files; mid-word names stay rows", () => {
+  const names = ["budget.xlsx", "budget 2025.png", "my budget.png", "budgets.png", "prebudgeted.png", "notes budget.txt"].map(hit);
+  const r = buildOverview({ names, nameTotal: 6, sem: [], text: "budget", expand: null, isImage });
+  assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["top", 1, false], ["files", 2, false], ["images", 3, false]]);
+  assert.deepEqual(r.sections[1].items.map((x) => x.hit.name), ["prebudgeted.png", "notes budget.txt"]);
+  const tiles = r.sections.find((x) => x.id === "images")!;
+  assert.equal(tiles.title, "Pictures");
+  assert.ok(tiles.items.every((x) => x.nameIdx !== undefined), "name tiles keep their row index (rename / recycle)");
+  assert.deepEqual(tiles.items.map((x) => x.col), [0, 1, 2], "tiles keep their grid column");
+  assert.ok(tiles.items.every((x) => x.named === "word" && x.why === "The name has “budget”"));
 });
 
-test("overview: fewer than three name-matched images stay in Files", () => {
-  const names = ["a.png", "b.png", "notes.txt"].map(hit);
-  const r = buildOverview({ names, nameTotal: 3, sem: [], text: "x", expand: null, isImage });
-  assert.deepEqual(r.sections.map((x) => x.id), ["files"]);
-  assert.equal(r.sections[0].items.length, 3, "rows, not tiles");
+test("overview: a single picture named with the word is a tile too", () => {
+  const names = ["a cat.png", "notes cat.txt"].map(hit);
+  const r = buildOverview({ names, nameTotal: 2, sem: [], text: "cat", expand: null, isImage });
+  assert.deepEqual(r.sections.map((x) => [x.id, x.items.length]), [["files", 1], ["images", 1]]);
 });
 
-test("overview: Show all photos also lists the name-matched images", () => {
-  const names = ["budget.xlsx", ...Array.from({ length: 5 }, (_, i) => `n${i}.png`)].map(hit);
-  const s = Array.from({ length: 14 }, (_, i) => sem(`p${i}.jpg`));
+test("overview: Show all pictures is one list, meaning and names by score; row items keep their index", () => {
+  const names = ["budget.xlsx", ...Array.from({ length: 5 }, (_, i) => `x ${i}.png`)].map(hit);
+  const s = Array.from({ length: 14 }, (_, i) => ({ ...sem(`p${i}.jpg`), rank: 9 - i * 0.4 }));
   const r = buildOverview({ names, nameTotal: 6, sem: s, text: "x", expand: "images", isImage });
   const imgs = r.sections.find((x) => x.id === "images")!;
-  assert.deepEqual([imgs.items.length, imgs.total, imgs.more], [19, 19, false]);
-  assert.equal(imgs.items[0].nameIdx, 1, "the name photos come first, keeping their row index");
-  assert.equal(imgs.items[5].nameIdx, undefined, "the meaning photos follow");
+  assert.deepEqual([imgs.items.length, imgs.total, imgs.more, imgs.count], [19, 19, false, true]);
+  assert.equal(imgs.items[0].hit.name, "p0.jpg", "the best meaning hit leads");
+  const firstName = imgs.items.findIndex((x) => x.nameIdx !== undefined);
+  assert.equal(firstName, 8, "whole-word names (6) come after the meaning hits that score above them (9 .. 6.2)");
+  assert.equal(imgs.items[firstName].nameIdx, 1);
 });
 
 test("ovMove walks rows, the grid by rows and tiles, and jumps sections", () => {

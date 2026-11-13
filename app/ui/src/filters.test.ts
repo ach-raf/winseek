@@ -17,7 +17,7 @@ test("photos from last summer", () => {
   assert.equal(p.kind, "images");
   assert.equal(p.text, "");
   assert.deepEqual(p.date, { from: at(2026, 6, 1), to: at(2026, 9, 1) });
-  assert.deepEqual(p.chips.map((c) => c.label), ["Images", "Summer 2026"]);
+  assert.deepEqual(p.chips.map((c) => c.label), ["Pictures", "Summer 2026"]);
 });
 
 test("last summer in July is the previous year", () => {

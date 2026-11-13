@@ -100,7 +100,7 @@ const NO_HITS: SemanticState = { query: "", hits: [], more: false, loading: fals
 const DEBOUNCE_MS = 150;
 const SEM_K = 24;
 const SEM_K_FILTERED = 80; // chips thin the hits out afterwards, so ask for more
-/** "Show all" / the Images and Documents tabs list every relevant file, read in pages of this size
+/** "Show all" / the Pictures and Documents tabs list every relevant file, read in pages of this size
  *  (over 200, which is what tells the backend to list everything rather than a top-k). */
 const SEM_PAGE = 1000;
 
@@ -113,7 +113,8 @@ export function useSemantic(backend: Backend, query: string, enabled: boolean, f
   const [state, setState] = useState<SemanticState>(NO_HITS);
   const seq = useRef(0);
   const q = query.trim();
-  const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs");
+  // Every kind the meaning index holds; folders, apps and settings are found by name only.
+  const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs" || filter === "video" || filter === "audio");
   useEffect(() => {
     const my = ++seq.current;
     if (!active) {

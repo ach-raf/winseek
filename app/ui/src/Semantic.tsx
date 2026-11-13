@@ -1,4 +1,4 @@
-import type { Hit, SemanticHit } from "./types";
+import type { Filter, Hit, SemanticHit } from "./types";
 import { matchesRanges, type KindId, type Parsed } from "./filters";
 import { kindOf, type Kind } from "./format";
 
@@ -9,12 +9,13 @@ export { key as pathKey };
 /** "files" is handled before this table: every meaning hit is a file, so the Files chip passes all. */
 const KIND_OF: Record<Exclude<KindId, "files">, Kind | null> = { images: "image", docs: "doc", video: "video", audio: "audio", apps: "app", folders: null, settings: null };
 
-/** Do the parsed chips let this meaning hit through? Date / size only count when the hit carries them. */
-export function semAccepts(h: SemanticHit, p: Parsed): boolean {
+/** Do the kind in force (`scope`: the tab, or the kind word of the query — see `kindScope`) and the parsed
+ *  chips let this meaning hit through? Date / size only count when the hit carries them. */
+export function semAccepts(h: SemanticHit, p: Parsed, scope: Filter = p.kind ?? "all"): boolean {
   const name = baseName(h.path);
   // `code:` hits are source files: the kind chips (photos, documents...) do not apply, an extension chip does.
   if (h.source === "code") return !p.ext || name.toLowerCase().endsWith("." + p.ext);
-  if (p.kind && p.kind !== "files" && KIND_OF[p.kind] !== kindOf(name, false)) return false;
+  if (scope !== "all" && scope !== "files" && KIND_OF[scope] !== kindOf(name, false)) return false;
   if (p.ext && !name.toLowerCase().endsWith("." + p.ext) && !(p.ext === "jpg" && name.toLowerCase().endsWith(".jpeg"))) return false;
   const probe = { is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null };
   const known = { date: probe.mtime === null ? null : p.date, size: probe.size === null ? null : p.size };

@@ -1,5 +1,6 @@
 // Natural filters, parsed locally on every keystroke (pure, no imports so `node --test` can load it).
-//   "photos from last summer"  -> Images + Summer 2026
+//   "photos from last summer"  -> Pictures + Summer 2026
+//   "image of a cat"           -> Pictures, free text "cat"
 //   "pdf invoice 2025"         -> PDF + 2025, free text "invoice"
 //   "screenshots this week"    -> Screenshots + This week
 //   "big videos"               -> Over 100 MB + Video
@@ -47,12 +48,15 @@ const KIND_WORDS: Record<string, KindId> = {
   setting: "settings", settings: "settings",
 };
 const KIND_LABEL: Record<KindId, string> = {
-  files: "Files", images: "Images", docs: "Docs", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps", settings: "Settings",
+  files: "Files", images: "Pictures", docs: "Documents", video: "Video", audio: "Audio", folders: "Folders", apps: "Apps", settings: "Settings",
 };
 const EXT_WORDS = new Set([
   "pdf", "docx", "xlsx", "pptx", "csv", "txt", "md", "png", "jpg", "jpeg", "gif", "heic", "mp4", "mkv", "mp3", "flac", "wav", "zip", "exe", "msi",
 ]);
 const SCREENSHOT = new Set(["screenshot", "screenshots"]);
+/** Grammar around a kind word, not part of the subject: "a photo of the beach", "pictures with cats". */
+const ARTICLES = new Set(["a", "an", "the", "some", "any"]);
+const LINKS = new Set(["of", "with", "showing"]);
 
 const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
 const MON3 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -212,7 +216,20 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
   const lt = toks.map((t) => t.toLowerCase());
   const out: Parsed = { kind: null, ext: null, date: null, size: null, text: "", chips: [] };
   const keep: string[] = [];
+  /** Token index of the last plain word pushed to `keep` (an article right before a kind word is dropped). */
+  let lastKept = -1;
   let quoted = false;
+  // "image of a cat", "a photo of cats", "pictures of the beach" all mean the subject: the article
+  // before the kind word and the "of a" after it go with the kind word. Returns the last token used.
+  const aroundKind = (i: number): number => {
+    if (lastKept === i - 1 && keep.length && ARTICLES.has(lt[i - 1])) { keep.pop(); lastKept = -1; }
+    let j = i + 1;
+    // "photos of march": that "of" belongs to the date. A link with nothing after it stays text.
+    if (!LINKS.has(lt[j]) || lt[j + 1] === undefined || (!out.date && dateAt(lt, j + 1, now, true))) return i;
+    j++;
+    if (ARTICLES.has(lt[j]) && lt[j + 1] !== undefined) j++;
+    return j - 1;
+  };
 
   const take = (type: ChipType, from: number, len: number, label: string): boolean => {
     const key = `${type}:${lt.slice(from, from + len).join(" ")}`;
@@ -242,17 +259,18 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
       if (f && take("date", i, f.len + filler, f.label)) { out.date = f.range; i += f.len + filler - 1; continue; }
     }
     if (!out.kind && !out.ext && SCREENSHOT.has(lt[i])) {
-      if (take("kind", i, 1, "Screenshots")) { out.kind = "images"; keep.push("screenshot"); continue; }
+      if (take("kind", i, 1, "Screenshots")) { out.kind = "images"; i = aroundKind(i); keep.push("screenshot"); continue; }
     }
     if (!out.kind && KIND_WORDS[lt[i]]) {
       const k = KIND_WORDS[lt[i]];
-      if (take("kind", i, 1, KIND_LABEL[k])) { out.kind = k; continue; }
+      if (take("kind", i, 1, KIND_LABEL[k])) { out.kind = k; i = aroundKind(i); continue; }
     }
     const ew = lt[i].replace(/^\./, "");
     if (!out.ext && EXT_WORDS.has(ew)) {
       if (take("ext", i, 1, ew.toUpperCase())) { out.ext = ew; continue; }
     }
     keep.push(t);
+    lastKept = i;
   }
   out.text = keep.join(" ");
   return out;
@@ -291,6 +309,15 @@ export function rangeClause(p: Pick<Parsed, "date" | "size">): string {
 
 /** Sent to the name index: free text plus `ext:` when an extension was named. */
 export const nameQuery = (p: Pick<Parsed, "text" | "ext">) => (p.ext ? `${p.text} ext:${p.ext}`.trim() : p.text);
+
+/**
+ * The one kind a search is limited to, whichever way it was asked for: a kind word in the query
+ * ("cat image") or the tab. The word wins while its chip is there; "settings" is a launcher scope,
+ * not a file kind. Everything downstream (name search, meaning search, the sections) takes this.
+ */
+export function kindScope<F extends string>(kind: KindId | null, tab: F): F | Exclude<KindId, "settings"> {
+  return kind && kind !== "settings" ? kind : tab;
+}
 
 /** `code: words` searches the separate code index (source, notebooks, project docs); nothing else sees code. */
 export const isCodeQuery = (text: string) => /^\s*code:/i.test(text);

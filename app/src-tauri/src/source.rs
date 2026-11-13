@@ -175,6 +175,11 @@ impl MockSource {
     }
 }
 
+/// The demo twin of the name index's `ws:` term: `word` begins a word of `name` (both lower-case).
+fn has_word(name: &str, word: &str) -> bool {
+    name.match_indices(word).any(|(i, _)| name[..i].chars().next_back().is_none_or(|p| !p.is_alphanumeric()))
+}
+
 fn matches_filter(e: &Entry, filter: &str) -> bool {
     match filter {
         "files" => !e.is_dir,
@@ -213,7 +218,10 @@ impl NameSource for MockSource {
                 && sizes.iter().all(|&(lo, hi)| !e.is_dir && e.size as i64 >= lo && e.size as i64 <= hi)
                 && dates.iter().all(|&(lo, hi)| e.mtime >= lo && e.mtime < hi)
                 && (exts.is_empty() || exts.iter().any(|x| e.lower.ends_with(x.as_str())))
-                && terms.iter().all(|t| e.lower.contains(t.as_str()))
+                && terms.iter().all(|t| match t.strip_prefix("ws:") {
+                    Some(w) => has_word(&e.lower, w),
+                    None => e.lower.contains(t.as_str()),
+                })
             {
                 idx.push(i as u32);
             }

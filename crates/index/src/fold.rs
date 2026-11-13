@@ -48,6 +48,61 @@ pub fn fold_string(s: &str) -> String {
     o
 }
 
+/// Does a word start between `prev` and `cur` (both as written, not folded)? After anything that
+/// is not a letter or digit (`my cat`, `my_cat`, `IMG-cat`), at a lower-to-upper step (`myCat`),
+/// and where letters meet digits (`2021cat`, `cat2`).
+#[inline]
+pub fn word_start(prev: char, cur: char) -> bool {
+    !prev.is_alphanumeric()
+        || (prev.is_lowercase() && cur.is_uppercase())
+        || (prev.is_numeric() != cur.is_numeric() && cur.is_alphanumeric())
+        // Scripts written without spaces (no upper / lower case either): any letter may start a word.
+        || (!cur.is_ascii() && cur.is_alphabetic() && !cur.is_lowercase() && !cur.is_uppercase())
+}
+
+/// Case-insensitive test: does `needle` (folded, ASCII) occur in `hay` at the start of a word
+/// ([`word_start`])? `intricate` does not hold the word `cat`; `my cat.jpg` and `cat_food` do.
+#[inline]
+pub fn find_word_ascii_ci(hay: &[u8], needle: &[u8]) -> bool {
+    let n = needle.len();
+    if n == 0 {
+        return true;
+    }
+    if hay.len() < n {
+        return false;
+    }
+    let first = needle[0];
+    let last = hay.len() - n;
+    let mut i = 0;
+    while i <= last {
+        if ASCII_FOLD[hay[i] as usize] == first && (i == 0 || word_start(hay[i - 1] as char, hay[i] as char)) {
+            let mut j = 1;
+            while j < n && ASCII_FOLD[hay[i + j] as usize] == needle[j] {
+                j += 1;
+            }
+            if j == n {
+                return true;
+            }
+        }
+        i += 1;
+    }
+    false
+}
+
+/// [`find_word_ascii_ci`] for any text: `needle` is folded chars, `hay` the name as written.
+pub fn find_word(hay: &[char], needle: &[char]) -> bool {
+    let n = needle.len();
+    if n == 0 {
+        return true;
+    }
+    if hay.len() < n {
+        return false;
+    }
+    (0..=hay.len() - n).any(|i| {
+        (i == 0 || word_start(hay[i - 1], hay[i])) && hay[i..i + n].iter().zip(needle).all(|(h, x)| fold_char(*h) == *x)
+    })
+}
+
 /// Case-insensitive substring test; `needle` must already be folded, ASCII.
 #[inline]
 pub fn find_ascii_ci(hay: &[u8], needle: &[u8]) -> bool {
