@@ -58,6 +58,9 @@ pub fn hub_vector(bank: &[Vec<f32>]) -> Vec<f32> {
 pub enum Modality {
     Visual,
     Text,
+    /// Soundtrack windows: their own population, so speech / music does not skew the z-scores of
+    /// pictures or text.
+    Audio,
 }
 
 impl From<VecKind> for Modality {
@@ -65,6 +68,7 @@ impl From<VecKind> for Modality {
         match k {
             VecKind::Image | VecKind::Page => Modality::Visual,
             VecKind::Text => Modality::Text,
+            VecKind::Audio => Modality::Audio,
         }
     }
 }

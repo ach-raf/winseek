@@ -12,6 +12,9 @@ pub struct Manifest {
     pub llama: LlamaManifest,
     /// Pinned pdfium runtime (PDF text extraction + page rendering).
     pub pdfium: PdfiumManifest,
+    /// Pinned ffmpeg sidecar (audio / video decoding for Tier 1). Absent = media search is off.
+    #[serde(default)]
+    pub ffmpeg: Option<FfmpegManifest>,
     pub models: Vec<ModelEntry>,
 }
 
@@ -37,6 +40,26 @@ pub struct PdfiumManifest {
 impl PdfiumManifest {
     /// File name of the extracted DLL.
     pub fn dll_name(&self) -> &str {
+        self.member.rsplit('/').next().unwrap_or(&self.member)
+    }
+}
+
+/// A pinned ffmpeg Windows build (`.zip`) and the one member (`ffmpeg.exe`) taken out of it.
+/// Only `ffmpeg.exe` is needed: durations come from the decoded PCM length, not from ffprobe.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FfmpegManifest {
+    /// Release label, e.g. "7.1.1"; names the install directory.
+    pub build: String,
+    pub url: String,
+    pub sha256: String,
+    pub size: u64,
+    /// Path of `ffmpeg.exe` inside the archive, e.g. "ffmpeg-7.1.1-essentials_build/bin/ffmpeg.exe".
+    pub member: String,
+}
+
+impl FfmpegManifest {
+    /// File name of the extracted executable.
+    pub fn exe_name(&self) -> &str {
         self.member.rsplit('/').next().unwrap_or(&self.member)
     }
 }
@@ -176,6 +199,17 @@ mod tests {
         assert_eq!(p.sha256, "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08");
         assert!(!is_unpinned(&p.sha256));
         assert_eq!((p.size, p.member.as_str(), p.dll_name()), (3_733_154, "bin/pdfium.dll", "pdfium.dll"));
+    }
+
+    #[test]
+    fn ffmpeg_entry_is_optional_and_names_its_exe() {
+        let m = Manifest::embedded();
+        let f = m.ffmpeg.as_ref().expect("embedded manifest lists ffmpeg");
+        assert_eq!(f.exe_name(), "ffmpeg.exe");
+        assert!(f.url.ends_with(".zip") && f.member.ends_with("/ffmpeg.exe"), "{f:?}");
+        // the minimal manifest below has none
+        let j = r#"{"llama":{"build":"b1","assets":[]},"pdfium":{"build":"1","url":"u","sha256":"s","size":1,"member":"m"},"models":[]}"#;
+        assert!(Manifest::parse(j).unwrap().ffmpeg.is_none());
     }
 
     #[test]

@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 
 use crate::backend::Backend;
 use crate::fetch::{fetch_with, rewrite_hf, FetchOptions, Progress};
-use crate::manifest::{Manifest, PdfiumManifest};
+use crate::manifest::{FfmpegManifest, Manifest, PdfiumManifest};
 use crate::{Error, Result};
 
 pub fn install_dir(root: &Path, build: &str, backend: Backend) -> PathBuf {
@@ -169,6 +169,75 @@ pub fn install_pdfium_with(
     Ok(dll)
 }
 
+// ---------------------------------------------------------------- ffmpeg
+
+/// `<root>/ffmpeg/<build>/<exe>`.
+pub fn ffmpeg_path(root: &Path, f: &FfmpegManifest) -> PathBuf {
+    root.join("ffmpeg").join(&f.build).join(f.exe_name())
+}
+
+/// Pull one member out of a `.zip` into `dest` via a temp file (a crash never leaves a truncated
+/// exe). Only the exact member path is read; nothing else is written.
+pub fn extract_zip_member(zip_path: &Path, member: &str, dest: &Path) -> Result<()> {
+    let mut z = zip::ZipArchive::new(File::open(zip_path)?).map_err(|e| Error::Zip(e.to_string()))?;
+    let want = member.trim_start_matches("./");
+    for i in 0..z.len() {
+        let mut entry = z.by_index(i).map_err(|e| Error::Zip(e.to_string()))?;
+        if entry.is_dir() || entry.name().replace('\\', "/").trim_start_matches("./") != want {
+            continue;
+        }
+        if let Some(p) = dest.parent() {
+            fs::create_dir_all(p)?;
+        }
+        let tmp = dest.with_extension("tmp");
+        let res = File::create(&tmp).and_then(|mut f| io::copy(&mut entry, &mut f).map(|_| ()));
+        if let Err(e) = res {
+            let _ = fs::remove_file(&tmp);
+            return Err(e.into());
+        }
+        let _ = fs::remove_file(dest);
+        fs::rename(&tmp, dest)?;
+        return Ok(());
+    }
+    Err(Error::NotFound(format!("{member} in {}", zip_path.display())))
+}
+
+/// Download (resumable, sha256-verified) and unpack the pinned ffmpeg. Idempotent. An unpinned
+/// manifest hash is refused by the fetch ([`Error::UnpinnedHash`]); a manifest without an ffmpeg
+/// entry is `NotFound`.
+pub fn install_ffmpeg_with(
+    root: &Path,
+    manifest: &Manifest,
+    opts: &FetchOptions,
+    progress: &mut dyn FnMut(&str, Progress),
+) -> Result<PathBuf> {
+    let f = manifest.ffmpeg.as_ref().ok_or_else(|| Error::NotFound("ffmpeg entry in manifest".into()))?;
+    let exe = ffmpeg_path(root, f);
+    if exe.is_file() {
+        return Ok(exe);
+    }
+    let name = f.url.rsplit('/').next().unwrap_or("ffmpeg.zip");
+    let dest = root.join("downloads").join(format!("ffmpeg-{}-{name}", f.build));
+    fetch_with(std::slice::from_ref(&f.url), &dest, &f.sha256, opts, &mut |pr| progress(name, pr))?;
+    if opts.is_cancelled() {
+        return Err(Error::Cancelled);
+    }
+    extract_zip_member(&dest, &f.member, &exe)?;
+    Ok(exe)
+}
+
+/// The installed ffmpeg: the pinned build if present, else the last (by name) other build under
+/// `<root>/ffmpeg` (a user-placed binary lands here too).
+pub fn installed_ffmpeg(root: &Path, f: &FfmpegManifest) -> Option<PathBuf> {
+    let pinned = ffmpeg_path(root, f);
+    if pinned.is_file() {
+        return Some(pinned);
+    }
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("ffmpeg")).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    dirs.sort();
+    dirs.into_iter().rev().map(|d| d.join(f.exe_name())).find(|p| p.is_file())
+}
+
 /// Installed build names (`bNNNN`) for `backend`, newest first.
 pub fn installed_builds(root: &Path, backend: Backend) -> Vec<String> {
     let mut v: Vec<(u64, String)> = fs::read_dir(root.join("llama"))
@@ -282,6 +351,46 @@ mod tests {
         let m = Manifest::embedded();
         let p = pdfium_path(Path::new("R"), &m.pdfium);
         assert_eq!(p, Path::new("R").join("pdfium").join("7881").join("pdfium.dll"));
+    }
+
+    #[test]
+    fn zip_member_extraction_and_ffmpeg_lookup() {
+        let d = tmp("ffz");
+        let z = d.join("f.zip");
+        make_zip(&z, &[("ffmpeg-7/LICENSE", b"lic"), ("ffmpeg-7/bin/ffmpeg.exe", b"MZ-ff"), ("ffmpeg-7/bin/ffplay.exe", b"no")]);
+        let f = FfmpegManifest {
+            build: "7.0".into(),
+            url: "https://x/f.zip".into(),
+            sha256: "s".into(),
+            size: 1,
+            member: "ffmpeg-7/bin/ffmpeg.exe".into(),
+        };
+        let exe = ffmpeg_path(&d, &f);
+        assert_eq!(exe, d.join("ffmpeg").join("7.0").join("ffmpeg.exe"));
+        assert!(installed_ffmpeg(&d, &f).is_none());
+        extract_zip_member(&z, &f.member, &exe).unwrap();
+        assert_eq!(fs::read(&exe).unwrap(), b"MZ-ff");
+        assert!(!exe.with_extension("tmp").exists() && !exe.with_file_name("ffplay.exe").exists());
+        assert_eq!(installed_ffmpeg(&d, &f).unwrap(), exe);
+        // an older install is found when the pinned one is absent
+        let mut newer = f.clone();
+        newer.build = "7.1".into();
+        assert_eq!(installed_ffmpeg(&d, &newer).unwrap(), exe);
+        assert!(matches!(extract_zip_member(&z, "nope/ffmpeg.exe", &d.join("o.exe")), Err(Error::NotFound(_))));
+        assert!(!d.join("o.exe").exists());
+    }
+
+    #[test]
+    fn ffmpeg_install_needs_a_pinned_hash() {
+        let d = tmp("ffi");
+        let mut m = Manifest::embedded();
+        let opts = FetchOptions::default();
+        assert!(
+            matches!(install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}), Err(Error::UnpinnedHash(_))),
+            "TODO-pin-in-CI must not download"
+        );
+        m.ffmpeg = None;
+        assert!(matches!(install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}), Err(Error::NotFound(_))));
     }
 
     #[test]

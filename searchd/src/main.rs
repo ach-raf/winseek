@@ -237,6 +237,7 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
         std::thread::sleep(Duration::from_millis(200));
         sh.trim_query_cache();
         sh.refresh_folder_sizes();
+        sh.refresh_usage();
         if sh.save_now.swap(false, Ordering::Relaxed) || last_save.elapsed() >= SAVE_EVERY {
             save_snapshot(&sh, &snap_path);
             last_save = Instant::now();

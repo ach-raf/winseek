@@ -68,6 +68,22 @@ pub fn image_input(jpeg: &[u8]) -> Value {
     })
 }
 
+/// One audio input object (16 kHz mono WAV bytes -> `input_audio`). Like images it rides in a
+/// `content` array; the audio tokens come from the mmproj's audio encoder (no ASR model).
+pub fn audio_input(wav: &[u8]) -> Value {
+    json!({
+        "content": [{
+            "type": "input_audio",
+            "input_audio": { "data": STANDARD.encode(wav), "format": "wav" }
+        }]
+    })
+}
+
+/// Request body for WAV clips.
+pub fn audio_body(wavs: &[&[u8]]) -> Value {
+    json!({ "input": wavs.iter().map(|w| audio_input(w)).collect::<Vec<_>>() })
+}
+
 /// Request body for text inputs (already prefixed).
 pub fn text_body(inputs: &[String]) -> Value {
     json!({ "input": inputs })
@@ -130,6 +146,11 @@ pub fn truncate_normalize(v: &[f32], dims: usize) -> Result<Vec<f32>> {
 /// True iff a `/props` document reports vision support (`modalities.vision == true`).
 pub fn props_vision(props: &Value) -> bool {
     props.pointer("/modalities/vision").and_then(Value::as_bool).unwrap_or(false)
+}
+
+/// True iff a `/props` document reports audio support (`modalities.audio == true`).
+pub fn props_audio(props: &Value) -> bool {
+    props.pointer("/modalities/audio").and_then(Value::as_bool).unwrap_or(false)
 }
 
 pub struct EmbedClient {
@@ -208,8 +229,24 @@ impl EmbedClient {
         self.post_embeddings(&images_body(jpegs), jpegs.len())
     }
 
+    /// Raw audio embeddings: one 16 kHz mono 16-bit WAV clip per input (about 30 s each). Callers
+    /// should check [`audio_enabled`](Self::audio_enabled) first.
+    pub fn embed_audio_wav(&self, wavs: &[&[u8]]) -> Result<Vec<Vec<f32>>> {
+        self.post_embeddings(&audio_body(wavs), wavs.len())
+    }
+
     /// `GET /props`: is the mmproj loaded (vision available)? Missing field => false.
     pub fn vision_enabled(&self) -> Result<bool> {
+        Ok(self.props()?.0)
+    }
+
+    /// `GET /props`: does the loaded mmproj take audio? Missing field => false.
+    pub fn audio_enabled(&self) -> Result<bool> {
+        Ok(self.props()?.1)
+    }
+
+    /// `(vision, audio)` from one `/props` call.
+    fn props(&self) -> Result<(bool, bool)> {
         let resp = self
             .agent
             .get(&format!("{}/props", self.base_url))
@@ -219,7 +256,7 @@ impl EmbedClient {
         let mut text = String::new();
         resp.into_reader().read_to_string(&mut text)?;
         let v: Value = serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
-        Ok(props_vision(&v))
+        Ok((props_vision(&v), props_audio(&v)))
     }
 }
 
@@ -253,6 +290,21 @@ mod tests {
         );
         let s = serde_json::to_string(&body).unwrap();
         assert!(!s.contains("image_data"));
+    }
+
+    #[test]
+    fn audio_body_exact_shape() {
+        let body = audio_body(&[b"RIFF", b"ab"]);
+        assert_eq!(
+            body,
+            json!({"input": [
+                {"content":[{"type":"input_audio","input_audio":{"data":"UklGRg==","format":"wav"}}]},
+                {"content":[{"type":"input_audio","input_audio":{"data":"YWI=","format":"wav"}}]}
+            ]})
+        );
+        assert!(props_audio(&json!({"modalities":{"vision":true,"audio":true}})));
+        assert!(!props_audio(&json!({"modalities":{"vision":true}})));
+        assert!(!props_audio(&json!({"modalities":{"audio":"yes"}})));
     }
 
     #[test]
@@ -380,6 +432,7 @@ mod tests {
         let c = EmbedClient::new("http://127.0.0.1:1", "k");
         assert!(c.embed_documents(&[]).unwrap().is_empty());
         assert!(c.embed_images_jpeg(&[]).unwrap().is_empty());
+        assert!(c.embed_audio_wav(&[]).unwrap().is_empty());
     }
 
     /// A llama-server stand-in that refuses (500, with its real message) any input longer than

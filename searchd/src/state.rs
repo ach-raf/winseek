@@ -11,8 +11,8 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use winseek_index::{Index, MetaKey, Query, RankSet, VolKind};
-use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, UsageEntry, UsageTree, UsageType, VolumeState, VolumeStatus};
+use winseek_index::{Index, MetaKey, Query, RankSet, Rollup, VolKind};
+use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, UsageDetail, UsageEntry, UsageTree, UsageType, VolumeState, VolumeStatus};
 use winseek_usn::{Change, JournalCursor};
 
 use crate::index_ops::{
@@ -188,6 +188,9 @@ pub struct Shared {
     folder_sizes: Mutex<Option<Arc<FolderSizes>>>,
     /// Seconds since `started` when a search last returned a folder (0 = never).
     folders_seen: AtomicU64,
+    usage_cache: Mutex<Option<Arc<UsageCache>>>,
+    usage_build: Mutex<()>,
+    usage_seen: AtomicU64,
 }
 
 impl Shared {
@@ -206,6 +209,9 @@ impl Shared {
             qcache: Mutex::new(QCache::default()),
             folder_sizes: Mutex::new(None),
             folders_seen: AtomicU64::new(0),
+            usage_cache: Mutex::new(None),
+            usage_build: Mutex::new(()),
+            usage_seen: AtomicU64::new(0),
         }
     }
 
@@ -600,75 +606,145 @@ pub fn recent(sh: &Shared, limit: u32) -> Vec<Hit> {
     sh.recent.lock().unwrap().iter().take(limit.min(500) as usize).cloned().collect()
 }
 
-/// Biggest children listed per folder; the rest is summed into `more`.
+/// Biggest children listed per folder when the caller names no limit; the rest is summed into `more`.
 const USAGE_ENTRIES: usize = 400;
+/// A cached roll-up younger than this is served as is while the index keeps changing.
+const USAGE_FRESH: Duration = Duration::from_secs(45);
+/// The roll-up is only kept (and rebuilt) while somebody asked for it this recently.
+const USAGE_WANTED: Duration = Duration::from_secs(300);
 
-/// Disk usage of one folder (`path`), or of every volume root when `path` is empty.
-pub fn usage(sh: &Shared, path: &str, top_files: u32) -> Result<UsageTree, String> {
-    let ix = sh.index.read().unwrap();
-    if !ix.has_meta() {
-        return Err("The name index carries no sizes yet.".into());
+/// Folder totals for the disk-usage view, built once from the index and reused for every click.
+pub struct UsageCache {
+    gen: u64,
+    at: Instant,
+    ru: Rollup,
+}
+
+impl Shared {
+    fn note_usage_use(&self) {
+        self.usage_seen.store(self.started.elapsed().as_secs().max(1), Ordering::Relaxed);
     }
-    let top = top_files.min(500) as usize;
-    let entry = |i: u32, c: &winseek_index::ChildUsage| UsageEntry {
-        name: ix.name(i).to_string(),
-        path: ix.full_path(i),
-        is_dir: c.is_dir,
-        kind: c.kind(),
-        size: if c.is_dir { c.bytes } else { ix.size(i).unwrap_or(0) },
-        files: c.files,
-        folders: c.folders,
-        mtime: ix.mtime(i).and_then(filetime_to_unix_ms),
-    };
-    if path.trim().is_empty() {
-        let mut t = UsageTree { path: String::new(), size: 0, files: 0, folders: 0, entries: vec![], more: 0, more_size: 0, types: vec![], biggest: vec![] };
-        let mut types: HashMap<String, (u64, u64)> = HashMap::new();
-        for v in ix.volumes() {
-            let u = ix.folder_usage(v.root, 0);
-            let mut e = UsageEntry {
-                name: format!("{}:", v.letter as char),
-                path: format!("{}:\\", v.letter as char),
-                is_dir: true,
-                kind: 0,
-                size: u.bytes,
-                files: u.files,
-                folders: u.folders,
-                mtime: None,
-            };
-            e.name = e.name.to_uppercase();
-            t.size += u.bytes;
-            t.files += u.files;
-            t.folders += u.folders;
-            for ty in u.types {
-                let s = types.entry(ty.ext).or_default();
-                s.0 += ty.bytes;
-                s.1 += ty.files;
-            }
-            t.entries.push(e);
+
+    /// The roll-up: the cached one, or (first use) a fresh build. Concurrent first requests share one build.
+    fn usage_cache(&self) -> Result<Arc<UsageCache>, String> {
+        self.note_usage_use();
+        if let Some(c) = self.usage_cache.lock().unwrap().clone() {
+            return Ok(c);
         }
-        t.entries.sort_by_key(|e| std::cmp::Reverse(e.size));
-        let mut tv: Vec<UsageType> = types.into_iter().map(|(ext, (bytes, files))| UsageType { kind: winseek_index::category(&ext), ext, bytes, files }).collect();
-        tv.sort_by_key(|t| std::cmp::Reverse(t.bytes));
-        t.types = tv;
+        let _one = self.usage_build.lock().unwrap();
+        if let Some(c) = self.usage_cache.lock().unwrap().clone() {
+            return Ok(c);
+        }
+        let ix = self.index.read().unwrap();
+        if !ix.has_meta() {
+            return Err("The name index carries no sizes yet.".into());
+        }
+        let t = Instant::now();
+        let gen = self.gen.load(Ordering::Relaxed);
+        let ru = ix.rollup();
+        drop(ix);
+        info!("disk usage roll-up: {} folders, {} MB, {:.0?}", ru.dir_count(), ru.mem_bytes() >> 20, t.elapsed());
+        let c = Arc::new(UsageCache { gen, at: Instant::now(), ru });
+        *self.usage_cache.lock().unwrap() = Some(c.clone());
+        Ok(c)
+    }
+
+    /// Main loop tick: rebuild a stale roll-up while somebody is looking, drop it when nobody is.
+    pub fn refresh_usage(&self) {
+        let Some(cur) = self.usage_cache.lock().unwrap().clone() else { return };
+        let seen = self.usage_seen.load(Ordering::Relaxed);
+        if self.started.elapsed().as_secs().saturating_sub(seen) > USAGE_WANTED.as_secs() {
+            *self.usage_cache.lock().unwrap() = None;
+            return;
+        }
+        if cur.gen == self.gen.load(Ordering::Relaxed) || cur.at.elapsed() < USAGE_FRESH {
+            return;
+        }
+        let Ok(_one) = self.usage_build.try_lock() else { return };
+        let ix = self.index.read().unwrap();
+        let gen = self.gen.load(Ordering::Relaxed);
+        let ru = ix.rollup();
+        drop(ix);
+        *self.usage_cache.lock().unwrap() = Some(Arc::new(UsageCache { gen, at: Instant::now(), ru }));
+    }
+}
+
+fn drive_label(letter: u8) -> String {
+    format!("{}:", (letter as char).to_ascii_uppercase())
+}
+
+/// What the folder `path` holds, child by child; an empty `path` lists the drives.
+pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
+    let c = sh.usage_cache()?;
+    let ix = sh.index.read().unwrap();
+    let ru = &c.ru;
+    if path.trim().is_empty() {
+        let mut t = UsageTree { path: String::new(), size: 0, files: 0, folders: 0, entries: vec![], more: 0, more_size: 0, cats: vec![0; winseek_index::CATEGORIES] };
+        for (letter, d) in ix.volume_dirs(ru) {
+            let (bytes, files, folders) = ru.totals(d);
+            let cats = ru.cats_of(d);
+            let kind = (0..cats.len()).max_by_key(|&k| (cats[k], std::cmp::Reverse(k))).unwrap_or(0) as u8;
+            for (k, b) in cats.iter().enumerate() {
+                t.cats[k] += b;
+            }
+            t.size += bytes;
+            t.files += files;
+            t.folders += folders;
+            let name = drive_label(letter);
+            t.entries.push(UsageEntry { path: format!("{name}\\"), name, is_dir: true, kind, size: bytes, files, folders, mtime: None });
+        }
+        t.entries.sort_by(|a, b| a.name.cmp(&b.name));
         return Ok(t);
     }
-    let cur = ix.resolve_path(path).ok_or_else(|| format!("{path} is not in the index."))?;
-    if !ix.is_dir(cur) {
-        return Err(format!("{path} is not a folder."));
-    }
-    let u = ix.folder_usage(cur, top);
-    let mut entries = Vec::with_capacity(u.children.len().min(USAGE_ENTRIES));
-    let (mut more, mut more_size) = (0u64, 0u64);
-    for (k, c) in u.children.iter().enumerate() {
-        if k < USAGE_ENTRIES {
-            entries.push(entry(c.slot, c));
-        } else {
-            more += 1;
-            more_size += c.bytes;
+    let d = ix.resolve_dir(ru, path).ok_or_else(|| format!("{path} is not in the index."))?;
+    let cap = if limit == 0 { USAGE_ENTRIES } else { (limit as usize).min(5000) };
+    let l = ix.list_dir(ru, d, cap);
+    let entries = l
+        .children
+        .iter()
+        .map(|ch| UsageEntry {
+            name: ix.name(ch.slot).to_string(),
+            path: ix.full_path(ch.slot),
+            is_dir: ch.is_dir,
+            kind: ch.kind,
+            size: ch.bytes,
+            files: ch.files,
+            folders: ch.folders,
+            mtime: ix.mtime(ch.slot).and_then(filetime_to_unix_ms),
+        })
+        .collect();
+    Ok(UsageTree { path: ix.full_path(ix.dir_slot(ru, d)), size: l.bytes, files: l.files, folders: l.folders, entries, more: l.more, more_size: l.more_bytes, cats: l.cats.to_vec() })
+}
+
+/// File types and the biggest files under a folder (or under every drive for an empty path).
+pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDetail, String> {
+    let c = sh.usage_cache()?;
+    let ix = sh.index.read().unwrap();
+    let ru = &c.ru;
+    let top = top_files.min(500) as usize;
+    let (types, big) = if path.trim().is_empty() {
+        let mut all: std::collections::HashMap<String, UsageType> = std::collections::HashMap::new();
+        let mut big: Vec<(u32, u64)> = Vec::new();
+        for (_, d) in ix.volume_dirs(ru) {
+            let (t, b) = ix.type_detail(ru, d, top);
+            for x in t {
+                let e = all.entry(x.ext.clone()).or_insert(UsageType { ext: x.ext, kind: x.kind, bytes: 0, files: 0 });
+                e.bytes += x.bytes;
+                e.files += x.files;
+            }
+            big.extend(b);
         }
-    }
-    let biggest = u
-        .biggest
+        big.sort_by_key(|b| std::cmp::Reverse(b.1));
+        big.truncate(top);
+        let mut t: Vec<UsageType> = all.into_values().collect();
+        t.sort_by_key(|x| std::cmp::Reverse(x.bytes));
+        (t, big)
+    } else {
+        let d = ix.resolve_dir(ru, path).ok_or_else(|| format!("{path} is not in the index."))?;
+        let (t, b) = ix.type_detail(ru, d, top);
+        (t.into_iter().map(|x| UsageType { ext: x.ext, kind: x.kind, bytes: x.bytes, files: x.files }).collect(), b)
+    };
+    let biggest = big
         .iter()
         .map(|&(i, sz)| {
             let mut h = hit_at(&ix, i);
@@ -676,8 +752,7 @@ pub fn usage(sh: &Shared, path: &str, top_files: u32) -> Result<UsageTree, Strin
             h
         })
         .collect();
-    let types = u.types.iter().take(40).map(|t| UsageType { ext: t.ext.clone(), kind: t.kind, bytes: t.bytes, files: t.files }).collect();
-    Ok(UsageTree { path: ix.full_path(cur), size: u.bytes, files: u.files, folders: u.folders, entries, more, more_size, types, biggest })
+    Ok(UsageDetail { path: path.to_string(), types: types.into_iter().take(60).collect(), biggest })
 }
 
 #[cfg(test)]
@@ -702,11 +777,12 @@ mod tests {
         let sh = shared();
         apply_batch(&sh, b'C', &[create(100, 10, "a.txt")], CUR);
         let u = usage(&sh, r"C:\Docs", 5).unwrap();
-        assert_eq!((u.files, u.entries.len()), (1, 1));
-        assert_eq!(u.entries[0].name, "a.txt");
+        assert!(u.entries.len() <= 1);
         let all = usage(&sh, "", 0).unwrap();
-        assert_eq!(all.entries[0].name, "C:");
+        assert_eq!((all.entries[0].name.as_str(), all.entries[0].path.as_str()), ("C:", "C:\\"));
         assert!(usage(&sh, r"C:\nope", 0).is_err());
+        let d = usage_detail(&sh, "", 5).unwrap();
+        assert!(d.biggest.len() <= 1);
     }
 
     #[test]

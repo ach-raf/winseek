@@ -11,13 +11,18 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+pub mod fuse;
+mod provenance;
 mod recover;
 pub mod relevance;
+mod tail;
+pub use provenance::{drift, verdict, Verdict, PROBE_MIN_COS};
 pub use recover::{is_corruption_message, Recovery};
+pub use tail::{TailCounts, TailJob};
 use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -73,6 +78,39 @@ pub const DEFAULT_IGNORE: &[&str] = &[
     // infra / misc tooling
     ".terraform", ".terragrunt-cache", ".direnv", ".devenv", ".vagrant", ".Rproj.user",
 ];
+
+/// Hard deny-list: names (any path segment, case-insensitive, `*`/`?` wildcards) that are NEVER
+/// indexed or read, whatever the user's ignore list says. Secrets, key material, password
+/// stores and tool caches. Unlike [`DEFAULT_IGNORE`] this is not editable and applies to every
+/// segment of a path, include roots too ([`in_scope_with`], [`hard_denied`]).
+pub const HARD_DENY: &[&str] = &[
+    // credential / key folders
+    ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".kube", ".docker", ".pki",
+    // password managers
+    "*.kdbx", "*.kdb", "*.agilekeychain", "*.opvault", "*.1pux", "*.psafe3", "*.keychain", "*.keychain-db", "*.wallet",
+    // keys and certificates
+    "*.pem", "*.key", "*.pfx", "*.p12", "*.ppk", "*.jks", "*.keystore", "*.gpg", "*.pgp", "*.crt", "*.cer", "*.der", "*.csr",
+    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    // credential files
+    ".env", ".env.*", "*.env", ".netrc", "_netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".htpasswd",
+    "credentials", "credentials.json", "secrets.json", "secrets.yml", "secrets.yaml", "service-account*.json",
+    "*password*.txt", "*passwords*.csv", "terraform.tfstate", "*.tfvars",
+    // caches
+    ".cache", "__pycache__", "INetCache", "GPUCache", "Code Cache", "ShaderCache", "Cache_Data", "CacheStorage", ".npm", ".pnpm-store",
+    ".gradle", ".m2", ".nuget", ".cargo",
+];
+
+fn hard_deny_set() -> &'static Ignore {
+    static H: std::sync::OnceLock<Ignore> = std::sync::OnceLock::new();
+    H.get_or_init(|| Ignore::new(HARD_DENY))
+}
+
+/// True when any segment of `path` (root included) matches [`HARD_DENY`].
+pub fn hard_denied(path: &str) -> bool {
+    let p = norm_path(path);
+    let ig = hard_deny_set();
+    p.split('\\').any(|seg| !seg.is_empty() && ig.matches_seg(seg))
+}
 
 /// The default ignore list as owned strings (what Settings shows on "Reset to defaults").
 pub fn default_ignore() -> Vec<String> {
@@ -172,6 +210,8 @@ pub enum VecKind {
     Image,
     Text,
     Page,
+    /// A window of a soundtrack (audio / video files), embedded straight from the waveform.
+    Audio,
 }
 
 impl VecKind {
@@ -180,6 +220,7 @@ impl VecKind {
             VecKind::Image => "image",
             VecKind::Text => "text",
             VecKind::Page => "page",
+            VecKind::Audio => "audio",
         }
     }
 }
@@ -190,6 +231,7 @@ impl VecKind {
             "image" => Some(VecKind::Image),
             "text" => Some(VecKind::Text),
             "page" => Some(VecKind::Page),
+            "audio" => Some(VecKind::Audio),
             _ => None,
         }
     }
@@ -473,6 +515,11 @@ impl Ignore {
         Ignore::new(DEFAULT_IGNORE)
     }
 
+    /// One name (not a path) matches the list, case-insensitively.
+    pub fn matches_name(&self, name: &str) -> bool {
+        self.matches_seg(&name.to_lowercase())
+    }
+
     fn matches_seg(&self, seg: &str) -> bool {
         if self.exact.contains(seg) {
             return true;
@@ -507,6 +554,9 @@ pub fn in_scope(scopes: &Scopes, path: &str) -> bool {
 /// below that root matches `ignore`.
 pub fn in_scope_with(scopes: &Scopes, ignore: &Ignore, path: &str) -> bool {
     let p = norm_path(path);
+    if hard_denied(path) {
+        return false;
+    }
     if scopes.exclude.iter().any(|e| under(&norm_path(e), &p)) {
         return false;
     }
@@ -757,6 +807,7 @@ impl Store {
         tx.execute(&format!("DELETE FROM texts WHERE {orphan}"), [])?;
         tx.execute(&format!("DELETE FROM pending_vecs WHERE {orphan}"), [])?;
         tx.execute(&format!("DELETE FROM parse_queue WHERE {orphan}"), [])?;
+        tx.execute(&format!("DELETE FROM pdf_tail WHERE {orphan}"), [])?;
         let n = tx.execute(&format!("DELETE FROM content WHERE {orphan}"), [])?;
         tx.commit()?;
         Ok(n)
@@ -997,6 +1048,23 @@ impl Store {
         self.set_state(file_id, STATE_SKIPPED, reason)
     }
 
+    /// Every file row as `(path, kind)`, for the stale-row purge.
+    pub fn all_file_paths(&self) -> Result<Vec<(String, String)>> {
+        let mut st = self.conn.prepare_cached("SELECT path, kind FROM files")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Skipped files whose skip reason is one of `reasons` go back to pending (their cause may be
+    /// gone: a cloud file was hydrated, a codec got installed). Returns how many.
+    pub fn requeue_skipped(&mut self, reasons: &[&str]) -> Result<usize> {
+        let mut n = 0;
+        for r in reasons {
+            n += self.conn.prepare_cached("UPDATE files SET state=0, error=NULL WHERE state=?1 AND error=?2")?.execute(params![STATE_SKIPPED, r])?;
+        }
+        Ok(n)
+    }
+
     /// The reason / message recorded for a skipped or failed file at `path` (case-insensitive).
     pub fn file_error(&self, path: &str) -> Result<Option<String>> {
         let v: Option<Option<String>> = self
@@ -1040,7 +1108,7 @@ impl Store {
         let mut by_hash: HashMap<String, Vec<(FileId, String)>> = HashMap::new();
         {
             let mut st = self.conn.prepare_cached(
-                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL",
+                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL AND kind != 'code'",
             )?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
@@ -1175,7 +1243,7 @@ impl Store {
         let mut by_hash: HashMap<String, Vec<(FileId, String)>> = HashMap::new();
         {
             let mut st = self.conn.prepare_cached(
-                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL",
+                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL AND kind != 'code'",
             )?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
@@ -1218,7 +1286,7 @@ impl Store {
         }
         type Pick<'a> = (&'a String, f32, f32, u32, Option<f32>);
         let mut out = Vec::new();
-        for m in [Modality::Visual, Modality::Text] {
+        for m in [Modality::Visual, Modality::Text, Modality::Audio] {
             let items: Vec<(&String, &PerQuery)> =
                 best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v)).collect();
             let n = items.len();
@@ -1279,7 +1347,7 @@ impl Store {
                     snippet(texts, 2, '[', ']', '…', 12), bm25(texts),
                     COALESCE((SELECT v.locator FROM vectors v WHERE v.hash = texts.hash AND v.chunk = texts.chunk),
                              (SELECT p.locator FROM pending_vecs p WHERE p.hash = texts.hash AND p.chunk = texts.chunk))
-             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4)
+             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind != 'code'
              WHERE texts MATCH ?1
              ORDER BY bm25(texts) LIMIT ?2",
         )?;
@@ -1291,6 +1359,42 @@ impl Store {
                 snippet: r.get(3)?,
                 rank: r.get(4)?,
                 locator: r.get(5)?,
+            })
+        })?;
+        let mut seen = std::collections::HashSet::new();
+        let mut out = Vec::new();
+        for h in rows {
+            let h = h?;
+            if seen.insert(h.file_id) {
+                out.push(h);
+                if out.len() == k {
+                    break;
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Full-text search over the *code* partition only (`code:` queries). Same shape as
+    /// [`Store::search_text`]; code never appears in any other search.
+    pub fn search_code(&self, fts_query: &str, k: usize) -> Result<Vec<TextHit>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let mut st = self.conn.prepare_cached(
+            "SELECT files.id, files.path, texts.chunk, snippet(texts, 2, '[', ']', '…', 12), bm25(texts)
+             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
+             WHERE texts MATCH ?1
+             ORDER BY bm25(texts) LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![fts_query, (k * 5) as i64], |r| {
+            Ok(TextHit {
+                file_id: FileId(r.get(0)?),
+                path: r.get(1)?,
+                chunk: r.get(2)?,
+                snippet: r.get(3)?,
+                rank: r.get(4)?,
+                locator: None,
             })
         })?;
         let mut seen = std::collections::HashSet::new();
@@ -1804,6 +1908,8 @@ fn clear_derived(conn: &Connection) -> Result<()> {
          DELETE FROM content;
          DELETE FROM pending_vecs;
          DELETE FROM parse_queue;
+         DELETE FROM pdf_tail;
+         DELETE FROM ref_vectors;
          DELETE FROM settings WHERE key = 'parse_route_cursor';
          DELETE FROM index_meta;
          UPDATE files SET content_hash = NULL, state = 0, error = NULL;
@@ -1877,6 +1983,18 @@ fn migrate(conn: &Connection) -> Result<()> {
              CREATE TABLE IF NOT EXISTS image_dims(
                  hash TEXT PRIMARY KEY, w INTEGER NOT NULL, h INTEGER NOT NULL);
              PRAGMA user_version = 4;
+             COMMIT;",
+        )?;
+    }
+    if v < 5 {
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS pdf_tail(
+                 hash TEXT PRIMARY KEY, next_page INTEGER NOT NULL, total INTEGER NOT NULL,
+                 state INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0, error TEXT);
+             CREATE TABLE IF NOT EXISTS ref_vectors(
+                 idx INTEGER PRIMARY KEY, build TEXT NOT NULL, vec BLOB NOT NULL);
+             PRAGMA user_version = 5;
              COMMIT;",
         )?;
     }
@@ -2336,6 +2454,58 @@ mod tests {
         };
         assert!(in_scope(&root, r"C:\anything\x"));
         assert!(!in_scope(&root, r"D:\x"));
+    }
+
+    #[test]
+    fn hard_deny_beats_any_user_ignore_list_and_include_root() {
+        let none = Ignore::new::<&str>(&[]); // user cleared the whole ignore list
+        let sc = Scopes { include: vec![r"C:\u\Documents".into(), r"C:\u\.ssh".into()], exclude: vec![], ..Default::default() };
+        for p in [
+            r"C:\u\Documents\.ssh\id_rsa",
+            r"C:\u\Documents\keys\server.pem",
+            r"C:\u\Documents\Vault.KDBX",
+            r"C:\u\Documents\app\.env.production",
+            r"C:\u\Documents\.aws\credentials",
+            r"C:\u\Documents\id_ed25519.pub",
+            r"C:\u\Documents\x\__pycache__\a.png",
+            r"C:\u\.ssh\notes.txt", // the include root itself is a denied folder
+        ] {
+            assert!(!in_scope_with(&sc, &none, p), "{p}");
+            assert!(hard_denied(p), "{p}");
+        }
+        assert!(in_scope_with(&sc, &none, r"C:\u\Documents\Taxes\2024.pdf"));
+        assert!(!hard_denied(r"C:\u\Documents\envelope.docx"));
+    }
+
+    #[test]
+    fn skips_for_a_temporary_cause_can_be_requeued() {
+        let meta = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let mut s = Store::open_in_memory(&meta).unwrap();
+        let k = |n: u64| FileKey { vol_guid: "v".into(), frn: n };
+        let a = s.upsert_file(&k(1), r"C:\p\a.jpg", 10, 1, "image").unwrap();
+        let b = s.upsert_file(&k(2), r"C:\p\b.jpg", 10, 1, "image").unwrap();
+        s.skip(a, "cloud_only").unwrap();
+        s.skip(b, "too_large").unwrap();
+        assert_eq!(s.requeue_skipped(&["cloud_only", "no_heic_codec"]).unwrap(), 1);
+        let pending: Vec<String> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        assert_eq!(pending, [r"C:\p\a.jpg"]);
+        assert_eq!(s.all_file_paths().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn code_files_are_searchable_only_through_search_code() {
+        let meta = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let mut s = Store::open_in_memory(&meta).unwrap();
+        let k = |n: u64| FileKey { vol_guid: "v".into(), frn: n };
+        let code = s.upsert_file(&k(1), r"C:\p\main.rs", 10, 1, "code").unwrap();
+        let doc = s.upsert_file(&k(2), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
+        s.complete(code, "h1", &[], &[(0, "frobnicate the widget".into())]).unwrap();
+        s.complete(doc, "h2", &[], &[(0, "meeting about the widget".into())]).unwrap();
+        let general = s.search_text("widget", 10).unwrap();
+        assert_eq!(general.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), [r"C:\p\notes.txt"]);
+        assert!(s.search_text("frobnicate", 10).unwrap().is_empty(), "code never mixes into general results");
+        let c = s.search_code("widget", 10).unwrap();
+        assert_eq!(c.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), [r"C:\p\main.rs"]);
     }
 
     #[test]

@@ -32,7 +32,9 @@ pub enum Request {
     Subscribe { id: u64, roots: Vec<String> },
     Rescan { id: u64, volume: char },
     /// What each child of a folder holds (WizTree-style). Empty `path` = every indexed volume.
-    Usage { id: u64, path: String, top_files: u32 },
+    Usage { id: u64, path: String, limit: u32 },
+    /// File types and biggest files under a folder (walks the subtree, so asked for separately).
+    UsageDetail { id: u64, path: String, top_files: u32 },
 }
 
 impl Request {
@@ -43,7 +45,8 @@ impl Request {
             | Request::Recent { id, .. }
             | Request::Subscribe { id, .. }
             | Request::Rescan { id, .. }
-            | Request::Usage { id, .. } => *id,
+            | Request::Usage { id, .. }
+            | Request::UsageDetail { id, .. } => *id,
         }
     }
 }
@@ -95,6 +98,14 @@ pub struct UsageTree {
     /// Children left out of `entries`, and what they hold together.
     pub more: u64,
     pub more_size: u64,
+    /// Bytes per file category under the folder (index = `UsageEntry::kind`).
+    #[serde(default)]
+    pub cats: Vec<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UsageDetail {
+    pub path: String,
     pub types: Vec<UsageType>,
     pub biggest: Vec<Hit>,
 }
@@ -149,6 +160,7 @@ pub enum Response {
     StatusResult { id: u64, volumes: Vec<VolumeStatus>, uptime_s: u64 },
     RecentResult { id: u64, hits: Vec<Hit> },
     UsageResult { id: u64, usage: UsageTree },
+    UsageDetailResult { id: u64, detail: UsageDetail },
     Change { kind: ChangeKind, path: String, old_path: Option<String>, is_dir: bool },
     Error { id: u64, message: String },
 }
@@ -197,6 +209,6 @@ mod tests {
     #[test]
     fn request_ids() {
         assert_eq!(Request::Rescan { id: 7, volume: 'C' }.id(), 7);
-        assert_eq!(Request::Usage { id: 8, path: String::new(), top_files: 0 }.id(), 8);
+        assert_eq!(Request::Usage { id: 8, path: String::new(), limit: 0 }.id(), 8);
     }
 }
