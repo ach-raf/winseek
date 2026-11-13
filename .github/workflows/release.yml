@@ -60,12 +60,35 @@ jobs:
             "$((Get-FileHash $_ -Algorithm SHA256).Hash.ToLower())  $($_.Name)" | Out-File "$($_.Name).sha256" -Encoding ascii
           }
 
+      - name: Resolve notes range from existing releases
+        id: notesrange
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEW_TAG: ${{ github.ref_name }}
+        run: |
+          # Releases, not git tags, are the source of truth for the notes range.
+          # If a release was deleted while its tag survived, that tag is skipped
+          # and its commits roll forward into the next release's notes instead
+          # of being lost between tags.
+          args="--latest --strip header"
+          while read -r tag; do
+            [ -n "$tag" ] || continue
+            [ "$tag" = "$NEW_TAG" ] && continue
+            if git rev-parse -q --verify "refs/tags/${tag}^{commit}" >/dev/null; then
+              args="--range ${tag}..${NEW_TAG} --strip header"
+              echo "Notes span ${tag}..${NEW_TAG} (newest surviving release)"
+              break
+            fi
+          done < <(gh release list --limit 50 --exclude-drafts --json tagName --jq '.[].tagName' 2>/dev/null || true)
+          echo "args=${args}" >> "$GITHUB_OUTPUT"
+
       - name: Release notes from commits
         id: cliff
         uses: orhun/git-cliff-action@v4
         with:
           config: cliff.toml
-          args: --latest --strip header
+          args: ${{ steps.notesrange.outputs.args }}
         env:
           OUTPUT: RELEASE_NOTES.md
 
