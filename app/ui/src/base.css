@@ -18,6 +18,10 @@
   --radius: 8px; --radius-lg: 14px;
   --lcol: 348px; --setside: 200px;
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
+  /* Library-window sidebar surfaces. Dark gets a lifted, faintly accent-tinted
+     graphite (plain --bg2 was near-black); light keeps the classic scheme. */
+  --side: var(--bg2);
+  --side-card: var(--bg);
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -28,6 +32,8 @@
     --mark: transparent; --mark-fg: var(--acc);
     --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
     --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+    --side: color-mix(in oklab, var(--acc) 5%, #23252c);
+    --side-card: color-mix(in oklab, var(--acc) 6%, #2f323b);
   }
 }
 /* Legacy names still used by not-yet-ported rules; they alias the v4 tokens. Do not add new uses. */
