@@ -73,6 +73,13 @@ export function formatDuration(s: number): string {
   return `${Math.floor(h / 24)} d ${h % 24} h`;
 }
 
+/** Countdown as a fixed-width clock ("0:59", "1:00", "12:05"): unlike formatDuration the text never
+ *  changes width as it ticks, so a row that shows it every second keeps its layout. */
+export function formatClock(s: number): string {
+  s = Math.max(0, Math.round(s));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
+
 /** Files per second: "12.4 files/s" above 10, one decimal below. */
 export function formatRate(r: number): string {
   return `${r >= 10 ? r.toFixed(0) : r.toFixed(1)} files/s`;

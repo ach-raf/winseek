@@ -363,7 +363,9 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
         gpu: det.gpu_name.clone(),
         llama_present: root.is_some_and(|r| resolve_exe(r, manifest, det.backend).is_some()),
         model_id: embedder::MODEL_ID,
-        profile: "default",
+        // The performance profile the embedder server follows (not a model variant): the UI uses it
+        // to say whether the server ever frees its GPU memory.
+        profile: parser.profile.as_str(),
         quant: embedder::QUANT,
         files: root.map(|r| model_files(manifest, &embedder::models_dir(r))).unwrap_or_default(),
         pdfium: pdfium_section(root, manifest, std::env::var_os(pdf::ENV_PDFIUM).as_deref()),

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusFfmpeg, StatusTier1, StatusWaiting, VolumeDetail } from "./types";
-import { formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
+import { formatClock, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 import { Grp, Row } from "./settingsUi";
 import { fileName, reasonHint, reasonSentence } from "./reasonText";
@@ -35,12 +35,14 @@ export function Bar({ value, label }: { value: number | null; label: string }) {
   );
 }
 
-/** A read-only key/value row (label left, value right). */
-function Kv({ k, children, title }: { k: string; children: React.ReactNode; title?: string }) {
+/** A read-only key/value row (label left, value right). `sub` is a muted line under the row for
+ *  text that changes: it lives on its own line, so it can never re-wrap the value column. */
+function Kv({ k, children, title, sub }: { k: string; children: React.ReactNode; title?: string; sub?: React.ReactNode }) {
   return (
-    <div className="grow kv" title={title}>
+    <div className={"grow kv" + (sub ? " wrap" : "")} title={title}>
       <div className="gtxt"><b>{k}</b></div>
       <span className="val">{children}</span>
+      {sub && <div className="gsub">{sub}</div>}
     </div>
   );
 }
@@ -249,6 +251,17 @@ function Files({ files }: { files: StatusModelFile[] }) {
 
 const profileName = (p: StatusParser["profile"]) => p.charAt(0).toUpperCase() + p.slice(1);
 
+/** One model / parser server row. The state stays a short value; the unload behaviour sits on its own
+ *  muted line below, because the idle countdown ticks every poll (and busy polls omit it), which used
+ *  to re-wrap the value between one and two lines every second. */
+function ServerRow({ k, sv, fast }: { k: string; sv: StatusModels["server"]; fast: boolean }) {
+  const sub = !sv.running ? `Starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`
+    : fast ? "Keeps models loaded while the app is open."
+    : sv.unload_in_s != null ? `Frees GPU memory in ${formatClock(sv.unload_in_s)} if idle`
+    : "Frees GPU memory when idle";
+  return <Kv k={k} sub={sub}>{sv.running ? `Running${sv.port != null ? ` on port ${sv.port}` : ""}` : "Not running"}</Kv>;
+}
+
 /** The document parser: files, server, queue, profile and the routing thresholds. */
 function ParserRows({ p }: { p: StatusParser }) {
   const sv = p.server;
@@ -260,11 +273,7 @@ function ParserRows({ p }: { p: StatusParser }) {
         {p.model_id}
         {p.present ? " · installed" : <span className="st-miss"> · not installed (optional, add it in Setup)</span>}
       </Kv>
-      <Kv k="Parser server">
-        {sv.running
-          ? `Running${sv.port != null ? ` on port ${sv.port}` : ""}${sv.unload_in_s != null ? ` · frees GPU memory in ${formatDuration(sv.unload_in_s)} if idle` : ""}`
-          : `Not running. It starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`}
-      </Kv>
+      <ServerRow k="Parser server" sv={sv} fast={p.profile === "fast"} />
       <Kv k="Parse queue" title="Images and scanned pages waiting for, finished by, skipped by, or given up on by the document parser">
         {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.skipped)} skipped · {fmt(q.failed)} failed
       </Kv>
@@ -298,11 +307,7 @@ export function Models({ m }: { m: StatusModels }) {
             : <span className="st-miss"> · not installed (downloads when a PDF is found, {formatSize(m.pdfium.expected_bytes)})</span>}
         </Kv>
         <Kv k="Embedder">{m.model_id} · {m.profile} profile · {m.quant}</Kv>
-        <Kv k="Server">
-          {sv.running
-            ? `Running${sv.port != null ? ` on port ${sv.port}` : ""}${sv.unload_in_s != null ? ` · frees GPU memory in ${formatDuration(sv.unload_in_s)} if idle` : ""}`
-            : `Not running. It starts when needed and unloads after ${formatDuration(sv.idle_unload_s)} idle.`}
-        </Kv>
+        <ServerRow k="Server" sv={sv} fast={m.profile === "fast"} />
         <Files files={m.files} />
       </Grp>
       <ParserRows p={m.parser} />

@@ -98,9 +98,10 @@
 .grow .val, .gctl .val { font-size: 13px; color: var(--fg2); font-weight: 500; }
 .grow .val.ok { color: var(--ok); }
 .grow.kv .val { text-align: right; max-width: 62%; overflow-wrap: anywhere; }
+.grow.kv .gsub { color: var(--fg3); font-size: 12.5px; margin-top: 0; font-weight: 400; }
 details.reasons > summary { cursor: pointer; list-style: none; }
 details.reasons > summary::-webkit-details-marker { display: none; }
-details.reasons > summary .val::after { content: "A"; display: inline-block; margin-left: 8px; color: var(--fg3); transition: transform .12s; }
+details.reasons > summary .val::after { content: "\203A"; display: inline-block; margin-left: 8px; color: var(--fg3); transition: transform .12s; }
 details.reasons[open] > summary .val::after { transform: rotate(90deg); }
 details.reasons > ul { list-style: none; margin: 0; padding: 0 0 12px; }
 details.reasons li { display: flex; gap: 14px; padding: 4px 0; font-size: 12.5px; color: var(--fg2); }

@@ -310,7 +310,7 @@ function mockStatusPage(): StatusPage {
       gpu: MOCK_BACKEND === "cuda12" ? "NVIDIA GeForce RTX 4070" : MOCK_BACKEND === "vulkan" ? "AMD Radeon RX 6600" : null,
       llama_present: groupHave("llama"),
       model_id: "embeddinggemma-2",
-      profile: "default",
+      profile: mockProfile,
       quant: "Q8_0",
       files: [
         { name: "embeddinggemma-2-Q8_0.gguf", role: "model", expected_bytes: 309855456, bytes: bytes(309855456, "EmbeddingGemma-2 model") },
