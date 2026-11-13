@@ -15,7 +15,7 @@ const gb = (n: number) => {
  *
  * The drives card answers two things a person actually wonders about: is search current (one line), and how
  * much room is left on each drive (the bar is the part in use; it turns amber when the drive is nearly full).
- * A click on a drive lists its biggest folders.
+ * A click on a drive opens Clean up > Disk space on that drive.
  */
 export function Sidebar({ page, onPage, status, counts, space, onDrive }: {
   page: Page; onPage: (p: Page) => void; status: VolumeStatus[];
@@ -66,11 +66,11 @@ export function Sidebar({ page, onPage, status, counts, space, onDrive }: {
             const tip = [
               sp ? `${v.letter}: ${gb(sp.free)} free of ${gb(sp.total)}${tight ? " (almost full)" : ""}` : `${v.letter}:`,
               `${v.files.toLocaleString("en-US")} files searchable`,
-              onDrive ? "Click to see the biggest folders" : "",
+              onDrive ? "Click to see what takes the space" : "",
             ].filter(Boolean).join("\n");
             return (
               <button className={"d" + (tight ? " tight" : "")} key={v.letter} tabIndex={-1} title={tip} disabled={!onDrive}
-                      aria-label={`Drive ${v.letter}: ${right}${sp ? " free" : ""}. Show its biggest folders.`}
+                      aria-label={`Drive ${v.letter}: ${right}${sp ? " free" : ""}. Show what takes the space.`}
                       onClick={() => onDrive?.(v.letter)}>
                 <b>{v.letter}:</b>
                 <div className={"meter" + (scan !== null ? " scan" : "")}><i style={{ "--u": scan ?? used ?? 0 } as CSSProperties} /></div>

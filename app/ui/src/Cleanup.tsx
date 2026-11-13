@@ -31,7 +31,7 @@ const dirName = (p: string) => {
   return parts.length >= 2 ? parts[parts.length - 2] : parts[0] ?? "";
 };
 
-export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError }: {
+export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError, drive }: {
   backend: Backend;
   /** The user's own pictures (app graphics left out, recycled files already gone). */
   images: LibImage[];
@@ -41,8 +41,11 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
   /** Bumps when new embeddings arrived. */
   gen: number;
   onError: (e: unknown) => void;
+  /** Show Disk space for this drive (a click on a drive in the side rail); `n` changes on every request. */
+  drive?: { letter: string; n: number };
 }) {
-  const [mode, setMode] = useState<"tidy" | "space">("tidy");
+  const [mode, setMode] = useState<"tidy" | "space">(drive ? "space" : "tidy");
+  useEffect(() => { if (drive) setMode("space"); }, [drive]);
   // Warm the name service's disk roll-up so "Disk space" opens instantly.
   useEffect(() => { backend.diskUsage("").catch(() => {}); }, [backend]);
   const [view, setView] = useState<View>("home");
@@ -140,7 +143,7 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
         </div>
       )}
       {mode === "space" ? (
-        <Space backend={backend} hidden={hidden} actions={actions} epoch={epoch} lead={modeTabs} />
+        <Space backend={backend} hidden={hidden} actions={actions} epoch={epoch} lead={modeTabs} start={drive} />
       ) : (
         <Home
           backend={backend} groups={vis} rows={rows} shots={shots} actions={actions}

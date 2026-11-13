@@ -45,9 +45,11 @@ export interface LibraryProps {
   chrome?: ReactNode;
   /** Esc / Alt+Left (embedded). */
   onBack?: () => void;
+  /** Clean up > Disk space should show this drive (a click on a drive in the side rail). */
+  drive?: { letter: string; n: number };
 }
 
-export default function Library({ backend, embedded = false, tab: tabProp, chrome, onBack }: LibraryProps) {
+export default function Library({ backend, embedded = false, tab: tabProp, chrome, onBack, drive }: LibraryProps) {
   const [ownTab, setOwnTab] = useState<LibTab>(() => {
     const t = new URLSearchParams(location.search).get("tab");
     return TABS.includes(t as LibTab) ? (t as LibTab) : "timeline";
@@ -261,7 +263,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {tab === "collections" && (
           <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} />
         )}
-        {tab === "cleanup" && <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} />}
+        {tab === "cleanup" && <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} drive={drive} />}
       </main>
       {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
       {toast && (

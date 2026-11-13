@@ -37,12 +37,14 @@ const readMapPref = (): { open: boolean; h: number } => {
   return { open: true, h: 300 };
 };
 
-export function Space({ backend, hidden, actions, epoch, lead }: {
+export function Space({ backend, hidden, actions, epoch, lead, start }: {
   backend: Backend;
   hidden: ReadonlySet<string>;
   actions: LibActions;
   epoch: number;
   lead?: React.ReactNode; // the mode tabs from the Clean up screen, shown at the start of the single top bar
+  /** Open this drive (a click on a drive in the side rail); `n` changes on every request. */
+  start?: { letter: string; n: number };
 }) {
   const [mapPref, setMapPref] = useState(readMapPref);
   const setMap = useCallback((p: { open: boolean; h: number }) => {
@@ -130,6 +132,15 @@ export function Space({ backend, hidden, actions, epoch, lead }: {
     setOpen(new Set(p ? [p] : []));
     if (p && pick) openChain(pick, p);
   }, [openChain]);
+  // A drive picked in the side rail: open it as soon as the drive list is known (its paths come from there).
+  const startDone = useRef(0);
+  useEffect(() => {
+    if (!start || start.n === startDone.current || !homeData) return;
+    const want = start.letter.toUpperCase() + ":";
+    const hit = homeData.entries.find((e) => e.path.toUpperCase().startsWith(want));
+    startDone.current = start.n;
+    if (hit) enterRoot(hit.path);
+  }, [start, homeData, enterRoot]);
   const showFolder = useCallback((p: string) => {
     if (!root || !within(root, p)) { enterRoot(p); return; }
     setFocus(p); setSel(p); setTab("tree"); openChain(p, root);
