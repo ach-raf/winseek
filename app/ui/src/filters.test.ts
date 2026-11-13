@@ -1,7 +1,12 @@
 // Run: npm test   (node's built-in runner; Node 22.6+ strips the types)
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { matchesRanges, nameQuery, parseQuery } from "./filters.ts";
+import { isCodeQuery, matchesRanges, nameQuery, parseQuery } from "./filters.ts";
+
+test("code: prefix marks a code query", () => {
+  assert.ok(isCodeQuery("code: parse config") && isCodeQuery("  CODE:foo"));
+  assert.ok(!isCodeQuery("my code: notes") && !isCodeQuery("decode:x"));
+});
 
 const NOW = new Date(2026, 9, 13, 15, 30).getTime(); // Tue 13 Oct 2026
 const at = (y: number, m: number, d: number) => new Date(y, m - 1, d).getTime();

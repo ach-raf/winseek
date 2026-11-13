@@ -1,9 +1,9 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
-import { mockDiskUsage } from "./mockUsage";
+import { mockDiskUsage, mockUsageDetail } from "./mockUsage";
 import type { ViewMode, ViewState } from "./viewMode";
-import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -125,6 +125,7 @@ let lastParseAt: number | null = null; // when the parser server was last used (
 let mockProfile: Profile = "balanced";
 let modelsInstalled = params.get("models") === "1";
 let autostart = true;
+let updatesOn = true;
 let dlRunning = false;
 let dlCancel = false;
 let dlFailOnce = params.get("dlfail") === "1";
@@ -604,6 +605,7 @@ export const mockBackend: Backend = {
   async appVersion() { return null; }, // the browser mock has no package info; Settings hides the row
   async recent(limit) { return [...DB].filter((e) => !e.dir).sort((a, b) => b.mtime - a.mtime).slice(0, limit).map(toHit); },
   async openPath(p) { console.info("[mock] open", p); },
+  async openAt(p, at): Promise<Opened> { console.info("[mock] open at", p, at); return { app: null, positioned: false }; },
   async revealPath(p) { console.info("[mock] reveal", p); },
   async copyPath(p) { try { await navigator.clipboard.writeText(p); } catch { /* ignore */ } console.info("[mock] copy", p); },
   async copyFiles(p) { console.info("[mock] copy files", p); },
@@ -757,6 +759,14 @@ export const mockBackend: Backend = {
       }
       return out;
     };
+    if (/^\s*code:/i.test(query)) {
+      await sleep(40);
+      const words = query.replace(/^\s*code:/i, "").toLowerCase().split(/\s+/).filter(Boolean);
+      const src = DB.filter((e) => !e.dir && /\.(rs|ts|tsx|py|js)$/i.test(e.name) && inScope(e.path) && (!words.length || words.some((w) => e.name.toLowerCase().includes(w))));
+      const all: SemanticHit[] = indexCode ? src.map((e) => ({ path: e.path, score: 0, size: e.size, mtime: Math.floor(e.mtime), snippet: `fn [${words[0] ?? "main"}]() {`, source: "code" as const })) : [];
+      const hits = all.slice(offset, offset + Math.max(1, k));
+      return { state: st, hits, total: all.length, more: offset + hits.length < all.length };
+    }
     if (!modelsInstalled) {
       await sleep(30);
       const all = textHits();
@@ -849,6 +859,14 @@ export const mockBackend: Backend = {
     indexTick = performance.now();
     rateSamples = [];
   },
+  async tier1Estimate(path): Promise<FolderEstimate> {
+    await sleep(400);
+    return { path, files: 1840, images: 1500, pdfs: 120, docs: 220, code: 0, bytes: 6.2 * 1024 ** 3, secs: 1260, lower_bound: false, capped: false, basis: "observed", rate: 1.5 };
+  },
+  async updatesGet(): Promise<UpdateState> { return { enabled: updatesOn, current: "0.2.18", latest: null, url: null, last_check: 0 }; },
+  async updatesSetEnabled(enabled): Promise<UpdateState> { updatesOn = enabled; return this.updatesGet(); },
+  async updatesCheckNow(): Promise<UpdateState> { await sleep(300); return this.updatesGet(); },
+  async updatesOpenPage() { console.info("[mock] open release page"); },
   async autostartGet() { return autostart; },
   async autostartSet(on) { await sleep(30); autostart = on; return autostart; },
   async agentGetConfig(): Promise<AgentConfig> { await sleep(15); return { ...agentCfg }; },
@@ -973,10 +991,15 @@ export const mockBackend: Backend = {
     await sleep(40);
     return DB.filter((e) => !e.dir && e.path.startsWith("C:\\Users\\User\\")).sort((a, b) => b.size - a.size).slice(0, limit).map(toHit);
   },
-  async diskUsage(path, topFiles) {
-    await sleep(60);
-    return mockDiskUsage(path, topFiles);
+  async diskUsage(path, limit) {
+    await sleep(25);
+    return mockDiskUsage(path, limit);
+  },
+  async diskUsageDetail(path, topFiles) {
+    await sleep(120);
+    return mockUsageDetail(path, topFiles);
   },
   async libraryDims(paths) { return paths.map((p) => { const f = libByPath.get(p); return f && f.w ? [f.w, f.h] as [number, number] : null; }); },
   async onOpenStatus() { return () => {}; },
+  async onUpdateState() { return () => {}; },
 };

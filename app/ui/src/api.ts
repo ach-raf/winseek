@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -23,6 +23,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     driveSpace: (letters) => inv("drive_space", { letters }),
     recent: (limit) => inv("recent", { limit }),
     openPath: (path) => inv("open_path", { path }),
+    openAt: (path, at) => inv<Opened>("open_at_position", { path, page: at.page ?? null, seconds: at.seconds ?? null, line: at.line ?? null }),
     revealPath: (path) => inv("reveal_path", { path }),
     copyPath: (path) => inv("copy_path", { path }),
     copyFiles: (paths) => inv("copy_files", { paths }),
@@ -44,6 +45,11 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1Status: () => inv<Tier1Status>("tier1_status"),
     tier1SetScopes: (include, exclude) => inv("tier1_set_scopes", { include, exclude }),
     tier1RemoveFolder: (path) => inv<number>("tier1_remove_folder", { path }),
+    tier1Estimate: (path) => inv<FolderEstimate>("tier1_estimate", { path }),
+    updatesGet: () => inv<UpdateState>("updates_get"),
+    updatesSetEnabled: (enabled) => inv<UpdateState>("updates_set_enabled", { enabled }),
+    updatesCheckNow: () => inv<UpdateState>("updates_check_now"),
+    updatesOpenPage: () => inv("updates_open_page"),
     tier1Pause: (paused) => inv("tier1_pause", { paused }),
     tier1GetIgnore: () => inv<IgnoreList>("tier1_get_ignore"),
     tier1SetIgnore: (list) => inv<IgnoreList>("tier1_set_ignore", { list }),
@@ -82,6 +88,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
     onOpenStatus: (cb) => t.event.listen("open-status", cb),
+    onUpdateState: (cb) => t.event.listen("update-state", cb),
     agentGetConfig: () => inv<AgentConfig>("agent_get_config"),
     agentSetConfig: (cfg) => inv<AgentConfig>("agent_set_config", { cfg }),
     agentLog: (limit) => inv<AgentLogEntry[]>("agent_log", { limit }),
@@ -122,7 +129,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     libraryNearStart: (threshold) => inv("library_near_start", { threshold }),
     libraryNearPoll: () => inv<NearState>("library_near_poll"),
     libraryBigFiles: (limit) => inv<Hit[]>("library_big_files", { limit }),
-    diskUsage: (path, topFiles) => inv<DiskUsage>("disk_usage", { path, topFiles: topFiles ?? 100 }),
+    diskUsage: (path, limit) => inv<DiskUsage>("disk_usage", { path, limit: limit ?? 0 }),
+    diskUsageDetail: (path, topFiles) => inv<UsageDetail>("disk_usage_detail", { path, topFiles: topFiles ?? 100 }),
     libraryDims: (paths) => inv<([number, number] | null)[]>("library_dims", { paths }),
   };
 }

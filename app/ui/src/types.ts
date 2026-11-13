@@ -34,6 +34,34 @@ export interface Tier1Status {
   error: string | null;
   paused_reason: PausedReason | null;
 }
+/** A folder measured on this PC before it is added to the indexed folders. */
+export interface FolderEstimate {
+  path: string;
+  files: number; images: number; pdfs: number; docs: number; code: number; bytes: number;
+  /** First-pass seconds; null when nothing could be measured yet. */
+  secs: number | null;
+  /** The real time is longer than `secs`. */
+  lower_bound: boolean;
+  /** The folder walk hit its time budget: counts are partial. */
+  capped: boolean;
+  /** "observed": this PC's own indexing speed; "sampled": timed reading only; "none". */
+  basis: "observed" | "sampled" | "none";
+  rate: number | null;
+}
+export interface UpdateState {
+  enabled: boolean;
+  current: string;
+  /** A newer release tag, when one was found. */
+  latest: string | null;
+  url: string | null;
+  /** Unix seconds of the last successful check (0 = never). */
+  last_check: number;
+}
+export interface Opened {
+  /** The app that was steered to the position; null when the file opened the plain way. */
+  app: string | null;
+  positioned: boolean;
+}
 export interface SemanticHit {
   path: string;
   /** Cosine similarity of the file's embedding to the query. */
@@ -45,8 +73,10 @@ export interface SemanticHit {
   snippet?: string | null;
   /** PDF page (1-based) the hit is on. */
   page?: number | null;
-  /** "text": found in the extracted text only (e.g. before the models are installed); default "meaning". */
-  source?: "meaning" | "text";
+  /** Audio / video: the moment (seconds) the matching window or frame starts; the preview seeks there. */
+  at?: number | null;
+  /** "text": found in the extracted text only (e.g. before the models are installed); "code": a hit of a `code:` query (separate code index); default "meaning". */
+  source?: "meaning" | "text" | "code";
   /** Where the query words sit on the image / PDF page (fractions 0-1); only boxes that contain a query word. */
   boxes?: HitBox[] | null;
 }
@@ -380,6 +410,9 @@ export interface Backend {
   driveSpace(letters: string[]): Promise<DriveSpace[]>;
   recent(limit: number): Promise<Hit[]>;
   openPath(path: string): Promise<void>;
+  /** Open at a PDF page, a media time (seconds) or a code line, in the default app when it can be steered
+   *  (else VLC / mpv / MPC-HC / VS Code / Notepad++ when installed, else the plain open: `positioned` false). */
+  openAt(path: string, at: { page?: number; seconds?: number; line?: number }): Promise<Opened>;
   revealPath(path: string): Promise<void>;
   copyPath(path: string): Promise<void>;
   copyFiles(paths: string[]): Promise<void>;
@@ -411,6 +444,8 @@ export interface Backend {
   /** Remove a folder for good: out of the scopes, its indexed files forgotten. Returns how many files were removed. */
   tier1RemoveFolder(path: string): Promise<number>;
   /** User pause (wins over the automatic battery / full-screen pause). */
+  /** Count a folder and time a sample of it on this machine before it is added. */
+  tier1Estimate(path: string): Promise<FolderEstimate>;
   tier1Pause(paused: boolean): Promise<void>;
   tier1GetIgnore(): Promise<IgnoreList>;
   /** `null` resets to the defaults; an empty list is a valid choice. Returns what was saved. */
@@ -443,6 +478,12 @@ export interface Backend {
   /** Drop all embeddings and index the chosen folders again. Never touches the name index. */
   tier1Rebuild(): Promise<void>;
   /** "Start with Windows" (HKCU Run value). */
+  updatesGet(): Promise<UpdateState>;
+  /** Daily update check on/off. Nothing is sent while off. */
+  updatesSetEnabled(enabled: boolean): Promise<UpdateState>;
+  updatesCheckNow(): Promise<UpdateState>;
+  /** Open the GitHub release page in the browser. */
+  updatesOpenPage(): Promise<void>;
   autostartGet(): Promise<boolean>;
   /** Resolves to the state after the change. */
   autostartSet(on: boolean): Promise<boolean>;
@@ -494,11 +535,15 @@ export interface Backend {
   /** The largest files under the user's profile (name index, sorted by size). */
   libraryBigFiles(limit: number): Promise<Hit[]>;
   /** Where the space went under a folder ("" = every drive), from the name index; also what the drive itself has free. */
-  diskUsage(path: string, topFiles?: number): Promise<DiskUsage>;
+  diskUsage(path: string, limit?: number): Promise<DiskUsage>;
+  /** File types and biggest files under a folder (walks the subtree: ask only when shown). */
+  diskUsageDetail(path: string, topFiles?: number): Promise<UsageDetail>;
   /** Pixel sizes read from the file headers (null: unknown format). */
   libraryDims(paths: string[]): Promise<([number, number] | null)[]>;
   /** The tray's "Status" item asks the popup to show the status page. */
   onOpenStatus(cb: () => void): Promise<() => void>;
+  /** A daily/manual update check finished (the state may have changed). */
+  onUpdateState(cb: () => void): Promise<() => void>;
   // ---- agents (strictly read-only MCP access) ----
   agentGetConfig(): Promise<AgentConfig>;
   /** Saves and applies without a restart. */
@@ -527,7 +572,7 @@ export interface Backend {
 }
 
 /** Bytes on one drive (sidebar card). */
-export interface DriveSpace { letter: string; total: number; free: number }
+export interface DriveSpace { letter: string; total: number; free: number; /** Volume label; empty when the drive has none. */ label?: string }
 /** One child of a folder in the disk-usage view. `kind`: 0 other, 1 pictures, 2 video, 3 audio, 4 documents, 5 archives, 6 code, 7 programs and system (a folder: what most of its bytes are). */
 export interface UsageEntry { name: string; path: string; is_dir: boolean; kind: number; size: number; files: number; folders: number; mtime: number | null }
 export interface UsageType { ext: string; kind: number; bytes: number; files: number }
@@ -540,7 +585,9 @@ export interface DiskUsage {
   /** Children the service left out of `entries`, and the bytes they hold together. */
   more: number;
   more_size: number;
-  types: UsageType[];
-  biggest: Hit[];
+  /** Bytes per file category under the folder (index = `UsageEntry.kind`). */
+  cats: number[];
+  /** Only for the drive list and a drive root: what the drive itself has free. */
   drives: DriveSpace[];
 }
+export interface UsageDetail { path: string; types: UsageType[]; biggest: Hit[] }

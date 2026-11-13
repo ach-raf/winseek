@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, fitScale, highlight, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt } from "./previewLogic.ts";
+import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, fitScale, formatClock, highlight, pdfRenderWidth, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt } from "./previewLogic.ts";
 
 test("clampPage keeps a PDF page inside the document", () => {
   assert.equal(clampPage(3, 10), 3);
@@ -154,4 +154,25 @@ test("kindLabel, crumbParts, driveOf", async () => {
   assert.deepEqual(m.crumbParts(P("D:", "Work", "Proj"), true), ["D:", "Work", "Proj"]);
   assert.equal(m.driveOf(P("d:", "x")), "D:");
   assert.equal(m.driveOf(P("", "", "srv", "share")), "");
+});
+
+test("formatClock shows a position as m:ss or h:mm:ss", () => {
+  assert.equal(formatClock(0), "0:00");
+  assert.equal(formatClock(7.9), "0:07");
+  assert.equal(formatClock(83), "1:23");
+  assert.equal(formatClock(3723), "1:02:03");
+  assert.equal(formatClock(-5), "0:00");
+  assert.equal(formatClock(NaN), "0:00");
+});
+
+test("seekTarget: no anchor means no seek, an anchor past the end is held inside the clip", () => {
+  assert.equal(seekTarget(null, 100), null);
+  assert.equal(seekTarget(undefined, 100), null);
+  assert.equal(seekTarget(0, 100), null, "the start of the clip needs no seek");
+  assert.equal(seekTarget(-3, 100), null);
+  assert.equal(seekTarget(NaN, 100), null);
+  assert.equal(seekTarget(42.5, 100), 42.5);
+  assert.equal(seekTarget(120, 100), 100, "clip shorter than the anchor");
+  assert.equal(seekTarget(42.5, NaN), 42.5, "duration not known yet");
+  assert.equal(seekTarget(42.5, 0), 42.5);
 });

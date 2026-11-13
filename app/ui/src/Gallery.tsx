@@ -22,6 +22,8 @@ export interface GridItem {
   /** What the search preview shows for a meaning hit (collections pass the collection's hits through). */
   snippet?: string | null;
   page?: number | null;
+  /** Audio / video hit: seconds into the clip. */
+  at?: number | null;
   boxes?: HitBox[] | null;
 }
 export interface GallerySection {
@@ -270,7 +272,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
       </div>
       {pvOpen && (preview || pvItem) && (pvItem ? (
         <div className="lg-pv">
-          <Preview backend={backend} hit={toHit(pvItem)} query="" snippet={pvItem.snippet} page={pvItem.page} boxes={pvItem.boxes}
+          <Preview backend={backend} hit={toHit(pvItem)} query="" snippet={pvItem.snippet} page={pvItem.page} start={pvItem.at ?? undefined} boxes={pvItem.boxes}
                    onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} onCopyPath={() => actions.copy(pvItem.path)} />
         </div>
       ) : (

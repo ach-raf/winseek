@@ -140,7 +140,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Quick Look. `pv` is the (debounced) hit it shows. `navigated`: the user has moved through the results with the
   // keyboard since the last keystroke in the box, so Space means "Quick Look", not a space.
   const [pvOpen, setPvOpen] = useState(false);
-  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; boxes: HitBox[] | null } | null>(null);
+  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; at: number | null; boxes: HitBox[] | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The last section is remembered across sessions of the popup.
@@ -697,7 +697,8 @@ export default function App({ backend }: { backend: Backend }) {
   const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
   const curBoxes = semSel?.boxes ?? (current ? semMap.get(pathKey(current.path))?.boxes : null) ?? null;
-  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curBoxes?.length ?? 0}` : "";
+  const curAt = semSel?.at ?? (current ? semMap.get(pathKey(current.path))?.at : null) ?? null;
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}` : "";
   const currentRef = useRef(current);
   currentRef.current = current;
   const snippetRef = useRef(curSnippet);
@@ -706,6 +707,8 @@ export default function App({ backend }: { backend: Backend }) {
   pageRef.current = curPage;
   const boxesRef = useRef(curBoxes);
   boxesRef.current = curBoxes;
+  const atRef = useRef(curAt);
+  atRef.current = curAt;
   // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
   // Launch rows (apps / settings / commands) have no preview: the pane stays empty for them.
   const isLaunchSel = !!(overview && ovItem?.launch);
@@ -713,7 +716,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     const c = currentRef.current;
     if (!c || isLaunchSel) { pvShown.current = false; setPv(null); return; }
-    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, boxes: boxesRef.current }); };
+    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, at: atRef.current, boxes: boxesRef.current }); };
     if (!pvShown.current) { set(); return; }
     const t = window.setTimeout(set, 120);
     return () => window.clearTimeout(t);
@@ -725,7 +728,11 @@ export default function App({ backend }: { backend: Backend }) {
     recordQuery();
     try {
       if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
-      if (kind === "open") await backend.openPath(h.path); else await backend.revealPath(h.path);
+      if (kind === "open") {
+        // A PDF hit found on a page opens on that page when the viewer can be steered; anything else opens the plain way.
+        const pg = /\.pdf$/i.test(h.path) ? pageRef.current : null;
+        if (pg && pg > 0) await backend.openAt(h.path, { page: pg }); else await backend.openPath(h.path);
+      } else await backend.revealPath(h.path);
       await backend.hide();
     } catch (e) { fail(e); }
   }, [backend, flash, fail, recordQuery]);
@@ -1477,7 +1484,7 @@ export default function App({ backend }: { backend: Backend }) {
   ) : null;
 
   const panels = showPanel && (setupOpen ? (
-    <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} />
+    <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} estimate={backend.tier1Estimate} />
   ) : settingsOpen ? (
     <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
               onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={openLibrary}
@@ -1603,7 +1610,7 @@ export default function App({ backend }: { backend: Backend }) {
 
           {/* full window: the preview is always there; compact: only as Quick Look (Space) */}
           {(full || quickLook) && (pvPane ? (
-            <Preview backend={backend} hit={pv!.hit} query={parsed.text} snippet={pv!.snippet} page={pv!.page} boxes={pv!.boxes} apiRef={previewApi}
+            <Preview backend={backend} hit={pv!.hit} query={parsed.text} snippet={pv!.snippet} page={pv!.page} start={pv!.at ?? undefined} boxes={pv!.boxes} apiRef={previewApi}
                      onOpen={() => void act("open", pv!.hit)} onReveal={() => void act("reveal", pv!.hit)} onCopyPath={() => void act("copy", pv!.hit)} />
           ) : (
             <aside className="pv-none">

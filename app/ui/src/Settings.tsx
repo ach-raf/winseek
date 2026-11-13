@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
@@ -103,7 +103,7 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
   };
   return (
     <Grp title="Source code">
-      <Row title="Index source code" desc="Search inside code files by what they say. Files ignored by .gitignore are left out.">
+      <Row title="Index source code" desc="Search inside code files by what they say. Files ignored by .gitignore are left out. Search them with the code: prefix, e.g. code: parse config; they never show up in other searches.">
         <Switch checked={!!on} disabled={on === null} onChange={change} label="Index source code" />
       </Row>
     </Grp>
@@ -120,6 +120,34 @@ function AutostartRow({ backend, onError }: { backend: Backend; onError: (e: unk
   return (
     <Row title="Start with Windows" desc="Starts in the tray when you sign in, so the shortcut works right away">
       <Switch checked={!!on} disabled={on === null} onChange={change} label="Start with Windows" />
+    </Row>
+  );
+}
+
+/** Daily check for a newer release. Only tells you (tray + this row) and opens the release page; installs nothing. */
+function UpdatesRow({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+  const [u, setU] = useState<UpdateState | null>(null);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    backend.updatesGet().then(setU).catch(onError);
+    let off: (() => void) | undefined, dead = false;
+    backend.onUpdateState(() => backend.updatesGet().then(setU).catch(onError)).then((f) => (dead ? f() : (off = f)));
+    return () => { dead = true; off?.(); };
+  }, [backend, onError]);
+  const change = (v: boolean) => {
+    setU((c) => (c ? { ...c, enabled: v } : c));
+    backend.updatesSetEnabled(v).then(setU).catch((e) => { onError(e); backend.updatesGet().then(setU).catch(onError); });
+  };
+  const check = () => { setBusy(true); backend.updatesCheckNow().then(setU).catch(onError).finally(() => setBusy(false)); };
+  const note = u?.latest
+    ? `${u.latest} is available.`
+    : u && u.last_check > 0 ? `Up to date (checked ${formatDate(u.last_check * 1000)}).` : "Not checked yet.";
+  return (
+    <Row title="Check for updates daily"
+         desc={`Looks at the public GitHub releases once a day and tells you in the tray. It sends nothing about you or this PC and installs nothing. ${note}`}>
+      {u?.latest && <button className="gbtn" onClick={() => backend.updatesOpenPage().catch(onError)}>Open release page</button>}
+      <button className="gbtn" disabled={busy || !u} onClick={check}>{busy ? "Checking…" : "Check now"}</button>
+      <Switch checked={!!u?.enabled} disabled={!u} onChange={change} label="Check for updates daily" />
     </Row>
   );
 }
@@ -737,7 +765,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
           {section === "indexing" && (
             <>
-              <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} />
+              <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={backend.tier1Estimate} />
               <CodeToggle backend={backend} onError={onError} />
               <IgnoredNames backend={backend} onError={onError} />
             </>
@@ -750,6 +778,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
                 <AccentRow />
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
+                <UpdatesRow backend={backend} onError={onError} />
                 <VersionRow backend={backend} onError={onError} />
               </Grp>
               <Performance backend={backend} onError={onError} />

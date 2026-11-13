@@ -238,9 +238,10 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .su-capbar i { display: block; height: 100%; min-width: 1px; }
 .su-capbar i.oth { background: repeating-linear-gradient(135deg, var(--fg3) 0 3px, transparent 3px 6px); opacity: .55; }
 
-.su-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 1fr) 400px; gap: 14px; }
+.su-body { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(360px, 44%) minmax(0, 1fr); gap: 14px; }
 .su-map { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; }
-.su-tm { position: relative; flex: 1; min-height: 160px; border-radius: 12px; overflow: hidden; }
+.su-tm { position: relative; flex: 1; min-height: 160px; border-radius: 12px; overflow: hidden; transition: opacity 140ms; }
+.su-tm.dim { opacity: .55; }
 .su-tile { position: absolute; border-radius: 6px; overflow: hidden; text-align: left; padding: 0; color: #fff;
   background: color-mix(in oklab, var(--kc) 70%, var(--bg)); transition: filter 120ms; }
 .su-tile.dir { background: var(--kc); }
@@ -285,6 +286,24 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib-main .su-del { background: color-mix(in oklab, var(--danger) 16%, var(--bg3)); color: var(--danger); }
 .lib-main .su-del:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 26%, var(--bg3)); }
 
+.su-tree { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 4px 4px; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.su-tr { position: absolute; left: 4px; right: 4px; display: flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 13px; white-space: nowrap; }
+.su-tr:hover { background: color-mix(in oklab, var(--fg) 5%, transparent); }
+.su-tr.foc:not(.on) { background: color-mix(in oklab, var(--acc) 10%, transparent); }
+.su-tr.on { background: var(--sel); }
+.su-tr.dim { color: var(--fg3); font-size: 12px; }
+.su-car { width: 18px; height: 18px; flex: none; display: inline-grid; place-items: center; border-radius: 5px; color: var(--fg3); }
+button.su-car svg { transition: transform 120ms; transform: rotate(180deg); }
+button.su-car.open svg { transform: rotate(270deg); }
+button.su-car:hover { background: var(--bg3); color: var(--fg); }
+.su-tr .ficon, .su-tr .ic { width: 20px; height: 20px; flex: none; }
+.su-tr .ficon svg, .su-tr .ficon img { width: 20px; height: 20px; }
+.su-tn { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; font-weight: 500; }
+.su-tp { position: relative; flex: none; width: 62px; height: 16px; border-radius: 4px; background: color-mix(in oklab, var(--fg) 7%, transparent); overflow: hidden; }
+.su-tp i { position: absolute; left: 0; top: 0; bottom: 0; background: color-mix(in oklab, var(--kc, var(--k0)) 55%, transparent); }
+.su-tp em { position: relative; display: block; text-align: right; padding-right: 5px; font-style: normal; font-size: 11px; line-height: 16px; font-variant-numeric: tabular-nums; }
+.su-ts { flex: none; width: 66px; text-align: right; font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
+
 .su-home { flex: 1; min-height: 0; overflow-y: auto; padding: 8px 0 20px; }
 .su-home h3 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
 .su-home p { margin: 4px 0 18px; font-size: 13px; color: var(--fg3); max-width: 560px; }
@@ -303,9 +322,10 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .su-dfoot b { color: var(--fg); font-weight: 600; }
 
 @media (max-width: 1100px) {
-  .su-body { grid-template-columns: minmax(0, 1fr) 340px; }
+  .su-body { grid-template-columns: minmax(320px, 46%) minmax(0, 1fr); }
 }
 @media (max-width: 900px) {
-  .su-body { grid-template-columns: 1fr; grid-template-rows: minmax(200px, 38%) minmax(0, 1fr); }
+  .su-body { grid-template-columns: 1fr; grid-template-rows: minmax(0, 1fr) minmax(180px, 34%); }
+  .su-map { order: 2; }
   .su-sum { flex-direction: column; align-items: stretch; gap: 10px; }
 }

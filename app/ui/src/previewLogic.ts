@@ -19,6 +19,23 @@ export function clampPage(page: number, pages: number | null): number {
   return Math.min(Math.max(1, p), max);
 }
 
+/** A position in a recording: "0:07", "1:23", "1:02:03". */
+export function formatClock(s: number): string {
+  const t = Number.isFinite(s) ? Math.max(0, Math.floor(s)) : 0;
+  const h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), sec = t % 60;
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${String(m).padStart(2, "0")}:${ss}` : `${m}:${ss}`;
+}
+
+/**
+ * Where a video / audio element should start for a hit anchored at `start` seconds: null when the hit has no
+ * (usable) anchor, else the anchor kept inside the clip (an unknown duration leaves it as is).
+ */
+export function seekTarget(start: number | null | undefined, duration: number): number | null {
+  if (start == null || !Number.isFinite(start) || start <= 0) return null;
+  return Number.isFinite(duration) && duration > 0 ? Math.min(start, duration) : start;
+}
+
 /** Pixel width to ask pdfium for: the pane width at device resolution, rounded up to 100 px (cache friendly), 400..1600. */
 export function pdfRenderWidth(boxWidth: number, dpr: number): number {
   const raw = Math.max(0, boxWidth) * Math.max(1, dpr);

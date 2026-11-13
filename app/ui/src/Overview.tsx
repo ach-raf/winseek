@@ -133,7 +133,7 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
   const kind = kindOf(hit.name, hit.is_dir);
   const thumb = kind === "image" || kind === "video";
   const snippet = sem?.snippet;
-  const pct = sem && sem.source !== "text" ? Math.max(1, Math.min(99, Math.round(sem.score * 100))) : null;
+  const pct = sem && sem.source !== "text" && sem.source !== "code" ? Math.max(1, Math.min(99, Math.round(sem.score * 100))) : null;
   return (
     <div className={"row" + (top ? " top" : "") + (sel ? " sel" : "")} role="option" aria-selected={sel} style={y === undefined ? undefined : { transform: `translateY(${y}px)` }}
          data-sel={sel ? "1" : undefined} data-i={i} title={title ?? hit.path}

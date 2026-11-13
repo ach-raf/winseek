@@ -1,5 +1,5 @@
 // Browser-preview disk usage: a small synthetic file system, rolled up the way the name service does it.
-import type { DiskUsage, UsageEntry, UsageType } from "./types";
+import type { DiskUsage, UsageDetail, UsageEntry, UsageType } from "./types";
 
 interface N { name: string; kids?: N[]; size?: number; kind?: number }
 
@@ -90,40 +90,61 @@ function find(path: string): { node: N; path: string } | null {
 
 const MTIME = Date.now() - 40 * 86400000;
 const GBd = 1024 ** 3;
-const DRIVES = [{ letter: "C", total: 931 * GBd, free: 41 * GBd }, { letter: "D", total: 1863 * GBd, free: 612 * GBd }, { letter: "E", total: 119 * GBd, free: 52 * GBd }];
+const DRIVES = [{ letter: "C", total: 931 * GBd, free: 41 * GBd, label: "Windows" }, { letter: "D", total: 1863 * GBd, free: 612 * GBd, label: "Games" }, { letter: "E", total: 119 * GBd, free: 52 * GBd, label: "" }];
 
-export function mockDiskUsage(path: string, topFiles = 100): DiskUsage {
+const catsOf = (n: N): number[] => {
+  const by = new Array(8).fill(0) as number[];
+  const walk = (x: N) => { for (const k of x.kids ?? []) { if (k.kids) walk(k); else by[kindOf(k.name)] += k.size ?? 0; } };
+  walk(n);
+  return by;
+};
+
+export function mockDiskUsage(path: string, limit = 400): DiskUsage {
   if (!path.trim()) {
     const entries: UsageEntry[] = Object.values(TREES).map((t) => {
       const [files, folders] = countOf(t);
-      return { name: t.name, path: `${t.name}\\`, is_dir: true, kind: 0, size: sizeOf(t), files, folders, mtime: null };
-    }).sort((a, b) => b.size - a.size);
-    return { path: "", size: entries.reduce((a, e) => a + e.size, 0), files: entries.reduce((a, e) => a + e.files, 0), folders: entries.reduce((a, e) => a + e.folders, 0), entries, more: 0, more_size: 0, types: [], biggest: [], drives: DRIVES };
+      return { name: t.name, path: `${t.name}\\`, is_dir: true, kind: dominantKind(t), size: sizeOf(t), files, folders, mtime: null };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+    return {
+      path: "", size: entries.reduce((a, e) => a + e.size, 0), files: entries.reduce((a, e) => a + e.files, 0), folders: entries.reduce((a, e) => a + e.folders, 0),
+      entries, more: 0, more_size: 0, cats: new Array(8).fill(0), drives: DRIVES,
+    };
   }
   const at = find(path);
   if (!at) throw new Error(`${path} is not in the index.`);
   const kids = at.node.kids ?? [];
-  const entries: UsageEntry[] = kids.map((k) => {
+  const all: UsageEntry[] = kids.map((k) => {
     const p = `${at.path.replace(/\\$/, "")}\\${k.name}`;
     const [files, folders] = countOf(k);
-    return { name: k.name, path: p, is_dir: !!k.kids, kind: k.kids ? dominantKind(k) : kindOf(k.name), size: sizeOf(k), files, folders, mtime: MTIME - rnd() * 4e10 };
+    return { name: k.name, path: p, is_dir: !!k.kids, kind: k.kids ? dominantKind(k) : kindOf(k.name), size: sizeOf(k), files, folders, mtime: k.kids ? null : MTIME - ((k.name.length * 7919) % 400) * 86400000 / 4 };
   }).sort((a, b) => b.size - a.size);
-  const types = new Map<string, UsageType>();
-  const big: { name: string; path: string; size: number }[] = [];
-  eachFile(at.node, (leaf, p) => {
-    const ext = extOf(leaf.name);
-    const t = types.get(ext) ?? { ext, kind: kindOf(leaf.name), bytes: 0, files: 0 };
-    t.bytes += leaf.size ?? 0; t.files++;
-    types.set(ext, t);
-    big.push({ name: leaf.name, path: p, size: leaf.size ?? 0 });
-  }, at.path);
+  const cap = limit > 0 ? limit : 400;
   const [files, folders] = countOf(at.node);
-  const shown = entries.slice(0, 400);
   return {
     path: at.path, size: sizeOf(at.node), files, folders,
-    entries: shown, more: entries.length - shown.length, more_size: entries.slice(400).reduce((a, e) => a + e.size, 0),
-    types: [...types.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 40),
-    biggest: big.sort((a, b) => b.size - a.size).slice(0, topFiles).map((b) => ({ name: b.name, path: b.path, is_dir: false, size: b.size, mtime: MTIME })),
+    entries: all.slice(0, cap), more: Math.max(0, all.length - cap), more_size: all.slice(cap).reduce((a, e) => a + e.size, 0),
+    cats: catsOf(at.node),
     drives: /^[A-Za-z]:\\?$/.test(at.path) ? DRIVES.filter((x) => at.path.toUpperCase().startsWith(x.letter)) : [],
+  };
+}
+
+export function mockUsageDetail(path: string, topFiles = 100): UsageDetail {
+  const roots = path.trim() ? [find(path)] : Object.keys(TREES).map((k) => find(`${k}:\\`));
+  const types = new Map<string, UsageType>();
+  const big: { name: string; path: string; size: number }[] = [];
+  for (const at of roots) {
+    if (!at) throw new Error(`${path} is not in the index.`);
+    eachFile(at.node, (leaf, p) => {
+      const ext = extOf(leaf.name);
+      const t = types.get(ext) ?? { ext, kind: kindOf(leaf.name), bytes: 0, files: 0 };
+      t.bytes += leaf.size ?? 0; t.files++;
+      types.set(ext, t);
+      big.push({ name: leaf.name, path: p, size: leaf.size ?? 0 });
+    }, at.path);
+  }
+  return {
+    path,
+    types: [...types.values()].sort((a, b) => b.bytes - a.bytes).slice(0, 60),
+    biggest: big.sort((a, b) => b.size - a.size).slice(0, topFiles).map((b) => ({ name: b.name, path: b.path, is_dir: false, size: b.size, mtime: MTIME })),
   };
 }

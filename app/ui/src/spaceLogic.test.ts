@@ -1,12 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { crumbs, formatPct, isHidden, parentPath, squarify, tileItems, withoutHidden } from "./spaceLogic.ts";
+import { chainTo, crumbs, driveTitle, flattenTree, formatPct, isHidden, parentPath, squarify, tileItems, within, withoutHidden } from "./spaceLogic.ts";
 import type { DiskUsage, UsageEntry } from "./types.ts";
 
-const ent = (name: string, size: number, dir = false): UsageEntry =>
-  ({ name, path: `C:\\x\\${name}`, is_dir: dir, kind: 1, size, files: dir ? 3 : 1, folders: 0, mtime: null });
-const usage = (entries: UsageEntry[], more = 0, more_size = 0): DiskUsage =>
-  ({ path: "C:\\x", size: entries.reduce((a, e) => a + e.size, 0) + more_size, files: 9, folders: 2, entries, more, more_size, types: [], biggest: [], drives: [] });
+const ent = (name: string, size: number, dir = false, base = "C:\\x"): UsageEntry =>
+  ({ name, path: `${base}\\${name}`, is_dir: dir, kind: 1, size, files: dir ? 3 : 1, folders: 0, mtime: null });
+const usage = (entries: UsageEntry[], more = 0, more_size = 0, path = "C:\\x"): DiskUsage =>
+  ({ path, size: entries.reduce((a, e) => a + e.size, 0) + more_size, files: 9, folders: 2, entries, more, more_size, cats: [], drives: [] });
 
 test("squarify tiles the box exactly and keeps areas proportional", () => {
   const box = { x: 0, y: 0, w: 400, h: 300 };
@@ -61,4 +61,35 @@ test("formatPct", () => {
   assert.equal(formatPct(3.14), "3.1%");
   assert.equal(formatPct(0.04), "<0.1%");
   assert.equal(formatPct(0), "0%");
+});
+
+test("driveTitle names a drive like Explorer", () => {
+  assert.equal(driveTitle("c", "Windows"), "Windows (C:)");
+  assert.equal(driveTitle("D", ""), "Local Disk (D:)");
+  assert.equal(driveTitle("E"), "Local Disk (E:)");
+});
+
+test("within / chainTo list the folders that must be open to show a path", () => {
+  assert.ok(within("C:\\", "C:\\Users\\Me"));
+  assert.ok(within("c:\\users", "C:\\Users"));
+  assert.ok(!within("C:\\Users", "C:\\Users2\\x"));
+  assert.deepEqual(chainTo("C:\\", "C:\\Users\\Me\\a.txt"), ["C:\\", "C:\\Users", "C:\\Users\\Me"]);
+  assert.deepEqual(chainTo("C:\\Users", "C:\\Users\\Me\\a.txt"), ["C:\\Users", "C:\\Users\\Me"]);
+  assert.deepEqual(chainTo("C:\\Users", "D:\\x"), []);
+});
+
+test("flattenTree shows the root, open folders' children, loading rows and the more-row", () => {
+  const root = usage([ent("Users", 800, true, "C:"), ent("pagefile.sys", 200, false, "C:")], 4, 40, "C:\\");
+  const users = usage([ent("Me", 600, true, "C:\\Users"), ent("Pub", 200, true, "C:\\Users")], 0, 0, "C:\\Users");
+  const data: Record<string, DiskUsage> = { "C:\\": root, "C:\\Users": users };
+  const get = (p: string) => data[p];
+
+  const closed = flattenTree("C:\\", get, new Set(["C:\\"]));
+  assert.deepEqual(closed.map((r) => `${r.depth}:${r.type}:${r.entry?.name ?? ""}`), ["0:node:C:", "1:node:Users", "1:node:pagefile.sys", "1:more:"]);
+  assert.equal(closed[3].more?.count, 4);
+
+  const loading = flattenTree("C:\\", get, new Set(["C:\\", "C:\\Users", "C:\\Users\\Me"]));
+  assert.deepEqual(loading.map((r) => `${r.depth}:${r.type}:${r.entry?.name ?? ""}`).slice(0, 5), ["0:node:C:", "1:node:Users", "2:node:Me", "3:busy:", "2:node:Pub"]);
+  assert.equal(loading[2].base, users.size);
+  assert.equal(flattenTree("D:\\", get, new Set())[0].type, "busy");
 });

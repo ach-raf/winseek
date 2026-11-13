@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Models } from "./hooks";
-import type { ModelsPlan, PausedReason, Tier1Status } from "./types";
+import type { FolderEstimate, ModelsPlan, PausedReason, Tier1Status } from "./types";
+import { estimateText } from "./estimateLogic";
 import { formatSize } from "./format";
 import { trapKey } from "./trap";
 import { Grp, Row, XIcon } from "./settingsUi";
@@ -28,7 +29,14 @@ function Bar({ value, label }: { value: number | null; label: string }) {
   );
 }
 
-export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; onChange: (include: string[]) => void; onRemove: (path: string) => void }) {
+type Pending = { path: string; est: FolderEstimate | null; err: string | null };
+
+/** `estimate` measures a folder on this PC before it is added; without it a typed folder is added at once. */
+export function Folders({ t1, onChange, onRemove, estimate }: {
+  t1: Tier1Status | null; onChange: (include: string[]) => void; onRemove: (path: string) => void;
+  estimate?: (path: string) => Promise<FolderEstimate>;
+}) {
+  const [pending, setPending] = useState<Pending | null>(null);
   const [known, setKnown] = useState<string[]>([]); // every folder seen this session, so an unchecked one can be re-checked
   const [text, setText] = useState("");
   const include = t1?.include ?? [];
@@ -44,8 +52,15 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
     const p = text.trim().replace(/^"(.*)"$/, "$1").replace(/[\\/]+$/, "");
     if (!p) return;
     setText("");
-    if (!on(p)) onChange([...include, p]);
+    if (on(p)) return;
+    if (!estimate) { onChange([...include, p]); return; }
+    // Measure first, then let the user decide: indexing a big folder can take hours.
+    setPending({ path: p, est: null, err: null });
+    estimate(p)
+      .then((est) => setPending((c) => (c && c.path === p ? { path: p, est, err: null } : c)))
+      .catch((e) => setPending((c) => (c && c.path === p ? { path: p, est: null, err: String(e) } : c)));
   };
+  const confirm = () => { if (pending) onChange([...include, pending.path]); setPending(null); };
   // Removal is final (the backend forgets the folder's indexed files), unlike unchecking,
   // which keeps both the entry and the data for a quick re-check.
   const remove = (p: string) => {
@@ -61,6 +76,18 @@ export function Folders({ t1, onChange, onRemove }: { t1: Tier1Status | null; on
                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
         <button className="gbtn" onClick={add} disabled={!text.trim()}>Add</button>
       </div>
+      {pending && (
+        <div className="grow stack" role="group" aria-label={`Add ${pending.path}?`}>
+          <div className="idx-line"><b className="fpath" title={pending.path}>{pending.path}</b></div>
+          <div className="idx-note" role="status" style={{ color: "var(--fg2)" }}>
+            {pending.err ? `Could not measure this folder: ${pending.err}` : pending.est ? estimateText(pending.est) : "Measuring this folder on your PC…"}
+          </div>
+          <div className="addrow">
+            <button className="gbtn" onClick={confirm} disabled={!pending.est && !pending.err}>{pending.err ? "Add anyway" : "Index this folder"}</button>
+            <button className="gbtn" onClick={() => setPending(null)}>Cancel</button>
+          </div>
+        </div>
+      )}
       {known.length > 0 && (
         <div className="glist">
           {known.map((p) => (
@@ -112,8 +139,8 @@ function Indexing({ t1, onPause }: { t1: Tier1Status | null; onPause: (p: boolea
 
 const PARSER_DESC = "Reads scanned pages, receipts and screenshots into text and tables you can search and copy";
 
-export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose, primaryRef }: {
-  t1: Tier1Status | null; models: Models;
+export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose, primaryRef, estimate }: {
+  t1: Tier1Status | null; models: Models; estimate?: (path: string) => Promise<FolderEstimate>;
   onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void; onClose: () => void;
   primaryRef: React.MutableRefObject<() => void>;
 }) {
@@ -138,7 +165,7 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
       <p>Search &ldquo;sunset at the beach&rdquo; and get beach photos, whatever they&rsquo;re named. Everything stays on this PC. Name search keeps working either way.</p>
 
       <div className={phase === "choose" || phase === "interrupted" || phase === "loading" ? "setup-cols" : undefined}>
-      {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} />}
+      {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={estimate} />}
 
       {phase === "loading" && <div className="vols"><Bar value={null} label="Detecting your GPU" /><span className="muted">Detecting your GPU…</span></div>}
 

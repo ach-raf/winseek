@@ -43,6 +43,8 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError 
   onError: (e: unknown) => void;
 }) {
   const [mode, setMode] = useState<"tidy" | "space">("tidy");
+  // Warm the name service's disk roll-up so "Disk space" opens instantly.
+  useEffect(() => { backend.diskUsage("").catch(() => {}); }, [backend]);
   const [view, setView] = useState<View>("home");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
   const [groups, setGroups] = useState<DupGroup[] | null>(null);

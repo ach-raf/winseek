@@ -12,6 +12,8 @@ const KIND_OF: Record<Exclude<KindId, "files">, Kind | null> = { images: "image"
 /** Do the parsed chips let this meaning hit through? Date / size only count when the hit carries them. */
 export function semAccepts(h: SemanticHit, p: Parsed): boolean {
   const name = baseName(h.path);
+  // `code:` hits are source files: the kind chips (photos, documents...) do not apply, an extension chip does.
+  if (h.source === "code") return !p.ext || name.toLowerCase().endsWith("." + p.ext);
   if (p.kind && p.kind !== "files" && KIND_OF[p.kind] !== kindOf(name, false)) return false;
   if (p.ext && !name.toLowerCase().endsWith("." + p.ext) && !(p.ext === "jpg" && name.toLowerCase().endsWith(".jpeg"))) return false;
   const probe = { is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null };

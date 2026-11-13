@@ -291,3 +291,6 @@ export function rangeClause(p: Pick<Parsed, "date" | "size">): string {
 
 /** Sent to the name index: free text plus `ext:` when an extension was named. */
 export const nameQuery = (p: Pick<Parsed, "text" | "ext">) => (p.ext ? `${p.text} ext:${p.ext}`.trim() : p.text);
+
+/** `code: words` searches the separate code index (source, notebooks, project docs); nothing else sees code. */
+export const isCodeQuery = (text: string) => /^\s*code:/i.test(text);

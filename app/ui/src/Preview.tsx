@@ -3,7 +3,7 @@ import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, crumbParts, extOf, fitScale, kindLabel, highlight, MAX_SCALE, pdfRenderWidth, previewTerms, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, crumbParts, extOf, fitScale, formatClock, kindLabel, highlight, MAX_SCALE, pdfRenderWidth, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -108,7 +108,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, onOp
           {err ? (
             <div className="pv-msg" role="alert">{err}</div>
           ) : info ? (
-            <Body key={info.path + "#" + (page ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
+            <Body key={info.path + "#" + (page ?? 0) + "@" + (start ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
                   boxes={boxes ?? null} onPage={setPdfPage} registerApi={registerApi} />
           ) : (
             <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
@@ -560,10 +560,26 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
   const common = {
     src: info.src, controls: true, preload: "metadata" as const,
     onError: () => setFailed(true),
+    // The hit's moment: seek there as soon as the clip knows its length (the matching window or shot starts here).
     onLoadedMetadata: (e: React.SyntheticEvent<HTMLMediaElement>) => {
-      if (start && start > 0) e.currentTarget.currentTime = Math.min(start, e.currentTarget.duration || start);
+      const t = seekTarget(start, e.currentTarget.duration);
+      if (t !== null) e.currentTarget.currentTime = t;
     },
   };
+  const anchor = seekTarget(start, Infinity);
+  /** The "Match at 1:23" button: back to the hit's moment, and play from there. */
+  const jump = () => {
+    const el = ref.current;
+    const t = seekTarget(start, el?.duration ?? NaN);
+    if (!el || t === null) return;
+    el.currentTime = t;
+    void el.play().catch(() => {});
+  };
+  const at = anchor !== null && (
+    <button className="btn quiet pv-at" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={jump} title="Jump to the moment that matched">
+      Match at {formatClock(anchor)}
+    </button>
+  );
   return info.kind === "video" ? (
     <div className="pv-media">
       <video ref={ref as React.RefObject<HTMLVideoElement>} {...common} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
@@ -572,11 +588,13 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
           <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5Z" /></svg>
         </span>
       )}
+      {at}
     </div>
   ) : (
     <div className="pv-media audio">
       <div className="wave" aria-hidden>{WAVE.map((h, j) => <i key={j} style={{ height: `${h}%` }} />)}</div>
       <audio ref={ref as React.RefObject<HTMLAudioElement>} {...common} />
+      {at}
     </div>
   );
 }

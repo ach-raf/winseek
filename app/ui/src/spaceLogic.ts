@@ -1,4 +1,4 @@
-import type { DiskUsage, UsageEntry } from "./types";
+import type { DiskUsage, UsageDetail, UsageEntry } from "./types";
 
 /** File categories, in the order the name service numbers them (see `category` in the index crate). */
 export const KINDS = [
@@ -88,7 +88,7 @@ export function isHidden(path: string, hidden: ReadonlySet<string>): boolean {
 export function withoutHidden(d: DiskUsage, hidden: ReadonlySet<string>): DiskUsage {
   if (hidden.size === 0) return d;
   const gone = d.entries.filter((e) => isHidden(e.path, hidden));
-  if (gone.length === 0 && !d.biggest.some((b) => isHidden(b.path, hidden))) return d;
+  if (gone.length === 0) return d;
   const bytes = gone.reduce((a, e) => a + e.size, 0);
   const files = gone.reduce((a, e) => a + (e.is_dir ? e.files : 1), 0);
   const folders = gone.reduce((a, e) => a + (e.is_dir ? e.folders + 1 : 0), 0);
@@ -98,15 +98,76 @@ export function withoutHidden(d: DiskUsage, hidden: ReadonlySet<string>): DiskUs
     size: Math.max(0, d.size - bytes),
     files: Math.max(0, d.files - files),
     folders: Math.max(0, d.folders - folders),
-    biggest: d.biggest.filter((b) => !isHidden(b.path, hidden)),
   };
 }
 
-/** Per-category bytes of a folder, from its file types. */
+/** The biggest-files list minus what was recycled this session. */
+export function detailWithoutHidden(d: UsageDetail, hidden: ReadonlySet<string>): UsageDetail {
+  if (hidden.size === 0 || !d.biggest.some((b) => isHidden(b.path, hidden))) return d;
+  return { ...d, biggest: d.biggest.filter((b) => !isHidden(b.path, hidden)) };
+}
+
+/** Per-category bytes of a folder. */
 export function kindTotals(d: DiskUsage): number[] {
-  const t = new Array(KINDS.length).fill(0) as number[];
-  for (const x of d.types) t[x.kind] = (t[x.kind] ?? 0) + x.bytes;
-  return t;
+  return KINDS.map((k) => d.cats?.[k.id] ?? 0);
+}
+
+/** "Windows (C:)" the way Explorer names a drive; "Local Disk (C:)" when it has no label. */
+export function driveTitle(letter: string, label?: string): string {
+  return `${label && label.trim() ? label.trim() : "Local Disk"} (${letter.toUpperCase()}:)`;
+}
+
+const norm = (p: string) => p.replace(/[\\/]+$/, "").toLowerCase();
+/** True when `path` is `root` or lies under it. */
+export function within(root: string, path: string): boolean {
+  const r = norm(root), p = norm(path);
+  return p === r || p.startsWith(r + "\\");
+}
+
+/** Folders from `root` down to the parent of `path` (both inclusive of root): what must be open to show `path` in the tree. */
+export function chainTo(root: string, path: string): string[] {
+  if (!within(root, path)) return [];
+  const rootParts = root.split(/[\\/]/).filter(Boolean).length;
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const out: string[] = [];
+  for (let n = rootParts; n < parts.length; n++) out.push(n === 1 ? `${parts[0]}\\` : parts.slice(0, n).join("\\"));
+  return out;
+}
+
+export interface TreeRow {
+  key: string;
+  /** node: a file or folder; more: "+ N smaller items"; busy: its children are being read. */
+  type: "node" | "more" | "busy";
+  depth: number;
+  entry?: UsageEntry;
+  /** Bytes of the folder this row sits in (for the % bar). */
+  base: number;
+  open?: boolean;
+  more?: { count: number; size: number };
+}
+
+const rootEntry = (path: string, d: DiskUsage): UsageEntry => {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  const name = parts.length <= 1 ? (parts[0] ?? path) : parts[parts.length - 1];
+  return { name, path, is_dir: true, kind: 0, size: d.size, files: d.files, folders: d.folders, mtime: null };
+};
+
+/** The visible tree: the root, then each open folder's children (biggest first) under it. */
+export function flattenTree(root: string, get: (p: string) => DiskUsage | undefined, open: ReadonlySet<string>): TreeRow[] {
+  const rd = get(root);
+  if (!rd) return [{ key: "busy:" + root, type: "busy", depth: 0, base: 0 }];
+  const out: TreeRow[] = [];
+  const walk = (e: UsageEntry, depth: number, base: number) => {
+    const isOpen = e.is_dir && open.has(e.path);
+    out.push({ key: e.path, type: "node", depth, entry: e, base, open: isOpen });
+    if (!isOpen) return;
+    const d = get(e.path);
+    if (!d) { out.push({ key: "busy:" + e.path, type: "busy", depth: depth + 1, base: e.size }); return; }
+    for (const c of d.entries) walk(c, depth + 1, d.size);
+    if (d.more > 0) out.push({ key: "more:" + e.path, type: "more", depth: depth + 1, base: d.size, more: { count: d.more, size: d.more_size } });
+  };
+  walk(rootEntry(root, rd), 0, rd.size);
+  return out;
 }
 
 export const pct = (part: number, whole: number): number => (whole > 0 ? (part / whole) * 100 : 0);

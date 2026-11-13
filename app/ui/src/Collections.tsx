@@ -99,7 +99,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
       .filter((h) => !hidden.has(h.path) && !gone.has(h.path.toLowerCase()))
       .map((h) => ({
         path: h.path, name: baseName(h.path), size: h.size ?? null, mtime: h.mtime ?? null,
-        score: h.score, snippet: h.snippet ?? null, page: h.page ?? null, boxes: h.boxes ?? null,
+        score: h.score, snippet: h.snippet ?? null, page: h.page ?? null, at: h.at ?? null, boxes: h.boxes ?? null,
       }));
   }, [evals, hidden, shots]);
 
