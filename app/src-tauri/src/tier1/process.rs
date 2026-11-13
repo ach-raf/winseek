@@ -96,6 +96,9 @@ pub struct Processor {
     upgrade_strikes: HashMap<i64, u32>,
     /// ffmpeg for audio / video files (tests inject a fake).
     media: Box<dyn MediaTool + Send>,
+    /// Asked (from the worker thread, must not block) to fetch ffmpeg when audio / video is queued
+    /// and no usable ffmpeg is on the machine.
+    media_requester: Option<Box<dyn Fn() + Send>>,
 }
 
 impl Default for Processor {
@@ -106,6 +109,8 @@ impl Default for Processor {
 
 /// Setting key: "1" while screenshots could not be OCR-ed (no engine / language installed).
 pub const SETTING_OCR_UNAVAILABLE: &str = "ocr_unavailable";
+/// Skip reason of audio / video files while the ffmpeg sidecar is not installed.
+pub const NO_FFMPEG: &str = "no_ffmpeg";
 /// Longest OCR text sent to the embedder (characters).
 const OCR_EMBED_CHARS: usize = 3000;
 /// Chunk index of the OCR text vector / FTS row (the image vector is chunk 0).
@@ -156,6 +161,7 @@ impl Processor {
             cursor_wrapped: Instant::now(),
             upgrade_strikes: HashMap::new(),
             media: Box::new(Ffmpeg),
+            media_requester: None,
         }
     }
 
@@ -163,6 +169,12 @@ impl Processor {
     #[cfg(test)]
     fn with_media(mut self, m: Box<dyn MediaTool + Send>) -> Self {
         self.media = m;
+        self
+    }
+
+    /// Callback that starts the ffmpeg download when audio / video is queued but no ffmpeg is usable.
+    pub fn with_media_requester(mut self, f: Box<dyn Fn() + Send>) -> Self {
+        self.media_requester = Some(f);
         self
     }
 
@@ -200,12 +212,30 @@ impl Processor {
         s.next_pending_where(1, &[], &skip, 0).is_ok_and(|p| !p.is_empty()) || s.next_text_only(1).is_ok_and(|p| !p.is_empty())
     }
 
+    /// Audio / video files cannot be read without ffmpeg. They stay queued (never skipped for it)
+    /// and ffmpeg is fetched on its own; Settings says so while they wait. Rows an older build
+    /// parked as skipped for a missing ffmpeg go back to the queue once one is usable.
+    pub fn sync_media_gate(&mut self, store: &Mutex<Store>) {
+        if self.media.available() {
+            let _ = lock(store).requeue_skipped(&[NO_FFMPEG]);
+        }
+    }
+
     /// Kinds to leave queued for now.
     fn excluded_kinds(&mut self, store: &Mutex<Store>) -> Vec<&'static str> {
         let mut kinds = if self.pdf_ready(store) { vec![] } else { vec![KIND_PDF] };
-        // Audio / video wait for the ffmpeg sidecar, like PDFs wait for pdfium.
+        // Audio / video wait for ffmpeg, like PDFs wait for pdfium; it is requested when they are queued.
         if !self.media.available() {
             kinds.extend([KIND_AUDIO, KIND_VIDEO]);
+            let queued = {
+                let s = lock(store);
+                s.has_pending_kind(KIND_AUDIO).unwrap_or(false) || s.has_pending_kind(KIND_VIDEO).unwrap_or(false)
+            };
+            if queued {
+                if let Some(r) = &self.media_requester {
+                    r();
+                }
+            }
         }
         kinds
     }
@@ -1225,6 +1255,30 @@ mod tests {
         let st = store.lock().unwrap().stats().unwrap();
         assert_eq!((st.done, st.pending, st.failed), (3, 0, 0));
         assert_eq!(pr.run_pass(&store, &e, &go).unwrap(), Pass::Idle);
+    }
+
+    #[test]
+    fn queued_media_stays_queued_and_asks_for_ffmpeg_until_it_is_there() {
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "memo.mp3", b"audio-bytes", 1, "audio");
+        add_kind(&store, dir.path(), "clip.mp4", b"video-bytes", 2, "video");
+        let asked = Arc::new(AtomicUsize::new(0));
+        let a = asked.clone();
+        let mut pr = Processor::default()
+            .with_media(Box::new(StubMedia(false)))
+            .with_media_requester(Box::new(move || {
+                a.fetch_add(1, Ordering::SeqCst);
+            }));
+        pr.sync_media_gate(&store);
+        assert!(!pr.has_index_work(&store));
+        let st = store.lock().unwrap().stats().unwrap();
+        assert_eq!((st.pending, st.skipped), (2, 0), "never parked as skipped");
+        assert!(asked.load(Ordering::SeqCst) >= 1, "ffmpeg was requested");
+        // rows an older build skipped for the missing ffmpeg come back with it
+        store.lock().unwrap().skip_pending_kinds(&[KIND_AUDIO, KIND_VIDEO], NO_FFMPEG).unwrap();
+        Processor::default().with_media(Box::new(StubMedia(true))).sync_media_gate(&store);
+        let st = store.lock().unwrap().stats().unwrap();
+        assert_eq!((st.pending, st.skipped), (2, 0));
     }
 
     #[test]

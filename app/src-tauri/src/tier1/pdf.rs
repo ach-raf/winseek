@@ -85,6 +85,16 @@ pub(crate) static TEST_DLL: OnceLock<PathBuf> = OnceLock::new();
 
 static RUNTIME: OnceLock<Pdfium> = OnceLock::new();
 static INIT: Mutex<()> = Mutex::new(());
+/// Serialises every document-level pdfium operation in the process. pdfium itself is not
+/// thread-safe (the `thread_safe` feature only locks single FFI calls, not a load -> page -> text ->
+/// drop sequence), so the worker, preview renders, word boxes and the agent reader must not
+/// interleave: concurrent use corrupted the heap and returned empty text layers.
+static DOC_LOCK: Mutex<()> = Mutex::new(());
+
+/// Hold the returned guard for the whole of one document operation (never nest).
+pub(crate) fn doc_lock() -> std::sync::MutexGuard<'static, ()> {
+    DOC_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+}
 
 /// The process-wide pdfium instance, bound on first use. Fails (without caching the failure) while
 /// the DLL is missing, so it starts working as soon as the download finishes.
@@ -172,6 +182,7 @@ pub fn read_pdf(pdfium: &Pdfium, bytes: &[u8], render_scanned: bool) -> Result<P
 /// [`read_pdf`] for the 1-based pages `from..=to` (clamped to the document). `total_pages` is the
 /// whole document's count, so the caller knows what is left.
 pub fn read_pdf_range(pdfium: &Pdfium, bytes: &[u8], render_scanned: bool, from: u32, to: u32) -> Result<PdfRead, PdfError> {
+    let _g = doc_lock();
     let doc = pdfium.load_pdf_from_byte_slice(bytes, None).map_err(map_load)?;
     let pages = doc.pages();
     let total = pages.len() as usize;
@@ -189,6 +200,7 @@ pub fn read_pdf_range(pdfium: &Pdfium, bytes: &[u8], render_scanned: bool, from:
 /// Render the given 1-based `pages` of a document to JPEGs (used when image vectors of a text-only
 /// file are computed later). Pages that fail to render are left out.
 pub fn render_pages(pdfium: &Pdfium, bytes: &[u8], pages: &[u32]) -> Result<Vec<(u32, Vec<u8>)>, PdfError> {
+    let _g = doc_lock();
     let doc = pdfium.load_pdf_from_byte_slice(bytes, None).map_err(map_load)?;
     let all = doc.pages();
     let mut out = Vec::new();
@@ -209,12 +221,14 @@ pub fn render_pages(pdfium: &Pdfium, bytes: &[u8], pages: &[u32]) -> Result<Vec<
 
 /// Page count of a document on disk (`None` for unreadable / encrypted files).
 pub fn page_count(pdfium: &Pdfium, path: &Path) -> Option<u32> {
+    let _g = doc_lock();
     let doc = pdfium.load_pdf_from_file(path, None).ok()?;
     Some(doc.pages().len() as u32)
 }
 
 /// One page (1-based) as a PNG `width` px wide (height follows the page's aspect ratio).
 pub fn render_page_png(pdfium: &Pdfium, path: &Path, page: u32, width: u32) -> Result<Vec<u8>, PdfError> {
+    let _g = doc_lock();
     let doc = pdfium.load_pdf_from_file(path, None).map_err(map_load)?;
     let pages = doc.pages();
     let n = pages.len() as u32;
@@ -243,6 +257,7 @@ const MAX_HITS_PER_TERM: usize = 200;
 /// store no boxes in their chunk locators (unlike OCR text and parser output), so the preview
 /// asks for these live.
 pub fn page_word_boxes(pdfium: &Pdfium, path: &Path, page: u32, terms: &[String]) -> Result<Vec<HitBox>, PdfError> {
+    let _g = doc_lock();
     let doc = pdfium.load_pdf_from_file(path, None).map_err(map_load)?;
     let pages = doc.pages();
     let n = pages.len() as u32;
@@ -314,6 +329,7 @@ pub(crate) mod testutil {
 
     /// A PDF with one A4 page per entry: `Some(text)` draws it, `None` leaves the page blank (a "scan").
     pub fn make_pdf(pdfium: &Pdfium, pages: &[Option<&str>]) -> Vec<u8> {
+        let _g = doc_lock();
         let mut doc = pdfium.create_new_pdf().unwrap();
         let font = doc.fonts_mut().helvetica();
         for text in pages {

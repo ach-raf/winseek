@@ -455,6 +455,9 @@ impl Tier1 {
     pub fn set_paused(&self, p: bool) {
         self.user_paused.store(p, Ordering::SeqCst);
         self.recompute_pause();
+        if !p {
+            self.kick(); // "Resume" starts the next batch now, not at the next poll
+        }
     }
 
     /// Automatic pause from the policy poller (`None` resumes, unless the user paused).
@@ -853,23 +856,29 @@ impl Tier1 {
         let snippets: std::collections::HashMap<String, String> =
             texts.iter().map(|t| (t.path.to_lowercase(), t.snippet.clone())).collect();
         let mut seen = std::collections::HashSet::new();
+        // The words found in extracted text, per file: a second kind of evidence (DigUp's "words bonus").
+        let text_keys: Vec<String> = texts
+            .iter()
+            .filter(|t| snap.in_scope(&t.path) && t.snippet.contains('['))
+            .map(|t| t.path.to_lowercase())
+            .collect();
+        let lean = winseek_store::fuse::exact_lean(q);
+        let words = words_bonus(lean);
+        let has_words: std::collections::HashSet<&str> = text_keys.iter().map(String::as_str).collect();
         let mut rows: Vec<SemRow> = gated
             .into_iter()
             .map(|h| {
                 let key = h.path.to_lowercase();
                 let snippet = snippets.get(&key).filter(|s| s.contains('[')).cloned();
                 let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&key).copied());
+                // One final score per file: how far it stands out for the query (the gate's z), plus the words bonus.
+                let score = h.rank() + if has_words.contains(key.as_str()) { words } else { 0.0 };
                 seen.insert(key);
-                SemRow { path: h.path, score: h.score, locator: h.locator, snippet, page, source: "meaning" }
+                SemRow { path: h.path, score, locator: h.locator, snippet, page, source: "meaning" }
             })
             .collect();
         // The words themselves, found inside files (documents, PDFs, screenshot text), fused with
         // the meaning list: a literal hit is separate evidence and is not held to the meaning gate.
-        let text_keys: Vec<String> = texts
-            .iter()
-            .filter(|t| snap.in_scope(&t.path) && t.snippet.contains('['))
-            .map(|t| t.path.to_lowercase())
-            .collect();
         for t in texts.into_iter().filter(|t| snap.in_scope(&t.path) && t.snippet.contains('[')) {
             if seen.contains(&t.path.to_lowercase()) {
                 continue;
@@ -878,7 +887,7 @@ impl Tier1 {
             rows.push(SemRow {
                 page: locator_page(t.locator.as_deref()),
                 path: t.path,
-                score: 0.0,
+                score: words,
                 locator: t.locator,
                 snippet: Some(t.snippet),
                 source: "text",
@@ -888,6 +897,7 @@ impl Tier1 {
         let order = winseek_store::fuse::fuse_order(&sem_keys, &text_keys, winseek_store::fuse::exact_lean(q));
         let pos: std::collections::HashMap<&str, usize> = order.iter().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
         rows.sort_by_key(|r| pos.get(r.path.to_lowercase().as_str()).copied().unwrap_or(usize::MAX));
+        finalize_scores(&mut rows);
         if let Some(k) = limit {
             let cap = k + (k / 3).max(3);
             if rows.len() > cap {
@@ -896,6 +906,30 @@ impl Tier1 {
             }
         }
         Ok((self.state_str().into(), rows, more))
+    }
+}
+
+/// Words bonus of the final score, on the gate's z scale (meaning hits sit at `Z_MIN` = 4 and up).
+/// Plain queries: a small bonus (a file also found by its words nudges up; a words-only file is a weak
+/// match). Code-like queries (invoice number, error code): large, so literal hits lead.
+fn words_bonus(lean: f32) -> f32 {
+    1.0 + 11.0 * lean.clamp(0.0, 1.0)
+}
+
+/// Turn the final scores into what the UI shows, relative to the best result of the list: the first
+/// row is 1.0 (100%), every other row `score / top` clamped to 0.01..=0.99, and never higher than the
+/// row above (a running minimum), so the badge reads high to low whatever the fusion order was.
+/// Rows are already in final order. Words-only rows after models-missing carry score 0 and stay at 0.
+fn finalize_scores(rows: &mut [SemRow]) {
+    let top = rows.first().map_or(0.0, |r| r.score);
+    if top <= 0.0 {
+        return;
+    }
+    let mut cap = 1.0f32;
+    for (i, r) in rows.iter_mut().enumerate() {
+        let rel = if i == 0 { 1.0 } else { (r.score / top).clamp(0.01, 0.99) };
+        r.score = rel.min(cap);
+        cap = r.score;
     }
 }
 
@@ -924,10 +958,27 @@ fn worker_loop(t: Arc<Tier1>) {
             }
         })) as Box<dyn Fn() + Send>
     };
-    let mut proc = Processor::default().with_pdf_requester(requester);
+    let media_requester = {
+        let t = t.clone();
+        Box::new(move || crate::models::request_ffmpeg({
+            let t = t.clone();
+            move |ok| {
+                if ok {
+                    t.kick();
+                }
+            }
+        })) as Box<dyn Fn() + Send>
+    };
+    let mut proc = Processor::default().with_pdf_requester(requester).with_media_requester(media_requester);
     let mut parse_pass = ParsePass::default();
     let (mut prov_done, mut prov_tries) = (false, 0u32);
+    let mut last_media_gate: Option<std::time::Instant> = None;
     loop {
+        // Rows an older build parked for a missing ffmpeg return to the queue once one is usable.
+        if last_media_gate.is_none_or(|i| i.elapsed() >= Duration::from_secs(10)) {
+            proc.sync_media_gate(&t.store);
+            last_media_gate = Some(std::time::Instant::now());
+        }
         let have_models = {
             let mut e = lock(&t.embedder);
             e.tick_idle();
@@ -1258,6 +1309,36 @@ pub(crate) fn test_tmp() -> tempfile::TempDir {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn srow(path: &str, score: f32, source: &'static str) -> SemRow {
+        SemRow { path: path.into(), score, locator: None, snippet: None, page: None, source }
+    }
+    fn paths(rows: &[SemRow]) -> Vec<&str> {
+        rows.iter().map(|r| r.path.as_str()).collect()
+    }
+
+    #[test]
+    fn badge_is_relative_to_the_top_and_never_rises() {
+        // Final order (z + words): 8.0, 9.0 (climbed by words, own z lower), 3.0, 0.5 weak.
+        let mut rows = vec![srow("a", 8.0, "meaning"), srow("b", 9.0, "meaning"), srow("c", 4.0, "meaning"), srow("w", 1.0, "text")];
+        finalize_scores(&mut rows);
+        let got: Vec<i32> = rows.iter().map(|r| (r.score * 100.0).round() as i32).collect();
+        assert_eq!(got, [100, 99, 50, 13]);
+        assert!(rows.windows(2).all(|p| p[0].score >= p[1].score));
+        assert_eq!(paths(&rows), ["a", "b", "c", "w"], "order is untouched");
+    }
+
+    #[test]
+    fn no_scores_means_nothing_to_normalise() {
+        let mut rows = vec![srow("a", 0.0, "text"), srow("b", 0.0, "text")];
+        finalize_scores(&mut rows);
+        assert_eq!(rows.iter().map(|r| r.score).collect::<Vec<_>>(), [0.0, 0.0]);
+    }
+
+    #[test]
+    fn code_queries_weight_the_words_more() {
+        assert!(words_bonus(1.0) > words_bonus(0.0) * 5.0);
+    }
     use embedder::{index_meta, DIMS};
     use winseek_store::{ChunkVec, FileKey, VecKind};
 

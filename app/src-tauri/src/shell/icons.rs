@@ -5,8 +5,9 @@ use std::borrow::Cow;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::path::Path;
-use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::collections::VecDeque;
+use std::path::PathBuf;
+use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use tauri::http::{Request, Response};
 use tauri::UriSchemeResponder;
 use windows::core::{Interface, PCWSTR};
@@ -37,33 +38,80 @@ struct Job {
     responder: UriSchemeResponder,
 }
 
-static POOL: OnceLock<Sender<Job>> = OnceLock::new();
+/// Waiting jobs. The newest is served first: the tile requested last is the one under the viewport, older ones
+/// belong to rows already scrolled past (the page also holds most requests back, see thumbQueue.ts).
+struct Queue {
+    jobs: Mutex<VecDeque<Job>>,
+    cv: Condvar,
+}
+
+/// Waiting jobs kept; beyond this the oldest are answered with 503 (the page does not cache that).
+const MAX_WAITING: usize = 512;
+
+static POOL: OnceLock<Arc<Queue>> = OnceLock::new();
 static CACHE: Mutex<Option<HashMap<String, Arc<Vec<u8>>>>> = Mutex::new(None);
 
-fn pool() -> &'static Sender<Job> {
+/// Decode workers: cores - 1 (the UI keeps one), between 3 and 8.
+fn workers() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).clamp(WORKERS, 8)
+}
+
+fn next_job(q: &Queue) -> Option<Job> {
+    let mut g = q.jobs.lock().ok()?;
+    loop {
+        if let Some(j) = g.pop_back() {
+            return Some(j);
+        }
+        g = q.cv.wait(g).ok()?;
+    }
+}
+
+fn pool() -> &'static Arc<Queue> {
     POOL.get_or_init(|| {
-        let (tx, rx) = channel::<Job>();
-        let rx = Arc::new(Mutex::new(rx));
-        for i in 0..WORKERS {
-            let rx = rx.clone();
+        let q = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), cv: Condvar::new() });
+        for i in 0..workers() {
+            let q = q.clone();
             let _ = std::thread::Builder::new().name(format!("wsicon-{i}")).spawn(move || {
                 let _com = ComGuard::init();
-                loop {
-                    let job = match rx.lock() {
-                        Ok(g) => g.recv(),
-                        Err(_) => return,
+                while let Some(job) = next_job(&q) {
+                    let png = match &job.aumid {
+                        Some(aumid) => render_aumid(aumid, job.size),
+                        None => render(&job.path, job.is_dir, job.size, job.thumb),
                     };
-                let Ok(job) = job else { return };
-                let png = match &job.aumid {
-                    Some(aumid) => render_aumid(aumid, job.size),
-                    None => render(&job.path, job.is_dir, job.size, job.thumb),
-                };
-                job.responder.respond(response(png));
+                    job.responder.respond(response(png));
                 }
             });
         }
-        tx
+        q
     })
+}
+
+fn submit(job: Job) {
+    let q = pool();
+    let dropped = match q.jobs.lock() {
+        Ok(mut g) => {
+            g.push_back(job);
+            if g.len() > MAX_WAITING {
+                g.pop_front()
+            } else {
+                None
+            }
+        }
+        Err(_) => Some(job),
+    };
+    q.cv.notify_one();
+    if let Some(old) = dropped {
+        old.responder.respond(busy_response());
+    }
+}
+
+fn busy_response() -> Response<Cow<'static, [u8]>> {
+    Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", "no-store")
+        .status(503)
+        .body(Cow::Borrowed(&[][..]))
+        .expect("static response")
 }
 
 fn response(png: Option<Arc<Vec<u8>>>) -> Response<Cow<'static, [u8]>> {
@@ -71,7 +119,7 @@ fn response(png: Option<Arc<Vec<u8>>>) -> Response<Cow<'static, [u8]>> {
     match png {
         Some(p) => b
             .status(200)
-            .header("Content-Type", "image/png")
+            .header("Content-Type", if p.starts_with(&[0xFF, 0xD8]) { "image/jpeg" } else { "image/png" })
             .header("Cache-Control", "max-age=3600")
             .body(Cow::Owned(p.as_ref().clone())),
         None => b.status(404).body(Cow::Borrowed(&[][..])),
@@ -117,9 +165,7 @@ pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
     } else {
         return responder.respond(response(None));
     };
-    if let Err(e) = pool().send(job) {
-        e.0.responder.respond(response(None));
-    }
+    submit(job);
 }
 
 fn ext_of(path: &str) -> String {
@@ -140,7 +186,13 @@ pub(super) fn render(path: &str, is_dir: bool, size: u32, thumb: bool) -> Option
     if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.get(&key)) {
         return Some(hit.clone());
     }
-    let png = if per_path { path_icon_png(path, size, thumb) } else { generic_icon_png(&ext, is_dir, size) }?;
+    let png = if thumb && size <= 512 {
+        thumb_bytes(path, size)
+    } else if per_path {
+        path_icon_png(path, size, thumb)
+    } else {
+        generic_icon_png(&ext, is_dir, size)
+    }?;
     let png = Arc::new(png);
     if size > 256 {
         return Some(png); // preview-sized renders are one-offs; keep the cache small
@@ -202,8 +254,14 @@ pub(super) fn generic_icon_png(ext: &str, is_dir: bool, size: u32) -> Option<Vec
     encode_png(w, h, &rgba)
 }
 
-/// Per-path icon or thumbnail through IShellItemImageFactory.
+/// Per-path icon or thumbnail through IShellItemImageFactory, as PNG.
 pub(super) fn path_icon_png(path: &str, size: u32, thumb: bool) -> Option<Vec<u8>> {
+    let (w, h, px) = path_icon_px(path, size, thumb)?;
+    encode_png(w, h, &px)
+}
+
+/// Per-path icon or thumbnail through IShellItemImageFactory, as straight-alpha RGBA.
+fn path_icon_px(path: &str, size: u32, thumb: bool) -> Option<(u32, u32, Vec<u8>)> {
     let item = shell_item(path).ok()?;
     let f: IShellItemImageFactory = item.cast().ok()?;
     let sz = SIZE { cx: size as i32, cy: size as i32 };
@@ -248,7 +306,7 @@ pub(super) fn path_icon_png(path: &str, size: u32, thumb: bool) -> Option<Vec<u8
         }
     }
     bgra_to_rgba(&mut px);
-    encode_png(w, h, &px)
+    Some((w, h, px))
 }
 
 struct BitmapGuard(HBITMAP);
@@ -333,6 +391,110 @@ fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     Some((w, h, px))
 }
 
+// ---- persistent thumbnail cache ---------------------------------------------------------------------------------
+// `%LOCALAPPDATA%\winseek\thumbs\<xx>\<sha256>.img`, keyed by path + mtime + size + requested px, so an edited file
+// gets a new entry. Opaque pictures are stored as small JPEGs, pictures with transparency as PNG. The shell's own
+// thumbnail cache stays the first source for a miss; this layer saves re-extraction and the per-request encode and
+// survives restarts.
+
+const DISK_CAP_BYTES: u64 = 600 * 1024 * 1024;
+
+fn thumb_dir() -> Option<&'static PathBuf> {
+    static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    DIR.get_or_init(|| {
+        let d = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("winseek").join("thumbs");
+        std::fs::create_dir_all(&d).ok()?;
+        let t = d.clone();
+        let _ = std::thread::Builder::new().name("wsicon-trim".into()).spawn(move || trim_dir(&t, DISK_CAP_BYTES));
+        Some(d)
+    })
+    .as_ref()
+}
+
+fn thumb_key(path: &str, mtime_ns: u128, len: u64, size: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let h = Sha256::digest(format!("v1|{}|{mtime_ns}|{len}|{size}", path.to_lowercase()).as_bytes());
+    format!("{h:x}")
+}
+
+fn thumb_bytes(path: &str, size: u32) -> Option<Vec<u8>> {
+    let file = (|| {
+        let meta = std::fs::metadata(path).ok()?;
+        let ns = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+        let key = thumb_key(path, ns, meta.len(), size);
+        Some(thumb_dir()?.join(&key[..2]).join(format!("{key}.img")))
+    })();
+    if let Some(f) = &file {
+        if let Ok(b) = std::fs::read(f) {
+            if !b.is_empty() {
+                return Some(b);
+            }
+        }
+    }
+    let (w, h, px) = path_icon_px(path, size, true).or_else(|| decode_small(path, size))?;
+    let bytes = encode_thumb(w, h, &px)?;
+    if let Some(f) = file {
+        if let Some(dir) = f.parent() {
+            let _ = std::fs::create_dir_all(dir);
+            let tmp = f.with_extension(format!("tmp{}", std::process::id()));
+            if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, &f).is_err() {
+                let _ = std::fs::remove_file(&tmp);
+            }
+        }
+    }
+    Some(bytes)
+}
+
+/// Fallback when the shell has no picture: decode with the `image` crate and downscale.
+fn decode_small(path: &str, size: u32) -> Option<(u32, u32, Vec<u8>)> {
+    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
+    let t = img.thumbnail(size, size).to_rgba8();
+    Some((t.width(), t.height(), t.into_raw()))
+}
+
+/// JPEG for opaque pictures, PNG when any pixel is transparent.
+fn encode_thumb(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
+    if rgba.as_chunks::<4>().0.iter().any(|p| p[3] != 255) {
+        return encode_png(w, h, rgba);
+    }
+    let mut rgb = Vec::with_capacity((w * h * 3) as usize);
+    for p in rgba.as_chunks::<4>().0 {
+        rgb.extend_from_slice(&p[..3]);
+    }
+    let mut out = Vec::with_capacity(rgb.len() / 8 + 256);
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 82)
+        .encode(&rgb, w, h, image::ExtendedColorType::Rgb8)
+        .ok()?;
+    Some(out)
+}
+
+/// Keep the cache under `cap` bytes: delete the oldest files first (down to 80%).
+fn trim_dir(dir: &Path, cap: u64) {
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for sub in rd.flatten() {
+        let Ok(inner) = std::fs::read_dir(sub.path()) else { continue };
+        for f in inner.flatten() {
+            if let Ok(m) = f.metadata() {
+                files.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), f.path()));
+            }
+        }
+    }
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    if total <= cap {
+        return;
+    }
+    files.sort_by_key(|f| f.0);
+    for (_, len, p) in files {
+        if total <= cap / 10 * 8 {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total = total.saturating_sub(len);
+        }
+    }
+}
+
 fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
     let mut out = Vec::with_capacity(rgba.len() / 4 + 256);
     let mut enc = png::Encoder::new(&mut out, w, h);
@@ -386,6 +548,40 @@ mod tests {
     fn missing_path_is_none() {
         let _c = ComGuard::init();
         assert!(path_icon_png(r"C:\definitely\not\here.exe", 32, false).is_none());
+    }
+
+    #[test]
+    fn thumb_key_changes_with_mtime_size_and_px() {
+        let a = thumb_key(r"C:\P\a.jpg", 1, 10, 256);
+        assert_eq!(a, thumb_key(r"c:\p\A.JPG", 1, 10, 256));
+        assert_ne!(a, thumb_key(r"C:\P\a.jpg", 2, 10, 256));
+        assert_ne!(a, thumb_key(r"C:\P\a.jpg", 1, 11, 256));
+        assert_ne!(a, thumb_key(r"C:\P\a.jpg", 1, 10, 480));
+    }
+
+    #[test]
+    fn opaque_thumbs_are_jpeg_transparent_are_png() {
+        let opaque = [200u8, 30, 30, 255].repeat(16 * 16);
+        let j = encode_thumb(16, 16, &opaque).expect("jpeg");
+        assert_eq!(&j[..2], &[0xFF, 0xD8]);
+        let mut clear = opaque.clone();
+        clear[3] = 0;
+        let p = encode_thumb(16, 16, &clear).expect("png");
+        assert_eq!(&p[..4], b"\x89PNG");
+    }
+
+    #[test]
+    fn trim_keeps_the_cache_under_its_cap() {
+        let dir = std::env::temp_dir().join(format!("wsthumb-trim-{}", std::process::id()));
+        let sub = dir.join("ab");
+        std::fs::create_dir_all(&sub).unwrap();
+        for i in 0..10 {
+            std::fs::write(sub.join(format!("{i}.img")), vec![0u8; 100]).unwrap();
+        }
+        trim_dir(&dir, 500);
+        let left: u64 = std::fs::read_dir(&sub).unwrap().flatten().map(|f| f.metadata().unwrap().len()).sum();
+        assert!(left <= 500, "left {left}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

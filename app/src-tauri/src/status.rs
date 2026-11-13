@@ -60,6 +60,53 @@ pub struct Tier1PageDto {
     pub can_rebuild: bool,
     /// Screenshots could not be read for text: no Windows OCR language is installed.
     pub ocr_unavailable: bool,
+    /// Queued files that cannot run yet, and what they wait for.
+    pub waiting: Vec<WaitingDto>,
+    /// Failed files grouped by error (biggest first), a few example paths each.
+    pub failed_reasons: Vec<ReasonDto>,
+    /// Skipped files grouped by reason code (biggest first), a few example paths each.
+    pub skipped_reasons: Vec<ReasonDto>,
+    /// The audio / video tool (ffmpeg): where its automatic download stands. Null while nothing is
+    /// queued for it or it is already usable.
+    pub ffmpeg: Option<crate::models::FfmpegFetch>,
+}
+
+/// Queued files of one kind that wait for something that is not there.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct WaitingDto {
+    /// "pdf" | "audio" | "video"
+    pub kind: String,
+    pub count: u64,
+    /// "pdf_reader_missing" | "pdf_reader_broken" | "ffmpeg_missing"
+    pub why: &'static str,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ReasonDto {
+    pub reason: String,
+    pub count: u64,
+    pub examples: Vec<String>,
+}
+
+fn reasons(g: Vec<winseek_store::ReasonGroup>) -> Vec<ReasonDto> {
+    g.into_iter().map(|g| ReasonDto { reason: g.reason, count: g.count, examples: g.examples }).collect()
+}
+
+/// What the queued (pending) files are waiting for, from the kinds the worker holds back.
+fn waiting_for(pending: Vec<(String, u64)>) -> Vec<WaitingDto> {
+    pending
+        .into_iter()
+        .filter_map(|(kind, count)| {
+            let why = match kind.as_str() {
+                "pdf" if pdf::runtime().is_ok() => return None,
+                "pdf" if pdf::locate_dll().is_some() => "pdf_reader_broken",
+                "pdf" => "pdf_reader_missing",
+                "audio" | "video" if tier1::media::locate_ffmpeg().is_none() => "ffmpeg_missing",
+                _ => return None,
+            };
+            Some(WaitingDto { kind, count, why })
+        })
+        .collect()
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -218,6 +265,10 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
             eta_s: None,
             can_rebuild: false,
             ocr_unavailable: false,
+            waiting: vec![],
+            failed_reasons: vec![],
+            skipped_reasons: vec![],
+            ffmpeg: None,
         };
     };
     let st = t.status();
@@ -228,7 +279,20 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
     });
     // Throughput only means something while the worker is actually embedding.
     let rate = if st.state == "indexing" { t.rate() } else { None };
+    let (waiting, failed_reasons, skipped_reasons) = {
+        let s = t.store.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            waiting_for(s.pending_by_kind().unwrap_or_default()),
+            reasons(s.reason_groups(false, 3, 12).unwrap_or_default()),
+            reasons(s.reason_groups(true, 3, 12).unwrap_or_default()),
+        )
+    };
+    let ffmpeg = waiting.iter().any(|w| w.why == "ffmpeg_missing").then(crate::models::ffmpeg_fetch_state);
     Tier1PageDto {
+        waiting,
+        ffmpeg,
+        failed_reasons,
+        skipped_reasons,
         eta_s: eta_secs(queue, rate),
         state: st.state,
         paused_reason: st.paused_reason,

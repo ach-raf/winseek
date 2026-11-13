@@ -153,6 +153,7 @@ fn main() {
             models::models_plan,
             models::models_download,
             models::models_cancel,
+            models::ffmpeg_retry,
             autostart::autostart_get,
             autostart::autostart_set,
             hotkeys::hotkeys_get,
