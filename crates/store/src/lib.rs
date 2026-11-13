@@ -364,6 +364,16 @@ pub struct Stats {
     pub text_only: u64,
 }
 
+/// Files that failed / were skipped for the same recorded reason.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasonGroup {
+    /// The recorded message or reason code (empty when none was stored).
+    pub reason: String,
+    pub count: u64,
+    /// A few example paths.
+    pub examples: Vec<String>,
+}
+
 /// A finished image file, as the library window lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ImageRow {
@@ -1063,6 +1073,50 @@ impl Store {
             n += self.conn.prepare_cached("UPDATE files SET state=0, error=NULL WHERE state=?1 AND error=?2")?.execute(params![STATE_SKIPPED, r])?;
         }
         Ok(n)
+    }
+
+    /// Pending files per kind (what is queued, by what it needs).
+    pub fn pending_by_kind(&self) -> Result<Vec<(String, u64)>> {
+        let mut st = self.conn.prepare_cached("SELECT kind, COUNT(*) FROM files WHERE state = ?1 GROUP BY kind ORDER BY 2 DESC")?;
+        let rows = st.query_map([STATE_PENDING], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
+    }
+
+    /// Pending files of `kinds` become skipped with `reason` (they cannot be processed on this machine
+    /// right now; `requeue_skipped` brings them back). Returns how many.
+    pub fn skip_pending_kinds(&mut self, kinds: &[&str], reason: &str) -> Result<usize> {
+        let mut n = 0;
+        for k in kinds {
+            n += self
+                .conn
+                .prepare_cached("UPDATE files SET state=?1, error=?2, content_hash=NULL WHERE state=?3 AND kind=?4")?
+                .execute(params![STATE_SKIPPED, reason, STATE_PENDING, k])?;
+        }
+        Ok(n)
+    }
+
+    /// Failed (`skipped == false`) or skipped (`true`) files grouped by their recorded reason, biggest
+    /// group first, with up to `examples` paths each. At most `max_groups` groups.
+    pub fn reason_groups(&self, skipped: bool, examples: usize, max_groups: usize) -> Result<Vec<ReasonGroup>> {
+        let state = if skipped { STATE_SKIPPED } else { STATE_FAILED };
+        let mut st = self.conn.prepare_cached("SELECT COALESCE(error, ''), path FROM files WHERE state = ?1 ORDER BY id DESC")?;
+        let mut rows = st.query([state])?;
+        let mut groups: Vec<ReasonGroup> = Vec::new();
+        let mut index: HashMap<String, usize> = HashMap::new();
+        while let Some(r) = rows.next()? {
+            let (reason, path): (String, String) = (r.get(0)?, r.get(1)?);
+            let i = *index.entry(reason.clone()).or_insert_with(|| {
+                groups.push(ReasonGroup { reason, count: 0, examples: Vec::new() });
+                groups.len() - 1
+            });
+            groups[i].count += 1;
+            if groups[i].examples.len() < examples {
+                groups[i].examples.push(path);
+            }
+        }
+        groups.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
+        groups.truncate(max_groups);
+        Ok(groups)
     }
 
     /// The reason / message recorded for a skipped or failed file at `path` (case-insensitive).

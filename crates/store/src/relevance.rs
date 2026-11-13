@@ -99,7 +99,7 @@ impl Candidate {
         self.adj >= ADJ_MIN && self.z.is_none_or(|z| z >= z_min)
     }
     /// Sort key: z when known, else a z-like scale of `adj`.
-    fn rank(&self) -> f32 {
+    pub fn rank(&self) -> f32 {
         self.z.unwrap_or(self.adj / ADJ_MIN * Z_MIN)
     }
 }
