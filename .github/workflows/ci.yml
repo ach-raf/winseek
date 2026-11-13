@@ -45,7 +45,7 @@ jobs:
       - name: UI tests
         run: npm test --prefix app/ui
 
-      # One package at a time (see CLAUDE.md). Only the crates that need no
+      # One package at a time. Only the crates that need no
       # elevated volume access or GPU.
       - name: Rust tests
         shell: pwsh
