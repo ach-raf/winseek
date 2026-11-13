@@ -8,21 +8,26 @@
 
 pub mod chunk;
 pub mod crawler;
+pub mod estimate;
 pub mod embedder;
 pub mod extract;
 pub mod feed;
 pub mod gitignore;
 pub mod gpu_phase;
+pub mod guard;
+pub mod heic;
 pub mod hitbox;
 pub mod identity;
 pub mod imgclass;
 pub mod library;
+pub mod media;
 pub mod ocr;
 pub mod parse_pass;
 pub mod parser;
 pub mod pdf;
 pub mod policy;
 pub mod process;
+pub mod provenance;
 pub mod progress;
 pub mod route;
 pub mod scopes;
@@ -182,6 +187,8 @@ pub struct SemanticHit {
     pub snippet: Option<String>,
     /// PDF page (1-based) the hit is on, from the chunk locator.
     pub page: Option<u32>,
+    /// Audio / video: the moment (seconds) the matching window or frame starts; the preview seeks there.
+    pub at: Option<f64>,
     /// "meaning" (vector hit) or "text" (found in the extracted text only, e.g. before the models are installed).
     pub source: &'static str,
     /// Where the query words sit on the image / PDF page (fractions 0-1), from the chunk's OCR or parser
@@ -257,6 +264,7 @@ impl SemRow {
             mtime,
             snippet: self.snippet.clone(),
             page: self.page,
+            at: media::locator_time(self.locator.as_deref()),
             source: self.source,
             boxes: hitbox::hit_boxes(self.locator.as_deref(), q),
         }
@@ -325,6 +333,11 @@ impl Tier1 {
         let path = root.join("tier1.sqlite");
         let store = match Store::open(&path, &meta) {
             Ok(s) => s,
+            // Only the llama.cpp build differs and the index holds reference vectors: keep it open under
+            // its old stamp; the worker compares the probes before indexing and rebuilds only if they moved.
+            Err(winseek_store::Error::MetaMismatch { stored, .. }) if stored.same_but_build(&meta) && has_baseline(&path, &stored) => {
+                Store::open(&path, &stored).map_err(|e| format!("open store: {e}"))?
+            }
             Err(winseek_store::Error::MetaMismatch { .. }) => Store::reset(&path, &meta).map_err(|e| format!("reset store: {e}"))?,
             // Too damaged to open: keep what is readable, the rest is indexed again.
             Err(e) if e.is_corruption() => {
@@ -587,13 +600,14 @@ impl Tier1 {
         if md.len() > limit {
             return Err("The file is too large to read.".into());
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("Cannot read file: {e}"))?;
+        let bytes = guard::read_guarded(std::path::Path::new(path)).map_err(|e| format!("Cannot read file: {e}"))?;
         let key = (process::sha256_hex(&bytes), page);
         if let Some(mut d) = self.cached_doc(&key) {
             d.cached = true;
             return Ok(d);
         }
         let jpeg = if page == 0 {
+            let bytes = heic::normalize(path, bytes.clone()).ok_or("This HEIC photo cannot be decoded: the Windows HEIF codec is missing.")?;
             prepare_jpeg_long(&bytes, PARSE_LONG_SIDE)?
         } else {
             let rt = pdf::runtime().map_err(|e| e.to_string())?;
@@ -603,7 +617,6 @@ impl Tier1 {
             }
             pages.remove(0).1
         };
-        drop(bytes);
         let parsed = parser::parse_phased(&self.parser, &self.embedder, &jpeg).map_err(|e| e.to_string())?;
         let doc = ParsedDoc { markdown: parsed.markdown(), tables: parsed.tables(), elements_count: parsed.elements.len(), cached: false };
         let mut cache = lock(&self.doc_cache);
@@ -762,10 +775,31 @@ impl Tier1 {
         Ok(SemanticResult { state: list.state.clone(), total: list.rows.len(), more: offset + hits.len() < list.rows.len(), hits })
     }
 
+    /// `code:` queries: words found in the separate code index (source, notebooks, project prose).
+    /// Needs the code option; code is never part of any other search.
+    fn code_rows(&self, q: &str, limit: Option<usize>) -> (String, Vec<SemRow>, bool) {
+        let snap = self.snapshot();
+        if !snap.index_code || q.is_empty() {
+            return (self.state_str().into(), vec![], false);
+        }
+        let raw = lock(&self.store).search_code(&fts_escape(q), limit.map_or(TEXT_ALL, |k| k * 4)).unwrap_or_default();
+        let mut rows: Vec<SemRow> = raw
+            .into_iter()
+            .filter(|h| snap.in_scope(&h.path))
+            .map(|h| SemRow { page: None, path: h.path, score: 0.0, locator: None, snippet: Some(h.snippet).filter(|s| s.contains('[')), source: "code" })
+            .collect();
+        let more = limit.is_some_and(|k| rows.len() > k);
+        rows.truncate(limit.unwrap_or(usize::MAX));
+        (self.state_str().into(), rows, more)
+    }
+
     /// The hits for `q` before the per-file work: `(state, rows, more exist)`. `limit` = the
     /// top-k of the overview; `None` = every relevant file. Without models the query words found
     /// in extracted text (documents, PDFs, screenshot OCR) answer alone, state `models_missing`.
     fn sem_rows(&self, q: &str, limit: Option<usize>) -> Result<(String, Vec<SemRow>, bool), String> {
+        if let Some(cq) = code_query(q) {
+            return Ok(self.code_rows(cq, limit));
+        }
         let text_k = limit.map_or(TEXT_ALL, |k| k * 4);
         let embedded = {
             let mut e = lock(&self.embedder);
@@ -829,15 +863,16 @@ impl Tier1 {
                 SemRow { path: h.path, score: h.score, locator: h.locator, snippet, page, source: "meaning" }
             })
             .collect();
-        // The words themselves, found inside files (documents, PDFs, screenshot text).
-        let cap = limit.map(|k| k + (k / 3).max(3));
+        // The words themselves, found inside files (documents, PDFs, screenshot text), fused with
+        // the meaning list: a literal hit is separate evidence and is not held to the meaning gate.
+        let text_keys: Vec<String> = texts
+            .iter()
+            .filter(|t| snap.in_scope(&t.path) && t.snippet.contains('['))
+            .map(|t| t.path.to_lowercase())
+            .collect();
         for t in texts.into_iter().filter(|t| snap.in_scope(&t.path) && t.snippet.contains('[')) {
             if seen.contains(&t.path.to_lowercase()) {
                 continue;
-            }
-            if cap.is_some_and(|c| rows.len() >= c) {
-                more = true;
-                break;
             }
             seen.insert(t.path.to_lowercase());
             rows.push(SemRow {
@@ -849,8 +884,26 @@ impl Tier1 {
                 source: "text",
             });
         }
+        let sem_keys: Vec<String> = rows.iter().filter(|r| r.source == "meaning").map(|r| r.path.to_lowercase()).collect();
+        let order = winseek_store::fuse::fuse_order(&sem_keys, &text_keys, winseek_store::fuse::exact_lean(q));
+        let pos: std::collections::HashMap<&str, usize> = order.iter().enumerate().map(|(i, k)| (k.as_str(), i)).collect();
+        rows.sort_by_key(|r| pos.get(r.path.to_lowercase().as_str()).copied().unwrap_or(usize::MAX));
+        if let Some(k) = limit {
+            let cap = k + (k / 3).max(3);
+            if rows.len() > cap {
+                more = true;
+                rows.truncate(cap);
+            }
+        }
         Ok((self.state_str().into(), rows, more))
     }
+}
+
+/// `code: rest` -> `Some("rest")` (prefix case-insensitive, optional space after the colon).
+pub fn code_query(q: &str) -> Option<&str> {
+    let t = q.trim_start();
+    let head = t.get(..5)?;
+    head.eq_ignore_ascii_case("code:").then(|| t[5..].trim())
 }
 
 /// The processing loop. Runs forever.
@@ -873,6 +926,7 @@ fn worker_loop(t: Arc<Tier1>) {
     };
     let mut proc = Processor::default().with_pdf_requester(requester);
     let mut parse_pass = ParsePass::default();
+    let (mut prov_done, mut prov_tries) = (false, 0u32);
     loop {
         let have_models = {
             let mut e = lock(&t.embedder);
@@ -886,6 +940,10 @@ fn worker_loop(t: Arc<Tier1>) {
         if have_models && proc.has_index_work(&t.store) {
             lock(&t.parser).unload();
         }
+        if have_models && !provenance_step(&t, &mut prov_done, &mut prov_tries) {
+            t.nap(IDLE_POLL);
+            continue;
+        }
         let started = std::time::Instant::now();
         let r = if have_models {
             match proc.run_upgrade_pass(&t.store, &t.embedder, &t.paused) {
@@ -898,7 +956,8 @@ fn worker_loop(t: Arc<Tier1>) {
                         *lock(&t.last_error) = None;
                         continue;
                     }
-                    Ok(_) => Ok(Pass::Idle),
+                    // Everything else is done: the rest of long documents, a slice at a time.
+                    Ok(_) => proc.run_tail_pass(&t.store, &t.embedder, &t.paused),
                     Err(msg) => Err(msg),
                 },
                     other => other,
@@ -956,15 +1015,95 @@ fn worker_loop(t: Arc<Tier1>) {
     }
 }
 
+/// Does the store at `path`, stamped `stamp`, hold reference vectors to compare a new build against?
+fn has_baseline(path: &std::path::Path, stamp: &winseek_store::IndexMeta) -> bool {
+    Store::open(path, stamp).and_then(|s| s.ref_vectors()).is_ok_and(|(_, v)| !v.is_empty())
+}
+
+/// Probe attempts (each retried a second or so apart) before a verdict is forced.
+const PROVENANCE_TRIES: u32 = 5;
+
+/// Provenance step of the worker loop (see [`provenance`]). Returns `true` when the passes may run:
+/// the stamp matches the running build or was just brought in line. While a verdict on a build
+/// change is pending the passes wait; after [`PROVENANCE_TRIES`] failed probe attempts the stale
+/// index is rebuilt (the old behaviour). A missing baseline never blocks indexing.
+fn provenance_step(t: &Tier1, done: &mut bool, tries: &mut u32) -> bool {
+    use provenance::Outcome;
+    if *done {
+        return true;
+    }
+    let rebuild = |why: String| {
+        eprintln!("winseek: {why}; re-embedding the index");
+        let meta = lock(&t.embedder).meta();
+        if let Err(e) = t.rebuild_with(|s| s.reset_in_place(&meta).map_err(|e| e.to_string())) {
+            t.report_error(e);
+        }
+    };
+    match provenance::check(&t.store, &t.embedder) {
+        Ok(Outcome::Current) => {
+            *done = true;
+            true
+        }
+        Ok(Outcome::Baselined) => {
+            eprintln!("winseek: index stamped with {} and reference vectors stored", lock(&t.store).stamp().llama_build);
+            *done = true;
+            true
+        }
+        Ok(Outcome::Kept(c)) => {
+            eprintln!("winseek: llama.cpp build changed; reference vectors unchanged (cos {c:.5}), index kept");
+            *done = true;
+            true
+        }
+        Ok(Outcome::Rebuild(c)) => {
+            rebuild(match c {
+                Some(c) => format!("llama.cpp build changed and vectors moved (cos {c:.5} < {})", winseek_store::PROBE_MIN_COS),
+                None => "llama.cpp build changed and the index has no reference vectors".into(),
+            });
+            *tries = 0; // the reset index gets its baseline from the new build on the next step
+            false
+        }
+        Err(e) => {
+            *tries += 1;
+            let stale = lock(&t.store).stamp() != &lock(&t.embedder).meta();
+            if *tries < PROVENANCE_TRIES {
+                return !stale;
+            }
+            *tries = 0;
+            if stale {
+                rebuild(format!("could not verify vectors after a llama.cpp build change ({e})"));
+                false
+            } else {
+                *done = true; // no baseline this session; indexing goes on
+                true
+            }
+        }
+    }
+}
+
+/// How often skipped-for-now files (cloud placeholders, missing HEIC codec) are retried.
+const RETRY_SKIPS_EVERY: Duration = Duration::from_secs(600);
+
 fn crawler_loop(t: Arc<Tier1>) {
     lower_thread_priority();
     let mut done_gen = 0;
+    let mut last_retry = std::time::Instant::now();
     loop {
         let snap = t.snapshot();
         if snap.gen != done_gen {
-            crawler::crawl(&t.store, &snap.scopes, &snap.ignore, snap.index_code, &|| t.snapshot().gen != snap.gen);
+            let stop = || t.snapshot().gen != snap.gen;
+            crawler::crawl(&t.store, &snap.scopes, &snap.ignore, snap.index_code, &stop);
+            // Rows indexed under older rules (secrets, dataset folders, code projects) go now.
+            if !stop() {
+                crawler::purge_stale(&t.store, &snap.scopes, &snap.ignore, snap.index_code);
+                let _ = lock(&t.store).requeue_skipped(crawler::RETRY_SKIPS);
+            }
             // An aborted crawl (scopes changed mid-way) is redone on the next iteration.
             done_gen = snap.gen;
+            last_retry = std::time::Instant::now();
+        } else if last_retry.elapsed() >= RETRY_SKIPS_EVERY {
+            // A cloud file hydrated or a codec installed since: look at those skips again (one stat each).
+            let _ = lock(&t.store).requeue_skipped(crawler::RETRY_SKIPS);
+            last_retry = std::time::Instant::now();
         }
         std::thread::sleep(Duration::from_millis(500));
     }
@@ -1109,7 +1248,9 @@ pub async fn semantic_search(h: tauri::State<'_, Handle>, query: String, k: usiz
 /// Temp dir outside `%LOCALAPPDATA%` (paths containing an `appdata` segment are never in scope).
 #[cfg(test)]
 pub(crate) fn test_tmp() -> tempfile::TempDir {
-    let base = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().parent().unwrap().join("target").join("tier1-tests");
+    // Outside the repository: a project marker (Cargo.toml) above the temp dir would make every test
+    // folder "code project content" for the crawler.
+    let base = std::env::temp_dir().join("winseek-tier1-tests");
     std::fs::create_dir_all(&base).unwrap();
     tempfile::Builder::new().prefix("t").tempdir_in(base).unwrap()
 }
@@ -1280,6 +1421,24 @@ mod tests {
         assert!(r.hits[1].snippet.as_deref().unwrap().contains("[cat]"));
         let stored = lock(&t.store).get_setting("relevance_hub:embeddinggemma-2").unwrap();
         assert!(stored.is_some_and(|s| s.starts_with('[')), "hub persisted per query model");
+    }
+
+    #[test]
+    fn a_code_in_the_query_lifts_the_literal_hit_above_meaning_hits() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        add_done(&t, 1, r"C:\Pics\something.jpg", 2); // the stub's meaning match for any non-"cat" query
+        {
+            let mut s = lock(&t.store);
+            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, r"C:\Pics\inv.txt", 1, 1, "doc").unwrap();
+            let v = [ChunkVec { chunk: 0, kind: VecKind::Text, locator: None, vec: unit(0) }]; // no meaning match
+            s.complete(id, "h9", &v, &[(0, "Invoice INV-2024-00817: total 2480 euros".into())]).unwrap();
+        }
+        let names = |q: &str| -> Vec<String> {
+            t.semantic_search(q, 5).unwrap().hits.iter().map(|h| h.path.rsplit('\\').next().unwrap().to_string()).collect()
+        };
+        assert_eq!(names("INV-2024-00817"), ["inv.txt", "something.jpg"], "an invoice number is a literal: it leads");
+        // The same file found by a plain word keeps the old order: meaning first, words after.
+        assert_eq!(names("invoice"), ["something.jpg", "inv.txt"]);
     }
 
     #[test]

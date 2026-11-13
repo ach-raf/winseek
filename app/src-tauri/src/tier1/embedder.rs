@@ -31,6 +31,13 @@ pub const DIMS: usize = 768;
 pub const IDLE_UNLOAD: Duration = Duration::from_secs(120);
 /// Start of the error `start_index` returns while the parser holds the GPU.
 const GPU_BUSY: &str = "GPU is busy";
+/// The error `embed_audio` returns when the loaded mmproj has no audio encoder.
+pub const NO_AUDIO: &str = "audio embedding not supported by the loaded model";
+
+/// Is `msg` the "mmproj has no audio encoder" error (permanent for this model, not a file's fault)?
+pub fn is_no_audio(msg: &str) -> bool {
+    msg == NO_AUDIO
+}
 
 /// Is `msg` the "parser holds the GPU" error (not a strike against the file being embedded)?
 pub fn is_gpu_busy(msg: &str) -> bool {
@@ -69,6 +76,12 @@ pub type Result<T> = std::result::Result<T, EmbedError>;
 pub trait Embedder {
     /// One 768-d L2-normalised vector per JPEG, in order.
     fn embed_images(&mut self, jpegs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>>;
+    /// One 768-d L2-normalised vector per 16 kHz mono 16-bit WAV clip (about 30 s each), embedded
+    /// straight from the waveform by the multimodal model. Backends without audio keep the default
+    /// error ([`NO_AUDIO`]).
+    fn embed_audio(&mut self, _wavs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
+        Err(EmbedError::Other(NO_AUDIO.into()))
+    }
     /// One 768-d L2-normalised query vector.
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>>;
     /// One 768-d vector per document text (e.g. OCR output), in order. Backends without text
@@ -124,6 +137,8 @@ struct Running {
     // Field order: the client is dropped before the server process is killed.
     client: EmbedClient,
     server: LlamaServer,
+    /// Does the loaded mmproj take audio? Asked once, on the first audio batch.
+    audio: Option<bool>,
 }
 
 impl Running {
@@ -292,7 +307,7 @@ impl LlamaEmbedder {
                 Err(e) => return Err(EmbedError::Other(format!("/props: {e}"))),
             }
         }
-        Ok(Running { client, server })
+        Ok(Running { client, server, audio: None })
     }
 
     fn start_query(&mut self) -> Result<()> {
@@ -403,6 +418,24 @@ impl Embedder for LlamaEmbedder {
         finish(raw)
     }
 
+    fn embed_audio(&mut self, wavs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
+        self.index_client()?;
+        let r = self.index.as_mut().expect("started");
+        let ok = match r.audio {
+            Some(v) => v,
+            None => {
+                let v = r.client.audio_enabled().map_err(other)?;
+                r.audio = Some(v);
+                v
+            }
+        };
+        if !ok {
+            return Err(EmbedError::Other(NO_AUDIO.into()));
+        }
+        let refs: Vec<&[u8]> = wavs.iter().map(Vec::as_slice).collect();
+        finish(r.client.embed_audio_wav(&refs).map_err(other)?)
+    }
+
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>> {
         let raw = self.text_client()?.embed_queries(&[q]).map_err(other)?;
         finish(raw)?.into_iter().next().ok_or_else(|| EmbedError::Other("empty embedding response".into()))
@@ -497,6 +530,26 @@ mod tests {
         assert!(!e.models_present());
         assert!(matches!(e.embed_images(&[vec![1, 2, 3]]), Err(EmbedError::ModelsMissing)));
         assert!(matches!(e.embed_query("cat"), Err(EmbedError::ModelsMissing)));
+    }
+
+    #[test]
+    fn audio_defaults_to_unsupported_and_models_missing_is_reported() {
+        struct NoAudio;
+        impl Embedder for NoAudio {
+            fn embed_images(&mut self, _: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
+                Err(EmbedError::ModelsMissing)
+            }
+            fn embed_query(&mut self, _: &str) -> Result<Vec<f32>> {
+                Err(EmbedError::ModelsMissing)
+            }
+            fn meta(&self) -> IndexMeta {
+                index_meta("t")
+            }
+        }
+        let Err(EmbedError::Other(m)) = NoAudio.embed_audio(&[vec![1]]) else { panic!("default must refuse") };
+        assert!(is_no_audio(&m));
+        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        assert!(matches!(e.embed_audio(&[vec![1]]), Err(EmbedError::ModelsMissing)));
     }
 
     #[test]

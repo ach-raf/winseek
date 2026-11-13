@@ -21,6 +21,7 @@ use winseek_store::{ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS
 
 use super::chunk;
 use super::embedder::Embedder;
+use super::guard;
 use super::ocr::{Ocr, WinOcr};
 use super::parser::{parse_phased, ParseError, Parser};
 use super::pdf::{self, PdfError};
@@ -214,7 +215,7 @@ impl ParsePass {
             return Ok(());
         }
         let Some(path) = lock(store).live_path(hash).map_err(db)? else { return Ok(()) };
-        let Some(ocr) = std::fs::read(Path::new(&path)).ok().and_then(|b| self.ocr.recognize(&b).ok()) else { return Ok(()) };
+        let Some(ocr) = guard::read_guarded(Path::new(&path)).ok().and_then(|b| self.ocr.recognize(&b).ok()) else { return Ok(()) };
         if ocr.is_empty() || ocr_looks_poor(&ocr.text) {
             return Ok(()); // nothing readable: the parser reads the page itself
         }
@@ -300,7 +301,7 @@ impl ParsePass {
 
     /// The page image of a job: the standalone image re-read from disk, or the PDF page rendered.
     fn job_input(&self, job: &ParseJob) -> Input {
-        let bytes = match std::fs::read(Path::new(&job.path)) {
+        let bytes = match guard::read_guarded(Path::new(&job.path)) {
             Ok(b) => b,
             Err(e) => return Input::Fail(format!("read: {e}")),
         };
@@ -308,6 +309,7 @@ impl ParsePass {
             return Input::Skip("changed");
         }
         if job.page == 0 {
+            let Some(bytes) = super::heic::normalize(&job.path, bytes) else { return Input::Skip("no_heic_codec") };
             return match prepare_jpeg_long(&bytes, PARSE_LONG_SIDE) {
                 Ok(j) => Input::Jpeg(j),
                 Err(m) => Input::Fail(m),

@@ -63,10 +63,71 @@ pub fn tooltip_text(vols: &[VolumeStatus]) -> String {
     format!("winseek · {} files", thousands(total))
 }
 
+/// "about 12 min", "about 2 h 10 min", "under a minute".
+pub fn eta_text(secs: u64) -> String {
+    match secs {
+        0..=59 => "under a minute".into(),
+        60..=3599 => format!("about {} min", secs.div_ceil(60)),
+        _ => {
+            let m = (secs / 60) % 60;
+            if m == 0 { format!("about {} h", secs / 3600) } else { format!("about {} h {m} min", secs / 3600) }
+        }
+    }
+}
+
+/// Meaning-index progress for the tray: `None` when there is nothing to report (idle and caught up,
+/// models still missing, or the worker unavailable).
+pub fn tier1_line(state: &str, done: u64, pending: u64, rate: Option<f64>) -> Option<String> {
+    let total = done + pending;
+    match state {
+        "paused" if pending > 0 => Some(format!("meaning index paused · {} left", thousands(pending))),
+        "indexing" if total > 0 && pending > 0 => {
+            let pct = done * 100 / total;
+            let eta = crate::tier1::progress::eta_secs(pending, rate).map(|s| format!(" · {}", eta_text(s))).unwrap_or_default();
+            Some(format!("meaning index {pct}%{eta}"))
+        }
+        _ => None,
+    }
+}
+
+/// Full tray tooltip: the name-index line, plus the meaning-index line when there is one.
+pub fn tray_tip(vols: &[VolumeStatus], t1: Option<String>) -> String {
+    let base = tooltip_text(vols);
+    match t1 {
+        Some(l) => format!("{base} · {l}"),
+        None => base,
+    }
+}
+
+/// Disabled menu line mirroring the meaning-index progress.
+pub struct ProgressItem(pub tauri::menu::MenuItem<tauri::Wry>);
+
+/// How often the worker's speed is remembered for first-pass estimates.
+const REMEMBER_EVERY: Duration = Duration::from_secs(60);
+
+/// Read the worker once: `(tooltip fragment, menu text)`. Also remembers its speed now and then.
+fn tier1_progress(app: &AppHandle, last_remember: &mut std::time::Instant) -> (Option<String>, Option<String>) {
+    let Ok(t) = app.state::<crate::tier1::Handle>().get() else { return (None, None) };
+    let st = t.status();
+    let Some(s) = st.stats else { return (None, None) };
+    let rate = t.rate();
+    if rate.is_some() && last_remember.elapsed() >= REMEMBER_EVERY {
+        *last_remember = std::time::Instant::now();
+        t.remember_rate();
+    }
+    let line = tier1_line(&st.state, s.done, s.pending, rate);
+    let menu = line.as_ref().map(|l| {
+        let mut c = l.chars();
+        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+    });
+    (line, menu)
+}
+
 pub fn spawn(app: AppHandle) {
     std::thread::spawn(move || {
         let mut last_tip = String::new();
         let mut last_poll = std::time::Instant::now();
+        let mut last_remember = std::time::Instant::now();
         let mut real = false;
         loop {
             refresh_pause_item(&app); // picks up automatic (battery / full-screen) pauses
@@ -80,7 +141,11 @@ pub fn spawn(app: AppHandle) {
             }
             if last_poll.elapsed() >= Duration::from_secs(2) {
                 last_poll = std::time::Instant::now();
-                let tip = tooltip_text(&app.state::<AppState>().source().status());
+                let (t1_line, t1_menu) = tier1_progress(&app, &mut last_remember);
+                let tip = tray_tip(&app.state::<AppState>().source().status(), t1_line);
+                if let Some(item) = app.try_state::<ProgressItem>() {
+                    let _ = item.0.set_text(t1_menu.as_deref().unwrap_or("Meaning index: up to date"));
+                }
                 if tip != last_tip {
                     if let Some(tray) = app.tray_by_id(TRAY_ID) {
                         let _ = tray.set_tooltip(Some(&tip));
@@ -116,6 +181,27 @@ mod tests {
         assert_eq!(pause_label(Some(PauseReason::User)), "Resume indexing");
         assert!(pause_label(Some(PauseReason::Battery)).contains("battery"));
         assert!(pause_label(Some(PauseReason::Fullscreen)).contains("full screen"));
+    }
+
+    #[test]
+    fn eta_wording() {
+        assert_eq!(eta_text(5), "under a minute");
+        assert_eq!(eta_text(60), "about 1 min");
+        assert_eq!(eta_text(61), "about 2 min");
+        assert_eq!(eta_text(3600), "about 1 h");
+        assert_eq!(eta_text(3600 + 600), "about 1 h 10 min");
+    }
+
+    #[test]
+    fn tier1_tray_lines() {
+        assert_eq!(tier1_line("indexing", 450, 550, Some(5.0)).unwrap(), "meaning index 45% · about 2 min");
+        assert_eq!(tier1_line("indexing", 450, 550, None).unwrap(), "meaning index 45%");
+        assert_eq!(tier1_line("paused", 1, 1234, None).unwrap(), "meaning index paused · 1,234 left");
+        assert_eq!(tier1_line("idle", 10, 0, None), None);
+        assert_eq!(tier1_line("models_missing", 0, 100, None), None);
+        let tip = tray_tip(&[v("C", 5, 5, "live", None, None)], Some("meaning index 45%".into()));
+        assert_eq!(tip, "winseek · 10 files · meaning index 45%");
+        assert!(tip.len() < 128, "tray tooltips are limited to 127 characters");
     }
 
     #[test]

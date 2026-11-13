@@ -13,8 +13,9 @@ use winseek_ipc::pipe::connect;
 use winseek_ipc::{read_message, write_message, ChangeKind, Request, Response, PIPE_NAME};
 use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
-use super::crawler::{crawl, kind_of, skip_attrs, KIND_CODE, KIND_IMAGE};
+use super::crawler::{crawl, kind_in, kind_of, skip_attrs, KIND_CODE, KIND_IMAGE};
 use super::gitignore;
+use super::guard;
 use super::identity::{file_info, FileInfo, ATTR_DIRECTORY};
 use super::Tier1;
 
@@ -40,7 +41,7 @@ pub fn map_change(
     old_path: Option<&str>,
     is_dir: bool,
 ) -> Vec<StoreOp> {
-    let wanted = |p: &str| kind_of(p, index_code).is_some() && in_scope_with(scopes, ignore, p);
+    let wanted = |p: &str| kind_in(p, index_code, guard::in_code_project(p)).is_some() && in_scope_with(scopes, ignore, p);
     match kind {
         ChangeKind::Created | ChangeKind::Modified => {
             if !is_dir && wanted(path) {
@@ -103,7 +104,7 @@ pub fn apply_ops(
     let mut changed = 0;
     let upsert = |store: &mut Store, path: &str| -> bool {
         match probe(path) {
-            Ok(i) => store.upsert_file(&i.key, path, i.size, i.mtime_ms, kind_of(path, true).unwrap_or(KIND_IMAGE)).is_ok(),
+            Ok(i) => store.upsert_file(&i.key, path, i.size, i.mtime_ms, kind_in(path, true, guard::in_code_project(path)).unwrap_or(KIND_IMAGE)).is_ok(),
             Err(_) => false, // gone again before we got to it; its Deleted event follows
         }
     };
@@ -131,6 +132,68 @@ pub fn apply_ops(
     changed
 }
 
+/// Source edits come in bursts (save, format, build, git): the code index re-reads a file only
+/// once its folder has been quiet this long.
+pub const CODE_QUIET: Duration = Duration::from_secs(60);
+
+/// Per-path "quiet since" bookkeeping for code files. Pure: time is passed in.
+#[derive(Debug, Default)]
+pub struct CodeDebounce {
+    due: std::collections::HashMap<String, std::time::Instant>,
+}
+
+impl CodeDebounce {
+    /// A change to `path` at `now`: (re)start its quiet period.
+    pub fn touch(&mut self, path: &str, now: std::time::Instant) {
+        self.due.insert(path.to_lowercase(), now + CODE_QUIET);
+    }
+    pub fn cancel(&mut self, path: &str) {
+        self.due.remove(&path.to_lowercase());
+    }
+    pub fn cancel_under(&mut self, dir: &str) {
+        let d = format!("{}\\", dir.trim_end_matches('\\').to_lowercase());
+        self.due.retain(|p, _| !p.starts_with(&d));
+    }
+    pub fn is_empty(&self) -> bool {
+        self.due.is_empty()
+    }
+    /// Paths whose quiet period is over; they leave the table.
+    pub fn take_due(&mut self, now: std::time::Instant) -> Vec<String> {
+        let ready: Vec<String> = self.due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
+        for p in &ready {
+            self.due.remove(p);
+        }
+        ready
+    }
+}
+
+/// Split `ops` into the ones to apply now and code upserts to hold back; removals and renames
+/// cancel the held path. `is_code` says whether a path belongs to the code index.
+pub fn defer_code(ops: Vec<StoreOp>, is_code: &dyn Fn(&str) -> bool, deb: &mut CodeDebounce, now: std::time::Instant) -> Vec<StoreOp> {
+    let mut now_ops = Vec::new();
+    for op in ops {
+        match &op {
+            StoreOp::Upsert { path } if is_code(path) => deb.touch(path, now),
+            StoreOp::RemovePath { path } => {
+                deb.cancel(path);
+                now_ops.push(op);
+            }
+            StoreOp::RemoveUnder { path } => {
+                deb.cancel_under(path);
+                now_ops.push(op);
+            }
+            StoreOp::RenamePath { old, new } if is_code(new) => {
+                // the row moves now, the re-read waits for quiet
+                deb.cancel(old);
+                deb.touch(new, now);
+                now_ops.push(op);
+            }
+            _ => now_ops.push(op),
+        }
+    }
+    now_ops
+}
+
 const BACKOFF_START: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
 
@@ -144,6 +207,7 @@ pub fn next_backoff(cur: Duration) -> Duration {
 pub fn run(t: Arc<Tier1>) {
     super::lower_thread_priority();
     let mut backoff = BACKOFF_START;
+    let mut held = CodeDebounce::default();
     loop {
         let snap = t.snapshot();
         let (scopes, gen) = (&snap.scopes, snap.gen);
@@ -183,6 +247,8 @@ pub fn run(t: Arc<Tier1>) {
             match rx.recv_timeout(Duration::from_millis(500)) {
                 Ok(Ok(Response::Change { kind, path, old_path, is_dir })) => {
                     let ops = map_change(scopes, &snap.ignore, snap.index_code, kind, &path, old_path.as_deref(), is_dir);
+                    let is_code = |p: &str| kind_in(p, true, guard::in_code_project(p)) == Some(KIND_CODE);
+                    let ops = defer_code(ops, &is_code, &mut held, std::time::Instant::now());
                     if !ops.is_empty() {
                         t.apply_ops(&ops);
                     }
@@ -190,6 +256,12 @@ pub fn run(t: Arc<Tier1>) {
                 Ok(Ok(_)) => {} // Error / unrelated: ignore
                 Ok(Err(_)) | Err(RecvTimeoutError::Disconnected) => break, // pipe closed: reconnect
                 Err(RecvTimeoutError::Timeout) => {}
+            }
+            if !held.is_empty() {
+                let due: Vec<StoreOp> = held.take_due(std::time::Instant::now()).into_iter().map(|path| StoreOp::Upsert { path }).collect();
+                if !due.is_empty() {
+                    t.apply_ops(&due);
+                }
             }
             if t.snapshot().gen != gen {
                 break; // resubscribe with the new roots
@@ -377,6 +449,33 @@ mod tests {
         assert_eq!(run(&mut s, vec![StoreOp::RemovePath { path: r"C:\Pix\b.jpg".into() }], &mut deferred), 1);
         assert_eq!(run(&mut s, vec![StoreOp::RemoveUnder { path: r"C:\Pix".into() }], &mut deferred), 1);
         assert_eq!(s.stats().unwrap().files, 0);
+    }
+
+    #[test]
+    fn code_edits_wait_for_a_quiet_minute_and_removals_cancel_them() {
+        use std::time::Instant;
+        let t0 = Instant::now();
+        let is_code = |p: &str| p.ends_with(".rs");
+        let mut deb = CodeDebounce::default();
+        let up = |p: &str| StoreOp::Upsert { path: p.into() };
+        // a burst of saves: code is held, documents go through at once
+        let now_ops = defer_code(vec![up(r"C:\p\a.rs"), up(r"C:\p\n.docx")], &is_code, &mut deb, t0);
+        assert_eq!(now_ops, [up(r"C:\p\n.docx")]);
+        assert!(deb.take_due(t0 + CODE_QUIET - Duration::from_secs(1)).is_empty());
+        // another save restarts the clock
+        defer_code(vec![up(r"C:\P\A.rs")], &is_code, &mut deb, t0 + Duration::from_secs(50));
+        assert!(deb.take_due(t0 + CODE_QUIET + Duration::from_secs(5)).is_empty(), "quiet period restarted");
+        assert_eq!(deb.take_due(t0 + Duration::from_secs(50) + CODE_QUIET), [r"c:\p\a.rs"]);
+        assert!(deb.is_empty());
+        // deleting (or moving away) a held file drops it; folders too
+        defer_code(vec![up(r"C:\p\b.rs"), up(r"C:\p\sub\c.rs")], &is_code, &mut deb, t0);
+        let ops = defer_code(vec![StoreOp::RemovePath { path: r"C:\p\b.rs".into() }, StoreOp::RemoveUnder { path: r"C:\p\sub".into() }], &is_code, &mut deb, t0);
+        assert_eq!(ops.len(), 2);
+        assert!(deb.is_empty());
+        // a rename moves the row now and re-reads later
+        let ops = defer_code(vec![StoreOp::RenamePath { old: r"C:\p\x.rs".into(), new: r"C:\p\y.rs".into() }], &is_code, &mut deb, t0);
+        assert_eq!(ops.len(), 1);
+        assert_eq!(deb.take_due(t0 + CODE_QUIET), [r"c:\p\y.rs"]);
     }
 
     #[test]

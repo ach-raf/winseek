@@ -393,6 +393,7 @@ impl Tier1 {
                     mtime,
                     snippet: None,
                     page: locator_page(h.locator.as_deref()),
+                    at: super::media::locator_time(h.locator.as_deref()),
                     source: "meaning",
                     boxes: None,
                 }

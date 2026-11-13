@@ -165,6 +165,11 @@ pub fn extract_file(path: &str, bytes: &[u8]) -> Res<Extracted> {
         "ods" | "ots" => odf(bytes, OdfKind::Sheet)?,
         "odp" | "otp" => odf(bytes, OdfKind::Slides)?,
         "rtf" => plain(bytes, true)?,
+        // Notebooks: cell sources only, never the outputs (huge, and they leak data).
+        "ipynb" => {
+            let text = super::guard::notebook_text(bytes).ok_or(ExtractError::Skip("not_notebook"))?;
+            plain(text.as_bytes(), false)?
+        }
         _ => plain(bytes, false)?,
     };
     if doc.text.trim().is_empty() {

@@ -22,8 +22,14 @@ use winseek_llama::Manifest;
 
 use super::hitbox::HitBox;
 
-/// Pages read per document; later pages are ignored.
+/// Pages [`read_pdf`] returns at most (the agent's whole-document read).
 pub const MAX_PAGES: usize = 300;
+/// Pages of a document indexed in the first pass: searchable at once.
+pub const HEAD_PAGES: u32 = 30;
+/// Most pages indexed per document, tail included; later pages are ignored.
+pub const TAIL_PAGE_CAP: u32 = 5000;
+/// Pages per tail slice (one pass of the background tail work).
+pub const TAIL_SLICE: u32 = 30;
 /// Larger files are skipped (`too_large`).
 pub const MAX_FILE_BYTES: u64 = 50 * 1024 * 1024;
 /// A page with fewer non-blank characters than this is treated as a scan.
@@ -160,11 +166,17 @@ fn render_jpeg(page: &PdfPage, long: u32) -> Result<Vec<u8>, PdfError> {
 
 /// Text of every page; scanned pages are rendered when `render_scanned`.
 pub fn read_pdf(pdfium: &Pdfium, bytes: &[u8], render_scanned: bool) -> Result<PdfRead, PdfError> {
+    read_pdf_range(pdfium, bytes, render_scanned, 1, MAX_PAGES as u32)
+}
+
+/// [`read_pdf`] for the 1-based pages `from..=to` (clamped to the document). `total_pages` is the
+/// whole document's count, so the caller knows what is left.
+pub fn read_pdf_range(pdfium: &Pdfium, bytes: &[u8], render_scanned: bool, from: u32, to: u32) -> Result<PdfRead, PdfError> {
     let doc = pdfium.load_pdf_from_byte_slice(bytes, None).map_err(map_load)?;
     let pages = doc.pages();
     let total = pages.len() as usize;
     let mut out = Vec::new();
-    for i in 0..total.min(MAX_PAGES) {
+    for i in (from.max(1) as usize - 1)..total.min(to as usize) {
         let Ok(page) = pages.get(i as i32) else { continue };
         let text = page.text().map(|t| t.all()).unwrap_or_default().replace("\r\n", "\n").replace('\r', "\n");
         let scanned = is_scanned_text(&text);
@@ -389,6 +401,20 @@ mod tests {
         assert_eq!(r.total_pages as usize, MAX_PAGES + 5);
         assert_eq!(r.pages.len(), MAX_PAGES);
         assert_eq!(r.pages.last().unwrap().page as usize, MAX_PAGES);
+    }
+
+    #[test]
+    fn page_ranges_slice_the_document() {
+        let Some(p) = pdfium() else { return };
+        let pages: Vec<Option<&str>> = (1..=7).map(|_| Some("same words on every page")).collect();
+        let bytes = make_pdf(p, &pages);
+        let r = read_pdf_range(p, &bytes, false, 3, 5).unwrap();
+        assert_eq!(r.total_pages, 7);
+        assert_eq!(r.pages.iter().map(|p| p.page).collect::<Vec<_>>(), [3, 4, 5]);
+        let r = read_pdf_range(p, &bytes, false, 6, 99).unwrap();
+        assert_eq!(r.pages.iter().map(|p| p.page).collect::<Vec<_>>(), [6, 7], "clamped to the document");
+        assert!(read_pdf_range(p, &bytes, false, 8, 20).unwrap().pages.is_empty());
+        assert_eq!(read_pdf_range(p, &bytes, false, 0, 2).unwrap().pages.len(), 2, "0 reads like 1");
     }
 
     #[test]

@@ -18,9 +18,11 @@ use winseek_llama::prep::prepare_jpeg;
 use winseek_store::{ChunkVec, PendingFile, PendingVec, Store, TextOnlyFile, VecKind};
 
 use super::chunk::{self, Chunk};
-use super::crawler::{KIND_IMAGE, KIND_PDF};
+use super::crawler::{KIND_AUDIO, KIND_IMAGE, KIND_PDF, KIND_VIDEO};
 use super::embedder::{is_gpu_busy, EmbedError, Embedder};
 use super::extract::{self, ExtractError};
+use super::guard;
+use super::media::{self, Ffmpeg, MediaTool};
 use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
 use super::pdf::{self, PdfError};
 use super::route;
@@ -92,6 +94,8 @@ pub struct Processor {
     cursor_wrapped: Instant,
     /// Upgrade attempts that failed to embed, per file id.
     upgrade_strikes: HashMap<i64, u32>,
+    /// ffmpeg for audio / video files (tests inject a fake).
+    media: Box<dyn MediaTool + Send>,
 }
 
 impl Default for Processor {
@@ -113,6 +117,8 @@ const IMAGE_EMBED_BATCH: usize = 8;
 /// Text chunks kept per PDF page / per PDF.
 const PDF_PAGE_CHUNKS: usize = 8;
 const PDF_MAX_CHUNKS: usize = 400;
+/// Text chunks one document may hold in all, tail included (the first pass keeps [`PDF_MAX_CHUNKS`]).
+const PDF_TAIL_MAX_CHUNKS: u32 = 20_000;
 /// How long PDFs are left alone after pdfium failed to load.
 const PDF_RETRY: Duration = Duration::from_secs(60);
 /// Text-only files upgraded per pass.
@@ -149,7 +155,15 @@ impl Processor {
             img_cursor: 0,
             cursor_wrapped: Instant::now(),
             upgrade_strikes: HashMap::new(),
+            media: Box::new(Ffmpeg),
         }
+    }
+
+    /// Replace the ffmpeg sidecar (tests).
+    #[cfg(test)]
+    fn with_media(mut self, m: Box<dyn MediaTool + Send>) -> Self {
+        self.media = m;
+        self
     }
 
     /// Callback that starts the pdfium download when PDFs are queued but the DLL is missing.
@@ -188,11 +202,12 @@ impl Processor {
 
     /// Kinds to leave queued for now.
     fn excluded_kinds(&mut self, store: &Mutex<Store>) -> Vec<&'static str> {
-        if self.pdf_ready(store) {
-            vec![]
-        } else {
-            vec![KIND_PDF]
+        let mut kinds = if self.pdf_ready(store) { vec![] } else { vec![KIND_PDF] };
+        // Audio / video wait for the ffmpeg sidecar, like PDFs wait for pdfium.
+        if !self.media.available() {
+            kinds.extend([KIND_AUDIO, KIND_VIDEO]);
         }
+        kinds
     }
 
     /// OCR `bytes` when the file looks like a screenshot. `Ok(None)` = not a screenshot or no
@@ -223,6 +238,13 @@ impl Processor {
         if pending.is_empty() {
             return Ok(Pass::Idle);
         }
+        // Audio / video files take long (decode + dozens of windows): a pass that finds one handles
+        // only those; the rest of the batch stays queued for the next pass.
+        let (media_files, pending): (Vec<PendingFile>, Vec<PendingFile>) =
+            pending.into_iter().partition(|f| f.kind == KIND_AUDIO || f.kind == KIND_VIDEO);
+        if !media_files.is_empty() {
+            return self.run_media(store, embedder, paused, &media_files);
+        }
         let mut handled = 0usize;
         let mut prepared: Vec<Prepared> = Vec::new();
         let mut jpegs: Vec<Vec<u8>> = Vec::new();
@@ -243,11 +265,16 @@ impl Processor {
             if f.size > MAX_FILE_BYTES {
                 return Err(String::new());
             }
-            let bytes = std::fs::read(Path::new(&f.path)).map_err(|e| format!("read: {e}"))?;
+            let bytes = guard::read_guarded(Path::new(&f.path)).map_err(|e| match guard::skip_reason(&e) {
+                Some(r) => format!("@{r}"),
+                None => format!("read: {e}"),
+            })?;
             if bytes.len() as u64 > MAX_FILE_BYTES {
                 return Err(String::new());
             }
             let hash = sha256_hex(&bytes);
+            // HEIC/HEIF: decoded by the Windows codec, the pipeline gets a JPEG (hash stays the file's).
+            let bytes = super::heic::normalize(&f.path, bytes).ok_or_else(|| "@no_heic_codec".to_string())?;
             Ok((bytes, hash))
         });
         let mut todo: Vec<(PendingFile, Vec<u8>, String)> = Vec::new();
@@ -256,6 +283,11 @@ impl Processor {
                 Ok(x) => x,
                 Err(e) if e.is_empty() => {
                     lock(store).skip(f.id, "file larger than 64 MB").map_err(|e| e.to_string())?;
+                    handled += 1;
+                    continue;
+                }
+                Err(e) if e.starts_with('@') => {
+                    lock(store).skip(f.id, &e[1..]).map_err(|e| e.to_string())?;
                     handled += 1;
                     continue;
                 }
@@ -370,6 +402,30 @@ impl Processor {
         Ok(Pass::Progress(handled))
     }
 
+    /// Audio / video files of one pass, one after the other (see [`media::run_file`]).
+    fn run_media(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: &Mutex<Box<dyn Embedder + Send>>,
+        paused: &AtomicBool,
+        files: &[PendingFile],
+    ) -> Result<Pass, String> {
+        let mut handled = 0usize;
+        let done = |handled: usize, otherwise: Pass| if handled > 0 { Pass::Progress(handled) } else { otherwise };
+        for f in files {
+            match media::run_file(&*self.media, store, embedder, paused, f, &mut self.strikes, MAX_STRIKES)? {
+                media::Step::Handled => handled += 1,
+                media::Step::Paused => return Ok(done(handled, Pass::Paused)),
+                media::Step::ModelsMissing => return Ok(done(handled, Pass::ModelsMissing)),
+                media::Step::Retry(msg) => {
+                    lock(embedder).reset();
+                    return Ok(done(handled, Pass::EmbedFailed(msg)));
+                }
+            }
+        }
+        Ok(Pass::Progress(handled))
+    }
+
     /// The text route for one document / code / PDF file: read, hash (content dedup as for images),
     /// extract, chunk, embed. FTS gets every chunk. Without an embedder (`None`, FTS-only mode) or when
     /// the models turn out to be missing the file is stored `text_only` with the vectors it owes; if
@@ -385,9 +441,14 @@ impl Processor {
         if f.size > limit {
             return lock(store).skip(f.id, "too_large").map_err(db);
         }
-        let bytes = match std::fs::read(Path::new(&f.path)) {
+        let bytes = match guard::read_guarded(Path::new(&f.path)) {
             Ok(b) => b,
-            Err(e) => return lock(store).fail(f.id, &format!("read: {e}")).map_err(db),
+            Err(e) => {
+                return match guard::skip_reason(&e) {
+                    Some(r) => lock(store).skip(f.id, r).map_err(db),
+                    None => lock(store).fail(f.id, &format!("read: {e}")).map_err(db),
+                }
+            }
         };
         if bytes.len() as u64 > limit {
             return lock(store).skip(f.id, "too_large").map_err(db);
@@ -397,8 +458,14 @@ impl Processor {
             return lock(store).complete(f.id, &hash, &[], &[]).map_err(db);
         }
         let items = if f.kind == KIND_PDF {
-            match self.extract_pdf(store, &bytes) {
-                Ok(items) => items,
+            match self.extract_pdf(store, &bytes, 1, pdf::HEAD_PAGES, 0, PDF_MAX_CHUNKS) {
+                Ok((items, total_pages)) => {
+                    // Long documents: the head is searchable at once, the rest follows in the background.
+                    if total_pages > pdf::HEAD_PAGES {
+                        lock(store).queue_tail(&hash, pdf::HEAD_PAGES + 1, total_pages.min(pdf::TAIL_PAGE_CAP)).map_err(db)?;
+                    }
+                    items
+                }
                 Err(Stop::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
                 Err(Stop::Fail(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
                 Err(Stop::Defer) => {
@@ -438,17 +505,28 @@ impl Processor {
 
     /// Text chunks per page; scanned pages are OCR-ed and also kept as page images. Chunk numbers
     /// are unique across texts and images (a scanned page's image comes before its OCR text).
-    fn extract_pdf(&mut self, store: &Mutex<Store>, bytes: &[u8]) -> Result<Vec<Item>, Stop> {
+    /// Reads the 1-based pages `from..=to`, numbering chunks from `first_chunk` and keeping at most
+    /// `max_text_chunks` text chunks; also returns the document's page count.
+    fn extract_pdf(
+        &mut self,
+        store: &Mutex<Store>,
+        bytes: &[u8],
+        from: u32,
+        to: u32,
+        first_chunk: u32,
+        max_text_chunks: usize,
+    ) -> Result<(Vec<Item>, u32), Stop> {
         let rt = (self.pdf_runtime)().map_err(|_| Stop::Defer)?;
-        let read = match pdf::read_pdf(rt, bytes, true) {
+        let read = match pdf::read_pdf_range(rt, bytes, true, from, to) {
             Ok(r) => r,
             Err(PdfError::Encrypted) => return Err(Stop::Skip("encrypted")),
             Err(PdfError::Failed(m)) => return Err(Stop::Fail(m)),
             Err(PdfError::Unavailable(_)) => return Err(Stop::Defer),
         };
         let mut items: Vec<Item> = Vec::new();
-        let mut next = 0u32;
+        let mut next = first_chunk;
         let mut text_chunks = 0usize;
+        let total_pages = read.total_pages;
         let (mut ocr_unavailable, mut ocr_ran) = (false, false);
         for page in read.pages {
             let mut page_texts: Vec<Chunk> = chunk::chunk_page(&page.text, page.page, PDF_PAGE_CHUNKS);
@@ -471,7 +549,7 @@ impl Processor {
                 next += 1;
             }
             for c in page_texts {
-                if text_chunks >= PDF_MAX_CHUNKS {
+                if text_chunks >= max_text_chunks {
                     break;
                 }
                 items.push(Item::Text { chunk: next, text: c.text, locator: c.locator });
@@ -480,7 +558,76 @@ impl Processor {
             }
         }
         self.record_ocr_flag(store, ocr_unavailable, ocr_ran);
-        Ok(items)
+        Ok((items, total_pages))
+    }
+
+    // ------------------------------------------------------------ tail of long documents
+
+    /// Index the next slice of one long document's tail (see `winseek_store::TailJob`). Runs only when
+    /// nothing else is waiting; returns `Idle` when no tail is queued. A slice that cannot be embedded
+    /// is retried, then stored text-only; a file that changed since the head was indexed is dropped.
+    pub fn run_tail_pass(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: &Mutex<Box<dyn Embedder + Send>>,
+        paused: &AtomicBool,
+    ) -> Result<Pass, String> {
+        if paused.load(Ordering::Relaxed) {
+            return Ok(Pass::Paused);
+        }
+        if self.pdf_block_until.is_some_and(|t| Instant::now() < t) {
+            return Ok(Pass::Idle);
+        }
+        let db = |e: winseek_store::Error| e.to_string();
+        let Some(job) = lock(store).next_tail(1).map_err(db)?.into_iter().next() else { return Ok(Pass::Idle) };
+        let bytes = match std::fs::read(Path::new(&job.path)) {
+            Ok(b) if sha256_hex(&b) == job.hash => b,
+            Ok(_) => return lock(store).fail_tail(&job.hash, "file changed").map_err(db).map(|_| Pass::Progress(1)),
+            Err(e) => {
+                let n = lock(store).bump_tail(&job.hash, &format!("read: {e}")).map_err(db)?;
+                if n >= MAX_STRIKES {
+                    lock(store).fail_tail(&job.hash, &format!("read: {e}")).map_err(db)?;
+                }
+                return Ok(Pass::Progress(1));
+            }
+        };
+        let to = job.next_page.saturating_add(pdf::TAIL_SLICE - 1).min(job.total);
+        let (first, budget) = {
+            let n = lock(store).next_chunk(&job.hash).map_err(db)?;
+            (n, PDF_TAIL_MAX_CHUNKS.saturating_sub(n) as usize)
+        };
+        let (items, _) = match self.extract_pdf(store, &bytes, job.next_page, to, first, budget) {
+            Ok(x) => x,
+            Err(Stop::Defer) => {
+                self.pdf_block_until = Some(Instant::now() + PDF_RETRY);
+                return Ok(Pass::Idle);
+            }
+            Err(Stop::Skip(reason)) => return lock(store).fail_tail(&job.hash, reason).map_err(db).map(|_| Pass::Progress(1)),
+            Err(Stop::Fail(msg)) => return lock(store).fail_tail(&job.hash, &msg).map_err(db).map(|_| Pass::Progress(1)),
+        };
+        // Out of chunk budget: whatever is stored stays, the rest of the document is not indexed.
+        let last = if budget == 0 { job.total } else { to };
+        let vectors = if items.is_empty() {
+            Vec::new()
+        } else {
+            match embed_items(embedder, &items) {
+                Ok(v) => v,
+                Err(EmbedError::ModelsMissing) => return Ok(Pass::ModelsMissing),
+                Err(EmbedError::Other(msg)) if is_gpu_busy(&msg) => return Ok(Pass::EmbedFailed(msg)),
+                Err(EmbedError::Other(msg)) => {
+                    if lock(store).bump_tail(&job.hash, &msg).map_err(db)? < UPGRADE_STRIKES {
+                        lock(embedder).reset();
+                        return Ok(Pass::EmbedFailed(msg));
+                    }
+                    Vec::new() // text stays searchable
+                }
+            }
+        };
+        lock(store).append_tail(&job.hash, last + 1, &vectors, &item_texts(&items)).map_err(db)?;
+        for page in scanned_pages(&items) {
+            lock(store).queue_parse(&job.hash, page, "scanned_pdf").map_err(db)?;
+        }
+        Ok(Pass::Progress(1))
     }
 
     // ------------------------------------------------------------ FTS-only mode (no models yet)
@@ -492,7 +639,7 @@ impl Processor {
             return Ok(Pass::Paused);
         }
         let mut skip = self.excluded_kinds(store);
-        skip.push(KIND_IMAGE);
+        skip.extend([KIND_IMAGE, KIND_AUDIO, KIND_VIDEO]); // vectors only: nothing to extract without models
         let pending = lock(store).next_pending_where(BATCH, &[], &skip, 0).map_err(|e| e.to_string())?;
         let mut handled = 0usize;
         for f in pending {
@@ -534,14 +681,12 @@ impl Processor {
             if !f.path.to_ascii_lowercase().ends_with(".png") {
                 return Ok(false);
             }
-            let mut head = vec![0u8; 4096];
-            let n = std::fs::File::open(&f.path).and_then(|mut h| std::io::Read::read(&mut h, &mut head)).unwrap_or(0);
-            head.truncate(n);
+            let head = guard::read_head(Path::new(&f.path), 4096).unwrap_or_default();
             if !ocr::is_screenshot(&f.path, ocr::image_dimensions(&head), self.screenshots_dir.as_deref()) {
                 return Ok(false);
             }
         }
-        let Ok(bytes) = std::fs::read(Path::new(&f.path)) else { return Ok(false) };
+        let Ok(bytes) = guard::read_guarded(Path::new(&f.path)) else { return Ok(false) };
         if bytes.len() as u64 > MAX_FILE_BYTES {
             return Ok(false);
         }
@@ -612,6 +757,7 @@ impl Processor {
                         }
                     }
                     VecKind::Image | VecKind::Page => images.push(p),
+                    VecKind::Audio => {} // audio / video never wait text-only: they are not re-derivable here
                 }
             }
             if !images.is_empty() {
@@ -647,7 +793,7 @@ impl Processor {
     /// Image vectors a text-only file still owes: PDF pages are re-rendered, an image file is re-read
     /// (both only if the file is unchanged). Anything that cannot be rebuilt is dropped.
     fn rebuild_images(&mut self, f: &TextOnlyFile, wanted: &[&PendingVec]) -> Vec<Item> {
-        let Ok(bytes) = std::fs::read(Path::new(&f.path)) else { return vec![] };
+        let Ok(bytes) = guard::read_guarded(Path::new(&f.path)) else { return vec![] };
         if sha256_hex(&bytes) != f.hash {
             return vec![];
         }
@@ -670,7 +816,10 @@ impl Processor {
         } else {
             wanted
                 .first()
-                .and_then(|p| Some(Item::Image { chunk: p.chunk, jpeg: prepare_jpeg(&bytes).ok()?, locator: locator_of(p) }))
+                .and_then(|p| {
+                    let bytes = super::heic::normalize(&f.path, bytes)?;
+                    Some(Item::Image { chunk: p.chunk, jpeg: prepare_jpeg(&bytes).ok()?, locator: locator_of(p) })
+                })
                 .into_iter()
                 .collect()
         }
@@ -1022,6 +1171,60 @@ mod tests {
         let e = emb(fake);
         assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::ModelsMissing);
         assert_eq!(store.lock().unwrap().stats().unwrap().pending, 1, "file stays queued");
+    }
+
+    struct StubMedia(bool);
+    impl MediaTool for StubMedia {
+        fn available(&self) -> bool {
+            self.0
+        }
+        fn decode_audio(&self, _: &Path) -> Result<media::Pcm, String> {
+            Ok(media::Pcm::from_bytes(vec![0; 32_000 * 40]))
+        }
+        fn shot_frames(&self, _: &Path, _: usize) -> Result<Vec<media::Frame>, String> {
+            Ok(vec![])
+        }
+    }
+
+    struct AudioOk;
+    impl Embedder for AudioOk {
+        fn embed_images(&mut self, j: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(j.iter().map(|b| vec_of(b)).collect())
+        }
+        fn embed_audio(&mut self, w: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(w.iter().map(|b| vec_of(&b[..64])).collect())
+        }
+        fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
+            Ok(vec_of(b"q"))
+        }
+        fn meta(&self) -> IndexMeta {
+            index_meta("test")
+        }
+    }
+
+    #[test]
+    fn audio_and_video_wait_for_ffmpeg_without_blocking_images() {
+        let (store, dir) = setup();
+        add(&store, dir.path(), "a.png", &png(8, 8, 1), 1);
+        add_kind(&store, dir.path(), "memo.mp3", b"audio-bytes", 2, "audio");
+        add_kind(&store, dir.path(), "clip.mp4", b"video-bytes", 3, "video");
+        let e: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(AudioOk));
+        let go = AtomicBool::new(false);
+
+        let mut pr = Processor::default().with_media(Box::new(StubMedia(false)));
+        assert!(pr.has_index_work(&store), "the image is work");
+        assert_eq!(pr.run_pass(&store, &e, &go).unwrap(), Pass::Progress(1), "only the image: media stays queued");
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 2);
+        assert!(!pr.has_index_work(&store), "queued media is not work while ffmpeg is missing");
+        assert_eq!(pr.run_fts_pass(&store, &go).unwrap(), Pass::Idle, "the FTS-only pass leaves media alone");
+        assert_eq!(store.lock().unwrap().stats().unwrap().pending, 2);
+
+        let mut pr = Processor::default().with_media(Box::new(StubMedia(true)));
+        assert!(pr.has_index_work(&store));
+        assert_eq!(pr.run_pass(&store, &e, &go).unwrap(), Pass::Progress(2), "both media files in one pass");
+        let st = store.lock().unwrap().stats().unwrap();
+        assert_eq!((st.done, st.pending, st.failed), (3, 0, 0));
+        assert_eq!(pr.run_pass(&store, &e, &go).unwrap(), Pass::Idle);
     }
 
     #[test]
@@ -1424,6 +1627,64 @@ mod tests {
         let s = store.lock().unwrap();
         assert_eq!((s.stats().unwrap().done, s.stats().unwrap().vectors), (1, 1));
         assert_eq!(s.get_setting(SETTING_OCR_UNAVAILABLE).unwrap().as_deref(), Some("1"));
+    }
+
+    #[test]
+    fn long_pdf_head_is_searchable_at_once_and_the_tail_follows_behind_everything() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        let words: Vec<String> = (1..=34).map(|n| format!("pagemarker{n:02}")).collect();
+        let pages: Vec<Option<&str>> = words.iter().map(|w| Some(w.as_str())).collect();
+        add_kind(&store, dir.path(), "long.pdf", &make_pdf(rt, &pages), 1, "pdf");
+        let (ocr, _) = fake_ocr(None);
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        let paused = AtomicBool::new(false);
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Progress(1));
+        let hits = |w: &str| store.lock().unwrap().search_text(&winseek_store::fts_escape(w), 5).unwrap().len();
+        assert_eq!((hits("pagemarker01"), hits("pagemarker30")), (1, 1), "the first 30 pages are searchable after one pass");
+        assert_eq!((hits("pagemarker31"), hits("pagemarker34")), (0, 0), "the rest waits");
+        {
+            let s = store.lock().unwrap();
+            assert_eq!(s.stats().unwrap().done, 1);
+            assert_eq!(s.tail_counts().unwrap(), winseek_store::TailCounts { queued: 1, pages_left: 4 });
+        }
+        // Nothing else is pending: the tail goes now, and appends without touching the head.
+        assert_eq!(p.run_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Idle);
+        assert_eq!(p.run_tail_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Progress(1));
+        assert_eq!((hits("pagemarker31"), hits("pagemarker34"), hits("pagemarker01")), (1, 1, 1));
+        assert_eq!(p.run_tail_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Idle, "tail finished");
+        let s = store.lock().unwrap();
+        assert_eq!(s.tail_counts().unwrap(), winseek_store::TailCounts::default());
+        let page_of = |w: &str| {
+            let h = s.search_text(&winseek_store::fts_escape(w), 5).unwrap();
+            serde_json::from_str::<serde_json::Value>(h[0].locator.as_deref().unwrap()).unwrap()["page"].as_u64().unwrap()
+        };
+        assert_eq!((page_of("pagemarker31"), page_of("pagemarker34")), (31, 34), "tail chunks keep their page numbers");
+    }
+
+    #[test]
+    fn a_short_pdf_queues_no_tail_and_a_changed_file_drops_its_tail() {
+        let Some(rt) = pdfium() else { return };
+        let (store, dir) = setup();
+        add_kind(&store, dir.path(), "short.pdf", &make_pdf(rt, &[Some("only page")]), 1, "pdf");
+        let (ocr, _) = fake_ocr(None);
+        let mut p = Processor::with_ocr(ocr, None);
+        p.pdf_runtime = test_runtime;
+        let paused = AtomicBool::new(false);
+        p.run_pass(&store, &doc_embedder(), &paused).unwrap();
+        assert_eq!(store.lock().unwrap().tail_counts().unwrap(), winseek_store::TailCounts::default());
+
+        let words: Vec<String> = (1..=32).map(|n| format!("chapter{n:02}")).collect();
+        let pages: Vec<Option<&str>> = words.iter().map(|w| Some(w.as_str())).collect();
+        add_kind(&store, dir.path(), "long.pdf", &make_pdf(rt, &pages), 2, "pdf");
+        p.run_pass(&store, &doc_embedder(), &paused).unwrap();
+        assert_eq!(store.lock().unwrap().tail_counts().unwrap().queued, 1);
+        std::fs::write(dir.path().join("long.pdf"), b"replaced after the head was indexed").unwrap();
+        assert_eq!(p.run_tail_pass(&store, &doc_embedder(), &paused).unwrap(), Pass::Progress(1));
+        let s = store.lock().unwrap();
+        assert_eq!(s.tail_counts().unwrap().queued, 0, "content no longer matches: tail dropped");
+        assert_eq!(s.search_text("chapter32", 5).unwrap().len(), 0);
     }
 
     #[test]
