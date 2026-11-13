@@ -1,0 +1,15 @@
+[package]
+name = "winseek-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "winseek command line: search the name index and rescan volumes over the searchd pipe"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+winseek-ipc = { path = "../crates/ipc" }
+
+[[bin]]
+name = "winseek-cli"
+path = "src/main.rs"
