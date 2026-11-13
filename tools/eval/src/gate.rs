@@ -98,6 +98,9 @@ mod tests {
         fn documents(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>, String> {
             unreachable!()
         }
+        fn documents_titled(&mut self, _: &[(&str, &str)]) -> Result<Vec<Vec<f32>>, String> {
+            unreachable!()
+        }
         fn queries(&mut self, q: &[&str]) -> Result<Vec<Vec<f32>>, String> {
             Ok(q.iter().map(|q| axis(if *q == "cat" { 1 } else { 3 })).collect())
         }

@@ -1,8 +1,9 @@
 //! winseek-eval: Tier 1 eval harness (llama-server -> store -> vector search).
 //!
-//! winseek-eval gen <dir>                 write the deterministic synthetic corpus
-//! winseek-eval cases                     print the cases JSON for that corpus (eval/cases.json)
-//! winseek-eval run --corpus D --cases F --models D --llama D [--url U] [--api-key K] [--hybrid] [--out F]
+//! winseek-eval gen <dir> [--titles]      write the deterministic synthetic corpus (+ titled notes)
+//! winseek-eval cases [--titles]          print the cases JSON for that corpus (eval/cases.json,
+//!                                        or eval/title-cases.json with --titles)
+//! winseek-eval run --corpus D --cases F --models D --llama D [--url U] [--api-key K] [--hybrid] [--titles] [--out F]
 //! winseek-eval diff a.json b.json        per-case regressions; exit 1 if recall@5 drops > 2 points
 //! winseek-eval route --set D --models D --llama D [--max-fp F] [--current MIN,MARGIN] [--out F]
 //!                                        doc-image routing + smart-collection thresholds on a labelled set
@@ -21,12 +22,16 @@ use std::process::ExitCode;
 use metrics::{diff, format_summary_table, Report, RECALL5_GATE};
 
 const USAGE: &str = "usage:
-  winseek-eval gen <dir>
-  winseek-eval cases
-  winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--hybrid] [--out <results.json>]
+  winseek-eval gen <dir> [--titles]
+  winseek-eval cases [--titles]
+  winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--hybrid] [--titles] [--out <results.json>]
   winseek-eval diff <a.json> <b.json>
   winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]
-  winseek-eval gate --db <copy of tier1.sqlite> --labels <labels.json> --url <http://127.0.0.1:PORT> [--api-key <key>]";
+  winseek-eval gate --db <copy of tier1.sqlite> --labels <labels.json> --url <http://127.0.0.1:PORT> [--api-key <key>]
+
+`--titles` embeds every text file as `title: {file name} | text: {body}` instead of the
+untitled form; `gen --titles` adds the meaningfully named title notes, and their cases
+live in eval/title-cases.json.";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).cloned()
@@ -45,13 +50,16 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
     match args.first().map(String::as_str) {
         Some("gen") => {
             let dir = args.get(1).ok_or(USAGE)?;
-            let n = corpus::generate(std::path::Path::new(dir)).map_err(|e| e.to_string())?;
-            println!("wrote {n} files + corpus.json to {dir}");
+            let titles = args.iter().any(|a| a == "--titles");
+            let n = (if titles { corpus::generate_with_titles(std::path::Path::new(dir)) } else { corpus::generate(std::path::Path::new(dir)) })
+                .map_err(|e| e.to_string())?;
+            println!("wrote {n} files + corpus.json to {dir}{}", if titles { " (titled notes included)" } else { "" });
             Ok(ExitCode::SUCCESS)
         }
         Some("cases") => {
-            let json = serde_json::to_string_pretty(&corpus::cases()).map_err(|e| e.to_string())?;
-            println!("{json}");
+            let json = if args.iter().any(|a| a == "--titles") { corpus::title_cases() } else { corpus::cases() };
+            let out = serde_json::to_string_pretty(&json).map_err(|e| e.to_string())?;
+            println!("{out}");
             Ok(ExitCode::SUCCESS)
         }
         Some("run") => {
@@ -63,6 +71,7 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
                 url: flag(&args, "--url"),
                 api_key: flag(&args, "--api-key").unwrap_or_default(),
                 hybrid: args.iter().any(|a| a == "--hybrid"),
+                titles: args.iter().any(|a| a == "--titles"),
             };
             if opts.url.is_none() && (flag(&args, "--models").is_none() || flag(&args, "--llama").is_none()) {
                 return Err(format!("--models and --llama are required unless --url is given\n{USAGE}"));
@@ -88,6 +97,7 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
                 url: flag(&args, "--url"),
                 api_key: flag(&args, "--api-key").unwrap_or_default(),
                 hybrid: false,
+                titles: false,
             };
             let set = PathBuf::from(need(&args, "--set")?);
             let max_fp: f32 = flag(&args, "--max-fp").map_or(Ok(0.01), |s| s.parse()).map_err(|e| format!("--max-fp: {e}"))?;

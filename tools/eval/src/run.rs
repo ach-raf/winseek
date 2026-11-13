@@ -28,6 +28,8 @@ const IMAGE_BATCH: usize = 8;
 pub trait Embed {
     fn images(&mut self, jpegs: &[&[u8]]) -> Result<Vec<Vec<f32>>, String>;
     fn documents(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String>;
+    /// `(title, text)` pairs — an empty title is the untitled form.
+    fn documents_titled(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>, String>;
     fn queries(&mut self, queries: &[&str]) -> Result<Vec<Vec<f32>>, String>;
 }
 
@@ -37,6 +39,9 @@ impl Embed for EmbedClient {
     }
     fn documents(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
         self.embed_documents(texts).map_err(|e| e.to_string())
+    }
+    fn documents_titled(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>, String> {
+        self.embed_documents_titled(docs).map_err(|e| e.to_string())
     }
     fn queries(&mut self, queries: &[&str]) -> Result<Vec<Vec<f32>>, String> {
         self.embed_queries(queries).map_err(|e| e.to_string())
@@ -57,8 +62,16 @@ pub fn index_meta(llama_build: &str) -> IndexMeta {
     }
 }
 
-/// Embed every corpus file into a fresh in-memory store. Returns the store.
-pub fn build_store(dir: &Path, corpus: &CorpusIndex, emb: &mut dyn Embed, llama_build: &str) -> Result<Store, String> {
+/// Embed every corpus file into a fresh in-memory store. With `titles`, every text file is
+/// embedded as `title: {file name} | text: {body}` instead of the untitled form.
+/// Returns the store.
+pub fn build_store(
+    dir: &Path,
+    corpus: &CorpusIndex,
+    emb: &mut dyn Embed,
+    llama_build: &str,
+    titles: bool,
+) -> Result<Store, String> {
     let mut store = Store::open_in_memory(&index_meta(llama_build)).map_err(|e| e.to_string())?;
     let mut images: Vec<(usize, Vec<u8>, String)> = Vec::new(); // (file no, jpeg, hash)
     let mut texts: Vec<(usize, String, String)> = Vec::new();
@@ -89,8 +102,14 @@ pub fn build_store(dir: &Path, corpus: &CorpusIndex, emb: &mut dyn Embed, llama_
         }
     }
     for batch in texts.chunks(IMAGE_BATCH) {
-        let refs: Vec<&str> = batch.iter().map(|(_, t, _)| t.as_str()).collect();
-        let vecs = finish(emb.documents(&refs)?)?;
+        let vecs = if titles {
+            let refs: Vec<(&str, &str)> =
+                batch.iter().map(|(i, t, _)| (corpus.files[*i].name.as_str(), t.as_str())).collect();
+            finish(emb.documents_titled(&refs)?)?
+        } else {
+            let refs: Vec<&str> = batch.iter().map(|(_, t, _)| t.as_str()).collect();
+            finish(emb.documents(&refs)?)?
+        };
         if vecs.len() != batch.len() {
             return Err(format!("expected {} text vectors, got {}", batch.len(), vecs.len()));
         }
@@ -160,6 +179,8 @@ pub struct RunOptions {
     pub api_key: String,
     /// Rank like the app: vector list fused with the exact-word hits.
     pub hybrid: bool,
+    /// Embed text documents with `title: {file name} | text: {body}`.
+    pub titles: bool,
 }
 
 fn version_of(exe: &Path) -> String {
@@ -216,6 +237,7 @@ pub fn connect(opts: &RunOptions, meta: &mut serde_json::Value) -> Result<Connec
         }
     };
     meta["unix_time"] = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    meta["titles"] = json!(opts.titles);
 
     let client = EmbedClient::new(&base_url, &key);
     match client.vision_enabled() {
@@ -244,7 +266,7 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
     let client = &mut conn.client;
     let started = std::time::Instant::now();
     eprintln!("embedding {} corpus files...", corpus.files.len());
-    let store = build_store(&opts.corpus, &corpus, client, &manifest.llama.build)?;
+    let store = build_store(&opts.corpus, &corpus, client, &manifest.llama.build, opts.titles)?;
     meta["index_secs"] = json!((started.elapsed().as_secs_f64() * 100.0).round() / 100.0);
     eprintln!("running {} cases...", cases.len());
     let results = run_cases(&store, &cases, client, corpus.files.len(), opts.hybrid)?;
@@ -283,6 +305,9 @@ mod tests {
                 onehot(self.next - 1)
             }).collect())
         }
+        fn documents_titled(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>, String> {
+            self.documents(docs.iter().map(|(_, t)| *t).collect::<Vec<_>>().as_slice())
+        }
         fn queries(&mut self, queries: &[&str]) -> Result<Vec<Vec<f32>>, String> {
             Ok(queries.iter().map(|q| onehot(q.strip_prefix("k:").unwrap().parse().unwrap())).collect())
         }
@@ -295,7 +320,7 @@ mod tests {
         let idx = corpus::index();
         let n = idx.files.len();
         let mut fake = Fake { next: 0 };
-        let store = build_store(dir.path(), &idx, &mut fake, "test").unwrap();
+        let store = build_store(dir.path(), &idx, &mut fake, "test", false).unwrap();
         assert_eq!(store.stats().unwrap().done as usize, n);
 
         // Images come first in arrival order (all images, then all notes); map vector -> file.

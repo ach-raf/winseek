@@ -51,7 +51,18 @@ fn rejected(e: &Error) -> bool {
 }
 
 pub fn document_input(text: &str) -> String {
-    format!("{DOC_PREFIX}{text}")
+    document_input_titled("", text)
+}
+
+/// `title: {t} | text: {x}` — the model card's titled document form. An empty title renders
+/// as `none`, which is [`document_input`]. One helper so the prefix contract stays in one place.
+pub fn document_input_titled(title: &str, text: &str) -> String {
+    let t = title.trim();
+    if t.is_empty() {
+        format!("{DOC_PREFIX}{text}")
+    } else {
+        format!("title: {t} | text: {text}")
+    }
 }
 
 pub fn query_input(text: &str) -> String {
@@ -195,18 +206,24 @@ impl EmbedClient {
     /// fail the whole request (and so the file). On a rejected batch every text is sent on its own,
     /// and a text that is still too long is cut in half until it fits.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = texts.iter().map(|t| document_input(t)).collect();
+        self.embed_documents_titled(texts.iter().map(|t| ("", *t)).collect::<Vec<_>>().as_slice())
+    }
+
+    /// Document embeddings with a title per document (e.g. the file name). An empty title is
+    /// the untitled form. Same reject/retry behaviour as [`Self::embed_documents`].
+    pub fn embed_documents_titled(&self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
+        let inputs: Vec<String> = docs.iter().map(|(t, x)| document_input_titled(t, x)).collect();
         match self.post_embeddings(&text_body(&inputs), inputs.len()) {
-            Err(e) if texts.len() > 1 && rejected(&e) => texts.iter().map(|t| self.embed_one_document(t)).collect(),
-            Err(e) if rejected(&e) => self.embed_one_document(texts[0]).map(|v| vec![v]),
+            Err(e) if docs.len() > 1 && rejected(&e) => docs.iter().map(|(t, x)| self.embed_one_document(t, x)).collect(),
+            Err(e) if rejected(&e) => self.embed_one_document(docs[0].0, docs[0].1).map(|v| vec![v]),
             r => r,
         }
     }
 
-    fn embed_one_document(&self, text: &str) -> Result<Vec<f32>> {
+    fn embed_one_document(&self, title: &str, text: &str) -> Result<Vec<f32>> {
         let mut t = text;
         loop {
-            let input = [document_input(t)];
+            let input = [document_input_titled(title, t)];
             match self.post_embeddings(&text_body(&input), 1) {
                 Err(e) if rejected(&e) && t.chars().count() > MIN_SHRINK_CHARS => {
                     let half = t.char_indices().nth(t.chars().count() / 2).map_or(t.len(), |(i, _)| i);
@@ -276,6 +293,13 @@ mod tests {
             text_body(&docs),
             json!({"input": ["title: none | text: hello", "title: none | text: "]})
         );
+    }
+
+    #[test]
+    fn titled_document_inputs() {
+        assert_eq!(document_input_titled("", "hello"), "title: none | text: hello");
+        assert_eq!(document_input_titled("   ", "hello"), "title: none | text: hello");
+        assert_eq!(document_input_titled("Invoice.pdf", "total due"), "title: Invoice.pdf | text: total due");
     }
 
     #[test]

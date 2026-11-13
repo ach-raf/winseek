@@ -193,6 +193,88 @@ pub fn file_name(idx: usize) -> String {
     }
 }
 
+// ------------------------------------------------------------------ title experiment
+//
+// The main corpus keeps file names opaque on purpose, so it can never measure what a
+// meaningful file NAME contributes. These notes are the opposite: named like real files
+// ("pancake-recipe.txt"), written with `gen --titles`, and embedded with
+// `title: {name} | text: {body}` by `run --titles`. Three probes:
+// - body+name agree (rows 1..9): does the title help or hurt plain meaning search?
+// - name-only (generic body, all the signal in the name): the sharpest title probe.
+// - junk names: the opaque note_XXXX.txt files, embedded titled too — worst case.
+
+/// `(file stem, body)`. Stems double as the `title_cases` expectation labels.
+pub const TITLE_NOTES: &[(&str, &str)] = &[
+    ("pancake-recipe", "Pancake recipe: mix flour, eggs, milk and a pinch of salt. Let the batter rest, then fry thin pancakes in butter. Serve with sugar and lemon."),
+    ("quarterly-budget-review-notes", "Meeting notes: quarterly budget review with the finance team. Action items: reduce cloud spending, hire two engineers, approve the marketing plan."),
+    ("hiking-packing-list", "Packing list for the hiking trip: boots, rain jacket, water bottle, map, compass, first aid kit and sunscreen."),
+    ("consulting-invoice-2043", "Invoice 2043: consulting services, 12 hours at 90 euros per hour, total 1080 euros, payment due within 30 days."),
+    ("recette-gateau-chocolat", "Recette de gateau au chocolat : melanger le chocolat fondu, le beurre, le sucre et les oeufs, puis cuire quarante minutes au four."),
+    ("lista-de-la-compra", "Lista de la compra: manzanas, leche, pan, queso y tomates para la cena del viernes."),
+    ("office-chairs-invoice", "Invoice INV-2024-00817: office chairs, 8 units, total 2480 euros, payment due within 30 days."),
+    ("cloud-hosting-invoice", "Invoice INV-2024-00931: cloud hosting subscription, total 1175 euros, payment due within 14 days."),
+    ("installer-access-denied-log", "Troubleshooting log: the installer stopped with error 0x80070005 (access denied) while writing to the Program Files folder."),
+    ("invalid-parameter-log", "Troubleshooting log: the installer stopped with error 0x80070057 (invalid parameter) while reading the configuration file."),
+    // Name-only probes: the body is filler; only the file name knows the subject.
+    ("hawaii-trip-packing-list", "Attached is the document you asked for. Please review it and confirm by Friday afternoon."),
+    ("wedding-speech-draft", "Draft. Opening line, two short anecdotes, the toast, and a closing thank you to the families."),
+    ("dental-cleaning-appointment-card", "Reminder card. Please arrive ten minutes early and bring your insurance card along."),
+];
+
+pub fn title_file_name(i: usize) -> String {
+    format!("{}.txt", TITLE_NOTES[i].0)
+}
+
+/// `(query, acceptable title-note stems)`.
+const TITLE_CASES: &[(&str, &[&str])] = &[
+    ("pancake recipe with flour and eggs", &["pancake-recipe"]),
+    ("quarterly budget review meeting notes", &["quarterly-budget-review-notes"]),
+    ("what to pack for a hike", &["hiking-packing-list"]),
+    ("consulting invoice with hourly rate", &["consulting-invoice-2043"]),
+    ("chocolate cake recipe", &["recette-gateau-chocolat"]),
+    ("grocery shopping list", &["lista-de-la-compra"]),
+    ("invoice for the office chairs", &["office-chairs-invoice"]),
+    ("cloud hosting subscription bill", &["cloud-hosting-invoice"]),
+    ("installer stopped access denied", &["installer-access-denied-log"]),
+    ("what should I pack for the hawaii trip", &["hawaii-trip-packing-list"]),
+    ("draft of the wedding speech and toast", &["wedding-speech-draft"]),
+    ("dentist appointment reminder", &["dental-cleaning-appointment-card"]),
+];
+
+/// The eval cases for the title notes (what `eval/title-cases.json` must equal).
+pub fn title_cases() -> Vec<Case> {
+    TITLE_CASES
+        .iter()
+        .map(|(q, stems)| Case {
+            q: (*q).into(),
+            tag: "title".into(),
+            expect: stems
+                .iter()
+                .map(|s| {
+                    TITLE_NOTES.iter().position(|(stem, _)| stem == s).map(title_file_name)
+                        .unwrap_or_else(|| panic!("unknown title stem {s}"))
+                })
+                .collect(),
+        })
+        .collect()
+}
+
+/// The main corpus plus the titled notes, listed in `corpus.json` so a single store embeds
+/// both (one run then measures the opaque `note_XXXX.txt` files under junk titles too).
+pub fn generate_with_titles(dir: &Path) -> std::io::Result<usize> {
+    let mut n = generate(dir)?;
+    let mut idx = load_index(dir).map_err(std::io::Error::other)?;
+    for (i, (_, body)) in TITLE_NOTES.iter().enumerate() {
+        let name = title_file_name(i);
+        std::fs::write(dir.join(&name), format!("{body}\n"))?;
+        idx.files.push(CorpusFile { name, kind: "text".into(), desc: format!("title-{}", TITLE_NOTES[i].0) });
+        n += 1;
+    }
+    let json = serde_json::to_string_pretty(&idx).expect("serialise");
+    std::fs::write(dir.join("corpus.json"), json + "\n")?;
+    Ok(n)
+}
+
 fn name_of_label(label: &str) -> Option<String> {
     SPECS.iter().position(|s| s.label == label).map(file_name)
 }
@@ -431,5 +513,34 @@ mod tests {
             cases(),
             "eval/cases.json is stale; regenerate with `winseek-eval cases > eval/cases.json`"
         );
+    }
+
+    #[test]
+    fn committed_title_cases_json_is_in_sync() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/title-cases.json");
+        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(
+            parse_cases(&text).unwrap(),
+            title_cases(),
+            "eval/title-cases.json is stale; regenerate with `winseek-eval cases --titles > eval/title-cases.json`"
+        );
+    }
+
+    #[test]
+    fn titled_corpus_writes_unique_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = generate_with_titles(dir.path()).unwrap();
+        assert_eq!(n, SPECS.len() + TITLE_NOTES.len());
+        let idx = load_index(dir.path()).unwrap();
+        let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
+        names.sort();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before, "file names collide");
+        for c in title_cases() {
+            for e in &c.expect {
+                assert!(names.iter().any(|n| glob_match(e, n)), "{} expects missing {e}", c.q);
+            }
+        }
     }
 }
