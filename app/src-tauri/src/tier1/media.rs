@@ -257,8 +257,189 @@ pub fn locate_ffmpeg_in(env: Option<&std::ffi::OsStr>, root: Option<&Path>, mani
     installed_ffmpeg(root?, manifest.ffmpeg.as_ref()?)
 }
 
+/// `%NAME%` references expanded from the process environment (registry PATH values are unexpanded).
+fn expand_env(s: &str) -> String {
+    let mut out = String::new();
+    let mut rest = s;
+    while let Some(i) = rest.find('%') {
+        out.push_str(&rest[..i]);
+        let tail = &rest[i + 1..];
+        match tail.find('%') {
+            Some(j) if j > 0 => match std::env::var(&tail[..j]) {
+                Ok(v) => {
+                    out.push_str(&v);
+                    rest = &tail[j + 1..];
+                }
+                Err(_) => {
+                    out.push('%');
+                    rest = tail;
+                }
+            },
+            _ => {
+                out.push('%');
+                rest = tail;
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+/// The data of `reg query <key> /v Path`: the value after the type column, `None` when absent.
+fn parse_reg_value(stdout: &str) -> Option<String> {
+    stdout.lines().find_map(|l| {
+        let l = l.trim();
+        let (_, after) = l.split_once("REG_EXPAND_SZ").or_else(|| l.split_once("REG_SZ"))?;
+        let v = after.trim();
+        (!v.is_empty()).then(|| v.to_string())
+    })
+}
+
+/// PATH as the user's shell would see it: a GUI app started from the tray / autostart inherits the
+/// environment of the session's first process, which may predate a later PATH change, so the
+/// registry copies (user, then system) are read as well.
+fn registry_path_dirs() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for key in [r"HKCU\Environment", r"HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment"] {
+        let res = Command::new("reg")
+            .args(["query", key, "/v", "Path"])
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        if let Some(v) = res.ok().and_then(|o| parse_reg_value(&String::from_utf8_lossy(&o.stdout))) {
+            out.extend(expand_env(&v).split(';').map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from));
+        }
+    }
+    out
+}
+
+/// Places a user's ffmpeg usually is, outside PATH or before PATH was updated: winget (Links and
+/// the package folder), scoop, chocolatey, and the folders people unzip to.
+fn common_ffmpeg_dirs() -> Vec<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let mut v = Vec::new();
+    if let Some(l) = env("LOCALAPPDATA") {
+        v.push(l.join("Microsoft").join("WinGet").join("Links"));
+        // Packages\Gyan.FFmpeg_...\ffmpeg-<ver>-full_build\bin
+        let pk = l.join("Microsoft").join("WinGet").join("Packages");
+        for p in std::fs::read_dir(pk).into_iter().flatten().flatten() {
+            if p.file_name().to_string_lossy().to_ascii_lowercase().contains("ffmpeg") {
+                for b in std::fs::read_dir(p.path()).into_iter().flatten().flatten() {
+                    v.push(b.path().join("bin"));
+                }
+            }
+        }
+    }
+    if let Some(h) = env("USERPROFILE") {
+        v.push(h.join("scoop").join("shims"));
+        v.push(h.join("scoop").join("apps").join("ffmpeg").join("current").join("bin"));
+    }
+    if let Some(c) = env("ChocolateyInstall") {
+        v.push(c.join("bin"));
+    }
+    if let Some(d) = env("ProgramData") {
+        v.push(d.join("chocolatey").join("bin"));
+    }
+    for p in [r"C:\ffmpeg\bin", r"C:\ffmpeg", r"C:\tools\ffmpeg\bin", r"C:\tools\ffmpeg", r"C:\Program Files\ffmpeg\bin"] {
+        v.push(PathBuf::from(p));
+    }
+    v
+}
+
+/// Candidate `ffmpeg.exe` files in lookup order after the override and our own install: the process
+/// PATH, the registry PATH, then the usual install folders. Duplicates dropped.
+fn path_candidates(process_path: Option<std::ffi::OsString>, registry: &[PathBuf], common: &[PathBuf]) -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = process_path.map(|p| std::env::split_paths(&p).collect()).unwrap_or_default();
+    dirs.extend(registry.iter().cloned());
+    dirs.extend(common.iter().cloned());
+    let mut seen = std::collections::HashSet::new();
+    dirs.into_iter()
+        .filter(|d| !d.as_os_str().is_empty())
+        .map(|d| d.join("ffmpeg.exe"))
+        .filter(|p| seen.insert(p.to_string_lossy().to_ascii_lowercase()))
+        .collect()
+}
+
+/// Run a tool for its stdout, giving up after `limit` (a wedged shim must not wedge the worker).
+fn stdout_of(exe: &Path, args: &[&str], limit: Duration) -> Option<String> {
+    let (exe, args) = (exe.to_path_buf(), args.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let o = Command::new(exe).args(args).stdin(Stdio::null()).stderr(Stdio::null()).creation_flags(CREATE_NO_WINDOW).output();
+        let _ = tx.send(o.ok().filter(|o| o.status.success()).map(|o| String::from_utf8_lossy(&o.stdout).into_owned()));
+    });
+    rx.recv_timeout(limit).ok().flatten()
+}
+
+/// Does `-version` / `-decoders` / `-filters` output describe a build that can do our jobs: it is
+/// ffmpeg, decodes the common audio and video codecs, and has the shot-detection filters?
+fn build_is_usable(version: &str, decoders: &str, filters: &str) -> bool {
+    let word = |text: &str, name: &str| text.lines().any(|l| l.split_whitespace().nth(1) == Some(name));
+    version.trim_start().starts_with("ffmpeg version")
+        && ["aac", "mp3", "flac", "h264"].iter().all(|d| word(decoders, d))
+        && ["select", "scale", "showinfo"].iter().all(|f| word(filters, f))
+}
+
+/// Does `exe` run, and can it decode what we feed it? Cached per file (path, size, mtime).
+fn ffmpeg_works(exe: &Path) -> bool {
+    type Entry = (PathBuf, u64, Option<std::time::SystemTime>, bool);
+    static CACHE: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
+    let Ok(meta) = std::fs::metadata(exe) else { return false };
+    let (len, mtime) = (meta.len(), meta.modified().ok());
+    {
+        let c = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(r) = c.iter().find(|r| r.0 == exe && r.1 == len && r.2 == mtime) {
+            return r.3;
+        }
+    }
+    let t = Duration::from_secs(20);
+    let ok = stdout_of(exe, &["-hide_banner", "-version"], t).is_some_and(|v| {
+        let d = stdout_of(exe, &["-hide_banner", "-decoders"], t).unwrap_or_default();
+        let f = stdout_of(exe, &["-hide_banner", "-filters"], t).unwrap_or_default();
+        build_is_usable(&v, &d, &f)
+    });
+    CACHE.lock().unwrap_or_else(|e| e.into_inner()).push((exe.to_path_buf(), len, mtime, ok));
+    ok
+}
+
+static FFMPEG_FOUND: Mutex<Option<(Instant, Option<PathBuf>)>> = Mutex::new(None);
+
+/// Forget the remembered lookup (after our own install finished).
+pub fn forget_ffmpeg_lookup() {
+    *FFMPEG_FOUND.lock().unwrap_or_else(|e| e.into_inner()) = None;
+}
+
+/// A working ffmpeg, looked up in this order: `WINSEEK_FFMPEG`, our pinned install, PATH (process
+/// and registry copies), the common install folders. The first candidate that runs and has the
+/// decoders / filters wins. The answer is remembered briefly (30 s found, 5 s not found): status
+/// polls and every worker pass ask.
 pub fn locate_ffmpeg() -> Option<PathBuf> {
-    locate_ffmpeg_in(std::env::var_os(ENV_FFMPEG).as_deref(), super::data_root().as_deref(), &Manifest::embedded())
+    {
+        let c = FFMPEG_FOUND.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((at, found)) = c.as_ref() {
+            let ttl = if found.is_some() { 30 } else { 5 };
+            if at.elapsed() < Duration::from_secs(ttl) && found.as_ref().is_none_or(|p| p.is_file()) {
+                return found.clone();
+            }
+        }
+    }
+    let found = locate_ffmpeg_uncached();
+    *FFMPEG_FOUND.lock().unwrap_or_else(|e| e.into_inner()) = Some((Instant::now(), found.clone()));
+    found
+}
+
+fn locate_ffmpeg_uncached() -> Option<PathBuf> {
+    // the override and our own install first; a broken one falls through to the next place
+    if let Some(p) = locate_ffmpeg_in(std::env::var_os(ENV_FFMPEG).as_deref(), super::data_root().as_deref(), &Manifest::embedded()) {
+        if ffmpeg_works(&p) {
+            return Some(p);
+        }
+    }
+    path_candidates(std::env::var_os("PATH"), &registry_path_dirs(), &common_ffmpeg_dirs())
+        .into_iter()
+        .filter(|p| p.is_file())
+        .find(|p| ffmpeg_works(p))
 }
 
 /// The real sidecar. The exe is looked up on every call (it may be installed while the app runs).
@@ -764,6 +945,34 @@ frame=    2 fps=0.0\n";
         std::fs::write(&own, b"x").unwrap();
         assert_eq!(locate_ffmpeg_in(Some(own.as_os_str()), Some(d.path()), &m), Some(own));
         assert_eq!(locate_ffmpeg_in(Some(d.path().join("nope").as_os_str()), Some(d.path()), &m), Some(exe), "a bad override falls back");
+    }
+
+    #[test]
+    fn registry_path_values_are_parsed_and_expanded() {
+        let out = "\r\nHKEY_CURRENT_USER\\Environment\r\n    Path    REG_EXPAND_SZ    %WS_TEST_HOME%\\bin;C:\\ffmpeg\\bin\r\n\r\n";
+        assert_eq!(parse_reg_value(out).as_deref(), Some("%WS_TEST_HOME%\\bin;C:\\ffmpeg\\bin"));
+        assert_eq!(parse_reg_value("    Path    REG_SZ    C:\\a").as_deref(), Some("C:\\a"));
+        assert_eq!(parse_reg_value("ERROR: The system was unable to find the specified registry key or value."), None);
+        std::env::set_var("WS_TEST_HOME", "D:\\h");
+        assert_eq!(expand_env("%WS_TEST_HOME%\\bin;%WS_NOPE_X%\\x;100%"), "D:\\h\\bin;%WS_NOPE_X%\\x;100%");
+    }
+
+    #[test]
+    fn path_candidates_run_process_path_then_registry_then_common_without_duplicates() {
+        let process = std::env::join_paths([r"C:\a", r"C:\b"]).unwrap();
+        let got = path_candidates(Some(process), &[PathBuf::from(r"C:\B"), PathBuf::from(r"C:\reg")], &[PathBuf::from(r"C:\ffmpeg\bin")]);
+        let want: Vec<PathBuf> = [r"C:\a\ffmpeg.exe", r"C:\b\ffmpeg.exe", r"C:\reg\ffmpeg.exe", r"C:\ffmpeg\bin\ffmpeg.exe"].iter().map(PathBuf::from).collect();
+        assert_eq!(got, want, "C:\\B is the same folder as C:\\b");
+    }
+
+    #[test]
+    fn a_build_must_decode_the_common_codecs_and_have_the_shot_filters() {
+        let dec = " A....D aac                  AAC\n A....D mp3   MP3\n A....D flac  FLAC\n V....D h264  H.264\n";
+        let fil = " T. select  Select frames\n .. scale   Scale\n .. showinfo Show\n";
+        assert!(build_is_usable("ffmpeg version 7.1.1-essentials", dec, fil));
+        assert!(!build_is_usable("ffprobe version 7", dec, fil), "not ffmpeg");
+        assert!(!build_is_usable("ffmpeg version 7", " A....D aac AAC\n", fil), "no mp3 / h264");
+        assert!(!build_is_usable("ffmpeg version 7", dec, " .. scale Scale\n"), "no showinfo");
     }
 
     // ------------------------------------------------------------ run_file with fakes
