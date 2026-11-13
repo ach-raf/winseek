@@ -3,6 +3,7 @@ import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, 
 import { formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 import { Grp, Row } from "./settingsUi";
+import { fileName, reasonHint, reasonSentence } from "./reasonText";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const POLL_MS = 1000;
@@ -125,48 +126,40 @@ export function waitingText(t: StatusTier1): string {
     : `Starting the next batch (${fmt(t.queue)} queued)`;
 }
 
-/** Plain-words name for a skip reason code or a failure message. */
-export function reasonLabel(r: string): string {
-  switch (r) {
-    case "": return "No reason recorded";
-    case "no_ffmpeg": return "Audio and video: ffmpeg is not installed (they are queued again once it is)";
-    case "cloud_only": return "Online-only cloud files (not downloaded to this PC)";
-    case "no_heic_codec": return "HEIC photos: the Windows HEIF codec is not installed";
-    case "too_large": return "Too large to read";
-    case "binary": return "Binary file, no text inside";
-    case "no_text": return "No readable text";
-    case "legacy_office": return "Old Office format (.doc, .xls, .ppt)";
-    case "encrypted": return "Encrypted or password-protected";
-    case "no_audio_model": return "Audio: the model has no audio support";
-    case "no_media_content": return "Audio or video with no usable sound or picture";
-    case "denied": return "Credential or system file (never read)";
-    case "zip_bomb": return "Archive that expands suspiciously large";
-    case "changed": return "Changed while being read";
-    case "not_notebook": return "Not a valid notebook";
-    default: return r;
-  }
-}
-
-/** A count with the reasons behind it: hover shows the first, the arrow opens every reason with example files. */
-function Reasons({ k, total, groups, title }: { k: string; total: number | null; groups: StatusReason[]; title: string }) {
+/** A count with the reasons behind it: hover shows the first, the arrow opens every reason, each as
+ *  one plain sentence with example files that can be shown in their folder. */
+function Reasons({ k, total, groups, title, onReveal }: { k: string; total: number | null; groups: StatusReason[]; title: string; onReveal?: (path: string) => void }) {
   if (total == null || total === 0 || groups.length === 0) return <Kv k={k} title={title}>{total == null ? "—" : fmt(total)}</Kv>;
   const shown = groups.reduce((a, g) => a + g.count, 0);
   return (
     <details className="reasons">
-      <summary className="grow kv" title={groups.map((g) => `${fmt(g.count)}  ${reasonLabel(g.reason)}`).join("\n")}>
+      <summary className="grow kv" title={groups.map((g) => reasonSentence(g.reason, g.count)).join("\n")}>
         <div className="gtxt"><b>{k}</b></div>
         <span className="val">{fmt(total)}</span>
       </summary>
       <ul>
-        {groups.map((g) => (
-          <li key={g.reason} title={g.examples.join("\n")}>
-            <span className="n">{fmt(g.count)}</span>
-            <span className="why">{reasonLabel(g.reason)}
-              {g.examples.length > 0 && <small>{g.examples.map((p) => p.split(/[\\/]/).pop()).join(", ")}</small>}
-            </span>
-          </li>
-        ))}
-        {total > shown && <li><span className="n">{fmt(total - shown)}</span><span className="why">Other reasons</span></li>}
+        {groups.map((g) => {
+          const hint = reasonHint(g.reason);
+          return (
+            <li key={g.reason}>
+              <span className="why">{reasonSentence(g.reason, g.count)}
+                {hint && <small>{hint}</small>}
+                {g.examples.length > 0 && (
+                  <small className="ex">
+                    {g.examples.map((p, i) => {
+                      const detail = g.details?.[i];
+                      const tip = detail ? `${p}\n${detail}` : p;
+                      return onReveal
+                        ? <button key={p} type="button" className="exfile" title={tip} aria-label={`Show ${fileName(p)} in its folder`} onClick={() => onReveal(p)}>{fileName(p)}</button>
+                        : <span key={p} className="exfile" title={tip}>{fileName(p)}</span>;
+                    })}
+                  </small>
+                )}
+              </span>
+            </li>
+          );
+        })}
+        {total > shown && <li><span className="why">{plural(total - shown, "more file", "more files")}</span></li>}
       </ul>
     </details>
   );
@@ -181,7 +174,7 @@ function stateLine(t: StatusTier1): string {
     : t.queue > 0 ? waitingText(t) : "All caught up";
 }
 
-export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmpeg }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean; onResume?: () => void; onRetryFfmpeg?: () => void }) {
+export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmpeg, onReveal }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean; onResume?: () => void; onRetryFfmpeg?: () => void; onReveal?: (path: string) => void }) {
   const [ask, setAsk] = useState(false);
   const s = t1.stats;
   useEffect(() => { if (!t1.can_rebuild) setAsk(false); }, [t1.can_rebuild]);
@@ -207,8 +200,8 @@ export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmp
           <Kv k="Text searchable, waiting for models" title="Their text is already searchable; the meaning vectors are added once the models are installed">
             {s ? fmt(s.text_only) : "—"}
           </Kv>
-          <Reasons k="Failed" total={s ? s.failed : null} groups={t1.failed_reasons} title="Files that could not be read or embedded" />
-          <Reasons k="Skipped" total={s ? s.skipped : null} groups={t1.skipped_reasons} title="Unsupported or legacy format, too large, no text, or ignored" />
+          <Reasons k="Failed" total={s ? s.failed : null} groups={t1.failed_reasons} title="Files that could not be read or embedded" onReveal={onReveal} />
+          <Reasons k="Skipped" total={s ? s.skipped : null} groups={t1.skipped_reasons} title="Unsupported or legacy format, too large, no text, or ignored" onReveal={onReveal} />
           <Kv k="Files in scope">{s ? fmt(s.files) : "—"}</Kv>
           <Kv k="Speed" title="Files per second over the last minute">{t1.rate != null ? formatRate(t1.rate) : "—"}</Kv>
           <Kv k="Screenshot text recognition" title="Reads text in screenshots with Windows OCR">

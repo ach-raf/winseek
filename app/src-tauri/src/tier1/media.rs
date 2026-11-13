@@ -680,6 +680,10 @@ pub fn run_file(
         lock(store).skip(f.id, "too_large").map_err(db)?;
         return Ok(Step::Handled);
     }
+    if f.size == 0 {
+        lock(store).skip(f.id, "empty_file").map_err(db)?;
+        return Ok(Step::Handled);
+    }
     if let Err(e) = guard::check_readable(path) {
         match guard::skip_reason(&e) {
             Some(r) => lock(store).skip(f.id, r).map_err(db)?,
@@ -811,7 +815,7 @@ fn fail_or_retry(
         }
         strikes.remove(&f.id.0);
     }
-    lock(store).fail(f.id, msg).map_err(db)?;
+    guard::fail_file(store, f.id, &f.path, msg)?;
     Ok(Step::Handled)
 }
 

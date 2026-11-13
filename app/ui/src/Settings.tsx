@@ -397,7 +397,8 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
       <Names t0={page.tier0} busy={busy} onRescan={rescan} />
       <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
                      onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
-                     onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }} />
+                     onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
+                     onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
       <ModelsPane m={page.models} />
     </>
   );

@@ -14,6 +14,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 pub mod fuse;
 mod provenance;
 mod recover;
+pub mod reason;
 pub mod relevance;
 mod tail;
 pub use provenance::{drift, verdict, Verdict, PROBE_MIN_COS};
@@ -22,7 +23,7 @@ pub use tail::{TailCounts, TailJob};
 use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -372,6 +373,8 @@ pub struct ReasonGroup {
     pub count: u64,
     /// A few example paths.
     pub examples: Vec<String>,
+    /// The raw technical detail of each example (empty when none), for a tooltip.
+    pub details: Vec<String>,
 }
 
 /// A finished image file, as the library window lists it.
@@ -1070,7 +1073,7 @@ impl Store {
     pub fn requeue_skipped(&mut self, reasons: &[&str]) -> Result<usize> {
         let mut n = 0;
         for r in reasons {
-            n += self.conn.prepare_cached("UPDATE files SET state=0, error=NULL WHERE state=?1 AND error=?2")?.execute(params![STATE_SKIPPED, r])?;
+            n += self.conn.prepare_cached("UPDATE files SET state=0, error=NULL, detail=NULL WHERE state=?1 AND error=?2")?.execute(params![STATE_SKIPPED, r])?;
         }
         Ok(n)
     }
@@ -1099,19 +1102,22 @@ impl Store {
     /// group first, with up to `examples` paths each. At most `max_groups` groups.
     pub fn reason_groups(&self, skipped: bool, examples: usize, max_groups: usize) -> Result<Vec<ReasonGroup>> {
         let state = if skipped { STATE_SKIPPED } else { STATE_FAILED };
-        let mut st = self.conn.prepare_cached("SELECT COALESCE(error, ''), path FROM files WHERE state = ?1 ORDER BY id DESC")?;
+        let mut st = self.conn.prepare_cached("SELECT COALESCE(error, ''), path, kind, COALESCE(detail, '') FROM files WHERE state = ?1 ORDER BY id DESC")?;
         let mut rows = st.query([state])?;
         let mut groups: Vec<ReasonGroup> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
         while let Some(r) = rows.next()? {
-            let (reason, path): (String, String) = (r.get(0)?, r.get(1)?);
+            let (raw, path, kind, detail): (String, String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            // Rows an older version wrote as free text still group by code.
+            let reason = if raw.is_empty() { raw } else { reason::classify(&raw, &kind).to_string() };
             let i = *index.entry(reason.clone()).or_insert_with(|| {
-                groups.push(ReasonGroup { reason, count: 0, examples: Vec::new() });
+                groups.push(ReasonGroup { reason, count: 0, examples: Vec::new(), details: Vec::new() });
                 groups.len() - 1
             });
             groups[i].count += 1;
             if groups[i].examples.len() < examples {
                 groups[i].examples.push(path);
+                groups[i].details.push(detail);
             }
         }
         groups.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.reason.cmp(&b.reason)));
@@ -1128,11 +1134,37 @@ impl Store {
         Ok(v.flatten())
     }
 
+    /// Fail a file with a reason `code` (see [`reason`]) and the raw technical `detail` kept for support.
+    pub fn fail_with(&mut self, file_id: FileId, code: &str, detail: &str) -> Result<()> {
+        self.set_state_detail(file_id, STATE_FAILED, code, Some(detail))
+    }
+
+    /// Skip a file with a reason `code` and a raw `detail`.
+    pub fn skip_with(&mut self, file_id: FileId, code: &str, detail: &str) -> Result<()> {
+        self.set_state_detail(file_id, STATE_SKIPPED, code, Some(detail))
+    }
+
+    /// The raw technical detail recorded for the file at `path`, if any.
+    pub fn file_detail(&self, path: &str) -> Result<Option<String>> {
+        let v: Option<Option<String>> = self
+            .conn
+            .query_row("SELECT detail FROM files WHERE path = ?1 COLLATE NOCASE", [norm_sep(path)], |r| r.get(0))
+            .optional()?;
+        Ok(v.flatten())
+    }
+
+    /// A message or a code: a code is stored as is, a message becomes its code with the text as detail.
     fn set_state(&mut self, id: FileId, state: i64, msg: &str) -> Result<()> {
+        let kind: String = self.conn.query_row("SELECT kind FROM files WHERE id = ?1", [id.0], |r| r.get(0)).optional()?.unwrap_or_default();
+        let (code, detail) = reason::split(msg, &kind);
+        self.set_state_detail(id, state, code, detail.as_deref())
+    }
+
+    fn set_state_detail(&mut self, id: FileId, state: i64, code: &str, detail: Option<&str>) -> Result<()> {
         let n = self
             .conn
-            .prepare_cached("UPDATE files SET state=?2, error=?3, content_hash=NULL WHERE id=?1")?
-            .execute(params![id.0, state, msg])?;
+            .prepare_cached("UPDATE files SET state=?2, error=?3, detail=?4, content_hash=NULL WHERE id=?1")?
+            .execute(params![id.0, state, code, detail])?;
         if n == 0 {
             return Err(Error::NoSuchFile(id));
         }
@@ -2052,6 +2084,29 @@ fn migrate(conn: &Connection) -> Result<()> {
              COMMIT;",
         )?;
     }
+    if v < 6 {
+        // Reason codes: `error` keeps the code, the old free text moves to `detail`. Files that
+        // failed under the old readers get one more try with the new ones.
+        conn.execute_batch("BEGIN;")?;
+        let has_detail: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'detail'", [], |r| r.get(0))?;
+        if has_detail == 0 {
+            conn.execute_batch("ALTER TABLE files ADD COLUMN detail TEXT;")?;
+        }
+        let rows: Vec<(i64, i64, String, String)> = {
+            let mut st = conn.prepare("SELECT id, state, error, kind FROM files WHERE state IN (?1, ?2) AND error IS NOT NULL")?;
+            let it = st.query_map([STATE_FAILED, STATE_SKIPPED], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            it.collect::<std::result::Result<Vec<_>, _>>()?
+        };
+        for (id, state, error, kind) in rows {
+            let (code, detail) = reason::split(&error, &kind);
+            if state == STATE_FAILED {
+                conn.execute("UPDATE files SET state = ?2, error = NULL, detail = NULL WHERE id = ?1", params![id, STATE_PENDING])?;
+            } else {
+                conn.execute("UPDATE files SET error = ?2, detail = ?3 WHERE id = ?1", params![id, code, detail])?;
+            }
+        }
+        conn.execute_batch("PRAGMA user_version = 6; COMMIT;")?;
+    }
     Ok(())
 }
 
@@ -2233,6 +2288,42 @@ mod tests {
         }
         let s = Store::open(&p, &meta()).unwrap();
         assert!(s.pending_vecs("x").unwrap().is_empty());
+    }
+
+    #[test]
+    fn failures_are_grouped_by_code_and_keep_the_raw_detail() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = s.upsert_file(&key(1), r"C:\v\a.mp4", 10, 1, "video").unwrap();
+        let b = s.upsert_file(&key(2), r"C:\v\b.mp4", 10, 1, "video").unwrap();
+        let raw = |p: &str| format!("ffmpeg: [in#0 @ 00000222cd15a800] Error opening input file {p}. | Invalid data found when processing input");
+        s.fail(a, &raw(r"C:\Q\x\a.mp4")).unwrap();
+        s.fail(b, &raw(r"C:\Q\y\b.mp4")).unwrap();
+        let g = s.reason_groups(false, 3, 10).unwrap();
+        assert_eq!(g.len(), 1, "different pointers and paths do not split the group");
+        assert_eq!((g[0].reason.as_str(), g[0].count), ("damaged_video", 2));
+        assert!(s.file_detail(r"C:\v\a.mp4").unwrap().unwrap().contains(r"C:\Q\x\a.mp4"));
+        s.skip(a, "too_large").unwrap();
+        assert_eq!(s.file_detail(r"C:\v\a.mp4").unwrap(), None);
+    }
+
+    #[test]
+    fn migration_maps_old_free_text_and_requeues_failures_once() {
+        let dir = tempfile::tempdir().unwrap();
+        let p = dir.path().join("old.db");
+        {
+            let mut s = Store::open(&p, &meta()).unwrap();
+            let a = s.upsert_file(&key(1), r"C:\p\a.png", 10, 1, "image").unwrap();
+            let b = s.upsert_file(&key(2), r"C:\p\b.pdf", 10, 1, "pdf").unwrap();
+            s.fail(a, "x").unwrap();
+            s.skip(b, "x").unwrap();
+            s.conn.execute("UPDATE files SET error = 'decode: The image format could not be determined', detail = NULL WHERE id = ?1", [a.0]).unwrap();
+            s.conn.execute("UPDATE files SET error = 'encrypted' WHERE id = ?1", [b.0]).unwrap();
+            s.conn.execute_batch("PRAGMA user_version = 5;").unwrap();
+        }
+        let s = Store::open(&p, &meta()).unwrap();
+        assert!(s.reason_groups(false, 3, 10).unwrap().is_empty(), "the failed row is pending again");
+        assert_eq!(s.file_error(r"C:\p\b.pdf").unwrap().as_deref(), Some("password_protected"));
+        assert_eq!(s.file_detail(r"C:\p\b.pdf").unwrap().as_deref(), Some("encrypted"));
     }
 
     #[test]

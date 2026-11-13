@@ -107,6 +107,10 @@ details.reasons li { display: flex; gap: 14px; padding: 4px 0; font-size: 12.5px
 details.reasons li .n { flex: none; min-width: 52px; text-align: right; font-variant-numeric: tabular-nums; color: var(--fg3); }
 details.reasons li .why { min-width: 0; overflow-wrap: anywhere; }
 details.reasons li .why small { display: block; color: var(--fg3); font-size: 11.5px; margin-top: 1px; }
+details.reasons li .why small.ex { display: flex; flex-wrap: wrap; gap: 2px 12px; }
+details.reasons .exfile { padding: 0; background: none; color: var(--fg3); font: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+details.reasons button.exfile { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
+details.reasons button.exfile:hover { color: var(--fg); }
 .grow.kv .gtxt { flex: 0 1 auto; max-width: 48%; }
 .grow .bad, .st-miss { color: var(--warn); }
 .firstrun .gnote { margin: 8px 2px 0; max-width: none; font-size: 12.5px; line-height: 1.45; color: var(--fg3); }

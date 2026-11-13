@@ -341,14 +341,16 @@ impl Processor {
             todo.iter().map(|(_, _, h)| seen.insert(h.clone())).collect()
         };
         let firsts: Vec<&[u8]> = todo.iter().zip(&first_of).filter(|(_, &first)| first).map(|((_, b, _), _)| b.as_slice()).collect();
-        let mut decoded = par_map(&firsts, |b| prepare_jpeg(b)).into_iter();
+        let mut decoded = par_map(&firsts, |b| prepare_picture(b, winseek_llama::prep::LONG_SIDE)).into_iter();
+        // What became of the first file of a hash that did not decode: its twins share the verdict.
+        let mut refused: HashMap<String, Refusal> = HashMap::new();
         for ((f, bytes, hash), first) in todo.into_iter().zip(first_of) {
             if !first {
                 match by_hash.get(&hash) {
                     Some(&slot) => prepared.push(Prepared { file: f, hash, slot }),
                     None => {
-                        // its twin could not be decoded either
-                        lock(store).fail(f.id, "decode failed").map_err(|e| e.to_string())?;
+                        let why = refused.get(&hash).cloned().unwrap_or_else(|| Refusal::Damaged("could not be decoded".into()));
+                        why.record(store, &f)?;
                         handled += 1;
                     }
                 }
@@ -364,8 +366,9 @@ impl Processor {
                     prepared.push(Prepared { file: f, hash, slot: jpegs.len() });
                     jpegs.push(j);
                 }
-                Err(msg) => {
-                    lock(store).fail(f.id, &msg).map_err(|e| e.to_string())?;
+                Err(why) => {
+                    why.record(store, &f)?;
+                    refused.insert(hash, why);
                     handled += 1;
                 }
             }
@@ -483,6 +486,9 @@ impl Processor {
         if bytes.len() as u64 > limit {
             return lock(store).skip(f.id, "too_large").map_err(db);
         }
+        if bytes.iter().take(4096).all(|&b| b == 0) {
+            return lock(store).skip(f.id, "empty_file").map_err(db);
+        }
         let hash = sha256_hex(&bytes);
         if lock(store).has_content(&hash).map_err(db)? {
             return lock(store).complete(f.id, &hash, &[], &[]).map_err(db);
@@ -497,7 +503,7 @@ impl Processor {
                     items
                 }
                 Err(Stop::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
-                Err(Stop::Fail(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+                Err(Stop::Fail(msg)) => return guard::fail_file(store, f.id, &f.path, &msg),
                 Err(Stop::Defer) => {
                     self.pdf_block_until = Some(Instant::now() + PDF_RETRY);
                     return Ok(()); // stays queued
@@ -507,7 +513,7 @@ impl Processor {
             let doc = match extract::extract_file(&f.path, &bytes) {
                 Ok(d) => d,
                 Err(ExtractError::Skip(reason)) => return lock(store).skip(f.id, reason).map_err(db),
-                Err(ExtractError::Failed(msg)) => return lock(store).fail(f.id, &msg).map_err(db),
+                Err(ExtractError::Failed(msg)) => return guard::fail_file(store, f.id, &f.path, &msg),
             };
             text_items(chunk::chunk(&doc), 0)
         };
@@ -549,7 +555,7 @@ impl Processor {
         let rt = (self.pdf_runtime)().map_err(|_| Stop::Defer)?;
         let read = match pdf::read_pdf_range(rt, bytes, true, from, to) {
             Ok(r) => r,
-            Err(PdfError::Encrypted) => return Err(Stop::Skip("encrypted")),
+            Err(PdfError::Encrypted) => return Err(Stop::Skip("password_protected")),
             Err(PdfError::Failed(m)) => return Err(Stop::Fail(m)),
             Err(PdfError::Unavailable(_)) => return Err(Stop::Defer),
         };
@@ -1042,6 +1048,46 @@ fn embed_items(embedder: &Mutex<Box<dyn Embedder + Send>>, items: &[Item]) -> Re
     Ok(out)
 }
 
+/// Why a picture was not embedded: it is not a picture / cannot be read here (a skip with a reason
+/// code), or it is damaged (a failure with the decoder's own words kept as detail).
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Refusal {
+    Skip(&'static str),
+    Damaged(String),
+}
+
+impl Refusal {
+    fn record(&self, store: &Mutex<Store>, f: &PendingFile) -> Result<(), String> {
+        match self {
+            Refusal::Skip(code) => lock(store).skip(f.id, code).map_err(|e| e.to_string()),
+            Refusal::Damaged(detail) if guard::is_fresh(&f.path) => lock(store).skip_with(f.id, "still_writing", detail).map_err(|e| e.to_string()),
+            Refusal::Damaged(detail) => lock(store).fail_with(f.id, "damaged_image", detail).map_err(|e| e.to_string()),
+        }
+    }
+}
+
+/// Decode `bytes` into the JPEG the embedder takes (long side `long_side`). The content decides, not
+/// the extension: bytes that are not a picture are a skip, not a failure. Whatever the `image`
+/// crate cannot decode (other formats, broken GIFs, pictures too big for its memory limit) goes to
+/// the Windows codecs, which scale while decoding.
+fn prepare_picture(bytes: &[u8], long_side: u32) -> Result<Vec<u8>, Refusal> {
+    use winseek_llama::prep::{prepare_jpeg_checked, PrepError, Sniff};
+    match prepare_jpeg_checked(bytes, long_side) {
+        Ok(j) => Ok(j),
+        Err(PrepError::NotPicture(code)) => Err(Refusal::Skip(code)),
+        Err(PrepError::Undecodable { sniff, detail, too_big }) => {
+            if let Some(j) = super::heic::to_jpeg_scaled(bytes, Some(long_side)) {
+                return Ok(j);
+            }
+            Err(match sniff {
+                _ if too_big => Refusal::Skip("too_large"),
+                Sniff::Unknown => Refusal::Skip("not_an_image"),
+                _ => Refusal::Damaged(detail),
+            })
+        }
+    }
+}
+
 enum Failure {
     ModelsMissing,
     /// The whole batch failed (backend down / bad reply).
@@ -1181,8 +1227,64 @@ mod tests {
         let mut pr = Processor::default();
         assert_eq!(pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap(), Pass::Progress(4));
         let s = store.lock().unwrap().stats().unwrap();
-        assert_eq!((s.done, s.failed, s.skipped, s.pending), (1, 2, 1, 0));
+        // text under a picture's name and the oversize file are skips; the missing file fails
+        assert_eq!((s.done, s.failed, s.skipped, s.pending), (1, 1, 2, 0));
         assert_eq!(images.load(Ordering::SeqCst), 1);
+        let st = store.lock().unwrap();
+        assert_eq!(st.file_error(&dir.path().join("bad.png").to_string_lossy()).unwrap().as_deref(), Some("not_an_image"));
+    }
+
+    #[test]
+    fn pictures_that_are_not_pictures_are_skipped_and_odd_ones_still_embed() {
+        let (store, dir) = setup();
+        let (fake, _c, images) = Fake::new();
+        let e = emb(fake);
+        add(&store, dir.path(), "empty.jpg", b"", 1);
+        add(&store, dir.path(), "zeros.png", &[0u8; 300], 2);
+        add(&store, dir.path(), "page.jpg", b"<!DOCTYPE html><html><body>Not found</body></html>", 3);
+        add(&store, dir.path(), "cut.png", b"\xFF\xD8\xFF\xE0\x00\x10JFIF\x00 junk after a jpeg header", 4);
+        // a real PNG under the wrong extension decodes from its content
+        add(&store, dir.path(), "really_png.gif", &png(12, 12, 5), 5);
+        let mut pr = Processor::default();
+        pr.run_pass(&store, &e, &AtomicBool::new(false)).unwrap();
+        let st = store.lock().unwrap();
+        let code = |n: &str| st.file_error(&dir.path().join(n).to_string_lossy()).unwrap();
+        assert_eq!(code("empty.jpg").as_deref(), Some("empty_file"));
+        assert_eq!(code("zeros.png").as_deref(), Some("empty_file"));
+        assert_eq!(code("page.jpg").as_deref(), Some("not_an_image"));
+        assert_eq!(code("cut.png").as_deref(), Some("damaged_image"));
+        assert!(st.file_detail(&dir.path().join("cut.png").to_string_lossy()).unwrap().unwrap().starts_with("decode"));
+        assert_eq!(code("really_png.gif"), None);
+        assert_eq!(images.load(Ordering::SeqCst), 1);
+    }
+
+    /// Dev probe: `WINSEEK_PROBE_LIST=<text file, one picture path per line> cargo test -p winseek-app probe_pictures_live -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn probe_pictures_live() {
+        let Ok(list) = std::env::var("WINSEEK_PROBE_LIST") else { return };
+        for path in std::fs::read_to_string(list).unwrap().lines().filter(|l| !l.is_empty()) {
+            let bytes = std::fs::read(path).unwrap_or_default();
+            let r = prepare_picture(&bytes, winseek_llama::prep::LONG_SIDE);
+            let name = path.rsplit('\\').next().unwrap_or(path);
+            println!("{} bytes  {:?}  {}", bytes.len(), r.as_ref().map(|j| j.len()).map_err(|e| e.clone()), name);
+        }
+    }
+
+    #[test]
+    fn lock_files_and_cut_office_files_are_told_apart() {
+        let (store, dir) = setup();
+        let (e, _b) = docs_embedder(false);
+        add_kind(&store, dir.path(), "~$report.docx", b"\x05Someone                      ", 1, "doc");
+        add_kind(&store, dir.path(), "cut.xlsx", b"PK\x03\x04 and then it stops", 2, "doc");
+        add_kind(&store, dir.path(), "old.docx", &[0xD0, 0xCF, 0x11, 0xE0, 1, 2, 3, 4], 3, "doc");
+        let mut p = Processor::default();
+        p.run_pass(&store, &e, &AtomicBool::new(false)).unwrap();
+        let s = store.lock().unwrap();
+        let code = |n: &str| s.file_error(&dir.path().join(n).to_string_lossy()).unwrap().unwrap();
+        assert_eq!(code("~$report.docx"), "temp_file");
+        assert_eq!(code("cut.xlsx"), "damaged_archive");
+        assert_eq!(code("old.docx"), "legacy_office");
     }
 
     #[test]
@@ -1551,8 +1653,9 @@ mod tests {
         assert_eq!(reason("blob.txt"), "binary");
         assert_eq!(reason("empty.txt"), "no_text");
         assert_eq!(reason("big.txt"), "too_large");
-        assert!(reason("broken.docx").starts_with("zip"));
-        assert!(reason("missing.txt").starts_with("read"));
+        assert_eq!(reason("broken.docx"), "damaged_archive");
+        assert!(s.file_detail(&dir.path().join("broken.docx").to_string_lossy()).unwrap().unwrap().starts_with("zip"));
+        assert_eq!(reason("missing.txt"), "unreadable");
     }
 
     #[test]
@@ -1762,7 +1865,7 @@ mod tests {
         let st = s.stats().unwrap();
         assert_eq!((st.failed, st.skipped, st.done), (1, 1, 0));
         assert_eq!(s.file_error(&big.to_string_lossy()).unwrap().as_deref(), Some("too_large"));
-        assert!(s.file_error(&dir.path().join("broken.pdf").to_string_lossy()).unwrap().unwrap().starts_with("pdf"));
+        assert_eq!(s.file_error(&dir.path().join("broken.pdf").to_string_lossy()).unwrap().as_deref(), Some("damaged_pdf"));
     }
 
     #[test]

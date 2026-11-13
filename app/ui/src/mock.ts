@@ -41,6 +41,23 @@ for (const f of LIB) {
   libByPath.set(f.path, f);
   DB.push({ name: f.name, lower: f.name.toLowerCase(), path: f.path, dir: false, size: f.size, mtime: f.mtime, kind: f.kind });
 }
+// Pictures for trying picture search: some show a cat without saying so in their name, some are named
+// for it, and many only hold the letters inside another word ("intricate", "location", "education").
+const SHOWS = new Map<string, string>();
+{
+  const tiles = LIB.filter((f) => f.kind === 1 && f.tile);
+  const add = (name: string, i: number, shows?: string) => {
+    const path = `C:\\Users\\User\\Pictures\\Sorted\\${name}`;
+    const src = tiles[(i * 37) % tiles.length];
+    libByPath.set(path, { ...src, name, path });
+    DB.push({ name, lower: name.toLowerCase(), path, dir: false, size: 400_000 + i * 9_137, mtime: Date.now() - (i + 1) * 4e8, kind: 1 });
+    if (shows) SHOWS.set(path, shows);
+  };
+  ["cat.jpg", "my cat 2021.png", "cat_food.png", "Cats on the sofa.jpg", "category chart.png"].forEach((n, i) => add(n, i, i < 2 || i === 3 ? "cat" : undefined));
+  for (let i = 0; i < 9; i++) add(`2018070${i}_1924${10 + i}.jpg`, 10 + i, "cat");
+  for (let i = 0; i < 36; i++) add(`000${String(30 + i)}-armor, fantasy art, intricate details.png`, 30 + i);
+  ["location map.png", "education poster.png", "scatter plot.png", "vacation 2023.jpg"].forEach((n, i) => add(n, 80 + i));
+}
 const livePaths = () => new Set(DB.map((e) => e.path));
 
 // A portable app without a Start-menu entry, so the launcher's portable-app promotion is visible.
@@ -92,6 +109,8 @@ function rangeTerms(all: string[]): (e: E) => boolean {
   return (e) => tests.every((f) => f(e));
 }
 const isRangeTerm = (t: string) => /^(size|dm):/.test(t);
+/** The name index's `ws:` term: `w` begins a word of the (lower-case) name. */
+const hasWord = (lower: string, w: string) => { for (let i = lower.indexOf(w); i >= 0; i = lower.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(lower[i - 1])) return true; return false; };
 const okFilter = (e: E, f: Filter) => f === "all" || (f === "files" && !e.dir) || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -275,9 +294,14 @@ function mockStatusPage(): StatusPage {
       ocr_unavailable: params.get("noocr") === "1",
       waiting: [],
       ffmpeg: null,
-      failed_reasons: s && s.failed > 0 ? [{ reason: "decode: The image format could not be determined", count: s.failed, examples: ["C:\Users\you\Pictures\broken.jpg"] }] : [],
+      failed_reasons: s && s.failed > 0
+        ? [
+            { reason: "damaged_image", count: Math.max(1, s.failed - 2), examples: ["C:\\Users\\you\\Pictures\\broken.jpg", "C:\\Users\\you\\Pictures\\cut-off.gif"], details: ["decode: invalid data", "decode: unexpected end"] },
+            { reason: "damaged_video", count: s.failed > 2 ? 2 : 0, examples: ["C:\\Users\\you\\Videos\\half-download.mp4"], details: ["ffmpeg: Invalid data found when processing input"] },
+          ].filter((g) => g.count > 0)
+        : [],
       skipped_reasons: s && s.skipped > 0
-        ? [{ reason: "no_text", count: s.skipped, examples: ["C:\Users\you\Documents\scan.pdf", "C:\Users\you\Documents\blank.docx"] }]
+        ? [{ reason: "no_text", count: s.skipped, examples: ["C:\\Users\\you\\Documents\\scan.pdf", "C:\\Users\\you\\Documents\\blank.docx"] }]
         : [],
     },
     models: {
@@ -577,7 +601,7 @@ export const mockBackend: Backend = {
     const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
     const terms = all.filter((t) => !t.startsWith("ext:") && !isRangeTerm(t));
     const inRange = rangeTerms(all);
-    const m = DB.filter((e) => inRange(e) && okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t))); // a term with a backslash is a path match (the drive scope)
+    const m = DB.filter((e) => inRange(e) && okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.startsWith("ws:") ? hasWord(e.lower, t.slice(3)) : (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t)))); // a term with a backslash is a path match (the drive scope)
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
     else if (s === "name_desc") m.sort((a, b) => b.lower.localeCompare(a.lower));
@@ -796,15 +820,17 @@ export const mockBackend: Backend = {
         const by = 0.12 + 0.5 * hash01(e.path + "|box");
         const boxes = snippet ? [{ x: 0.12, y: by, w: 0.42, h: 0.06 }, { x: 0.12, y: by + 0.12, w: 0.58, h: 0.06 }] : null;
         return {
-          path: e.path, score: 0.1 + 0.22 * h + (terms.some((t) => e.lower.includes(t)) ? 0.2 : 0),
+          path: e.path, score: 0.1 + 0.2 * h + (terms.some((t) => t.replace(/s$/, "") === SHOWS.get(e.path)) ? 0.45 + 0.2 * h : 0),
           size: e.size, mtime: Math.floor(e.mtime), snippet: snippet && snippet.includes("[") ? snippet : null,
           boxes: snippet && snippet.includes("[") ? boxes : null,
         };
       })
       .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
       // Like the app's calibrated gate: only what clearly stands out is returned, never "the least unrelated".
-      .filter((h) => h.score >= 0.28)
-      .sort((a, b) => b.score - a.score);
+      .filter((h) => h.score >= 0.297)
+      .sort((a, b) => b.score - a.score)
+      // The app sends two numbers: the score on the gate's scale, and the same relative to the best hit.
+      .map((h, _i, arr) => ({ ...h, rank: 4 + (h.score - 0.297) * 12, score: Math.max(0.01, h.score / arr[0].score) }));
     // Like the app: a small first page is the quick top-k, anything else a page of the whole list.
     const hits = all.slice(offset, offset + Math.max(1, k));
     const deep = offset > 0 || k > 200;

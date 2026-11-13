@@ -155,6 +155,9 @@ fn ext_of(path: &str) -> String {
 /// Extract the searchable text of `bytes` (the whole file, already size-checked), choosing the
 /// reader by `path`'s extension.
 pub fn extract_file(path: &str, bytes: &[u8]) -> Res<Extracted> {
+    if super::guard::is_temp_name(path) {
+        return Err(ExtractError::Skip("temp_file"));
+    }
     let ext = ext_of(path);
     let doc = match ext.as_str() {
         "doc" | "dot" | "xls" | "xlt" | "ppt" | "pps" | "pot" => return Err(ExtractError::Skip("legacy_office")),

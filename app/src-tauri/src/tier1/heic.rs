@@ -25,28 +25,45 @@ pub fn normalize(path: &str, bytes: Vec<u8>) -> Option<Vec<u8>> {
 /// Decode any image the OS codecs know and re-encode it as JPEG. Classic synchronous WIC (the
 /// WinRT async wrappers crashed the process after a failed decode). EXIF orientation is not applied.
 pub fn to_jpeg(bytes: &[u8]) -> Option<Vec<u8>> {
+    to_jpeg_scaled(bytes, None)
+}
+
+/// [`to_jpeg`] with the long side capped at `long_side` while decoding (no upscaling), so a huge
+/// picture never has to exist at full size in this process's own decoders.
+pub fn to_jpeg_scaled(bytes: &[u8], long_side: Option<u32>) -> Option<Vec<u8>> {
     // A fresh thread per call: its own COM apartment, whatever mode the caller's thread is in.
-    std::thread::scope(|s| s.spawn(|| decode_encode(bytes)).join().ok().flatten())
+    std::thread::scope(|s| s.spawn(|| decode_encode(bytes, long_side)).join().ok().flatten())
+}
+
+/// Size to scale a `w` x `h` picture to so its long side is `long_side` (never larger than the source).
+pub fn scaled_size(w: u32, h: u32, long_side: u32) -> (u32, u32) {
+    let long = w.max(h);
+    if long <= long_side || long == 0 {
+        return (w, h);
+    }
+    let f = |v: u32| ((u64::from(v) * u64::from(long_side) + u64::from(long) / 2) / u64::from(long)).max(1) as u32;
+    (f(w), f(h))
 }
 
 /// Initialise COM for this (fresh) thread, run the conversion, release every interface *before*
 /// uninitialising. The WIC stream borrows `bytes` without copying: they outlive it here.
-fn decode_encode(bytes: &[u8]) -> Option<Vec<u8>> {
+fn decode_encode(bytes: &[u8], long_side: Option<u32>) -> Option<Vec<u8>> {
     use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_MULTITHREADED};
     // SAFETY: paired with the CoUninitialize below on the same thread (only when init succeeded).
     let inited = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-    let r = convert(bytes);
+    let r = convert(bytes, long_side);
     if inited {
         unsafe { CoUninitialize() };
     }
     r
 }
 
-fn convert(bytes: &[u8]) -> Option<Vec<u8>> {
+fn convert(bytes: &[u8], long_side: Option<u32>) -> Option<Vec<u8>> {
     use windows::Win32::Graphics::Imaging::{
-        CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, IWICImagingFactory, WICBitmapDitherTypeNone,
+        CLSID_WICImagingFactory, GUID_ContainerFormatJpeg, GUID_WICPixelFormat24bppBGR, IWICBitmapSource, IWICImagingFactory, WICBitmapDitherTypeNone, WICBitmapInterpolationModeFant,
         WICBitmapEncoderNoCache, WICBitmapPaletteTypeCustom, WICDecodeMetadataCacheOnDemand,
     };
+    use windows::core::Interface;
     use windows::Win32::System::Com::{CoCreateInstance, CLSCTX_INPROC_SERVER, STATFLAG_NONAME, STREAM_SEEK_SET};
     use windows::Win32::UI::Shell::SHCreateMemStream;
 
@@ -65,6 +82,16 @@ fn convert(bytes: &[u8]) -> Option<Vec<u8>> {
         if w == 0 || h == 0 {
             return None;
         }
+        let mut src: IWICBitmapSource = conv.cast().ok()?;
+        if let Some(l) = long_side {
+            let (sw, sh) = scaled_size(w, h, l);
+            if (sw, sh) != (w, h) {
+                let scaler = factory.CreateBitmapScaler().ok()?;
+                scaler.Initialize(&src, sw, sh, WICBitmapInterpolationModeFant).ok()?;
+                src = scaler.cast().ok()?;
+                (w, h) = (sw, sh);
+            }
+        }
         let out = SHCreateMemStream(None)?;
         let enc = factory.CreateEncoder(&GUID_ContainerFormatJpeg, std::ptr::null()).ok()?;
         enc.Initialize(&out, WICBitmapEncoderNoCache).ok()?;
@@ -75,7 +102,7 @@ fn convert(bytes: &[u8]) -> Option<Vec<u8>> {
         fenc.SetSize(w, h).ok()?;
         let mut fmt = GUID_WICPixelFormat24bppBGR;
         fenc.SetPixelFormat(&mut fmt).ok()?;
-        fenc.WriteSource(&conv, std::ptr::null()).ok()?;
+        fenc.WriteSource(&src, std::ptr::null()).ok()?;
         fenc.Commit().ok()?;
         enc.Commit().ok()?;
         let mut stat = std::mem::zeroed();
@@ -102,9 +129,28 @@ mod tests {
     }
 
     #[test]
+    fn scaled_size_caps_the_long_side_and_never_upscales() {
+        assert_eq!(scaled_size(4000, 2000, 768), (768, 384));
+        assert_eq!(scaled_size(2000, 4000, 768), (384, 768));
+        assert_eq!(scaled_size(500, 300, 768), (500, 300));
+        assert_eq!(scaled_size(30000, 1, 768), (768, 1));
+    }
+
+    #[test]
     fn non_heic_is_untouched_and_garbage_heic_is_refused() {
         assert_eq!(normalize("a.jpg", vec![1, 2, 3]), Some(vec![1, 2, 3]));
         assert_eq!(normalize("a.heic", b"definitely not an image".to_vec()), None);
+    }
+
+    /// A big picture comes back already scaled: no full-size copy for the caller to hold.
+    #[test]
+    fn wic_scales_while_decoding() {
+        let img = image::RgbImage::from_fn(1600, 900, |x, y| image::Rgb([(x / 7) as u8, (y / 5) as u8, 90]));
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png).unwrap();
+        let jpeg = to_jpeg_scaled(&png, Some(400)).expect("WIC decodes and scales");
+        let back = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((back.width(), back.height()), (400, 225));
     }
 
     /// The codec path itself: a PNG made by the `image` crate goes through WIC and comes back as a JPEG.

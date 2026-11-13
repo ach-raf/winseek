@@ -56,7 +56,9 @@ fn ext_in(path: &str, list: &[&str]) -> bool {
 /// Which Tier 1 reader a path belongs to: `image`, `pdf`, `doc`, or `code` (only when `index_code`).
 /// Source files that are minified / generated / vendored / secret-looking are never `code`.
 pub fn kind_of(path: &str, index_code: bool) -> Option<&'static str> {
-    if is_supported_image(path) {
+    if guard::is_temp_name(path) {
+        None
+    } else if is_supported_image(path) {
         Some(KIND_IMAGE)
     } else if ext_in(path, &["pdf"]) {
         Some(KIND_PDF)
@@ -198,7 +200,7 @@ pub fn crawl(store: &Mutex<Store>, scopes: &Scopes, ignore: &Ignore, index_code:
 }
 
 /// Skip reasons worth a second look later: the file may have been hydrated / the codec installed.
-pub const RETRY_SKIPS: &[&str] = &["cloud_only", "no_heic_codec"];
+pub const RETRY_SKIPS: &[&str] = &["cloud_only", "no_heic_codec", "still_writing"];
 
 /// Remove rows indexed before the current rules existed: out of scope or hard-denied, not readable
 /// under the code-project rules, or inside a dataset-looking folder. Returns the rows removed.

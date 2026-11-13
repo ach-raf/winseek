@@ -65,6 +65,44 @@ pub fn read_head(path: &Path, n: usize) -> io::Result<Vec<u8>> {
     Ok(buf)
 }
 
+// ---------------------------------------------------------------- files that are not finished
+
+/// A file modified this recently may still be being written (a download, a copy, a save).
+pub const FRESH_SECS: u64 = 120;
+
+/// True when a file last modified at `mtime` may still be written to at `now` (or claims the future).
+pub fn is_fresh_at(mtime: std::time::SystemTime, now: std::time::SystemTime) -> bool {
+    now.duration_since(mtime).map(|d| d.as_secs() < FRESH_SECS).unwrap_or(true)
+}
+
+/// True when `path` was modified within [`FRESH_SECS`]. (Unit tests write their fixtures a moment
+/// before reading them, so there it is always false.)
+pub fn is_fresh(path: &str) -> bool {
+    if cfg!(test) {
+        return false;
+    }
+    std::fs::metadata(path).and_then(|m| m.modified()).map(|t| is_fresh_at(t, std::time::SystemTime::now())).unwrap_or(false)
+}
+
+/// Office lock files (`~$name.docx`) and download / temp leftovers: never content, whatever the extension.
+pub fn is_temp_name(path: &str) -> bool {
+    let p = Path::new(path);
+    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+    if name.starts_with("~$") {
+        return true;
+    }
+    p.extension().and_then(|e| e.to_str()).is_some_and(|e| {
+        ["part", "crdownload", "download", "partial", "tmp", "temp", "opdownload", "!ut", "bc!"].iter().any(|x| e.eq_ignore_ascii_case(x))
+    })
+}
+
+/// Fail a file that could not be read. A file still being written is not damaged yet: it is
+/// skipped as `still_writing` and looked at again later.
+pub fn fail_file(store: &std::sync::Mutex<winseek_store::Store>, id: winseek_store::FileId, path: &str, msg: &str) -> Result<(), String> {
+    let mut s = store.lock().unwrap_or_else(|e| e.into_inner());
+    if is_fresh(path) { s.skip_with(id, "still_writing", msg) } else { s.fail(id, msg) }.map_err(|e| e.to_string())
+}
+
 // ---------------------------------------------------------------- dataset folders
 
 /// Folder names that are datasets by themselves.
@@ -239,6 +277,19 @@ pub fn notebook_text(json: &[u8]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn files_written_a_moment_ago_are_fresh_and_temp_names_are_recognised() {
+        use std::time::{Duration, SystemTime};
+        let now = SystemTime::now();
+        assert!(super::is_fresh_at(now - Duration::from_secs(5), now));
+        assert!(super::is_fresh_at(now + Duration::from_secs(5), now));
+        assert!(!super::is_fresh_at(now - Duration::from_secs(3600), now));
+        for n in [r"C:\d\~$report.docx", r"C:\d\movie.mp4.part", r"C:\d\a.crdownload", r"C:\d\x.tmp"] {
+            assert!(super::is_temp_name(n), "{n}");
+        }
+        assert!(!super::is_temp_name(r"C:\d\report.docx"));
+    }
+
     use super::*;
 
     fn names(v: &[&str]) -> Vec<String> {

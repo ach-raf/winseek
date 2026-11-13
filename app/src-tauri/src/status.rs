@@ -86,10 +86,12 @@ pub struct ReasonDto {
     pub reason: String,
     pub count: u64,
     pub examples: Vec<String>,
+    /// Raw technical detail per example (for a tooltip / copy); the sentence never shows it.
+    pub details: Vec<String>,
 }
 
 fn reasons(g: Vec<winseek_store::ReasonGroup>) -> Vec<ReasonDto> {
-    g.into_iter().map(|g| ReasonDto { reason: g.reason, count: g.count, examples: g.examples }).collect()
+    g.into_iter().map(|g| ReasonDto { reason: g.reason, count: g.count, examples: g.examples, details: g.details }).collect()
 }
 
 /// What the queued (pending) files are waiting for, from the kinds the worker holds back.

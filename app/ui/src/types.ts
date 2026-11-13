@@ -64,8 +64,10 @@ export interface Opened {
 }
 export interface SemanticHit {
   path: string;
-  /** Cosine similarity of the file's embedding to the query. */
+  /** The final score relative to the best hit of the list (1 = the top one). */
   score: number;
+  /** The final score itself, on the relevance gate's scale (a meaning hit starts at 4; the words found in the file add a bonus). */
+  rank?: number;
   /** On-disk size / modified time (unix ms), when the file could be stat-ed. */
   size?: number | null;
   mtime?: number | null;
@@ -205,6 +207,8 @@ export interface StatusReason {
   count: number;
   /** A few example paths. */
   examples: string[];
+  /** Raw technical detail per example, for a tooltip; never shown as the sentence. */
+  details?: string[];
 }
 export interface StatusModelFile {
   name: string;
