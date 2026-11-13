@@ -220,7 +220,7 @@ impl ParsePass {
             return Ok(()); // nothing readable: the parser reads the page itself
         }
         let locator = ocr.locator_json();
-        let result = text_result(embedder, chunk_texts(&ocr.text, 0), &locator);
+        let result = text_result(embedder, chunk_texts(&ocr.text, 0), &super::file_title(&path), &locator);
         lock(store).skip_parse_replacing(hash, 0, "ocr_ok", &result).map_err(db)
     }
 
@@ -339,7 +339,7 @@ fn finish_job(
         return Ok(());
     }
     let locator = parsed.locator_json((job.page > 0).then_some(job.page));
-    let result = text_result(embedder, chunk_texts(&text, job.page), &locator);
+        let result = text_result(embedder, chunk_texts(&text, job.page), &super::file_title(&job.path), &locator);
     lock(store).finish_parse(&job.hash, job.page, &result).map_err(db)
 }
 
@@ -362,11 +362,12 @@ fn chunk_texts(text: &str, page: u32) -> Vec<String> {
     chunk::chunk_page(text, page, PARSE_CHUNKS).into_iter().map(|c| c.text).filter(|t| !t.is_empty()).collect()
 }
 
-/// Text chunks with their vectors (`embed_documents` on the CPU query server; on any error the
-/// vectors are left owed and the upgrade pass computes them later) as a [`ParseResult`]; the same
-/// locator goes on the chunks and on the item's image / page vector.
-fn text_result(embedder: &Mutex<Box<dyn Embedder + Send>>, texts: Vec<String>, locator: &str) -> ParseResult {
-    let vecs: Vec<Option<Vec<f32>>> = match lock(embedder).embed_documents(&texts) {
+/// Text chunks with their vectors (`embed_documents` on the CPU query server, titled with the
+/// file name; on any error the vectors are left owed and the upgrade pass computes them later)
+/// as a [`ParseResult`]; the same locator goes on the chunks and on the item's image / page vector.
+fn text_result(embedder: &Mutex<Box<dyn Embedder + Send>>, texts: Vec<String>, title: &str, locator: &str) -> ParseResult {
+    let pairs: Vec<(&str, &str)> = texts.iter().map(|t| (title, t.as_str())).collect();
+    let vecs: Vec<Option<Vec<f32>>> = match lock(embedder).embed_documents(&pairs) {
         Ok(v) if v.len() == texts.len() => v.into_iter().map(Some).collect(),
         _ => vec![None; texts.len()],
     };
@@ -412,12 +413,12 @@ mod tests {
         fn embed_query(&mut self, q: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(unit(if DOC_PROMPTS.contains(&q) { 0 } else { 1 }))
         }
-        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
             self.doc_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_docs {
                 return Err(EmbedError::Other("server down".into()));
             }
-            Ok(t.iter().map(|_| unit(2)).collect())
+            Ok(docs.iter().map(|_| unit(2)).collect())
         }
         fn meta(&self) -> winseek_store::IndexMeta {
             index_meta("test")

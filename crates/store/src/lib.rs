@@ -275,6 +275,10 @@ pub const SETTING_PARSE_ROUTE_CURSOR: &str = "parse_route_cursor";
 /// Settings key: set once queue entries queued under an older routing gate have been re-checked
 /// against the current one (`parse_pass::reeval_stale`).
 pub const SETTING_PARSE_GATE_REEVAL: &str = "parse_gate_reeval_v1";
+/// Settings key: marks that text vectors are embedded with the titled document form
+/// (`title: {file name} | text: {body}`). While it is missing, existing text vectors use the
+/// untitled scheme and are re-queued once via [`Store::reset_text_vectors`].
+pub const SETTING_TEXT_TITLE_SCHEME: &str = "text_title_scheme";
 
 /// One queued item for the document parser. `page` 0 is a standalone image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1051,6 +1055,29 @@ impl Store {
         tx.execute("UPDATE files SET state = 1 WHERE content_hash = ?1 AND state = 4", [hash])?;
         tx.commit()?;
         Ok(())
+    }
+
+    /// Re-queue every stored text vector as owed, so the upgrade pass re-embeds it from the
+    /// stored text (the `texts` rows keep the bodies; nothing is re-extracted). Only files whose
+    /// content owes a *text* vector flip back to text-only; images / pages / audio are untouched.
+    /// Returns the number of files that went back to text-only.
+    pub fn reset_text_vectors(&mut self) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO pending_vecs(hash, chunk, kind, locator)
+             SELECT v.hash, v.chunk, 'text', v.locator FROM vectors v
+             WHERE v.kind = 'text'
+               AND NOT EXISTS (SELECT 1 FROM pending_vecs p WHERE p.hash = v.hash AND p.chunk = v.chunk)",
+            [],
+        )?;
+        tx.execute("DELETE FROM vectors WHERE kind = 'text'", [])?;
+        let n = tx.execute(
+            "UPDATE files SET state = 4 WHERE state = 1
+             AND content_hash IN (SELECT hash FROM pending_vecs WHERE kind = 'text')",
+            [],
+        )?;
+        tx.commit()?;
+        Ok(n)
     }
 
     pub fn fail(&mut self, file_id: FileId, msg: &str) -> Result<()> {
@@ -2841,6 +2868,29 @@ mod tests {
         assert!(cluster_near(&v, 0.99).is_empty());
         assert_eq!(cluster_near(&v, 0.5), vec![vec![0, 1, 2, 3]]);
         assert!(cluster_near(&[], 0.9).is_empty());
+    }
+
+    #[test]
+    fn reset_text_vectors_requeues_only_text() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.pdf", 100);
+        let b = add(&mut s, 2, r"C:\p\b.jpg", 200);
+        // a: one page image + one text chunk; b: image only
+        let text_vec = ChunkVec { chunk: 1, kind: VecKind::Text, locator: None, vec: vec![0., 1., 0., 0.] };
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.]), text_vec], &[(1, "body".into())]).unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        assert!(s.next_text_only(10).unwrap().is_empty(), "both done");
+
+        assert_eq!(s.reset_text_vectors().unwrap(), 1, "only the file with a text chunk");
+        assert_eq!(s.pending_vecs("ha").unwrap(), vec![PendingVec { chunk: 1, kind: VecKind::Text, locator: None }]);
+        assert!(s.pending_vecs("hb").unwrap().is_empty(), "image vectors stay");
+        assert_eq!(s.texts_of("ha").unwrap().len(), 1, "text survives for FTS");
+        let only = s.next_text_only(10).unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].path, r"C:\p\a.pdf");
+
+        // idempotent: a second pass has nothing left to move
+        assert_eq!(s.reset_text_vectors().unwrap(), 0);
     }
 
     #[test]

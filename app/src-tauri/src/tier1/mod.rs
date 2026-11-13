@@ -211,6 +211,11 @@ pub struct ParsedDoc {
     pub cached: bool,
 }
 
+/// The file name (last path component) — the `title:` half of a document embedding.
+pub fn file_title(path: &str) -> String {
+    std::path::Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+}
+
 /// The `page` of a chunk locator (`{"page":3,"chars":[0,90]}`).
 pub fn locator_page(locator: Option<&str>) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(locator?).ok()?;

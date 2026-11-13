@@ -8,18 +8,21 @@
 
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
 use pdfium_render::prelude::Pdfium;
 use sha2::{Digest, Sha256};
 use winseek_llama::prep::prepare_jpeg;
-use winseek_store::{ChunkVec, PendingFile, PendingVec, Store, TextOnlyFile, VecKind};
+use winseek_store::{
+    ChunkVec, PendingFile, PendingVec, Store, TextOnlyFile, VecKind, SETTING_TEXT_TITLE_SCHEME,
+};
 
 use super::chunk::{self, Chunk};
 use super::crawler::{KIND_AUDIO, KIND_IMAGE, KIND_PDF, KIND_VIDEO};
 use super::embedder::{is_gpu_busy, EmbedError, Embedder};
+use super::file_title;
 use super::extract::{self, ExtractError};
 use super::guard;
 use super::media::{self, Ffmpeg, MediaTool};
@@ -263,6 +266,7 @@ impl Processor {
         if paused.load(Ordering::Relaxed) {
             return Ok(Pass::Paused);
         }
+        ensure_title_scheme(store)?;
         let skip = self.excluded_kinds(store);
         let pending = lock(store).next_pending_where(BATCH, &[], &skip, 0).map_err(|e| e.to_string())?;
         if pending.is_empty() {
@@ -279,8 +283,8 @@ impl Processor {
         let mut prepared: Vec<Prepared> = Vec::new();
         let mut jpegs: Vec<Vec<u8>> = Vec::new();
         let mut by_hash: HashMap<String, usize> = HashMap::new();
-        // OCR output per unique JPEG slot.
-        let mut ocr_by_slot: HashMap<usize, OcrText> = HashMap::new();
+        // OCR output per unique JPEG slot, with the file name as the embedding title.
+        let mut ocr_by_slot: HashMap<usize, (String, OcrText)> = HashMap::new();
         let mut ocr_unavailable = false;
         let mut ocr_ran = false;
 
@@ -360,7 +364,7 @@ impl Processor {
                 Ok(j) => {
                     if let Some(t) = self.ocr_screenshot(&f.path, &bytes, &mut ocr_unavailable) {
                         ocr_ran = true;
-                        ocr_by_slot.insert(jpegs.len(), t);
+                        ocr_by_slot.insert(jpegs.len(), (file_title(&f.path), t));
                     }
                     by_hash.insert(hash.clone(), jpegs.len());
                     prepared.push(Prepared { file: f, hash, slot: jpegs.len() });
@@ -412,7 +416,7 @@ impl Processor {
                 Ok(vec) => {
                     let mut chunks = vec![ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec.clone() }];
                     let mut texts: Vec<(u32, String)> = Vec::new();
-                    if let Some(t) = ocr_by_slot.get(&p.slot) {
+                    if let Some((_, t)) = ocr_by_slot.get(&p.slot) {
                         // Line rectangles ride on both vectors' locator (preview bbox highlight),
                         // so a hit exposes them whichever chunk wins the per-file ranking.
                         let loc = t.locator_json();
@@ -424,7 +428,7 @@ impl Processor {
                     }
                     // A duplicate in the same batch finds the content already stored and just links.
                     lock(store).complete(p.file.id, &p.hash, &chunks, &texts).map_err(|e| e.to_string())?;
-                    if ocr_by_slot.get(&p.slot).is_some_and(|t| route::screenshot_wants_parser(&t.text)) {
+                    if ocr_by_slot.get(&p.slot).is_some_and(|(_, t)| route::screenshot_wants_parser(&t.text)) {
                         lock(store).queue_parse(&p.hash, 0, "screenshot").map_err(|e| e.to_string())?;
                     }
                 }
@@ -524,7 +528,7 @@ impl Processor {
         let texts = item_texts(&items);
         let stored = match embedder {
             None => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
-            Some(embedder) => match embed_items(embedder, &items) {
+            Some(embedder) => match embed_items(embedder, &items, &file_title(&f.path)) {
                 Ok(vectors) => lock(store).complete(f.id, &hash, &vectors, &texts).map_err(db),
                 Err(EmbedError::ModelsMissing) => lock(store).complete_text_only(f.id, &hash, &item_pending(&items), &texts).map_err(db),
                 Err(EmbedError::Other(_)) => lock(store).complete(f.id, &hash, &[], &texts).map_err(db),
@@ -646,7 +650,7 @@ impl Processor {
         let vectors = if items.is_empty() {
             Vec::new()
         } else {
-            match embed_items(embedder, &items) {
+            match embed_items(embedder, &items, &file_title(&job.path)) {
                 Ok(v) => v,
                 Err(EmbedError::ModelsMissing) => return Ok(Pass::ModelsMissing),
                 Err(EmbedError::Other(msg)) if is_gpu_busy(&msg) => return Ok(Pass::EmbedFailed(msg)),
@@ -799,7 +803,7 @@ impl Processor {
             if !images.is_empty() {
                 items.extend(self.rebuild_images(&f, &images));
             }
-            match embed_items(embedder, &items) {
+            match embed_items(embedder, &items, &file_title(&f.path)) {
                 Ok(vectors) => {
                     lock(store).finish_vectors(&f.hash, &vectors).map_err(db)?;
                     self.upgrade_strikes.remove(&f.id.0);
@@ -862,13 +866,15 @@ impl Processor {
     }
 
     /// Best-effort text embeddings of the OCR output (FTS still gets the text if this fails).
-    fn embed_ocr_texts(embedder: &Mutex<Box<dyn Embedder + Send>>, by_slot: &HashMap<usize, OcrText>) -> HashMap<usize, Vec<f32>> {
+    fn embed_ocr_texts(embedder: &Mutex<Box<dyn Embedder + Send>>, by_slot: &HashMap<usize, (String, OcrText)>) -> HashMap<usize, Vec<f32>> {
         if by_slot.is_empty() {
             return HashMap::new();
         }
         let slots: Vec<usize> = by_slot.keys().copied().collect();
-        let docs: Vec<String> = slots.iter().map(|s| by_slot[s].text.chars().take(OCR_EMBED_CHARS).collect()).collect();
-        match lock(embedder).embed_documents(&docs) {
+        let docs: Vec<(&str, String)> =
+            slots.iter().map(|s| (by_slot[s].0.as_str(), by_slot[s].1.text.chars().take(OCR_EMBED_CHARS).collect())).collect();
+        let pairs: Vec<(&str, &str)> = docs.iter().map(|(t, x)| (*t, x.as_str())).collect();
+        match lock(embedder).embed_documents(&pairs) {
             Ok(v) if v.len() == slots.len() => slots.into_iter().zip(v).collect(),
             _ => HashMap::new(),
         }
@@ -990,9 +996,33 @@ fn item_pending(items: &[Item]) -> Vec<PendingVec> {
         .collect()
 }
 
-/// Vectors for all items. Text is all-or-nothing (a failure is returned and the caller decides);
-/// a page image that cannot be embedded is left out so one poison page does not block the file.
-fn embed_items(embedder: &Mutex<Box<dyn Embedder + Send>>, items: &[Item]) -> Result<Vec<ChunkVec>, EmbedError> {
+/// 0 = not checked this process, 2 = done (`ensure_title_scheme`).
+static TITLE_SCHEME: AtomicU8 = AtomicU8::new(0);
+
+/// One-shot migration to the titled document form (`title: {file name} | text: {body}`): text
+/// vectors embedded under the older untitled scheme are re-queued, and the upgrade pass
+/// re-embeds them from the stored text while FTS keeps every file searchable. Safe to re-run.
+fn ensure_title_scheme(store: &Mutex<Store>) -> Result<(), String> {
+    if TITLE_SCHEME.load(Ordering::Relaxed) == 2 {
+        return Ok(());
+    }
+    let db = |e: winseek_store::Error| e.to_string();
+    {
+        let mut s = lock(store);
+        if s.get_setting(SETTING_TEXT_TITLE_SCHEME).map_err(db)?.is_none() {
+            let n = s.reset_text_vectors().map_err(db)?;
+            s.set_setting(SETTING_TEXT_TITLE_SCHEME, Some("1")).map_err(db)?;
+            eprintln!("winseek: titled-document migration: {n} file(s) re-queued (text vectors re-embed in the background)");
+        }
+    }
+    TITLE_SCHEME.store(2, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Vectors for all items of one file (`title` is its file name). Text is all-or-nothing (a
+/// failure is returned and the caller decides); a page image that cannot be embedded is left
+/// out so one poison page does not block the file.
+fn embed_items(embedder: &Mutex<Box<dyn Embedder + Send>>, items: &[Item], title: &str) -> Result<Vec<ChunkVec>, EmbedError> {
     let mut out: Vec<ChunkVec> = Vec::with_capacity(items.len());
     let texts: Vec<(&u32, &String, &String)> = items
         .iter()
@@ -1010,7 +1040,7 @@ fn embed_items(embedder: &Mutex<Box<dyn Embedder + Send>>, items: &[Item]) -> Re
         .collect();
     let mut e = lock(embedder);
     for group in texts.chunks(TEXT_EMBED_BATCH) {
-        let docs: Vec<String> = group.iter().map(|g| g.1.clone()).collect();
+        let docs: Vec<(&str, &str)> = group.iter().map(|g| (title, g.1.as_str())).collect();
         let v = e.embed_documents(&docs)?;
         if v.len() != group.len() {
             return Err(EmbedError::Other("wrong vector count".into()));
@@ -1460,8 +1490,8 @@ mod tests {
         fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(vec_of(b"q"))
         }
-        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
-            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(docs.iter().map(|_| vec_of(b"doc")).collect())
         }
         fn meta(&self) -> IndexMeta {
             index_meta("test")
@@ -1533,12 +1563,12 @@ mod tests {
         fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(vec_of(b"q"))
         }
-        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
             if self.fail {
                 return Err(EmbedError::Other("down".into()));
             }
-            self.batches.lock().unwrap().push(t.len());
-            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+            self.batches.lock().unwrap().push(docs.len());
+            Ok(docs.iter().map(|_| vec_of(b"doc")).collect())
         }
         fn meta(&self) -> IndexMeta {
             index_meta("test")
@@ -1720,14 +1750,14 @@ mod tests {
         fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(vec_of(b"q"))
         }
-        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
             if !self.ready.load(Ordering::SeqCst) {
                 return Err(EmbedError::ModelsMissing);
             }
             if self.fail_docs {
                 return Err(EmbedError::Other("server down".into()));
             }
-            Ok(t.iter().map(|_| vec_of(b"doc")).collect())
+            Ok(docs.iter().map(|_| vec_of(b"doc")).collect())
         }
         fn meta(&self) -> IndexMeta {
             index_meta("test")

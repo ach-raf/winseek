@@ -84,9 +84,10 @@ pub trait Embedder {
     }
     /// One 768-d L2-normalised query vector.
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>>;
-    /// One 768-d vector per document text (e.g. OCR output), in order. Backends without text
-    /// embedding keep the default error; callers treat that as "no text vector".
-    fn embed_documents(&mut self, _texts: &[String]) -> Result<Vec<Vec<f32>>> {
+    /// One 768-d vector per `(title, text)` document, in order; an empty title embeds the
+    /// untitled form (`title: none | text: …`). Backends without text embedding keep the
+    /// default error; callers treat that as "no text vector".
+    fn embed_documents(&mut self, _docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
         Err(EmbedError::Other("document embedding not supported".into()))
     }
     fn meta(&self) -> IndexMeta;
@@ -441,16 +442,15 @@ impl Embedder for LlamaEmbedder {
         finish(raw)?.into_iter().next().ok_or_else(|| EmbedError::Other("empty embedding response".into()))
     }
 
-    fn embed_documents(&mut self, texts: &[String]) -> Result<Vec<Vec<f32>>> {
-        let refs: Vec<&str> = texts.iter().map(String::as_str).collect();
+    fn embed_documents(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
         if self.documents_on_gpu() {
             match self.index_client() {
-                Ok(c) => return finish(c.embed_documents(&refs).map_err(other)?),
+                Ok(c) => return finish(c.embed_documents_titled(docs).map_err(other)?),
                 Err(EmbedError::ModelsMissing) => return Err(EmbedError::ModelsMissing),
                 Err(e) => eprintln!("winseek: index server unavailable for documents ({e}); using the query server"),
             }
         }
-        let raw = self.text_client()?.embed_documents(&refs).map_err(other)?;
+        let raw = self.text_client()?.embed_documents_titled(docs).map_err(other)?;
         finish(raw)
     }
 
@@ -676,7 +676,7 @@ mod tests {
     #[ignore]
     fn documents_go_to_the_index_server_live() {
         let mut e = LlamaEmbedder::new(crate::tier1::data_root().unwrap(), Manifest::embedded());
-        let v = e.embed_documents(&["Invoice 4471: total due 1,869.00".into()]).unwrap();
+        let v = e.embed_documents(&[("", "Invoice 4471: total due 1,869.00")]).unwrap();
         assert_eq!(v[0].len(), DIMS);
         assert!(e.index.is_some(), "index (GPU) server should have answered");
         assert!(e.query.is_none(), "the CPU query server must not be started for documents");

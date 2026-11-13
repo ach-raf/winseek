@@ -38,7 +38,7 @@ fn probe_jpeg() -> Vec<u8> {
 
 /// Embed the probe set: the parity strings as documents, then the probe picture.
 pub fn probe_vectors(embedder: &Mutex<Box<dyn Embedder + Send>>) -> Result<Vec<Vec<f32>>, EmbedError> {
-    let docs: Vec<String> = PARITY_STRINGS.iter().map(|s| s.to_string()).collect();
+    let docs: Vec<(&str, &str)> = PARITY_STRINGS.iter().map(|s| ("", *s)).collect();
     let mut e = embedder.lock().unwrap_or_else(|p| p.into_inner());
     let mut out = e.embed_documents(&docs)?;
     out.extend(e.embed_images(&[probe_jpeg()])?);
@@ -107,8 +107,8 @@ mod tests {
         fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(vec_for(0, 0.0))
         }
-        fn embed_documents(&mut self, t: &[String]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
-            Ok(t.iter().enumerate().map(|(i, _)| vec_for(i * 10, self.shift)).collect())
+        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            Ok(docs.iter().enumerate().map(|(i, _)| vec_for(i * 10, self.shift)).collect())
         }
         fn meta(&self) -> winseek_store::IndexMeta {
             index_meta(self.build)
