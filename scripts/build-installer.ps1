@@ -39,6 +39,9 @@ Run 'cargo' @('build', '--release', '-p', 'searchd') $Root
 Step 'cargo build --release -p winseek-mcp'
 Run 'cargo' @('build', '--release', '-p', 'winseek-mcp') $Root
 
+Step 'cargo build --release -p winseek-cli'
+Run 'cargo' @('build', '--release', '-p', 'winseek-cli') $Root
+
 Step 'tauri build (UI + app + NSIS installer)'
 Run 'npx.cmd' @('tauri', 'build', '--bundles', 'nsis') $App
 

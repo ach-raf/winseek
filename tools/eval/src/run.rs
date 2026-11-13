@@ -107,12 +107,24 @@ fn file_name_of(path: &str) -> String {
 }
 
 /// Run every case against the store (query -> embed -> `search_vectors` over all files).
-pub fn run_cases(store: &Store, cases: &[Case], emb: &mut dyn Embed, n_files: usize) -> Result<Vec<CaseResult>, String> {
+///
+/// `hybrid` ranks like the app does: the vector list fused with the exact-word (FTS) hits.
+pub fn run_cases(store: &Store, cases: &[Case], emb: &mut dyn Embed, n_files: usize, hybrid: bool) -> Result<Vec<CaseResult>, String> {
     let mut out = Vec::with_capacity(cases.len());
     for c in cases {
         let q = finish(emb.queries(&[c.q.as_str()])?)?.into_iter().next().ok_or("empty query embedding")?;
         let hits = store.search_vectors(&q, n_files.max(5), None).map_err(|e| e.to_string())?;
-        let ranked: Vec<String> = hits.iter().map(|h| file_name_of(&h.path)).collect();
+        let mut ranked: Vec<String> = hits.iter().map(|h| file_name_of(&h.path)).collect();
+        if hybrid {
+            let text: Vec<String> = store
+                .search_text(&winseek_store::fts_escape(&c.q), n_files.max(5))
+                .map_err(|e| e.to_string())?
+                .iter()
+                .filter(|t| t.snippet.contains('['))
+                .map(|t| file_name_of(&t.path))
+                .collect();
+            ranked = winseek_store::fuse::fuse_order(&ranked, &text, winseek_store::fuse::exact_lean(&c.q));
+        }
         out.push(CaseResult {
             q: c.q.clone(),
             tag: c.tag.clone(),
@@ -146,6 +158,8 @@ pub struct RunOptions {
     pub llama: PathBuf,
     pub url: Option<String>,
     pub api_key: String,
+    /// Rank like the app: vector list fused with the exact-word hits.
+    pub hybrid: bool,
 }
 
 fn version_of(exe: &Path) -> String {
@@ -224,6 +238,7 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
         "image_budget": IMAGE_BUDGET,
         "corpus_files": corpus.files.len(),
         "cases": cases.len(),
+        "hybrid": opts.hybrid,
     });
     let mut conn = connect(opts, &mut meta)?;
     let client = &mut conn.client;
@@ -232,7 +247,7 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
     let store = build_store(&opts.corpus, &corpus, client, &manifest.llama.build)?;
     meta["index_secs"] = json!((started.elapsed().as_secs_f64() * 100.0).round() / 100.0);
     eprintln!("running {} cases...", cases.len());
-    let results = run_cases(&store, &cases, client, corpus.files.len())?;
+    let results = run_cases(&store, &cases, client, corpus.files.len(), opts.hybrid)?;
     Ok(Report::new(meta, results))
 }
 
@@ -290,7 +305,7 @@ mod tests {
             Case { q: format!("k:{}", n - 1), expect: vec![order[n - 1].into()], tag: "b".into() },
             Case { q: "k:3".into(), expect: vec!["nope*".into()], tag: "c".into() },
         ];
-        let res = run_cases(&store, &cases, &mut fake, n).unwrap();
+        let res = run_cases(&store, &cases, &mut fake, n, false).unwrap();
         assert_eq!(res[0].rank, Some(1));
         assert_eq!(res[1].rank, Some(1));
         assert_eq!(res[2].rank, None);

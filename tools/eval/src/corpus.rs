@@ -128,6 +128,12 @@ const SPECS: &[Spec] = &[
         "Recette de gateau au chocolat : melanger le chocolat fondu, le beurre, le sucre et les oeufs, puis cuire quarante minutes au four.",
     ),
     txt("note-compras-es", "Lista de la compra: manzanas, leche, pan, queso y tomates para la cena del viernes."),
+    // Exact-token notes (appended: earlier indices are baked into file names). Two near-twins each,
+    // so meaning alone cannot tell the identifier apart.
+    txt("note-inv-00817", "Invoice INV-2024-00817: office chairs, 8 units, total 2480 euros, payment due within 30 days."),
+    txt("note-inv-00931", "Invoice INV-2024-00931: cloud hosting subscription, total 1175 euros, payment due within 14 days."),
+    txt("note-err-5", "Troubleshooting log: the installer stopped with error 0x80070005 (access denied) while writing to the Program Files folder."),
+    txt("note-err-57", "Troubleshooting log: the installer stopped with error 0x80070057 (invalid parameter) while reading the configuration file."),
 ];
 
 /// `(query, tag, labels of acceptable files)`.
@@ -173,6 +179,10 @@ const CASES: &[(&str, &str, &[&str])] = &[
     ("un triangulo amarillo", "xling", &["triangle-yellow", "dup-triangle-yellow"]),
     ("grocery shopping list", "xling", &["note-compras-es"]),
     ("chocolate cake recipe", "xling", &["note-gateau-fr"]),
+    ("INV-2024-00817", "exact", &["note-inv-00817"]),
+    ("INV-2024-00931", "exact", &["note-inv-00931"]),
+    ("0x80070005", "exact", &["note-err-5"]),
+    ("installer error 0x80070057", "exact", &["note-err-57"]),
 ];
 
 /// File name for the spec at `idx`.

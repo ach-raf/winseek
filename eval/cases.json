@@ -294,5 +294,33 @@
       "note_0039.txt"
     ],
     "tag": "xling"
+  },
+  {
+    "q": "INV-2024-00817",
+    "expect": [
+      "note_0041.txt"
+    ],
+    "tag": "exact"
+  },
+  {
+    "q": "INV-2024-00931",
+    "expect": [
+      "note_0042.txt"
+    ],
+    "tag": "exact"
+  },
+  {
+    "q": "0x80070005",
+    "expect": [
+      "note_0043.txt"
+    ],
+    "tag": "exact"
+  },
+  {
+    "q": "installer error 0x80070057",
+    "expect": [
+      "note_0044.txt"
+    ],
+    "tag": "exact"
   }
 ]

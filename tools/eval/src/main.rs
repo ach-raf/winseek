@@ -2,7 +2,7 @@
 //!
 //! winseek-eval gen <dir>                 write the deterministic synthetic corpus
 //! winseek-eval cases                     print the cases JSON for that corpus (eval/cases.json)
-//! winseek-eval run --corpus D --cases F --models D --llama D [--url U] [--api-key K] [--out F]
+//! winseek-eval run --corpus D --cases F --models D --llama D [--url U] [--api-key K] [--hybrid] [--out F]
 //! winseek-eval diff a.json b.json        per-case regressions; exit 1 if recall@5 drops > 2 points
 //! winseek-eval route --set D --models D --llama D [--max-fp F] [--current MIN,MARGIN] [--out F]
 //!                                        doc-image routing + smart-collection thresholds on a labelled set
@@ -23,7 +23,7 @@ use metrics::{diff, format_summary_table, Report, RECALL5_GATE};
 const USAGE: &str = "usage:
   winseek-eval gen <dir>
   winseek-eval cases
-  winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--out <results.json>]
+  winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--hybrid] [--out <results.json>]
   winseek-eval diff <a.json> <b.json>
   winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]
   winseek-eval gate --db <copy of tier1.sqlite> --labels <labels.json> --url <http://127.0.0.1:PORT> [--api-key <key>]";
@@ -62,6 +62,7 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
                 llama: PathBuf::from(flag(&args, "--llama").unwrap_or_default()),
                 url: flag(&args, "--url"),
                 api_key: flag(&args, "--api-key").unwrap_or_default(),
+                hybrid: args.iter().any(|a| a == "--hybrid"),
             };
             if opts.url.is_none() && (flag(&args, "--models").is_none() || flag(&args, "--llama").is_none()) {
                 return Err(format!("--models and --llama are required unless --url is given\n{USAGE}"));
@@ -86,6 +87,7 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
                 llama: PathBuf::from(flag(&args, "--llama").unwrap_or_default()),
                 url: flag(&args, "--url"),
                 api_key: flag(&args, "--api-key").unwrap_or_default(),
+                hybrid: false,
             };
             let set = PathBuf::from(need(&args, "--set")?);
             let max_fp: f32 = flag(&args, "--max-fp").map_or(Ok(0.01), |s| s.parse()).map_err(|e| format!("--max-fp: {e}"))?;
