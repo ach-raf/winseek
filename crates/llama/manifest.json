@@ -40,9 +40,9 @@
     },
     "ffmpeg": {
         "build": "7.1.1",
-        "url": "https://www.gyan.dev/ffmpeg/builds/packages/ffmpeg-7.1.1-essentials_build.zip",
-        "sha256": "TODO-pin-in-CI",
-        "size": 0,
+        "url": "https://github.com/GyanD/codexffmpeg/releases/download/7.1.1/ffmpeg-7.1.1-essentials_build.zip",
+        "sha256": "04861d3339c5ebe38b56c19a15cf2c0cc97f5de4fa8910e4d47e5e6404e4a2d4",
+        "size": 92234348,
         "member": "ffmpeg-7.1.1-essentials_build/bin/ffmpeg.exe"
     },
     "models": [

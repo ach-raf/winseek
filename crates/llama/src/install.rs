@@ -384,6 +384,8 @@ mod tests {
     fn ffmpeg_install_needs_a_pinned_hash() {
         let d = tmp("ffi");
         let mut m = Manifest::embedded();
+        // the shipped manifest is pinned (a real hash); an unpinned entry must never download
+        m.ffmpeg.as_mut().expect("ffmpeg entry in manifest").sha256 = "TODO-pin-in-CI".into();
         let opts = FetchOptions::default();
         assert!(
             matches!(install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}), Err(Error::UnpinnedHash(_))),

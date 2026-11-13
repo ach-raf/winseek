@@ -16,7 +16,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use winseek_llama::import::{configured_dirs, import_file};
-use winseek_llama::install::{install_llama_with, install_pdfium_with, resolve_exe};
+use winseek_llama::install::{install_ffmpeg_with, install_llama_with, install_pdfium_with, resolve_exe};
 use winseek_llama::manifest::ModelFile;
 use winseek_llama::{
     detect_backend, fetch_with, Backend, Detected, Error as LlamaError, FetchOptions, Manifest, ModelProfile, ModelRole, Progress,
@@ -380,6 +380,93 @@ pub fn request_pdfium(done: impl FnOnce(bool) + Send + 'static) {
     if spawned.is_err() {
         PDFIUM_RUNNING.store(false, Ordering::SeqCst);
     }
+}
+
+// ---------------------------------------------------------------- ffmpeg on demand
+
+static FFMPEG_RUNNING: AtomicBool = AtomicBool::new(false);
+/// When the last automatic download failed, and why.
+static FFMPEG_FAILED: Mutex<Option<(Instant, String)>> = Mutex::new(None);
+/// (downloaded, total) bytes of the running download.
+static FFMPEG_PROGRESS: Mutex<(u64, u64)> = Mutex::new((0, 0));
+/// After a failed automatic download wait this long before trying again (offline machines); the
+/// Retry button does not wait.
+const FFMPEG_RETRY: Duration = Duration::from_secs(300);
+
+/// Where the ffmpeg fetch stands, for Settings / Setup.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct FfmpegFetch {
+    /// "idle" | "downloading" | "failed"
+    pub state: &'static str,
+    pub downloaded: u64,
+    pub total: u64,
+    pub error: Option<String>,
+}
+
+pub fn ffmpeg_fetch_state() -> FfmpegFetch {
+    let (downloaded, total) = *locked(&FFMPEG_PROGRESS);
+    if FFMPEG_RUNNING.load(Ordering::SeqCst) {
+        return FfmpegFetch { state: "downloading", downloaded, total, error: None };
+    }
+    match locked(&FFMPEG_FAILED).as_ref() {
+        Some((_, e)) => FfmpegFetch { state: "failed", downloaded: 0, total: 0, error: Some(e.clone()) },
+        None => FfmpegFetch { state: "idle", downloaded: 0, total: 0, error: None },
+    }
+}
+
+/// Download the pinned ffmpeg in the background (the first time audio / video is queued and no
+/// usable ffmpeg is on the machine). At most one download runs at a time; a failure is retried after
+/// [`FFMPEG_RETRY`]. `done(ok)` runs on the download thread.
+pub fn request_ffmpeg(done: impl FnOnce(bool) + Send + 'static) {
+    if locked(&FFMPEG_FAILED).as_ref().is_some_and(|(t, _)| t.elapsed() < FFMPEG_RETRY) {
+        return;
+    }
+    start_ffmpeg(done);
+}
+
+/// The Retry button: forget a failure and try now.
+pub fn retry_ffmpeg(done: impl FnOnce(bool) + Send + 'static) {
+    *locked(&FFMPEG_FAILED) = None;
+    start_ffmpeg(done);
+}
+
+fn start_ffmpeg(done: impl FnOnce(bool) + Send + 'static) {
+    if FFMPEG_RUNNING.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    *locked(&FFMPEG_PROGRESS) = (0, Manifest::embedded().ffmpeg.map_or(0, |f| f.size));
+    let spawned = std::thread::Builder::new().name("ffmpeg-download".into()).spawn(move || {
+        let r = match tier1::data_root() {
+            Some(root) => install_ffmpeg_with(&root, &Manifest::embedded(), &FetchOptions::default(), &mut |_, p| {
+                let mut g = locked(&FFMPEG_PROGRESS);
+                g.0 = p.downloaded;
+                if let Some(t) = p.total {
+                    g.1 = t;
+                }
+            })
+            .map(|_| ())
+            .map_err(|e| e.to_string()),
+            None => Err("LOCALAPPDATA is not set".to_string()),
+        };
+        *locked(&FFMPEG_FAILED) = r.as_ref().err().map(|e| (Instant::now(), e.clone()));
+        tier1::media::forget_ffmpeg_lookup();
+        FFMPEG_RUNNING.store(false, Ordering::SeqCst);
+        done(r.is_ok());
+    });
+    if spawned.is_err() {
+        FFMPEG_RUNNING.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Settings / Setup "Retry" for the audio / video tools.
+#[tauri::command]
+pub fn ffmpeg_retry(app: AppHandle) {
+    let worker = app.state::<tier1::Handle>().get().ok();
+    retry_ffmpeg(move |ok| {
+        if let Some(t) = worker.filter(|_| ok) {
+            t.kick();
+        }
+    });
 }
 
 // ---------------------------------------------------------------- Tauri state + commands
