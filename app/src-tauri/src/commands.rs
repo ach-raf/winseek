@@ -24,11 +24,29 @@ impl AppState {
 pub struct AppState {
     pub source: RwLock<Arc<dyn NameSource>>,
     pub paused: AtomicBool,
-    /// (query, filter, sort) of the newest `search` call. Searches queue on the one searchd
-    /// connection; a queued search for a query the user has already typed past is dropped
-    /// instead of run (typing "report" must not run "r", "re", "rep", ... one after another).
-    latest_search: Arc<Mutex<String>>,
+    /// The newest `search` call of each stream. Searches queue on the one searchd connection; a queued
+    /// search for a query the user has already typed past is dropped instead of run (typing "report"
+    /// must not run "r", "re", "rep", ... one after another).
+    latest_search: Arc<Mutex<LatestSearch>>,
     search_gate: Arc<Mutex<()>>,
+}
+
+/// The newest search key of each *stream* (the result list, the picture grid, ...). A search is superseded
+/// only by a newer one of its own stream: the tab counts, the picture grid and the list all search at the
+/// same time, and none of them may cancel another (a cancelled search answers "0 results").
+/// A request without a stream (counts) is never superseded.
+#[derive(Default)]
+pub struct LatestSearch(std::collections::HashMap<String, String>);
+
+impl LatestSearch {
+    pub fn begin(&mut self, stream: Option<&str>, key: &str) {
+        if let Some(s) = stream {
+            self.0.insert(s.to_string(), key.to_string());
+        }
+    }
+    pub fn superseded(&self, stream: Option<&str>, key: &str) -> bool {
+        stream.is_some_and(|s| self.0.get(s).is_some_and(|k| k != key))
+    }
 }
 
 /// Run blocking work off the main thread. A plain (non-async) Tauri command runs *on* it, so a
@@ -49,16 +67,17 @@ pub async fn search(
     limit: usize,
     sort: Option<String>,
     filter: Option<String>,
+    stream: Option<String>,
 ) -> Result<SearchResult, String> {
     let src = state.source();
     let filter = filter.unwrap_or_else(|| "all".into());
     let sort = sort.unwrap_or_else(|| "rel".into());
     let key = format!("{query}\u{1}{filter}\u{1}{sort}");
-    *lock(&state.latest_search) = key.clone();
+    lock(&state.latest_search).begin(stream.as_deref(), &key);
     let (latest, gate) = (state.latest_search.clone(), state.search_gate.clone());
     blocking(move || {
         let _turn = lock(&gate);
-        if *lock(&latest) != key {
+        if lock(&latest).superseded(stream.as_deref(), &key) {
             return SearchResult { total: 0, hits: vec![], elapsed_us: 0 }; // superseded: the UI drops it anyway
         }
         src.search(&query, &filter, offset, limit.min(5000), &sort)
@@ -212,4 +231,24 @@ pub fn copy_path(path: String) -> Result<(), String> {
 #[tauri::command]
 pub fn app_version(app: tauri::AppHandle) -> String {
     app.package_info().version.to_string()
+}
+
+#[cfg(test)]
+mod search_stream_tests {
+    use super::LatestSearch;
+
+    #[test]
+    fn searches_only_supersede_their_own_stream() {
+        let mut l = LatestSearch::default();
+        l.begin(Some("list"), "cat|all");
+        // the tab counts and the picture grid run at the same moment: the list must still be answered
+        l.begin(Some("pics"), "cat|images");
+        l.begin(None, "cat|audio");
+        assert!(!l.superseded(Some("list"), "cat|all"));
+        assert!(!l.superseded(None, "cat|audio"));
+        l.begin(Some("list"), "cats|all");
+        assert!(l.superseded(Some("list"), "cat|all"));
+        assert!(!l.superseded(Some("list"), "cats|all"));
+        assert!(!l.superseded(Some("pics"), "cat|images"));
+    }
 }

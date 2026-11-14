@@ -296,7 +296,7 @@ export default function App({ backend }: { backend: Backend }) {
       try {
         const out: Hit[] = [];
         for (;;) {
-          const r = await backend.search({ query: picQ, offset: out.length, limit: picsOpen ? PIC_PAGE : PIC_HEAD, sort: "name", filter: "images" });
+          const r = await backend.search({ query: picQ, offset: out.length, limit: picsOpen ? PIC_PAGE : PIC_HEAD, sort: "name", filter: "images", stream: "pics" });
           if (dead) return;
           for (const h of r.hits) out.push(h);
           const done = !picsOpen || r.hits.length === 0 || out.length >= r.total;
@@ -321,7 +321,7 @@ export default function App({ backend }: { backend: Backend }) {
     (async () => {
       const out: Hit[] = [];
       for (;;) {
-        const r = await backend.search({ query: scopedQ, offset: out.length, limit: PIC_PAGE, sort: "name", filter: "images" });
+        const r = await backend.search({ query: scopedQ, offset: out.length, limit: PIC_PAGE, sort: "name", filter: "images", stream: "tail" });
         if (dead) return;
         for (const h of r.hits) out.push(h);
         const done = r.hits.length === 0 || out.length >= r.total;
@@ -384,7 +384,7 @@ export default function App({ backend }: { backend: Backend }) {
         rowsRef.current = hits;
         setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else {
-        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: effFilter });
+        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: effFilter, stream: "list" });
         if (my !== seq.current) return;
         // Only the loaded rows are stored (`data.total` is the length); a one-letter query can match
         // millions of names and must not allocate a slot for each on every keystroke.
@@ -414,7 +414,7 @@ export default function App({ backend }: { backend: Backend }) {
       if (pagesRef.current.has(p) || inflight.current.has(p) || p * PAGE >= data.total) continue;
       if ((emptyTries.current.get(p) ?? 0) >= 3) continue; // the service keeps answering nothing: stop asking
       inflight.current.add(p);
-      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter }).then((r) => {
+      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter, stream: "list" }).then((r) => {
         if (my !== seq.current) return;
         inflight.current.delete(p);
         if (r.hits.length === 0) {
@@ -498,7 +498,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     if (isRecent || data.recent || !loaded || renaming) return;
     const my = seq.current;
-    const args = { query: scopedQ, sort, filter: effFilter };
+    const args = { query: scopedQ, sort, filter: effFilter, stream: "list" as const };
     const t = window.setInterval(() => {
       if (document.visibilityState !== "visible" || my !== seq.current) return;
       backend.search({ ...args, offset: 0, limit: 0 }).then((c) => {

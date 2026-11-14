@@ -99,6 +99,9 @@ export interface ParsedDoc {
   /** Answered from the in-memory cache (same content and page parsed a moment ago). */
   cached: boolean;
 }
+/** Searches of one stream supersede each other (typing on); different streams never do. No stream = never superseded. */
+export type SearchStream = "list" | "pics" | "tail";
+
 export interface SemanticResult {
   state: string;
   hits: SemanticHit[];
@@ -431,7 +434,8 @@ export interface NearState {
 }
 
 export interface Backend {
-  search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter }): Promise<SearchResult>;
+  search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter; stream?: SearchStream }): Promise<SearchResult>;
+
   status(): Promise<VolumeStatus[]>;
   /** The app's own version (Settings › General); null in the browser mock. */
   appVersion(): Promise<string | null>;
