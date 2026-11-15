@@ -77,13 +77,18 @@
 .set-foot kbd { margin: 0 1px; }
 @media (max-width: 640px) { .set { grid-template-columns: 150px minmax(0, 1fr); } .sfind { width: 190px; } .scont { padding-right: 16px; } }
 
-/* The page is wide: cards flow into as many ~460px columns as fit, so a section fills the window
-   instead of a single strip down the left with half the screen empty. */
-.settings.embedded .scols { columns: 380px; column-gap: var(--sp-4); }
+/* The page is wide: cards flow into as many ~420px columns as fit (masonry-style, no row gaps). The
+   verdict and the Details toggle span every column, so all columns start on the same line. */
+.settings.embedded .scols { columns: 540px; column-gap: var(--sp-4); max-width: 1500px; }
 .settings.embedded .grp { max-width: none; break-inside: avoid; margin-bottom: var(--sp-4); }
 .settings.embedded .grp h3 { margin-top: 0; }
 .settings.embedded .scols > :not(.grp) { break-inside: avoid; }
-@media (min-width: 1900px) { .settings.embedded .scols { columns: 3; max-width: 1700px; } }
+.settings.embedded .scols > .verdict, .settings.embedded .scols > .st-toggle, .settings.embedded .scols > .fr-error { column-span: all; }
+/* A row's title and its description share one line when they fit (title, then the grey detail beside it);
+   a long description drops below by itself. No more two-line rows with the right half of the card empty. */
+.settings.embedded .grow .gtxt { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 14px; row-gap: 1px; }
+.settings.embedded .grow .gtxt > b { flex: none; max-width: 100%; }
+.settings.embedded .grow .gtxt > span { flex: 0 1 auto; max-width: 100%; }
 
 /* ---- groups, cards, rows ---- */
 .grp { max-width: 640px; margin-bottom: var(--sp-5); }
@@ -103,7 +108,7 @@
 .grow .gtxt > span .gline { display: block; margin-top: 2px; }
 .gctl { display: flex; align-items: center; gap: 8px; flex: none; }
 .grow .val, .gctl .val { font-size: 13px; color: var(--fg2); font-weight: 500; }
-.grow.kv .val { text-align: right; max-width: 62%; overflow-wrap: anywhere; }
+.grow.kv .val { text-align: right; max-width: 70%; overflow-wrap: anywhere; }
 .grow.kv .gsub { color: var(--fg3); font-size: 12.5px; margin-top: 0; font-weight: 400; }
 details.reasons > summary { cursor: pointer; list-style: none; }
 details.reasons > summary::-webkit-details-marker { display: none; }
@@ -118,7 +123,7 @@ details.reasons li .why small.ex { display: flex; flex-wrap: wrap; gap: 2px 12px
 details.reasons .exfile { padding: 0; background: none; color: var(--fg3); font: inherit; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.reasons button.exfile { cursor: pointer; text-decoration: underline dotted; text-underline-offset: 2px; }
 details.reasons button.exfile:hover { color: var(--fg); }
-.grow.kv .gtxt { flex: 0 1 auto; max-width: 48%; }
+.grow.kv .gtxt { flex: 0 1 auto; max-width: 60%; }
 .grow .bad, .st-miss { color: var(--warn); }
 .firstrun .gnote { margin: 8px 2px 0; max-width: none; font-size: 12.5px; line-height: 1.45; color: var(--fg3); }
 .gnote code, .gtxt code { font-size: 11.5px; }
@@ -145,21 +150,19 @@ details.reasons button.exfile:hover { color: var(--fg); }
 
 /* verdict: the one calm headline the Status page opens with; the groups fold under it */
 .verdict { display: flex; align-items: flex-start; gap: 10px; padding: 2px var(--sp-4) var(--sp-2); column-span: all; }
-/* Status inside the Settings columns: the verdict spans the top, the Details block flows across the columns
- * (its groups stay whole) instead of being dropped into one column beside an empty one. */
-.settings.embedded .scols > .st-details { break-inside: auto; }
-.settings.embedded .st-details > summary { padding-left: var(--sp-4); }
 .verdict .dot { margin-top: 6px; }
 .verdict b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .verdict .vsub { display: block; margin-top: 3px; font-size: 12.5px; color: var(--fg3); }
 .verdict.busy .dot { background: var(--warn); }
 .verdict.problem .dot { background: var(--danger); }
 .verdict.problem b { color: var(--danger); }
-.st-details > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: var(--sp-2) 2px; font-size: 12.5px; font-weight: 600; color: var(--fg3); user-select: none; }
-.st-details > summary::-webkit-details-marker { display: none; }
-.st-details > summary::after { content: "\203A"; font-size: 14px; line-height: 1; transition: transform .12s; }
-.st-details[open] > summary::after { transform: rotate(90deg); }
-.st-details[open] > summary { margin-bottom: var(--sp-1); }
+/* Details toggle: a quiet line under the verdict. Its chevron sits in the dot's column and its label on the
+ * verdict title's left edge, so the three lines read as one aligned block. */
+.st-toggle { display: flex; align-items: center; gap: 10px; width: max-content; margin: 2px 0 var(--sp-4); padding: 6px var(--sp-4); border-radius: 8px; font-size: 14px; font-weight: 600; color: var(--fg2); }
+.st-toggle::before { content: "›"; width: 8px; text-align: center; font-size: 20px; line-height: 1; transition: transform .12s; }
+.st-toggle:hover { color: var(--fg); background: var(--bg2); }
+.st-toggle:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+.st-toggle[aria-expanded="true"]::before { transform: rotate(90deg); }
 
 /* parse timeline: read / reading now / queued, one thin strip (emphasis by difference: the moving part is the coloured one) */
 .tl-strip { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg3); }

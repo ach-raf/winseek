@@ -437,15 +437,17 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
         <span className="dot" aria-hidden="true" />
         <div className="vtx"><b>{v.headline}</b>{v.sub && <span className="vsub">{v.sub}</span>}</div>
       </div>
-      <details className="st-details" open={detailsOpen} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
-        <summary>Details</summary>
-        <Names t0={page.tier0} busy={busy} onRescan={rescan} />
-        <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
-                       onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
-                       onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
-                       onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
-        <ModelsPane m={page.models} />
-      </details>
+      <button type="button" className="st-toggle" aria-expanded={detailsOpen} onClick={() => setOpen(!detailsOpen)}>{detailsOpen ? "Hide details" : "Show details"}</button>
+      {detailsOpen && (
+        <>
+          <Names t0={page.tier0} busy={busy} onRescan={rescan} />
+          <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
+                         onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
+                         onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
+                         onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
+          <ModelsPane m={page.models} />
+        </>
+      )}
     </>
   );
 }
