@@ -876,6 +876,7 @@ impl Tier1 {
             .collect();
         let lean = winseek_store::fuse::exact_lean(q);
         let words = words_bonus(lean);
+        let kinds = relevance::kind_hints(q);
         let has_words: std::collections::HashSet<&str> = text_keys.iter().map(String::as_str).collect();
         let mut rows: Vec<SemRow> = gated
             .into_iter()
@@ -883,8 +884,11 @@ impl Tier1 {
                 let key = h.path.to_lowercase();
                 let snippet = snippets.get(&key).filter(|s| s.contains('[')).cloned();
                 let page = locator_page(h.locator.as_deref()).or_else(|| text_pages.get(&key).copied());
-                // One final score per file: how far it stands out for the query (the gate's z), plus the words bonus.
-                let score = h.rank() + if has_words.contains(key.as_str()) { words } else { 0.0 };
+                // One final score per file: how far it stands out for the query (the gate's z), plus the words
+                // bonus, plus 1 when the query names this kind of file ("songs about ...": DigUp's kind hint,
+                // a soft boost, not a filter).
+                let kind = if kinds.contains(&h.modality) { 1.0 } else { 0.0 };
+                let score = h.rank() + kind + if has_words.contains(key.as_str()) { words } else { 0.0 };
                 seen.insert(key);
                 SemRow { path: h.path, score, rank: score, locator: h.locator, snippet, page, source: "meaning" }
             })
@@ -939,7 +943,7 @@ fn top_per_kind(rows: &mut Vec<SemRow>, k: usize) -> bool {
     rows.len() < before
 }
 
-/// Words bonus of the final score, on the gate's z scale (meaning hits sit at `Z_MIN` = 4 and up).
+/// Words bonus of the final score, on the gate's z scale (meaning hits sit at `Z_MIN` = 2 and up).
 /// Plain queries: a small bonus (a file also found by its words nudges up; a words-only file is a weak
 /// match). Code-like queries (invoice number, error code): large, so literal hits lead.
 fn words_bonus(lean: f32) -> f32 {

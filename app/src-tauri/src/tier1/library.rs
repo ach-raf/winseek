@@ -325,16 +325,18 @@ impl Tier1 {
 
     /// The stored slider (0.4..0.9, historically a raw cosine floor) as a calibrated-gate
     /// strictness: the hub-corrected z minimum a file must clear (`relevance`). The old midpoint
-    /// default 0.62 maps to 4.04 — search's own `Z_MIN` — so saved collections keep their dial
+    /// default 0.62 maps to 2.02 — search's own `Z_MIN` — so saved collections keep their dial
     /// position and gain the calibration; looser (0.4) means "stand out a bit", tighter (0.9)
-    /// means "near the top of what the library has for this query".
+    /// means "near the top of what the library has for this query". The mapping is the one of the
+    /// old per-modality scale (where `Z_MIN` was 4) halved, because the meaning scale (one deviation
+    /// across modalities) puts the same hits at about half the z.
     pub fn threshold_z_min(threshold: f32) -> f32 {
-        (2.5 + (threshold - 0.4) * 7.0).clamp(2.0, 8.0)
+        ((2.5 + (threshold - 0.4) * 7.0) * 0.5).clamp(1.0, 4.0)
     }
 
     /// Files that belong to a collection: every phrase of the description ([`facets`]) is embedded
     /// and the in-scope files that are *relevant* to one of them are returned — the same
-    /// calibrated gate search uses (see `relevance`: hub correction, then a per-modality z-score)
+    /// calibrated gate search uses (see `relevance`: hub correction, per-modality centring, one deviation)
     /// — best first, one per file content, at most `cap`. `threshold` only dials the strictness
     /// (see [`Self::threshold_z_min`]). App graphics do not take part unless `opts.graphics`
     /// (neither as hits nor as the crowd a hit must stand out from), and what the user removed by
@@ -724,7 +726,7 @@ mod tests {
         let t: Vec<(&str, f32)> = d.iter().map(|c| (c.name.as_str(), c.threshold)).collect();
         assert_eq!(t, [("Receipts", 0.64), ("Whiteboards", 0.61), ("Memes", 0.63), ("Documents to sign", 0.63), ("Screenshots", 0.0)]);
         // kept for dial continuity: the numbers are strictness dials now (see `threshold_z_min`),
-        // and every query collection maps to about search's own gate strictness (z ~ 4)
+        // and every query collection maps to about search's own gate strictness (z ~ 2)
         assert!(d.iter().filter(|c| c.rule.is_none()).all(|c| (0.6..0.7).contains(&c.threshold)));
     }
 
@@ -825,11 +827,12 @@ mod tests {
     #[test]
     fn threshold_maps_to_gate_strictness() {
         let z = Tier1::threshold_z_min;
-        assert!((z(0.62) - 4.04).abs() < 1e-4, "the stored default dials search's own strictness");
-        assert_eq!(z(0.4), 2.5);
-        assert!((z(0.9) - 6.0).abs() < 1e-4);
-        assert!((z(1.0) - 6.7).abs() < 1e-4);
-        assert_eq!(z(-1.0), 2.0, "sanitize allows -1; the mapping clamps loose");
+        assert!((z(0.62) - 2.02).abs() < 1e-4, "the stored default dials search's own strictness");
+        assert_eq!(z(0.4), 1.25);
+        assert!((z(0.9) - 3.0).abs() < 1e-4);
+        assert!((z(1.0) - 3.35).abs() < 1e-4);
+        assert_eq!(z(-1.0), 1.0, "sanitize allows -1; the mapping clamps loose");
+        assert_eq!(z(9.0), 4.0, "and tight");
     }
 
     #[test]
