@@ -3,8 +3,9 @@ import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCf
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
-import { Bar, Models as ModelsPane, Names, StatusMeaning, useStatusPage, waitingText } from "./Status";
+import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage, waitingText } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
+import { fileName } from "./reasonText";
 import { eventToCombo } from "./hotkeyLogic";
 import { Folders, pausedText } from "./Setup";
 import { trapKey } from "./trap";
@@ -277,11 +278,17 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
   const off = !t1 || t1.state === "models_missing" || t1.state === "unavailable";
   const pr = st?.paused_reason ?? t1?.paused_reason ?? null;
   const total = s ? s.done + s.pending + s.text_only : 0;
-  // Document-parser progress: the enrichment pass that runs once the embed queue is empty.
+  // Document-parser progress: the enrichment pass that runs once the embed queue is empty. The
+  // run (recorded since the queue filled) is the honest denominator; lifetime counts are the
+  // fallback on stores older than the feature and for the all-time figure on the model line.
   const q = m?.parser.queue;
-  const pTotal = q ? q.queued + q.done + q.failed + q.skipped : 0;
+  const pRun = m?.parser.run ?? null;
   const pLeft = q?.queued ?? 0;
   const pFailed = q?.failed ?? 0;
+  const lifeTotal = q ? q.queued + q.done + q.failed + q.skipped : 0;
+  const lifeDone = lifeTotal - pLeft;
+  const pTotal = pRun && pRun.total > 0 ? pRun.total : lifeTotal;
+  const pDone = pRun ? pRun.done + pRun.failed + pRun.skipped : lifeDone;
   const pRate = m?.parser.rate ?? null;
   const pEta = m?.parser.eta_s ?? null;
   const indexing = st?.state === "indexing" || t1?.state === "indexing";
@@ -312,6 +319,7 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
             )
           )}
         </Row>
+        <IndexRow index={st?.index ?? null} />
         {s && total > 0 && (
           <div className="grow stack">
             <div className="idx-line">
@@ -327,14 +335,23 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
         {m?.parser.present && pTotal > 0 && (pLeft > 0 || pRate != null) && (
           <div className="grow stack">
             <div className="idx-line">
-              <span className="nums"><b>{fmt(pTotal - pLeft)} of {fmt(pTotal)} pages</b></span>
+              <span className="nums"><b>{fmt(pDone)} of {fmt(pTotal)} pages</b></span>
               <span className="nums">
-                {[pRate != null ? formatPages(pRate) : null,
+                {[pLeft > 0 ? `${fmt(pLeft)} left` : null,
+                  pRate != null ? formatPages(pRate) : null,
                   pRate != null && pEta != null && pLeft > 0 && !pr ? `about ${formatDuration(pEta)} left` : null].filter(Boolean).join(" · ")}
               </span>
             </div>
-            <Bar value={pTotal ? (pTotal - pLeft) / pTotal : null} label="Pages read by the document parser" />
+            <Bar value={pTotal ? pDone / pTotal : null} label="Pages read by the document parser" />
+            {m.parser.live && pLeft > 0 && (
+              <div className="gsub">
+                Reading {fileName(m.parser.live.path)} · {fmt(m.parser.live.pages)} {m.parser.live.pages === 1 ? "page" : "pages"} in this batch
+              </div>
+            )}
           </div>
+        )}
+        {m?.parser.present && pRun && pRun.ended_unix != null && pLeft === 0 && pRun.total > 0 && (
+          <div className="gsub">Last round: {fmt(pRun.total)} pages read in {formatDuration(Math.max(0, pRun.ended_unix - pRun.started_unix))}</div>
         )}
       </Grp>
       {m && (
@@ -358,8 +375,8 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
             <ModelLine name="Document parser" detail={m.parser.model_id} optional
                        act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
               {!m.parser.present ? "Optional"
-                : pLeft > 0 ? `${m.parser.server.running ? "Loaded" : "Installed"} · ${fmt(pTotal - pLeft)} parsed · ${fmt(pLeft)} left${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
-                : pTotal > 0 ? `Done · ${fmt(pTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
+                : pLeft > 0 ? `${m.parser.server.running ? "Loaded" : "Installed"} · ${fmt(lifeDone)} parsed · ${fmt(pLeft)} left${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
+                : lifeTotal > 0 ? `Done · ${fmt(lifeTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
                 : m.parser.server.running ? "Loaded" : "Installed"}
             </ModelLine>
           </div>

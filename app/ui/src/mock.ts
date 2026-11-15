@@ -294,6 +294,15 @@ function mockStatusPage(): StatusPage {
       ocr_unavailable: params.get("noocr") === "1",
       waiting: [],
       ffmpeg: null,
+      index: {
+        stamp: { model_id: "embeddinggemma-2", llama_build: "b11588", quant: "Q8_0", image_budget: 280, dims: 768 },
+        current: { model_id: "embeddinggemma-2", llama_build: "b11588", quant: "Q8_0", image_budget: 280, dims: 768 },
+        state: "current",
+        verdict: { kind: "current", cos: null },
+        app_version: "0.2.25",
+        stamped_unix: Math.floor((Date.now() - 11 * 86400_000) / 1000),
+        needs_rebuild: false,
+      },
       failed_reasons: s && s.failed > 0
         ? [
             { reason: "damaged_image", count: Math.max(1, s.failed - 2), examples: ["C:\\Users\\you\\Pictures\\broken.jpg", "C:\\Users\\you\\Pictures\\cut-off.gif"], details: ["decode: invalid data", "decode: unexpected end"] },
@@ -340,6 +349,10 @@ function mockStatusPage(): StatusPage {
         eta_s: parserHave() && modelsInstalled ? 20 : null,
         profile: mockProfile,
         routing: { doc_min: 0.6, doc_margin: 0.04, screenshot_min_chars: 200, provisional: false },
+        run: parserHave() && modelsInstalled
+          ? { started_unix: Math.floor((Date.now() - 4 * 600_000) / 1000), done: 24, failed: 0, skipped: 2, left: 3, total: 29, ended_unix: null, avg_rate: 0.1 }
+          : { started_unix: Math.floor((Date.now() - 3 * 3600_000) / 1000), done: 36, failed: 0, skipped: 2, left: 0, total: 38, ended_unix: Math.floor((Date.now() - 2.4 * 3600_000) / 1000), avg_rate: null },
+        live: parserHave() && modelsInstalled ? { path: "C:\\Users\\you\\Documents\\receipts\\invoice-4471.pdf", pages: 3, age_s: 4 } : null,
       },
     },
   };

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Backend, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusFfmpeg, StatusTier1, StatusWaiting, VolumeDetail } from "./types";
-import { formatClock, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
+import type { Backend, StatusIndex, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusFfmpeg, StatusTier1, StatusWaiting, VolumeDetail } from "./types";
+import { formatClock, formatDate, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText } from "./Setup";
 import { Grp, Row } from "./settingsUi";
 import { fileName, reasonHint, reasonSentence } from "./reasonText";
@@ -186,6 +186,7 @@ export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmp
         {t1.paused_reason === "user" && onResume && <button className="gbtn pri" onClick={onResume}>Resume</button>}
         {t1.ffmpeg?.state === "failed" && onRetryFfmpeg && <button className="gbtn pri" onClick={onRetryFfmpeg}>Retry</button>}
       </Row>
+      <IndexRow index={t1.index} />
       {t1.state === "unavailable" ? (
         t1.error && <div className="grow"><span className="fr-error" role="alert">{t1.error}</span></div>
       ) : (
@@ -235,6 +236,43 @@ export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmp
 
 const backendName = (m: StatusModels) => (m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU");
 
+/** Whether the meaning index matches this build (Settings › Search by meaning and Status › Meaning).
+ *  After an app update this is the row that answers "does my index need a rebuild?": the app
+ *  compares the index stamp with what this build expects, and probe vectors decide a changed
+ *  engine build. Rebuilds always start by themselves — the row only says what happened. */
+export function IndexRow({ index }: { index: StatusIndex | null }) {
+  if (!index) return null;
+  const sub = [
+    index.stamped_unix != null ? `Built ${formatDate(index.stamped_unix * 1000)}` : null,
+    index.app_version ? `last checked with WinSeek ${index.app_version}` : null,
+  ].filter(Boolean).join(" · ");
+  const v = index.verdict;
+  let value: string;
+  let title = "Compares how the index was built with what this version expects.";
+  if (index.state === "current") {
+    value = "No rebuild needed";
+  } else if (index.state === "build_drift") {
+    if (v?.kind === "kept") {
+      value = "Still compatible — no rebuild needed";
+      title = `After the engine update the probe vectors still match (cosine ${v.cos?.toFixed(5) ?? "n/a"}): every embedding is kept.`;
+    } else if (v && (v.kind === "moved" || v.kind === "no_baseline" || v.kind === "unverified")) {
+      value = "Rebuilding for the new engine";
+      title = "The engine update changed the embeddings, so the index is re-embedded automatically (see the progress above).";
+    } else {
+      value = "Engine updated — checked before the next indexing run";
+      title = "This build was compiled with a different llama.cpp; the index is verified against probe vectors before it is reused.";
+    }
+  } else {
+    value = "New format — re-embedding automatically";
+    title = "This version uses a different index layout, so every file is embedded again (see the progress above).";
+  }
+  return (
+    <Kv k="Index" title={title} sub={sub || undefined}>
+      {value}
+    </Kv>
+  );
+}
+
 function Files({ files }: { files: StatusModelFile[] }) {
   return (
     <>
@@ -267,6 +305,8 @@ function ParserRows({ p }: { p: StatusParser }) {
   const sv = p.server;
   const q = p.queue;
   const r = p.routing;
+  const run = p.run;
+  const handled = run ? run.done + run.failed + run.skipped : 0;
   return (
     <Grp title="Document parser">
       <Kv k="Document parser" title="Infinity-Parser2 reads scans, receipts and screenshots into text and tables">
@@ -274,6 +314,20 @@ function ParserRows({ p }: { p: StatusParser }) {
         {p.present ? " · installed" : <span className="st-miss"> · not installed (optional, add it in Setup)</span>}
       </Kv>
       <ServerRow k="Parser server" sv={sv} fast={p.profile === "fast"} />
+      {run && run.total > 0 && (
+        <Kv k="Parse progress" title="The pages handled since this round of reading started — not the all-time total">
+          {run.left > 0
+            ? `${fmt(handled)} of ${fmt(run.total)} pages${run.left ? ` · ${fmt(run.left)} left` : ""}${run.failed ? ` · ${fmt(run.failed)} failed` : ""}`
+            : run.ended_unix != null
+            ? `${fmt(run.total)} pages read in ${formatDuration(Math.max(0, run.ended_unix - run.started_unix))}`
+            : `${fmt(run.total)} pages read`}
+        </Kv>
+      )}
+      {p.live && (
+        <Kv k="Now reading" title="The page batch the document parser has in flight">
+          {fileName(p.live.path)} · {fmt(p.live.pages)} {p.live.pages === 1 ? "page" : "pages"}
+        </Kv>
+      )}
       <Kv k="Parse queue" title="Images and scanned pages waiting for, finished by, skipped by, or given up on by the document parser">
         {fmt(q.queued)} queued · {fmt(q.done)} done · {fmt(q.skipped)} skipped · {fmt(q.failed)} failed
       </Kv>

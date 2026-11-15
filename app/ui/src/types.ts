@@ -193,6 +193,8 @@ export interface StatusTier1 {
   skipped_reasons: StatusReason[];
   /** The audio / video tool (ffmpeg): where its automatic download stands; null when nothing waits for it. */
   ffmpeg: StatusFfmpeg | null;
+  /** Whether the meaning index matches this build; null when the worker is unavailable. */
+  index: StatusIndex | null;
 }
 export interface StatusFfmpeg {
   state: "idle" | "downloading" | "failed";
@@ -244,6 +246,61 @@ export interface StatusParser {
   profile: Profile;
   /** Which images go to the parser. Guesses until the evaluation has tuned them. */
   routing: { doc_min: number; doc_margin: number; screenshot_min_chars: number; provisional: boolean };
+  /** The current burst of work since the queue filled (null on stores older than the feature). */
+  run: StatusParserRun | null;
+  /** The page batch in flight right now, if any. */
+  live: StatusParserLive | null;
+}
+/** Progress of the current / most recent parse run: counted since the queue filled, not lifetime. */
+export interface StatusParserRun {
+  started_unix: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  /** Pages still waiting. */
+  left: number;
+  /** Everything this run will have handled once `left` reaches zero. */
+  total: number;
+  /** Unix seconds when the queue drained; null while the run is going. */
+  ended_unix: number | null;
+  /** Average pages per second over the run so far; steady even when single pages take minutes. */
+  avg_rate: number | null;
+}
+/** The page batch the parser is reading right now. */
+export interface StatusParserLive {
+  /** Path of the file whose batch went in flight first (a batch mixes files). */
+  path: string;
+  /** Pages of this batch. */
+  pages: number;
+  /** Seconds since the batch was picked up. */
+  age_s: number;
+}
+/** The meaning index stamp vs. what this build expects, plus the last probe verdict. */
+export interface StatusIndex {
+  stamp: StatusIndexMeta;
+  current: StatusIndexMeta;
+  /** "current": stamp matches this build; "build_drift": only the engine build differs; "mismatch": model / quant / budget / dims differ. */
+  state: "current" | "build_drift" | "mismatch";
+  verdict: StatusIndexVerdict | null;
+  /** App version that last opened / verified this index. */
+  app_version: string | null;
+  /** Unix seconds when the current index content was created or re-stamped. */
+  stamped_unix: number | null;
+  /** True when this build cannot use the index as-is (a rebuild starts by itself). */
+  needs_rebuild: boolean;
+}
+export interface StatusIndexMeta {
+  model_id: string;
+  llama_build: string;
+  quant: string;
+  image_budget: number;
+  dims: number;
+}
+export interface StatusIndexVerdict {
+  /** "current" | "baselined" | "kept" | "moved" | "no_baseline" | "unverified" */
+  kind: string;
+  /** Worst probe cosine, for kept / moved. */
+  cos: number | null;
 }
 export interface StatusModels {
   llama_build: string;
