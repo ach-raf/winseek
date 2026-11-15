@@ -1232,6 +1232,22 @@ export default function App({ backend }: { backend: Backend }) {
     return () => window.removeEventListener("contextmenu", noMenu);
   }, []);
 
+  // body is user-select:none, so Chromium KEEPS a text selection alive across clicks on rows and
+  // buttons — without this, one selection in the pane would hijack Ctrl+C from then on: every
+  // later press copied the stale text instead of the selected file. Clicking outside the pane
+  // means the user is done with that text: drop it, and Ctrl+C falls back to file copy. Clicks
+  // inside the pane (adjusting the selection, the pane's own copy menu) are left alone.
+  useEffect(() => {
+    const onDown = (e: MouseEvent) => {
+      const sel = document.getSelection();
+      const pv = document.querySelector(".pv");
+      if (!sel || sel.isCollapsed || !pv) return;
+      if (pv.contains(sel.anchorNode) && !pv.contains(e.target as Node)) sel.removeAllRanges();
+    };
+    window.addEventListener("mousedown", onDown);
+    return () => window.removeEventListener("mousedown", onDown);
+  }, []);
+
   // moving the selection / reloading the list cancels an inline rename
   useEffect(() => { setRenaming(false); }, [sel, oselKey, epoch, query, filter, sort]);
 
@@ -1353,7 +1369,11 @@ export default function App({ backend }: { backend: Backend }) {
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
       if (suppressClick.current) { suppressClick.current = false; return; }
-      ovGo(i); refocus();
+      ovGo(i);
+      // A click selects like arrowing does: Space now means Quick Look, not a typed space. Typing
+      // resets it (query change), and closing Quick Look hands the space back to the query too.
+      navigated.current = true;
+      refocus();
     },
     onOpen: (i) => {
       const it = ov.flat[i];
