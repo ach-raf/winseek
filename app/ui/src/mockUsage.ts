@@ -51,6 +51,17 @@ const TREES: Record<string, N> = {
     d("Footage", ...many("Clip", "mov", 90, 2.4 * GB)),
     d("Archive", ...many("old", "rar", 30, 600 * MB))),
   E: d("E:", d("Photos", ...many("DSC", "jpg", 900, 6 * MB)), d("Music", ...many("Song", "mp3", 400, 8 * MB))),
+  F: d("F:",
+    d("Backup", ...many("disk-image", "bak", 12, 6.2 * GB), f("full-pc-image.wim", 42 * GB)),
+    d("File History", ...many("snapshot", "zip", 60, 700 * MB))),
+  G: d("G:",
+    d("Movies", ...many("film", "mkv", 34, 4.7 * GB)),
+    d("Series", ...many("episode", "mp4", 260, 1.2 * GB)),
+    d("Concerts", ...many("recording", "flac", 90, 48 * MB))),
+  H: d("H:",
+    d("Scratch", ...many("render", "tmp", 220, 84 * MB)),
+    d("Extract", ...many("unpacked", "exe", 24, 310 * MB)),
+    f("pagefile.sys", 9 * GB)),
 };
 
 const sizeOf = (n: N): number => (n.kids ? n.kids.reduce((a, k) => a + sizeOf(k), 0) : n.size ?? 0);
@@ -90,7 +101,14 @@ function find(path: string): { node: N; path: string } | null {
 
 const MTIME = Date.now() - 40 * 86400000;
 const GBd = 1024 ** 3;
-const DRIVES = [{ letter: "C", total: 931 * GBd, free: 41 * GBd, label: "Windows" }, { letter: "D", total: 1863 * GBd, free: 612 * GBd, label: "Games" }, { letter: "E", total: 119 * GBd, free: 52 * GBd, label: "" }];
+const DRIVES = [
+  { letter: "C", total: 931 * GBd, free: 41 * GBd, label: "Windows" },
+  { letter: "D", total: 1863 * GBd, free: 612 * GBd, label: "Games" },
+  { letter: "E", total: 119 * GBd, free: 52 * GBd, label: "" },
+  { letter: "F", total: 3815 * GBd, free: 1902 * GBd, label: "Backup" },
+  { letter: "G", total: 476940 * 1024 ** 2, free: 81410 * 1024 ** 2, label: "Media" },
+  { letter: "H", total: 256061 * 1024 ** 2, free: 1933 * 1024 ** 2, label: "Scratch" },
+];
 
 const catsOf = (n: N): number[] => {
   const by = new Array(8).fill(0) as number[];

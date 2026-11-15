@@ -2,7 +2,7 @@
 .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
 .dot.warn { background: var(--warn); }
 .sp { flex: 1; }
-.side { width: 216px; flex: none; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: 14px 10px 10px; gap: 2px; }
+.side { width: 216px; flex: none; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: var(--sp-4) 10px 10px; gap: 2px; }
 .brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-size: 16px; font-weight: 700; letter-spacing: -.02em; }
 .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--acc); color: var(--acc-ink); display: grid; place-items: center; }
 .nv { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--fg2); text-align: left; width: 100%; }
@@ -26,15 +26,15 @@
   .idx .meter { background: var(--bg); }
 }
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.tbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 8px 0 18px; }
+.tbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 var(--sp-2) 0 var(--sp-5); }
 .tbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
 .tbar .hsub { font-size: 13px; color: var(--fg3); margin-left: 4px; }
-.tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 12px 0 14px; border-radius: 11px; background: var(--bg2); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 var(--sp-3); border-radius: 11px; background: var(--bg2); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
 .tbar .field:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
 .wc { display: flex; margin-left: 6px; }
 .wc button { width: 40px; height: 32px; display: grid; place-items: center; color: var(--fg3); border-radius: 6px; }
 .wc button:hover { background: var(--bg3); color: var(--fg); }
-.page-body { flex: 1; min-height: 0; overflow: auto; padding: 4px 22px 90px; position: relative; }
+.page-body { flex: 1; min-height: 0; overflow: auto; padding: var(--sp-1) var(--gut) 90px; position: relative; }
 
 /* ---- drives card: is search current, and how much room is left where ---- */
 .side .idx { gap: 5px; padding: 12px 8px 8px; }
@@ -49,6 +49,5 @@
 .idx .d.tight span { color: var(--warn); font-weight: 600; }
 .idx .meter.scan i { background: var(--acc); }
 
-/* ---- one gutter for every page of the full window: titles, tabs, cards, lists and footers start on the same line ---- */
-.shell.full { --gut: 22px; }
+/* ---- one gutter for every page of the full window: titles, tabs, cards, lists and footers start on the same line (--gut, base.css) ---- */
 .shell.full .tbar { padding-left: var(--gut); }

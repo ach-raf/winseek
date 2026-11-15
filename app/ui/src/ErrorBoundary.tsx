@@ -19,14 +19,14 @@ export class ErrorBoundary extends Component<{ children: ReactNode }, { err: Err
       <div style={{ height: "100%", display: "grid", placeItems: "center", padding: 24 }}>
         <div role="alert" style={{
           background: "var(--bg)", color: "var(--fg)", border: "1px solid var(--line)",
-          borderRadius: 14, boxShadow: "var(--shadow)", padding: "22px 26px", maxWidth: 420,
+          borderRadius: 14, boxShadow: "var(--shadow)", padding: "22px 22px", maxWidth: 420,
           display: "flex", flexDirection: "column", gap: 10, alignItems: "flex-start",
         }}>
           <b style={{ fontSize: 16 }}>winseek hit a rendering error</b>
           <code style={{ font: "500 12px/1.5 var(--mono)", color: "var(--fg2)", wordBreak: "break-word" }}>{err.message}</code>
           <button onClick={() => location.reload() } style={{
             background: "var(--acc)", color: "var(--acc-ink)", fontWeight: 600, fontSize: 13.5,
-            padding: "7px 18px", borderRadius: 8,
+            padding: "7px 16px", borderRadius: 8,
           }}>Reload winseek</button>
         </div>
       </div>

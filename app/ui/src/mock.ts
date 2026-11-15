@@ -81,8 +81,11 @@ const params = new URLSearchParams(typeof location !== "undefined" ? location.se
 const SCAN_MS = 4000;
 const VOLS: { letter: string; files: number; folders: number; ms: number; fs: string; monitor: VolumeDetail["monitor"] }[] = [
   { letter: "C", files: 5210442, folders: 740569, ms: SCAN_MS, fs: "NTFS", monitor: "usn" },
-  { letter: "H", files: 998120, folders: 206391, ms: SCAN_MS * 0.6, fs: "NTFS", monitor: "usn" },
+  { letter: "D", files: 3187604, folders: 512240, ms: SCAN_MS * 0.8, fs: "NTFS", monitor: "usn" },
   { letter: "E", files: 18342, folders: 1207, ms: SCAN_MS * 0.3, fs: "exFAT", monitor: "folder_watch" },
+  { letter: "F", files: 684021, folders: 98330, ms: SCAN_MS * 0.5, fs: "NTFS", monitor: "usn" },
+  { letter: "G", files: 2401988, folders: 305911, ms: SCAN_MS * 0.7, fs: "NTFS", monitor: "usn" },
+  { letter: "H", files: 998120, folders: 206391, ms: SCAN_MS * 0.6, fs: "NTFS", monitor: "usn" },
 ];
 let svc: ServiceState = params.get("installed") === "1" ? "running" : params.get("stopped") === "1" ? "stopped" : "not_installed";
 let scanStart: number | null = svc === "running" ? -Infinity : null; // when the "pipe" comes up

@@ -1,7 +1,7 @@
 /* ===== preview pane (v4): .pv and everything inside it ===== */
 .pv {
   flex: 1; min-width: 0; min-height: 0; width: 100%; height: 100%;
-  display: flex; flex-direction: column; padding: 16px 18px 16px;
+  display: flex; flex-direction: column; padding: var(--sp-4);
   border-left: 1px solid var(--line); overflow: auto; background: var(--bg);
   animation: fade 160ms var(--ease);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
@@ -36,12 +36,12 @@
 .crumbs i { font-style: normal; color: var(--fg-3); }
 
 /* why it is here (bounded: a long snippet must not push the facts around) */
-.whyb { padding: 12px 14px; border-radius: 12px; background: var(--sel); font-size: 14px; line-height: 1.4; color: var(--fg); max-height: 6em; overflow: hidden; }
+.whyb { padding: var(--sp-3) var(--sp-4); border-radius: 12px; background: var(--sel); font-size: 14px; line-height: 1.4; color: var(--fg); max-height: 6em; overflow: hidden; }
 .whyb b { display: block; font-size: 12px; font-weight: 600; color: var(--fg-2); margin-bottom: 3px; }
 
 /* facts: as many per row as the pane's width allows (the drive letter is already the first crumb;
  * EXIF "None" / GPS "No" are not rows) */
-.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); column-gap: 18px; margin: 0; }
+.meta { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); column-gap: var(--sp-4); margin: 0; }
 .meta > div { display: flex; justify-content: space-between; gap: 10px; padding: 6px 0; font-size: 13px; min-width: 0; border-top: 1px solid var(--line); }
 .meta > div.wide { grid-column: 1 / -1; }
 .meta dt { color: var(--fg-3); flex: none; }
@@ -118,14 +118,14 @@
 /* text / documents */
 .pv-text { position: absolute; inset: 0; overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent; text-wrap: pretty; }
 .pv-text pre {
-  margin: 0; padding: 12px 14px; font: 12px/1.5 var(--mono); color: var(--fg);
+  margin: 0; padding: var(--sp-3) var(--sp-4); font: 12px/1.5 var(--mono); color: var(--fg);
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text;
 }
 .pv-hits {
   position: sticky; top: 8px; float: right; margin: 8px 8px 0 0; padding: 1px 9px; border-radius: 999px; z-index: 1;
   background: var(--sel); color: var(--fg); font: 600 11px/1.6 var(--font);
 }
-.pv-trunc { padding: 6px 14px 12px; font-size: 12px; color: var(--fg-3); }
+.pv-trunc { padding: 6px var(--sp-4) var(--sp-3); font-size: 12px; color: var(--fg-3); }
 
 /* everything else */
 .pv-other { position: absolute; inset: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; text-align: center; }
@@ -146,16 +146,16 @@
 .pv .pv-pick .btn.pv-btn { justify-content: flex-start; background: transparent; font-weight: 500; }
 .pv .pv-pick .btn.pv-btn:hover { background: var(--bg3); }
 .pv-parse-panel { display: flex; flex-direction: column; min-height: 0; max-height: 34vh; border-radius: 12px; background: var(--bg2); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
-.pv-parse-head { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px 4px 14px; font-size: 12.5px; }
+.pv-parse-head { flex: none; display: flex; align-items: center; gap: 8px; padding: var(--sp-2) 10px 4px var(--sp-4); font-size: 12.5px; }
 .pv-parse-head b { font-weight: 600; }
 .pv-parse-head .muted { flex: 1; }
-.pv-parse-panel pre { margin: 0; padding: 4px 14px 12px; overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
+.pv-parse-panel pre { margin: 0; padding: 4px var(--sp-4) var(--sp-3); overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
 .dl-opt { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .dl-opt-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .dl-opt-head .sz { margin-left: auto; color: var(--fg-3); font-variant-numeric: tabular-nums; }
 
 /* full window: the preview pane uses the page gutter too */
-.shell.full .pv { padding: 18px var(--gut, 22px) var(--gut, 22px); }
+.shell.full .pv { padding: var(--sp-4) var(--gut) var(--gut); }
 /* The "Match at 1:23" jump button of a video / audio hit. */
 .pv-media .pv-at { position: absolute; left: 12px; bottom: 12px; z-index: 2; font-variant-numeric: tabular-nums; background: color-mix(in srgb, var(--bg2) 86%, transparent); backdrop-filter: blur(6px); }
 .pv-media.audio .pv-at { position: static; justify-self: start; }

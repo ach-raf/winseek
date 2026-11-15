@@ -16,6 +16,11 @@
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 8px; --radius-lg: 14px;
+  /* Spacing scale — the only horizontal rhythm. Micro paddings (0-3px) stay literal; anything
+     >= 4px snaps to --sp-1..--sp-6. --gut is the full window's page gutter (titles, tabs, cards,
+     rows all start on it); the popup's tighter gutter is --sp-4 (16px). */
+  --sp-1: 4px; --sp-2: 8px; --sp-3: 12px; --sp-4: 16px; --sp-5: 22px; --sp-6: 32px;
+  --gut: var(--sp-5);
   --lcol: 348px; --setside: 200px;
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
   /* Library-window sidebar surfaces. Dark gets a lifted, faintly accent-tinted
