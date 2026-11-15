@@ -60,6 +60,13 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* Windowed lists (Overview's Windowed): spacers stand in for the rows that are not drawn. */
 .win-pad { grid-column: 1 / -1; pointer-events: none; }
 .list.ov { overflow-anchor: none; }
+/* The overview sheet (home suggestions, results) reuses .ov, whose dark veil + white ink exists
+ * for captions over photos and video. As a page surface it follows the theme instead. */
+:root[data-theme="light"] .list.ov {
+  background: var(--bg2);
+  color: var(--fg);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
 
 /* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
  * Chips are buttons that act on the query — never filter chips (.fc), never info chips (.qchip). */
