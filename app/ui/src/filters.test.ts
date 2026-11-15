@@ -96,7 +96,7 @@ test("months, years, relative dates", () => {
 });
 
 test("plain queries and user syntax are untouched", () => {
-  for (const q of ["invoice", "report final", "ext:pdf", '"last summer"', "!photos", "C:\Users\photos", "*.pdf"]) {
+  for (const q of ["invoice", "report final", "ext:pdf", '"last summer"', "!photos", "C:\\Users\\photos", "*.pdf"]) {
     const p = parseQuery(q, { now: NOW });
     assert.equal(p.chips.length, 0, q);
     assert.equal(p.text, q);

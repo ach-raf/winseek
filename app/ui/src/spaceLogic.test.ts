@@ -23,6 +23,7 @@ test("squarify tiles the box exactly and keeps areas proportional", () => {
 test("squarify handles empty input and one item", () => {
   assert.deepEqual(squarify([], { x: 0, y: 0, w: 10, h: 10 }), []);
   const [only] = squarify([{ item: "a", value: 5 }], { x: 0, y: 0, w: 10, h: 20 });
+  assert.ok(only);
   assert.deepEqual([only.x, only.y, only.w, only.h], [0, 0, 10, 20]);
 });
 
@@ -50,7 +51,7 @@ test("tileItems folds tiny entries and the service's leftovers into one rest til
   const d = usage([ent("big", 9000), ent("tiny1", 1), ent("tiny2", 1), ent("zero", 0)], 5, 10);
   const t = tileItems(d, { x: 0, y: 0, w: 300, h: 200 });
   assert.equal(t.length, 2);
-  const rest = t[1].item as { rest: true; count: number; size: number };
+  const rest = t[1]!.item as { rest: true; count: number; size: number };
   assert.equal(rest.rest, true);
   assert.deepEqual([rest.count, rest.size], [7, 12]);
   assert.deepEqual(tileItems(usage([]), { x: 0, y: 0, w: 10, h: 10 }), []);
@@ -86,10 +87,10 @@ test("flattenTree shows the root, open folders' children, loading rows and the m
 
   const closed = flattenTree("C:\\", get, new Set(["C:\\"]));
   assert.deepEqual(closed.map((r) => `${r.depth}:${r.type}:${r.entry?.name ?? ""}`), ["0:node:C:", "1:node:Users", "1:node:pagefile.sys", "1:more:"]);
-  assert.equal(closed[3].more?.count, 4);
+  assert.equal(closed[3]?.more?.count, 4);
 
   const loading = flattenTree("C:\\", get, new Set(["C:\\", "C:\\Users", "C:\\Users\\Me"]));
   assert.deepEqual(loading.map((r) => `${r.depth}:${r.type}:${r.entry?.name ?? ""}`).slice(0, 5), ["0:node:C:", "1:node:Users", "2:node:Me", "3:busy:", "2:node:Pub"]);
-  assert.equal(loading[2].base, users.size);
-  assert.equal(flattenTree("D:\\", get, new Set())[0].type, "busy");
+  assert.equal(loading[2]?.base, users.size);
+  assert.equal(flattenTree("D:\\", get, new Set())[0]?.type, "busy");
 });

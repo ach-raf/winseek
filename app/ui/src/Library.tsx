@@ -180,7 +180,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
       if (showSettings && (e.key === "Escape" || matches(e, "Alt+Left"))) { e.preventDefault(); setShowSettings(false); return; }
       if (!embedded && e.ctrlKey && !e.shiftKey && !e.altKey) {
         const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
-        if (ti >= 0) { e.preventDefault(); setOwnTab(TABS[ti]); return; }
+        if (ti >= 0) { e.preventDefault(); setOwnTab(TABS[ti]!); return; }
       }
       // Back to the search — unless something inside (preview, collection, drill-in, form, text field) owns the key.
       if (e.key === "Escape" || matches(e, "Alt+Left")) {

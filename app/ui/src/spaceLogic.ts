@@ -148,7 +148,7 @@ export interface TreeRow {
 
 const rootEntry = (path: string, d: DiskUsage): UsageEntry => {
   const parts = path.split(/[\\/]/).filter(Boolean);
-  const name = parts.length <= 1 ? (parts[0] ?? path) : parts[parts.length - 1];
+  const name = parts.length <= 1 ? (parts[0] ?? path) : (parts[parts.length - 1] ?? path);
   return { name, path, is_dir: true, kind: 0, size: d.size, files: d.files, folders: d.folders, mtime: null };
 };
 

@@ -26,7 +26,7 @@ export function groupByMonth<T extends { mtime: number }>(items: T[]): Section<T
     const key = `${year}-${String(month + 1).padStart(2, "0")}`;
     const last = out[out.length - 1];
     if (last && last.key === key) last.items.push(it);
-    else out.push({ key, label: `${MONTHS[month]} ${year}`, year, month, items: [it] });
+    else out.push({ key, label: `${MONTHS[month] ?? ""} ${year}`, year, month, items: [it] });
   }
   return out;
 }
@@ -47,7 +47,7 @@ export function railEntries(sections: { year: number; month: number; items: unkn
   sections.forEach((s, i) => {
     let y = out[out.length - 1];
     if (!y || y.year !== s.year) { y = { year: s.year, months: [] }; out.push(y); }
-    y.months.push({ section: i, label: MON3[s.month], count: s.items.length });
+    y.months.push({ section: i, label: MON3[s.month] ?? "", count: s.items.length });
   });
   return out;
 }
@@ -55,7 +55,7 @@ export function railEntries(sections: { year: number; month: number; items: unkn
 /** Index of the section the scroll position is in (the last one that starts at or above it). */
 export function activeSection(sectionTop: number[], scrollTop: number): number {
   let a = 0;
-  for (let i = 0; i < sectionTop.length; i++) if (sectionTop[i] <= scrollTop + 4) a = i;
+  for (let i = 0; i < sectionTop.length; i++) if (sectionTop[i]! <= scrollTop + 4) a = i;
   return a;
 }
 
@@ -119,10 +119,11 @@ export function visibleRows(rows: { top: number; h: number }[], scrollTop: numbe
   let a = 0, b = rows.length;
   while (a < b) {
     const m = (a + b) >> 1;
-    if (rows[m].top + rows[m].h <= lo) a = m + 1; else b = m;
+    const row = rows[m]!; // m sits in [a, b) inside rows
+    if (row.top + row.h <= lo) a = m + 1; else b = m;
   }
   let to = a;
-  while (to < rows.length && rows[to].top < hi) to++;
+  while (to < rows.length && rows[to]!.top < hi) to++;
   return [a, to];
 }
 
@@ -222,7 +223,7 @@ export function packMosaic(sizes: number[], cols: number): Mosaic {
           placed = true;
         }
       }
-      while (occ[minRow] && occ[minRow].every(Boolean)) minRow++;
+      while (occ[minRow]?.every(Boolean)) minRow++;
     }
     sections.push({ first: flat, end: flat + n, rows });
     flat += n;
@@ -236,7 +237,7 @@ export function mosaicMetrics(m: Mosaic, rowH: number, gap: number, headH: numbe
   let y = 0;
   m.sections.forEach((s, i) => {
     const body = s.rows > 0 ? s.rows * (rowH + gap) - gap : 0;
-    const sh = headH[i] + body + (s.rows > 0 ? bottom : 0);
+    const sh = (headH[i] ?? 0) + body + (s.rows > 0 ? bottom : 0);
     top.push(y);
     h.push(sh);
     y += sh;
@@ -261,12 +262,14 @@ export function moveMosaic(m: Mosaic, mt: MosaicMetrics, rowH: number, gap: numb
   if (key !== "ArrowUp" && key !== "ArrowDown") return i;
   const cur = m.tiles[i];
   if (!cur) return i;
-  const gy = (t: MosaicTile) => { const b = tileBox(t, rowH, gap, mt.head[t.section]); return { y: mt.top[t.section] + b.y, h: b.h }; };
+  const gy = (t: MosaicTile) => { const b = tileBox(t, rowH, gap, mt.head[t.section] ?? 0); return { y: (mt.top[t.section] ?? 0) + b.y, h: b.h }; };
   const c = gy(cur), cx = cur.col + cur.w / 2;
   let best = -1, bestDy = Infinity, bestDx = Infinity;
   for (let k = Math.max(0, i - 64); k <= Math.min(n - 1, i + 64); k++) {
     if (k === i) continue;
-    const t = m.tiles[k], b = gy(t);
+    const t = m.tiles[k];
+    if (!t) continue; // tiles cover [0, n), k never leaves it
+    const b = gy(t);
     const dy = key === "ArrowDown" ? b.y - (c.y + c.h) : c.y - (b.y + b.h);
     if (dy < -1) continue;
     const dx = Math.abs(t.col + t.w / 2 - cx);
@@ -296,7 +299,7 @@ export function pickKeeper(members: KeepCandidate[]): number {
   let best = 0;
   const px = (m: KeepCandidate) => (m.width ?? 0) * (m.height ?? 0);
   for (let i = 1; i < members.length; i++) {
-    const a = members[i], b = members[best];
+    const a = members[i]!, b = members[best]!; // both indices stay inside members
     const d = px(a) - px(b) || a.mtime - b.mtime || b.path.length - a.path.length || (a.path < b.path ? 1 : a.path > b.path ? -1 : 0);
     if (d > 0) best = i;
   }

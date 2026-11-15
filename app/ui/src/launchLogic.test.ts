@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { isHelperExe, launchForFilter, launchPath, pickTop, portableApps, TOP_MIN, makeLaunchGuard } from "./launchLogic.ts";
+import { launchForFilter, launchPath, pickTop, portableApps, TOP_MIN, makeLaunchGuard } from "./launchLogic.ts";
 import type { Hit, LaunchHit, LaunchItem } from "./types.ts";
 
 const hit = (path: string): Hit => {

@@ -48,7 +48,7 @@ export function appGradient(name: string): [string, string] {
 export function initials(name: string): string {
   const words = name.split(/[^A-Za-z0-9]+/).filter(Boolean);
   if (!words.length) return name.trim().slice(0, 1).toUpperCase() || "?";
-  if (words.length > 1) return (words[0][0] + words[1][0]).toUpperCase();
-  const w = words[0];
-  return w.length > 1 ? w[0].toUpperCase() + w[1].toLowerCase() : w.toUpperCase();
+  const w = words[0] ?? ""; // filter(Boolean) leaves real words, never ""
+  if (words.length > 1) return (w.charAt(0) + (words[1] ?? "").charAt(0)).toUpperCase();
+  return w.length > 1 ? w.charAt(0).toUpperCase() + w.charAt(1).toLowerCase() : w.toUpperCase();
 }

@@ -19,11 +19,11 @@ test("overview: top result, a few files, photo grid, related documents; a file i
   const s = [sem("budget.xlsx"), ...Array.from({ length: 12 }, (_, i) => sem(`p${i}.jpg`)), sem("plan.pdf", "text")];
   const { sections, flat } = buildOverview({ names, nameTotal: 300, sem: s, text: "budget", expand: null, isImage });
   assert.deepEqual(sections.map((x) => [x.id, x.items.length, x.more]), [["top", 1, false], ["files", 4, true], ["images", 8, true], ["docs", 1, false]]);
-  assert.equal(sections[1].total, 299);
-  assert.equal(flat[0].hit.name, "budget.xlsx");
+  assert.equal(sections[1]?.total, 299);
+  assert.equal(flat[0]?.hit.name, "budget.xlsx");
   assert.ok(!flat.some((x, i) => i > 0 && x.hit.name === "budget.xlsx"), "the meaning twin of the top result is not repeated");
   assert.deepEqual(flat.filter((x) => x.section === "images").map((x) => x.col), [0, 1, 2, 3, 0, 1, 2, 3]);
-  assert.equal(sections[3].title, "Related by meaning");
+  assert.equal(sections[3]?.title, "Related by meaning");
   const wide = buildOverview({ names, nameTotal: 300, sem: s, text: "budget", expand: null, isImage, photoCols: 5 });
   assert.equal(wide.sections.find((x) => x.id === "images")?.items.length, 10, "the full window shows two rows of five");
 });
@@ -54,7 +54,7 @@ test("overview: pictures named with the typed word become tiles and leave Files;
   const names = ["budget.xlsx", "budget 2025.png", "my budget.png", "budgets.png", "prebudgeted.png", "notes budget.txt"].map(hit);
   const r = buildOverview({ names, nameTotal: 6, sem: [], text: "budget", expand: null, isImage });
   assert.deepEqual(r.sections.map((x) => [x.id, x.items.length, x.more]), [["top", 1, false], ["files", 2, false], ["images", 3, false]]);
-  assert.deepEqual(r.sections[1].items.map((x) => x.hit.name), ["prebudgeted.png", "notes budget.txt"]);
+  assert.deepEqual(r.sections[1]?.items.map((x) => x.hit.name), ["prebudgeted.png", "notes budget.txt"]);
   const tiles = r.sections.find((x) => x.id === "images")!;
   assert.equal(tiles.title, "Pictures");
   assert.ok(tiles.items.every((x) => x.nameIdx !== undefined), "name tiles keep their row index (rename / recycle)");
@@ -74,10 +74,10 @@ test("overview: Show all pictures is one list, meaning and names by score; row i
   const r = buildOverview({ names, nameTotal: 6, sem: s, text: "x", expand: "images", isImage });
   const imgs = r.sections.find((x) => x.id === "images")!;
   assert.deepEqual([imgs.items.length, imgs.total, imgs.more, imgs.count], [19, 19, false, true]);
-  assert.equal(imgs.items[0].hit.name, "p0.jpg", "the best meaning hit leads");
+  assert.equal(imgs.items[0]?.hit.name, "p0.jpg", "the best meaning hit leads");
   const firstName = imgs.items.findIndex((x) => x.nameIdx !== undefined);
   assert.equal(firstName, 8, "whole-word names (6) come after the meaning hits that score above them (9 .. 6.2)");
-  assert.equal(imgs.items[firstName].nameIdx, 1);
+  assert.equal(imgs.items[firstName]?.nameIdx, 1);
 });
 
 test("ovMove walks rows, the grid by rows and tiles, and jumps sections", () => {
@@ -112,9 +112,9 @@ const setting = (id: string, title: string, score: number, uri: string) => mkLau
 
 test("launcher: mpv with only portable files -> portable mpv.exe is the Top result (not repeated), mpv.conf stays in Files", () => {
   const names = [hit("mpv.conf"), { ...hit("mpv.exe"), path: "D:\\tools\\mpv\\mpv.exe" }, hit("mpv-2.dll")];
-  const r = buildOverview({ names, nameTotal: 3, sem: [], text: "mpv", expand: null, isImage, portable: [names[1]] });
-  assert.equal(r.sections[0].id, "top");
-  assert.equal(r.sections[0].items[0].hit.name, "mpv.exe");
+  const r = buildOverview({ names, nameTotal: 3, sem: [], text: "mpv", expand: null, isImage, portable: [names[1]!] });
+  assert.equal(r.sections[0]?.id, "top");
+  assert.equal(r.sections[0]?.items[0]?.hit.name, "mpv.exe");
   assert.ok(!r.sections.some((s) => s.id === "apps"), "the Top result is taken out of Apps");
   const files = r.sections.find((s) => s.id === "files");
   assert.deepEqual(files?.items.map((i) => i.hit.name), ["mpv.conf", "mpv-2.dll"]);
@@ -131,8 +131,8 @@ test("launcher: a catalog app covering the same path is listed once (as the Top 
 test("launcher: a settings hit over TOP_MIN beats a strong file for the Top result", () => {
   const launch = [setting("set:ms-settings:bluetooth", "Bluetooth & devices", 178, "ms-settings:bluetooth")];
   const r = buildOverview({ names: [hit("bluetooth_driver.zip")], nameTotal: 1, sem: [], text: "bluetooth", expand: null, isImage, launch });
-  assert.equal(r.sections[0].id, "top");
-  assert.equal(r.sections[0].items[0].launch?.item.id, "set:ms-settings:bluetooth");
+  assert.equal(r.sections[0]?.id, "top");
+  assert.equal(r.sections[0]?.items[0]?.launch?.item.id, "set:ms-settings:bluetooth");
 });
 
 test("launcher: section order Top, Apps, Files, Windows settings, Commands; ovMove walks it", () => {
@@ -140,15 +140,15 @@ test("launcher: section order Top, Apps, Files, Windows settings, Commands; ovMo
   const r = buildOverview({ names: [hit("apply.txt")], nameTotal: 1, sem: [], text: "app", expand: null, isImage, launch });
   // the best app is the Top result and leaves its own section, so there is no Apps section here
   assert.deepEqual(r.sections.map((s) => s.id), ["top", "files", "settings", "commands"]);
-  assert.equal(r.sections[2].title, "Windows settings");
+  assert.equal(r.sections[2]?.title, "Windows settings");
   const flat = r.flat;
   assert.equal(ovMove(flat, 0, "down"), 1);
   assert.equal(ovMove(flat, 1, "next"), 2, "files -> settings");
   assert.equal(ovMove(flat, 2, "next"), 3, "settings -> commands");
   const two = buildOverview({ names: [], nameTotal: 0, sem: [], text: "app", expand: null, isImage, launch: [app("app:1", "App one", 170), app("app:2", "App two", 120)] });
   assert.deepEqual(two.sections.map((s) => s.id), ["top", "apps"]);
-  assert.equal(two.sections[0].items[0].launch?.item.id, "app:1");
-  assert.deepEqual(two.sections[1].items.map((i) => i.launch?.item.id), ["app:2"]);
+  assert.equal(two.sections[0]?.items[0]?.launch?.item.id, "app:1");
+  assert.deepEqual(two.sections[1]?.items.map((i) => i.launch?.item.id), ["app:2"]);
 });
 
 test("launcher: the apps filter shows only apps, no Files section", () => {
@@ -156,14 +156,14 @@ test("launcher: the apps filter shows only apps, no Files section", () => {
   const portable = [hit("tool.exe")];
   const r = buildOverview({ names: [hit("apply.txt")], nameTotal: 1, sem: [], text: "app", expand: "apps", isImage, launch, portable });
   assert.deepEqual(r.sections.map((s) => s.id), ["apps"]);
-  assert.equal(r.sections[0].items.length, 2, "catalog app + portable exe");
+  assert.equal(r.sections[0]?.items.length, 2, "catalog app + portable exe");
 });
 
 test("launcher: a launch Top result's resolved exe is not listed again under Files", () => {
   const exe = { ...hit("mpv.exe"), path: "D:\\tools\\mpv\\mpv.exe" };
   const launch = [app("app:mpv", "mpv", 180, { t: "aumid", aumid: "x!App", path: "D:\\tools\\mpv\\mpv.exe" })];
   const r = buildOverview({ names: [exe, hit("mpv.conf")], nameTotal: 2, sem: [], text: "mpv", expand: null, isImage, launch });
-  assert.equal(r.sections[0].items[0].launch?.item.id, "app:mpv");
+  assert.equal(r.sections[0]?.items[0]?.launch?.item.id, "app:mpv");
   const files = r.sections.find((s) => s.id === "files");
   assert.ok(!files?.items.some((i) => i.hit.path === "D:\\tools\\mpv\\mpv.exe"));
 });
@@ -188,7 +188,7 @@ test("home: Most used grid (capped at the columns) then Recent files; ovMove wal
   assert.deepEqual(h.sections.map((x) => [x.id, x.items.length]), [["mostused", 6], ["recent", 7]]);
   const h12 = buildHome({ mru, recent, appCols: 12, recentCap: 7 });
   assert.deepEqual(h12.sections.map((x) => [x.id, x.items.length]), [["mostused", 9], ["recent", 7]], "full mode's 12 columns show every stored MRU entry");
-  assert.equal(h.flat[7].nameIdx, 1, "recent rows point into the name results");
+  assert.equal(h.flat[7]?.nameIdx, 1, "recent rows point into the name results");
   const C = { mostused: 6 };
   assert.equal(ovMove(h.flat, 2, "down", C), 6, "grid -> first recent row");
   assert.equal(ovMove(h.flat, 6, "up", C), 0, "recent row up -> first tile of the grid's last row");
@@ -205,7 +205,7 @@ test("bumpMru counts launches, most used first, capped", () => {
   assert.deepEqual(l.map((e) => [e.item.id, e.n]), [["b", 2], ["a", 1]]);
   for (let i = 0; i < 20; i++) l = bumpMru(l, it("x" + i), 10 + i);
   assert.equal(l.length, 12);
-  assert.equal(l[0].item.id, "b");
+  assert.equal(l[0]?.item.id, "b");
 });
 
 test("nicePath drops the home folder and joins with a chevron", () => {

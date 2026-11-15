@@ -14,7 +14,7 @@ interface E { name: string; lower: string; path: string; dir: boolean; size: num
 
 let seed = 0x9e3779b9;
 const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 4294967296; };
-const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)];
+const pick = <T,>(a: T[]): T => { const v = a[Math.floor(rnd() * a.length)]; if (v === undefined) throw new Error("pick from an empty pool"); return v; };
 
 const DB: E[] = (() => {
   const now = Date.now();
@@ -49,6 +49,7 @@ const SHOWS = new Map<string, string>();
   const add = (name: string, i: number, shows?: string) => {
     const path = `C:\\Users\\User\\Pictures\\Sorted\\${name}`;
     const src = tiles[(i * 37) % tiles.length];
+    if (!src) return; // the tile pool is non-empty (the library always builds images)
     libByPath.set(path, { ...src, name, path });
     DB.push({ name, lower: name.toLowerCase(), path, dir: false, size: 400_000 + i * 9_137, mtime: Date.now() - (i + 1) * 4e8, kind: 1 });
     if (shows) SHOWS.set(path, shows);
@@ -103,14 +104,14 @@ function rangeTerms(all: string[]): (e: E) => boolean {
   for (const t of all) {
     const m = /^(size|dm):(\d*)\.\.(\d*)$/.exec(t);
     if (!m) continue;
-    const lo = num(m[2], -Infinity), hi = num(m[3], Infinity);
+    const lo = num(m[2] ?? "", -Infinity), hi = num(m[3] ?? "", Infinity); // \d* groups always match, possibly ""
     tests.push(m[1] === "size" ? (e) => !e.dir && e.size >= lo && e.size <= hi : (e) => e.mtime >= lo && e.mtime < hi);
   }
   return (e) => tests.every((f) => f(e));
 }
 const isRangeTerm = (t: string) => /^(size|dm):/.test(t);
 /** The name index's `ws:` term: `w` begins a word of the (lower-case) name. */
-const hasWord = (lower: string, w: string) => { for (let i = lower.indexOf(w); i >= 0; i = lower.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(lower[i - 1])) return true; return false; };
+const hasWord = (lower: string, w: string) => { for (let i = lower.indexOf(w); i >= 0; i = lower.indexOf(w, i + 1)) if (i === 0 || !/[a-z0-9]/.test(lower[i - 1] ?? "")) return true; return false; };
 const okFilter = (e: E, f: Filter) => f === "all" || (f === "files" && !e.dir) || (f === "images" && e.kind === 1) || (f === "docs" && e.kind === 2) || (f === "video" && e.kind === 3) || (f === "audio" && e.kind === 4) || (f === "folders" && e.dir) || (f === "apps" && /\.(exe|msi)$/.test(e.lower));
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -191,7 +192,7 @@ async function runDownload(groups: ModelGroup[]) {
       if (dlCancel) return fail("cancelled");
       dlDone[item.name] = Math.min(item.real, (dlDone[item.name] ?? 0) + 30e6);
       const got = items.reduce((a, i) => a + (dlDone[i.name] ?? 0), 0);
-      progressCbs.forEach((f) => f({ item: item.name, downloaded: dlDone[item.name], total: item.real, overall_downloaded: got, overall_total: all }));
+      progressCbs.forEach((f) => f({ item: item.name, downloaded: dlDone[item.name] ?? 0, total: item.real, overall_downloaded: got, overall_total: all }));
       if (dlFailOnce && got / all > 0.6) { dlFailOnce = false; return fail("stalled: no data for 20s at 612345678 bytes"); }
     }
   }
@@ -242,7 +243,8 @@ function mockStatusPage(): StatusPage {
   function volRow(v: (typeof VOLS)[number]): Omit<VolumeDetail, "fs" | "monitor"> {
     const total = v.files + v.folders;
     const el = now - (scanStart as number);
-    const rs = rescanAt[v.letter] !== undefined ? now - rescanAt[v.letter] : Infinity;
+    const at = rescanAt[v.letter];
+    const rs = at !== undefined ? now - at : Infinity;
     if (v.letter === "H" && params.get("volerr") === "1") {
       return { letter: "H", files: 0, folders: 0, state: "error", done: null, total: null, error: "USN journal is not active and could not be created (access denied)" };
     }
@@ -556,7 +558,7 @@ const viewListeners = new Set<(m: ViewMode) => void>();
 let hotkeys: Hotkeys = { popup: "Alt+Space", library: null, clipboard: null };
 let agentLogRows: AgentLogEntry[] = [
   { ts_ms: Date.now() - 42_000, client: "claude-code", tool: "search_files", args: { query: "invoice", type: "docs", modified_after: "this_month" }, ok: true, count: 12, ms: 34 },
-  { ts_ms: Date.now() - 30_000, client: "claude-code", tool: "read_text", args: { path: "C:\Users\User\Documents\invoice.pdf", max_chars: 20000 }, ok: true, ms: 210 },
+  { ts_ms: Date.now() - 30_000, client: "claude-code", tool: "read_text", args: { path: "C:\\Users\\User\\Documents\\invoice.pdf", max_chars: 20000 }, ok: true, ms: 210 },
   { ts_ms: Date.now() - 12_000, client: "cursor", tool: "search_by_meaning", args: { query: "screenshot of the login error" }, ok: false, error: "Agent access is off. Turn it on in winseek Settings › Agents.", ms: 2 },
 ];
 const launchHist = new Map<string, number>();
@@ -583,7 +585,7 @@ const launchBoost = (query: string, id: string) => {
   let best = 0;
   for (const [key, count] of launchHist) {
     const [prefix, picked] = key.split("\u{1}");
-    if (picked === id && q.startsWith(prefix)) best = Math.max(best, Math.min(160, count * 60));
+    if (picked === id && prefix !== undefined && q.startsWith(prefix)) best = Math.max(best, Math.min(160, count * 60));
   }
   return best;
 };
@@ -626,14 +628,14 @@ export const mockBackend: Backend = {
       const ty = (e: (typeof m)[number]) => (toHit(e).is_dir ? "" : e.lower.slice(e.lower.lastIndexOf(".") + 1));
       m.sort((a, b) => (ty(a).localeCompare(ty(b)) || a.lower.localeCompare(b.lower)) * (s === "type" ? 1 : -1));
     }
-    else m.sort((a, b) => Number(b.lower.startsWith(terms[0])) - Number(a.lower.startsWith(terms[0])) || a.lower.length - b.lower.length);
+    else m.sort((a, b) => Number(b.lower.startsWith(terms[0] ?? "")) - Number(a.lower.startsWith(terms[0] ?? "")) || a.lower.length - b.lower.length); // "rel" only gets here with terms (empty became "date" above)
     await sleep(8);
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
   },
   async driveSpace(letters) {
     const GB = 1024 ** 3;
     const known: Record<string, [number, number]> = { C: [931 * GB, 41 * GB], H: [1863 * GB, 1122 * GB], E: [119 * GB, 96 * GB] };
-    return letters.filter((l) => known[l]).map((l) => ({ letter: l, total: known[l][0], free: known[l][1] }));
+    return letters.flatMap((l) => { const k = known[l]; return k ? [{ letter: l, total: k[0], free: k[1] }] : []; });
   },
   async status(): Promise<VolumeStatus[]> {
     if (scanStart === null || performance.now() < scanStart) return [{ letter: "C", files: 0, folders: 0, state: "demo" }];
@@ -656,7 +658,7 @@ export const mockBackend: Backend = {
     for (const path of paths) {
       const i = DB.findIndex((e) => e.path === path);
       if (i < 0) throw new Error("File not found");
-      bin.push({ e: DB.splice(i, 1)[0], at: Date.now() });
+      bin.push({ e: DB.splice(i, 1)[0]!, at: Date.now() }); // i is a proven hit (checked just above)
     }
     console.info("[mock] recycle", paths);
   },
@@ -664,8 +666,8 @@ export const mockBackend: Backend = {
     let n = 0;
     for (const path of paths) {
       let k = -1;
-      bin.forEach((b, i) => { if (b.e.path === path && (k < 0 || b.at >= bin[k].at)) k = i; });
-      if (k >= 0) { DB.push(bin.splice(k, 1)[0].e); n++; }
+      bin.forEach((b, i) => { if (b.e.path === path && (k < 0 || b.at >= (bin[k]?.at ?? -Infinity))) k = i; });
+      if (k >= 0) { DB.push(bin.splice(k, 1)[0]!.e); n++; } // k was found by the scan above
     }
     console.info("[mock] restore", paths, n);
     return n;
@@ -795,8 +797,9 @@ export const mockBackend: Backend = {
       for (const e of DB) {
         if (e.dir || pvExt(e.name) !== "pdf" || !inScope(e.path)) continue;
         for (let i = 0; i < PDF_LINES.length; i++) {
-          if (!words.some((w) => PDF_LINES[i].toLowerCase().includes(w)) || hash01(e.path + "|has|" + i) > 0.5) continue;
-          out.push({ path: e.path, score: 0, size: e.size, mtime: Math.floor(e.mtime), snippet: PDF_LINES[i].replace(re, "[$1]"), page: pdfPage(e.path, i), source: "text" });
+          const line = PDF_LINES[i];
+          if (!line || !words.some((w) => line.toLowerCase().includes(w)) || hash01(e.path + "|has|" + i) > 0.5) continue;
+          out.push({ path: e.path, score: 0, size: e.size, mtime: Math.floor(e.mtime), snippet: line.replace(re, "[$1]"), page: pdfPage(e.path, i), source: "text" });
           break;
         }
       }
@@ -843,7 +846,7 @@ export const mockBackend: Backend = {
       .filter((h) => h.score >= 0.297)
       .sort((a, b) => b.score - a.score)
       // The app sends two numbers: the score on the gate's scale, and the same relative to the best hit.
-      .map((h, _i, arr) => ({ ...h, rank: 4 + (h.score - 0.297) * 12, score: Math.max(0.01, h.score / arr[0].score) }));
+      .map((h, _i, arr) => ({ ...h, rank: 4 + (h.score - 0.297) * 12, score: Math.max(0.01, h.score / arr[0]!.score) })); // map only runs when arr is non-empty
     // Like the app: a small first page is the quick top-k, anything else a page of the whole list.
     const hits = all.slice(offset, offset + Math.max(1, k));
     const deep = offset > 0 || k > 200;
@@ -1030,7 +1033,7 @@ export const mockBackend: Backend = {
     const groups: DupGroup[] = [...by.entries()].filter(([, m]) => m.length > 1).map(([id, m]) => {
       const members = m.sort((a, b) => b.mtime - a.mtime).map((f) => ({ path: f.path, size: f.size, mtime: f.mtime, sim: f.tile!.variant === 0 ? 1 : 0.998 - f.tile!.variant * 0.01 }));
       return { id, members, reclaimable: members.reduce((a, x) => a + x.size, 0) - Math.max(...members.map((x) => x.size)) };
-    }).sort((a, b) => b.members.length - a.members.length || b.members[0].mtime - a.members[0].mtime);
+    }).sort((a, b) => b.members.length - a.members.length || (b.members[0]?.mtime ?? 0) - (a.members[0]?.mtime ?? 0));
     return { state: "done", done: total, total, groups, error: null };
   },
   async libraryBigFiles(limit) {

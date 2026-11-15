@@ -344,7 +344,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Launcher rows follow the type filter (a Folders search must not put a settings page in the Top Hit slot).
   const launchSel = useMemo(
     () => (drive ? [] : launchForFilter(launch, settingsScope ? "settings" : effFilter)), // apps / settings have no drive
-    [launch, settingsScope, effFilter, drive], // eslint-disable-line react-hooks/exhaustive-deps
+    [launch, settingsScope, effFilter, drive],
   );
   const portable = useMemo(
     () => (lcfg?.portable === false ? [] : portableApps(headRows.filter((h): h is Hit => !!h), parsed.text, launch)),
@@ -363,7 +363,7 @@ export default function App({ backend }: { backend: Backend }) {
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen], // eslint-disable-line react-hooks/exhaustive-deps
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -401,7 +401,7 @@ export default function App({ backend }: { backend: Backend }) {
       setPin(null);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, scopedQ, drive, effFilter, rangeKey, sort, isRecent, epoch]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [backend, scopedQ, drive, effFilter, rangeKey, sort, isRecent, epoch]);
 
   // Page loader: only ever fetches what the list shows *now*. While the scrollbar is dragged across millions
   // of rows the positions it passed are never requested (two requests at most are in flight; when one lands
@@ -612,7 +612,7 @@ export default function App({ backend }: { backend: Backend }) {
       setPage("search"); // the pages are a full-window thing
       if (page === "settings") setSettingsOpen(true);
     }
-  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps — runs on mode flips only
+  }, [viewMode]); // eslint-disable-line react-hooks/exhaustive-deps -- runs on mode flips only
   const flipView = useCallback(() => {
     void backend.viewSetCurrent(toggleMode(viewMode)).then(setViewMode).catch(() => {});
     requestAnimationFrame(() => inputRef.current?.focus());
@@ -667,7 +667,7 @@ export default function App({ backend }: { backend: Backend }) {
     if (!text.trim()) { setLaunch([]); return; }
     const my = ++launchSeq.current;
     backend.launchSearch(text, 30).then((hits) => { if (my === launchSeq.current) setLaunch(hits); }).catch(console.error);
-  }, [backend, parsed.text, launchVer]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [backend, parsed.text, launchVer]);
 
   // ---- actions -------------------------------------------------------------
   const flash = useCallback((msg: string, undo = false, ms = undo ? 5000 : 1600) => {
@@ -985,14 +985,15 @@ export default function App({ backend }: { backend: Backend }) {
         if (fi >= 0) {
           e.preventDefault();
           const k = parsed.chips.find((c) => c.type === "kind");
-          if (k && parsed.kind !== FILTERS[fi].id) dropChip(k.key); // a filter key overrides the kind found in the text (like the tab click)
-          setFilter(FILTERS[fi].id);
+          const flt = FILTERS[fi]!;
+          if (k && parsed.kind !== flt.id) dropChip(k.key); // a filter key overrides the kind found in the text (like the tab click)
+          setFilter(flt.id);
           inputRef.current?.focus();
           return;
         }
         if (matchesKey(e, "Alt+S")) {
           e.preventDefault();
-          changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length].id);
+          changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
           inputRef.current?.focus();
           return;
         }
@@ -1045,7 +1046,7 @@ export default function App({ backend }: { backend: Backend }) {
         if (r) { e.preventDefault(); r[1](); return; }
         if (e.altKey && e.shiftKey && !e.ctrlKey) {
           const d = e.key === "ArrowLeft" ? [-1, 0] : e.key === "ArrowRight" ? [1, 0] : e.key === "ArrowUp" ? [0, -1] : e.key === "ArrowDown" ? [0, 1] : null;
-          if (d) { e.preventDefault(); api.pan(d[0], d[1]); return; }
+          if (d) { e.preventDefault(); api.pan(d[0]!, d[1]!); return; }
         }
       }
       if (overview && !e.altKey && !e.shiftKey) {
@@ -1104,7 +1105,7 @@ export default function App({ backend }: { backend: Backend }) {
           const atStart = inInput && inp!.selectionStart === 0 && inp!.selectionEnd === 0;
           if (backspaceDropsChip(atStart, hasSelection, parsed.chips.length)) {
             e.preventDefault();
-            dropChip(parsed.chips[parsed.chips.length - 1].key);
+            dropChip(parsed.chips[parsed.chips.length - 1]!.key); // backspaceDropsChip already required a chip
           }
           break;
         }
@@ -1112,7 +1113,7 @@ export default function App({ backend }: { backend: Backend }) {
           if (showPanelRef.current) break; // let focus move into the panel buttons
           e.preventDefault();
           const i = FILTERS.findIndex((f) => f.id === filter);
-          setFilter(FILTERS[(i + (e.shiftKey ? FILTERS.length - 1 : 1)) % FILTERS.length].id);
+          setFilter(FILTERS[(i + (e.shiftKey ? FILTERS.length - 1 : 1)) % FILTERS.length]!.id);
           break;
         }
         case "c": case "C":
@@ -1159,7 +1160,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols, changeSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1245,7 +1246,7 @@ export default function App({ backend }: { backend: Backend }) {
       })()
       : null;
   const sortLabel = SORT_LABEL[sort];
-  const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length].id); inputRef.current?.focus(); };
+  const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
   const rowHandlers: ItemHandlers = useMemo(() => ({
@@ -1279,7 +1280,7 @@ export default function App({ backend }: { backend: Backend }) {
       );
     }
     return out;
-  }, [first, last, vl.voff, vl.top, rowH, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]);
+  }, [first, last, vl.voff, vl.top, rowH, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]); // eslint-disable-line react-hooks/exhaustive-deps -- data.ver counts in-place mutations of the sparse rows array
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {

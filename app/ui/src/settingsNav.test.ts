@@ -2,7 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { filterSections, parseSection, SECTION_IDS } from "./settingsNav.ts";
 
-const items = SECTION_IDS.map((id) => ({ id, label: id[0].toUpperCase() + id.slice(1) }));
+const items = SECTION_IDS.map((id) => ({ id, label: id.charAt(0).toUpperCase() + id.slice(1) }));
 
 test("parseSection falls back to general", () => {
   assert.equal(parseSection("meaning"), "meaning");

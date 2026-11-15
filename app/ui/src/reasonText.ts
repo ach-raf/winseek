@@ -44,7 +44,7 @@ const W: Record<string, Wording> = {
   not_notebook: { one: "{n} notebook is not valid", many: "{n} notebooks are not valid" },
 };
 
-const GENERIC: Wording = W.failed;
+const GENERIC: Wording = W.failed!; // the table above always defines "failed"
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -53,13 +53,13 @@ export const isReasonCode = (r: string) => Object.prototype.hasOwnProperty.call(
 
 /** One plain sentence with the count, e.g. "31 pictures are damaged or not really pictures". */
 export function reasonSentence(reason: string, count: number): string {
-  const w = isReasonCode(reason) ? W[reason] : GENERIC;
+  const w = isReasonCode(reason) ? (W[reason] ?? GENERIC) : GENERIC;
   return (count === 1 ? w.one : w.many).replace("{n}", fmt(count));
 }
 
 /** What the person can do about this group, or null when there is nothing to do. */
 export function reasonHint(reason: string): string | null {
-  return isReasonCode(reason) ? W[reason].hint ?? null : null;
+  return isReasonCode(reason) ? W[reason]?.hint ?? null : null;
 }
 
 /** The file name of a path, for the example list. */

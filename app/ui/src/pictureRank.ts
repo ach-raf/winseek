@@ -56,11 +56,11 @@ function wordIn(chars: string[], low: string[], word: string): NameMatch | null 
     let j = 0;
     while (j < n && low[i + j] === w[j]) j++;
     if (j < n) continue;
-    if (i > 0 && !wordStart(chars[i - 1], chars[i])) { best ??= "part"; continue; }
+    if (i > 0 && !wordStart(chars[i - 1]!, chars[i]!)) { best ??= "part"; continue; } // i stays inside chars (n >= 1)
     // The word ends here, or only a plural ending follows ("cats", "boxes").
     let e = i + n;
     if (low[e] === "e" && low[e + 1] === "s") e += 2; else if (low[e] === "s") e += 1;
-    const ends = (at: number) => at >= chars.length || !isAlnum(chars[at]) || wordStart(chars[at - 1], chars[at]);
+    const ends = (at: number) => at >= chars.length || !isAlnum(chars[at]!) || wordStart(chars[at - 1]!, chars[at]!); // the range check above short-circuits past-the-end reads
     if (ends(i + n) || ends(e)) return "word";
     best = "start";
   }

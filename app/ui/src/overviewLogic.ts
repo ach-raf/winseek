@@ -167,7 +167,8 @@ export function buildOverview(opts: {
       } else if (picked.file) {
         top = { key: "n0", section: "top", hit: picked.file, nameIdx: picked.nameIdx };
       } else if (names[0] === undefined && nameTotal === 0 && sem.length) {
-        top = { key: "s:" + sem[0].path, section: "top", hit: semHit(sem[0]), sem: sem[0] };
+        const s0 = sem[0]!; // sem.length above guarantees a first hit
+        top = { key: "s:" + s0.path, section: "top", hit: semHit(s0), sem: s0 };
       }
     }
   }
@@ -363,7 +364,7 @@ export function nicePath(path: string): { head: string; tail: string } {
     if (!parts.length) parts = ["Home"];
   } else parts = dir.split("\\").filter(Boolean);
   if (!parts.length) return { head: "", tail: dir };
-  const last = parts[parts.length - 1];
+  const last = parts[parts.length - 1]!; // non-empty was checked above
   return parts.length === 1 ? { head: "", tail: last } : { head: parts.slice(0, -1).join(" \u203a "), tail: " \u203a " + last };
 }
 
@@ -403,16 +404,16 @@ export const onDrive = (path: string, drive: string): boolean => !drive || path.
  */
 export function ovMove(flat: OvItem[], i: number, dir: "up" | "down" | "left" | "right" | "next" | "prev", cols: GridCols = DEFAULT_COLS): number {
   if (!flat.length) return 0;
-  const cur = flat[Math.max(0, Math.min(i, flat.length - 1))];
+  const cur = flat[Math.max(0, Math.min(i, flat.length - 1))]!; // clamped into the non-empty list above
   const clamp = (n: number) => Math.max(0, Math.min(flat.length - 1, n));
   if (dir === "next" || dir === "prev") {
     if (dir === "next") { const j = flat.findIndex((x, n) => n > i && x.section !== cur.section); return j < 0 ? i : j; }
     let j = i;
-    while (j > 0 && flat[j - 1].section === cur.section) j--; // start of this section
+    while (j > 0 && flat[j - 1]?.section === cur.section) j--; // start of this section
     if (j !== i) return j;
     if (j === 0) return 0;
-    const prevSec = flat[j - 1].section;
-    while (j > 0 && flat[j - 1].section === prevSec) j--;
+    const prevSec = flat[j - 1]?.section;
+    while (j > 0 && flat[j - 1]?.section === prevSec) j--;
     return j;
   }
   const colsOf = (sec: SectionId) => Math.max(1, cols[sec] ?? 1);
@@ -424,16 +425,16 @@ export function ovMove(flat: OvItem[], i: number, dir: "up" | "down" | "left" | 
     const sec = flat[p]?.section;
     if (sec && isGrid(sec) && p !== i) {
       let s = p;
-      while (s > 0 && flat[s - 1].section === sec) s--;
+      while (s > 0 && flat[s - 1]?.section === sec) s--;
       return s + Math.floor((p - s) / colsOf(sec)) * colsOf(sec);
     }
     return p;
   }
   const sec = cur.section, n = colsOf(sec);
   let s = i;
-  while (s > 0 && flat[s - 1].section === sec) s--;
+  while (s > 0 && flat[s - 1]?.section === sec) s--;
   let e = i;
-  while (e < flat.length - 1 && flat[e + 1].section === sec) e++;
+  while (e < flat.length - 1 && flat[e + 1]?.section === sec) e++;
   const pos = i - s;
   switch (dir) {
     case "left": return pos % n === 0 ? i : i - 1;

@@ -41,9 +41,9 @@ test("layoutGrid: headings, wrapped rows, section offsets", () => {
   assert.deepEqual(L.rows.map((r) => [r.kind, r.section, r.start, r.end]), [
     ["head", 0, 0, 0], ["cells", 0, 0, 3], ["cells", 0, 3, 5], ["head", 2, 5, 5], ["cells", 2, 5, 7],
   ]);
-  assert.equal(L.rows[0].top, 8);
-  assert.equal(L.rows[1].top, 48);
-  assert.equal(L.rows[2].top, 158);
+  assert.equal(L.rows[0]?.top, 8);
+  assert.equal(L.rows[1]?.top, 48);
+  assert.equal(L.rows[2]?.top, 158);
   assert.equal(L.sectionTop[0], 8);
   assert.equal(L.sectionTop[2], 268);
   assert.equal(L.total, 268 + 40 + 110 + 20);
@@ -129,19 +129,19 @@ test("packMosaic: feature tiles, no overlaps, dense holes get filled", () => {
     }
   }
   assert.deepEqual(m.tiles[0], { idx: 0, section: 0, col: 0, row: 0, w: 2, h: 2 });
-  assert.equal(m.sections[2].rows, 0);
+  assert.equal(m.sections[2]?.rows, 0);
   const mt = mosaicMetrics(m, 100, 4, [44, 44, 44], 14, 20);
   assert.equal(mt.top[1], mt.h[0]);
-  assert.equal(mt.total, mt.top[2] + mt.h[2] + 20);
+  assert.equal(mt.total, mt.top[2]! + mt.h[2]! + 20);
 });
 
 test("moveMosaic: up/down pick the nearest tile in the next row band", () => {
   const m = packMosaic([20], 8);
   const mt = mosaicMetrics(m, 100, 4, [44], 14, 20);
   const down = moveMosaic(m, mt, 100, 4, 0, "ArrowDown", 20);
-  assert.ok(m.tiles[down].row >= 2, "below the 2x2 tile");
+  assert.ok(m.tiles[down]!.row >= 2, "below the 2x2 tile");
   const up = moveMosaic(m, mt, 100, 4, down, "ArrowUp", 20);
-  assert.ok(m.tiles[up].row < m.tiles[down].row);
+  assert.ok(m.tiles[up]!.row < m.tiles[down]!.row);
   assert.equal(moveMosaic(m, mt, 100, 4, 0, "ArrowUp", 20), 0);
   assert.equal(moveMosaic(m, mt, 100, 4, 3, "ArrowRight", 20), 4);
 });

@@ -11,7 +11,7 @@ function tokenize(text: string): Tok[] | null {
   const toks: Tok[] = [];
   let i = 0;
   while (i < s.length) {
-    const c = s[i];
+    const c = s.charAt(i);
     if (c === " ") { i++; continue; }
     if (c >= "0" && c <= "9" || c === ".") {
       const m = /^\d*\.?\d+/.exec(s.slice(i));

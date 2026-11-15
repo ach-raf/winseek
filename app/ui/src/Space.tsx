@@ -204,7 +204,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     );
   }
 
-  const selRow = selIdx >= 0 ? nodeRows[selIdx].entry! : null;
+  const selRow = selIdx >= 0 ? (nodeRows[selIdx]?.entry ?? null) : null;
   const detail = tab !== "tree" ? details.current.get(focus) : undefined;
   const detailView = detail ? detailWithoutHidden(detail, hidden) : detail;
   const selHit = sel && (tab === "files" || !selRow) ? detailView?.biggest.find((b) => b.path === sel) ?? null : null;
@@ -267,7 +267,7 @@ function Crumbs({ path, onGo }: { path: string; onGo: (p: string) => void }) {
   return (
     <nav className="su-crumbs" aria-label="Location">
       {all.map((c, i) => {
-        if (fold && i > 1 && i < fold) return i === 2 ? <span key="fold" className="su-cr"><i><IChevL size={12} /></i><button className="su-chip" title={all[fold - 1].path} onClick={() => onGo(all[fold - 1].path)}>…</button></span> : null;
+        if (fold && i > 1 && i < fold) return i === 2 ? <span key="fold" className="su-cr"><i><IChevL size={12} /></i><button className="su-chip" title={all[fold - 1]?.path ?? ""} onClick={() => onGo(all[fold - 1]?.path ?? "")}>…</button></span> : null;
         const last = i === all.length - 1;
         return (
           <span key={c.path || "pc"} className="su-cr">
@@ -299,7 +299,7 @@ function Capacity({ drive, indexed, kinds }: { drive: DriveSpace; indexed: numbe
   return (
     <div className="su-cap" title={`${formatSize(used)} used of ${formatSize(drive.total)} · ${formatSize(drive.free)} free${other > drive.total * 0.02 ? ` · ${formatSize(other)} is system space and files the list cannot see` : ""}`}>
       <div className="su-capbar" role="img" aria-label={`${formatSize(used)} used of ${formatSize(drive.total)}`}>
-        {kinds.map((b, k) => (b > 0 ? <i key={k} style={{ width: `${pct(b, drive.total)}%`, background: `var(--k${k})` }} title={`${KINDS[k].label}: ${formatSize(b)}`} /> : null))}
+        {kinds.map((b, k) => (b > 0 ? <i key={k} style={{ width: `${pct(b, drive.total)}%`, background: `var(--k${k})` }} title={`${KINDS[k]?.label ?? "Other"}: ${formatSize(b)}`} /> : null))}
         {other > 0 && <i className="oth" style={{ width: `${pct(other, drive.total)}%` }} title={`Other used space: ${formatSize(other)}`} />}
       </div>
       <span><b>{formatSize(drive.free)}</b> free of {formatSize(drive.total)}</span>
@@ -503,10 +503,10 @@ function Treemap({ data, get, want, sel, dim, onSel, onOpen, onMenu }: {
 
 function Legend({ data }: { data: DiskUsage }) {
   const kinds = useMemo(() => kindTotals(data), [data]);
-  const shown = KINDS.filter((k) => kinds[k.id] > 0).sort((a, b) => kinds[b.id] - kinds[a.id]);
+  const shown = KINDS.filter((k) => (kinds[k.id] ?? 0) > 0).sort((a, b) => (kinds[b.id] ?? 0) - (kinds[a.id] ?? 0));
   return (
     <div className="su-legend" title="Outlined blocks are folders · double-click to open">
-      {shown.map((k) => <span key={k.id}><i style={{ background: `var(--k${k.id})` }} />{k.label}<em>{formatSize(kinds[k.id])}</em></span>)}
+      {shown.map((k) => <span key={k.id}><i style={{ background: `var(--k${k.id})` }} />{k.label}<em>{formatSize(kinds[k.id] ?? 0)}</em></span>)}
     </div>
   );
 }

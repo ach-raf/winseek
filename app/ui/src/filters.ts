@@ -93,11 +93,11 @@ interface Found { len: number; range: DateRange; label: string }
 
 /** Season starting in calendar year `y` (winter = Dec y .. Feb y+1). */
 function seasonIn(name: string, y: number): DateRange {
-  const [, m0, n] = SEASONS[name];
+  const [, m0, n] = SEASONS[name]!; // both callers check SEASONS[name] first
   return { from: monthStart(y, m0), to: monthStart(y, m0 + n) };
 }
 function seasonLabel(name: string, y: number): string {
-  const [label, m0, n] = SEASONS[name];
+  const [label, m0, n] = SEASONS[name]!; // both callers check SEASONS[name] first
   return m0 + n > 12 ? `${label} ${y}–${String(y + 1).slice(2)}` : `${label} ${y}`;
 }
 
@@ -181,6 +181,7 @@ const num = (s: string | undefined) => (s && /^\d+(\.\d+)?$/.test(s) ? parseFloa
 /** ">100mb", "> 100 mb", "<5mb", "over 1gb", "under 500 kb", or the words big / huge / small. */
 function sizeAt(lt: string[], i: number): SizeFound | null {
   const t = lt[i];
+  if (t === undefined) return null; // callers index inside the token list, never past it
   const w = SIZE_WORDS[t];
   if (w) {
     return { len: 1, size: w, label: w.min !== null ? `Over ${fmtBytes(w.min)}` : `Under ${fmtBytes(w.max as number)}` };
@@ -188,7 +189,7 @@ function sizeAt(lt: string[], i: number): SizeFound | null {
   let op: string | null = null, at = i + 1;
   const m = /^([<>]=?)(.*)$/.exec(t);
   let rest = "";
-  if (m) { op = m[1]; rest = m[2]; }
+  if (m) { op = m[1] ?? ""; rest = m[2] ?? ""; } // both groups always take part in the match
   else if (["over", "above", "bigger", "larger", "under", "below", "smaller", "less", "more"].includes(t)) {
     op = ["over", "above", "bigger", "larger", "more"].includes(t) ? ">" : "<";
     if (lt[at] === "than") at++;
@@ -201,9 +202,12 @@ function sizeAt(lt: string[], i: number): SizeFound | null {
   const v = num(g[1]);
   let unit: string | undefined = g[2];
   let end = rest ? at : at + 1;
-  if (!unit && lt[end] && UNITS[lt[end]] !== undefined) { unit = lt[end]; end++; }
-  if (!unit || UNITS[unit] === undefined || !(v > 0)) return null;
-  const bytes = Math.round(v * UNITS[unit]);
+  const u2 = lt[end];
+  if (!unit && u2 && UNITS[u2] !== undefined) { unit = u2; end++; }
+  if (!unit) return null;
+  const mult = UNITS[unit];
+  if (mult === undefined || !(v > 0)) return null;
+  const bytes = Math.round(v * mult);
   return op.startsWith(">")
     ? { len: end - i, size: { min: bytes, max: null }, label: `Over ${fmtBytes(bytes)}` }
     : { len: end - i, size: { min: null, max: bytes }, label: `Under ${fmtBytes(bytes)}` };
@@ -222,12 +226,12 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
   // "image of a cat", "a photo of cats", "pictures of the beach" all mean the subject: the article
   // before the kind word and the "of a" after it go with the kind word. Returns the last token used.
   const aroundKind = (i: number): number => {
-    if (lastKept === i - 1 && keep.length && ARTICLES.has(lt[i - 1])) { keep.pop(); lastKept = -1; }
+    if (lastKept === i - 1 && keep.length && ARTICLES.has(lt[i - 1] ?? "")) { keep.pop(); lastKept = -1; }
     let j = i + 1;
     // "photos of march": that "of" belongs to the date. A link with nothing after it stays text.
-    if (!LINKS.has(lt[j]) || lt[j + 1] === undefined || (!out.date && dateAt(lt, j + 1, now, true))) return i;
+    if (!LINKS.has(lt[j] ?? "") || lt[j + 1] === undefined || (!out.date && dateAt(lt, j + 1, now, true))) return i;
     j++;
-    if (ARTICLES.has(lt[j]) && lt[j + 1] !== undefined) j++;
+    if (ARTICLES.has(lt[j] ?? "") && lt[j + 1] !== undefined) j++;
     return j - 1;
   };
 
@@ -239,7 +243,8 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
   };
 
   for (let i = 0; i < toks.length; i++) {
-    const t = toks[i];
+    const t = toks[i]!; // loop bound keeps both indices inside (lt mirrors toks 1:1)
+    const lw = lt[i]!;
     // quoted phrases, negations, wildcards, path or operator terms are the user's own syntax: leave alone
     if (quoted || t.startsWith('"') || t.startsWith("!") || /[\\/*?]/.test(t) || (t.includes(":") && !t.startsWith(">") && !t.startsWith("<"))) {
       if (!quoted && t.startsWith('"') && !(t.length > 1 && t.endsWith('"'))) quoted = true;
@@ -254,18 +259,18 @@ export function parseQuery(input: string, opts: { now?: number; off?: ReadonlySe
     }
     if (!out.date) {
       // "from last summer": the filler word belongs to the date phrase
-      const filler = FILLERS.has(lt[i]) ? 1 : 0;
+      const filler = FILLERS.has(lw) ? 1 : 0;
       const f = dateAt(lt, i + filler, now, filler === 1);
       if (f && take("date", i, f.len + filler, f.label)) { out.date = f.range; i += f.len + filler - 1; continue; }
     }
-    if (!out.kind && !out.ext && SCREENSHOT.has(lt[i])) {
+    if (!out.kind && !out.ext && SCREENSHOT.has(lw)) {
       if (take("kind", i, 1, "Screenshots")) { out.kind = "images"; i = aroundKind(i); keep.push("screenshot"); continue; }
     }
-    if (!out.kind && KIND_WORDS[lt[i]]) {
-      const k = KIND_WORDS[lt[i]];
+    if (!out.kind && KIND_WORDS[lw]) {
+      const k = KIND_WORDS[lw];
       if (take("kind", i, 1, KIND_LABEL[k])) { out.kind = k; i = aroundKind(i); continue; }
     }
-    const ew = lt[i].replace(/^\./, "");
+    const ew = lw.replace(/^\./, "");
     if (!out.ext && EXT_WORDS.has(ew)) {
       if (take("ext", i, 1, ew.toUpperCase())) { out.ext = ew; continue; }
     }

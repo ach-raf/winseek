@@ -197,7 +197,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
 
   const dupRows: PickRow[] = useMemo(() => (groups ?? []).slice(0, HOME_ROWS).map((g) => {
     const info = dupInfo.get(g.id)!;
-    const keeper = g.members[info.keep];
+    const keeper = g.members[info.keep]!; // pickKeeper always returns an in-range index
     const others = Array.from(new Set(g.members.filter((_, i) => i !== info.keep).map((x) => dirName(x.path)))).slice(0, 2);
     return {
       key: "d:" + g.id,
@@ -288,7 +288,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
                 />
               )}
             <div className="cl-foot">
-              {groups !== null && groups.length > 0 && <button className="btn sm" onClick={() => onReview(groups[0].id)}>Review {groups.length.toLocaleString("en-US")} group{groups.length === 1 ? "" : "s"}</button>}
+              {groups !== null && groups.length > 0 && <button className="btn sm" onClick={() => onReview(groups[0]!.id)}>Review {groups.length.toLocaleString("en-US")} group{groups.length === 1 ? "" : "s"}</button>}
               <button className="btn sm" onClick={onSimilar}>Find similar photos</button>
             </div>
           </section>
@@ -503,7 +503,9 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
     if (e.key !== "ArrowDown" && e.key !== "ArrowUp") return;
     e.preventDefault();
     const n = Math.max(0, Math.min(groups.length - 1, idx + (e.key === "ArrowDown" ? 1 : -1)));
-    setSelId(groups[n].id);
+    const g = groups[n];
+    if (!g) return; // empty list
+    setSelId(g.id);
     const el = list.current;
     if (el) {
       if (n * GROUP_H < el.scrollTop) el.scrollTop = n * GROUP_H;
@@ -528,7 +530,7 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
                     </span>
                     <span className="gr-meta">
                       <b>{g.members.length} {kind === "exact" ? "copies" : "similar photos"}</b>
-                      <span>{formatSize(g.reclaimable)} to free · {baseName(g.members[0].path)}</span>
+                      <span>{formatSize(g.reclaimable)} to free · {baseName(g.members[0]!.path)}</span>
                     </span>
                   </button>
                 );
@@ -536,7 +538,7 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
             </div>
           </div>
         </aside>
-        <GroupDetail key={sel.id} backend={backend} group={sel} kind={kind} actions={actions} />
+        {sel && <GroupDetail key={sel.id} backend={backend} group={sel} kind={kind} actions={actions} />}
       </div>
     </>
   );
@@ -615,8 +617,8 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
   return (
     <section className="gd">
       <div className="gd-cmp">
-        <Pane backend={backend} c={cand[keep]} role="Keep" badge={keep === auto ? "Suggested" : "Your choice"} other={cand[other]} actions={actions} />
-        {other >= 0 && <Pane backend={backend} c={cand[other]} role="Compare" badge={extraKeep.has(cand[other].path) ? "Kept too" : "To Recycle Bin"} other={cand[keep]} actions={actions} />}
+        <Pane backend={backend} c={cand[keep]!} role="Keep" badge={keep === auto ? "Suggested" : "Your choice"} other={cand[other]!} actions={actions} />
+        {other >= 0 && <Pane backend={backend} c={cand[other]!} role="Compare" badge={extraKeep.has(cand[other]!.path) ? "Kept too" : "To Recycle Bin"} other={cand[keep]!} actions={actions} />}
       </div>
       <div className="gd-strip" role="list" tabIndex={0} onKeyDown={stripKey} aria-label="Files in this group">
         {cand.map((c, i) => (

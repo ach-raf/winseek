@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/pictureRank.test.ts src/reasonText.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/format.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts src/hotkeyLogic.test.ts src/viewMode.test.ts src/settingsNav.test.ts src/iconLogic.test.ts src/vlist.test.ts src/spaceLogic.test.ts src/estimateLogic.test.ts src/thumbQueue.test.ts src/semanticLogic.test.ts"
+    "test": "node --test src/filters.test.ts src/previewLogic.test.ts src/libraryLogic.test.ts src/overviewLogic.test.ts src/pictureRank.test.ts src/reasonText.test.ts src/modelRows.test.ts src/launchLogic.test.ts src/calc.test.ts src/format.test.ts src/agentLogic.test.ts src/keymap.test.ts src/queryHistory.test.ts src/hotkeyLogic.test.ts src/viewMode.test.ts src/settingsNav.test.ts src/iconLogic.test.ts src/vlist.test.ts src/spaceLogic.test.ts src/estimateLogic.test.ts src/thumbQueue.test.ts src/semanticLogic.test.ts",
+    "lint": "eslint src"
   },
   "dependencies": {
     "@fontsource-variable/figtree": "^5.3.0",
@@ -16,10 +17,23 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "@types/node": "^26.6.6",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "^4.3.4",
+    "babel-plugin-react-compiler": "^1.0.0",
+    "eslint": "^9.39.5",
+    "eslint-plugin-react-compiler": "^19.1.0-rc.2",
+    "eslint-plugin-react-hooks": "^7.1.1",
     "typescript": "^5.6.0",
+    "typescript-eslint": "^8.72.2",
     "vite": "^6.0.0"
+  },
+  "overrides": {
+    "zod-validation-error": "^4.0.0",
+    "eslint-plugin-react-hooks": {
+      "zod": "^4.0.0"
+    }
   }
 }

@@ -68,10 +68,10 @@ function eachFile(n: N, fn: (leaf: N, path: string) => void, path: string): void
 }
 function dominantKind(n: N): number {
   const by = new Array(8).fill(0) as number[];
-  const walk = (x: N) => { for (const k of x.kids ?? []) { if (k.kids) walk(k); else by[kindOf(k.name)] += k.size ?? 0; } };
+  const walk = (x: N) => { for (const k of x.kids ?? []) { if (k.kids) walk(k); else by[kindOf(k.name)] = (by[kindOf(k.name)] ?? 0) + (k.size ?? 0); } };
   walk(n);
   let best = 0;
-  for (let i = 1; i < 8; i++) if (by[i] > by[best]) best = i;
+  for (let i = 1; i < 8; i++) if ((by[i] ?? 0) > (by[best] ?? 0)) best = i;
   return best;
 }
 
@@ -94,7 +94,7 @@ const DRIVES = [{ letter: "C", total: 931 * GBd, free: 41 * GBd, label: "Windows
 
 const catsOf = (n: N): number[] => {
   const by = new Array(8).fill(0) as number[];
-  const walk = (x: N) => { for (const k of x.kids ?? []) { if (k.kids) walk(k); else by[kindOf(k.name)] += k.size ?? 0; } };
+  const walk = (x: N) => { for (const k of x.kids ?? []) { if (k.kids) walk(k); else by[kindOf(k.name)] = (by[kindOf(k.name)] ?? 0) + (k.size ?? 0); } };
   walk(n);
   return by;
 };

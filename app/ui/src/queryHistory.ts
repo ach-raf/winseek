@@ -21,10 +21,10 @@ export function step(list: string[], at: number, draft: string, dir: -1 | 1): { 
   if (list.length === 0 || (dir === 1 && at < 0)) return { q: draft, at: -1 };
   if (dir === -1) {
     const next = at < 0 ? 0 : Math.min(at + 1, list.length - 1);
-    return { q: list[next], at: next };
+    return { q: list[next]!, at: next }; // next is clamped into the non-empty list
   }
   const next = at - 1;
-  return next < 0 ? { q: draft, at: -1 } : { q: list[next], at: next };
+  return next < 0 ? { q: draft, at: -1 } : { q: list[next]!, at: next };
 }
 
 export function load(): string[] {

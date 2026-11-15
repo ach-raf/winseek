@@ -56,8 +56,8 @@ test("one score: both kinds of evidence first, then meaning and whole-word names
   assert.deepEqual(ranked.map((p) => p.score), [7 + NAME_WORD, 9.5, NAME_WORD, 5.1, 4.6, NAME_START, 1]);
   assert.deepEqual(names(tail), ["intricate.png"], "found by meaning, location.jpg is in the grid on that merit alone");
   assert.equal(ranked.find((p) => p.hit.name === "location.jpg")!.name, "part");
-  assert.ok(ranked.every((p, i) => i === 0 || p.pct! <= ranked[i - 1].pct!), "the badge never rises down the list");
-  assert.equal(ranked[0].pct, 100);
+  assert.ok(ranked.every((p, i) => i === 0 || p.pct! <= ranked[i - 1]!.pct!), "the badge never rises down the list");
+  assert.equal(ranked[0]?.pct, 100);
   assert.equal(new Set(names(ranked)).size, ranked.length, "a picture is listed once");
 });
 
@@ -91,25 +91,25 @@ test("Show all keeps the order: the overview's tiles are the head of the full li
   assert.deepEqual(order(full).slice(0, 10), head.items.map((x) => x.hit.name), "same first tiles as the overview");
   assert.equal(order(full).length, 80);
   const scoreOf = (r: typeof full) => r.sections.find((x) => x.id === "images")!.items.map((x) => x.pct!);
-  assert.ok(scoreOf(full).every((p, i, a) => i === 0 || p <= a[i - 1]), "best first, all the way down");
+  assert.ok(scoreOf(full).every((p, i, a) => i === 0 || p <= a[i - 1]!), "best first, all the way down");
   // a later page never reorders what was already there: page 1's tiles keep their relative order
   const pos = new Map(order(full).map((n, i) => [n, i]));
-  assert.ok(order(page1).every((n, i, a) => i === 0 || pos.get(a[i - 1])! < pos.get(n)!));
+  assert.ok(order(page1).every((n, i, a) => i === 0 || pos.get(a[i - 1]!)! < pos.get(n)!));
   // counts stay honest: the grid counts what is ranked, the fold what only holds the letters
   const secs = (r: typeof full) => r.sections.map((x) => [x.id, x.total, x.items.length]);
   assert.deepEqual(secs(page1), [["images", 80, 50], ["namepics", 20, 0]]);
   assert.deepEqual(secs(full), [["images", 80, 80], ["namepics", 20, 0]]);
   const opened = buildOverview({ ...opts, sem: found, picNames: named, picTotal: 50, picTail: [...named, ...mid], picNameTotal: 70, expand: "images", weakOpen: true });
   assert.deepEqual(secs(opened), [["images", 80, 80], ["namepics", 20, 20]]);
-  assert.match(opened.sections[1].title, /^Other names containing \u201ccat\u201d \(20\)$/);
-  assert.ok(opened.sections[1].items.every((x) => x.hit.name.startsWith("location")));
+  assert.match(opened.sections[1]!.title, /^Other names containing \u201ccat\u201d \(20\)$/);
+  assert.ok(opened.sections[1]?.items.every((x) => x.hit.name.startsWith("location")));
 });
 
 test("an index that cannot answer word terms: the names read are sorted here, and the only results are not hidden", () => {
   const rows = ["intricate.png", "cat.jpg", "location.png"].map(hit);
   const r = buildOverview({ names: [], nameTotal: 0, sem: [], text: "cat", isImage, picNames: [], picTotal: 0, picTail: rows, picNameTotal: 3, expand: "images" });
   assert.deepEqual(r.sections.map((x) => [x.id, x.items.map((i) => i.hit.name)]), [["images", ["cat.jpg"]], ["namepics", []]]);
-  const none = buildOverview({ names: [], nameTotal: 0, sem: [], text: "cat", isImage, picNames: [], picTotal: 0, picTail: [rows[0], rows[2]], picNameTotal: 2, expand: "images" });
+  const none = buildOverview({ names: [], nameTotal: 0, sem: [], text: "cat", isImage, picNames: [], picTotal: 0, picTail: [rows[0]!, rows[2]!], picNameTotal: 2, expand: "images" });
   assert.deepEqual(none.sections.map((x) => [x.id, x.fold?.open, x.items.length]), [["namepics", true, 2]]);
 });
 
@@ -135,7 +135,7 @@ test("chip, tab and section are one path: the same words through any of them giv
   const pics = ["cat.jpg", "intricate.png"].map(hit);
   const build = (query: string, tabSel: "all" | "images") => {
     const v = view(query, tabSel);
-    return buildOverview({ names: pics, nameTotal: 2, sem: found, text: v.text, isImage, picNames: [pics[0]], picTotal: 1, picNameTotal: 2, expand: v.scope === "images" ? "images" : null });
+    return buildOverview({ names: pics, nameTotal: 2, sem: found, text: v.text, isImage, picNames: [pics[0]!], picTotal: 1, picNameTotal: 2, expand: v.scope === "images" ? "images" : null });
   };
   assert.deepEqual(build("cat image", "all"), build("cat", "images"));
   assert.deepEqual(build("cat", "images").sections.map((x) => [x.id, x.items.map((i) => i.hit.name)]), [["images", ["IMG_1.jpg", "cat.jpg"]], ["namepics", []]]);

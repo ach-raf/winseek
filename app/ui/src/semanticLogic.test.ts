@@ -91,6 +91,6 @@ test("a superseded run emits nothing; a failed one answers empty for its own pla
   const bad = { semanticSearch: async () => { throw new Error("x"); } };
   const plan = semPlan("q1", "audio", false, false);
   await runSemantic(bad, "q1", plan, () => true, (s) => out.push(s));
-  assert.equal(out[0].key, plan.key);
-  assert.equal(out[0].hits.length, 0);
+  assert.equal(out[0]?.key, plan.key);
+  assert.equal(out[0]?.hits.length, 0);
 });

@@ -101,9 +101,9 @@ const MODS = ["Ctrl", "Alt", "Shift", "Win"] as const;
 function eventKey(e: Pick<KeyboardEvent, "key" | "code">): string {
   const code = e.code ?? "";
   let m = /^Key([A-Z])$/.exec(code);
-  if (m) return m[1];
+  if (m) return m[1]!; // the one capture group always takes part in a match
   m = /^Digit([0-9])$/.exec(code);
-  if (m) return m[1];
+  if (m) return m[1]!;
   // Symbol keys with layout-independent codes (PRD RB1a: = - / , and the numpad twins).
   if (code === "Equal" || code === "NumpadAdd") return "=";
   if (code === "Minus" || code === "NumpadSubtract") return "-";

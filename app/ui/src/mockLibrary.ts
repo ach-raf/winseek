@@ -43,7 +43,7 @@ const THEME_WEIGHTS: [Theme, number][] = [["photo", 0.54], ["screenshot", 0.18],
 
 export function buildLibrary(now: number): LibFile[] {
   const rnd = mulberry32(0x5eed1234);
-  const pick = <T,>(a: T[]): T => a[Math.floor(rnd() * a.length)];
+  const pick = <T,>(a: T[]): T => { const v = a[Math.floor(rnd() * a.length)]; if (v === undefined) throw new Error("pick from an empty pool"); return v; };
   const theme = (): Theme => {
     let r = rnd();
     for (const [t, w] of THEME_WEIGHTS) { if ((r -= w) < 0) return t; }
@@ -110,6 +110,7 @@ export function buildLibrary(now: number): LibFile[] {
   const dupCount = 14;
   for (let g = 0; g < dupCount; g++) {
     const src = dupSrc[Math.floor(g * (dupSrc.length / dupCount))];
+    if (!src) continue; // the spaced index stays inside the pool
     src.dupKey = `d${g}`;
     const copies = 1 + (g % 3);
     for (let c = 0; c < copies; c++) {
@@ -126,6 +127,7 @@ export function buildLibrary(now: number): LibFile[] {
   const bursts = 16;
   for (let g = 0; g < bursts; g++) {
     const src = burstSrc[Math.floor((g + 0.5) * (burstSrc.length / bursts))];
+    if (!src) continue; // the spaced index stays inside the pool
     src.nearKey = `n${g}`;
     const extra = 1 + (g % 4);
     for (let c = 1; c <= extra; c++) {

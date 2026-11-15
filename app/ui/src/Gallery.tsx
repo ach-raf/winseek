@@ -138,8 +138,8 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     const t = mosaic.tiles[sel];
     if (!el || !toScroll.current || !t) return;
     toScroll.current = false;
-    const b = tileBox(t, rowH, GAP, metrics.head[t.section]);
-    const y = metrics.top[t.section] + b.y;
+    const b = tileBox(t, rowH, GAP, metrics.head[t.section] ?? 0);
+    const y = (metrics.top[t.section] ?? 0) + b.y;
     const margin = 8, headroom = HEAD_H + margin;
     let next = el.scrollTop;
     if (y - headroom < next) next = Math.max(0, y - headroom);
@@ -213,16 +213,19 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
         <div className="lg-scroll" ref={box} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
           <div className="lg-space" style={{ height: metrics.total }}>
             {sections.map((s, si) => {
-              const top = metrics.top[si], h = metrics.h[si];
+              const top = metrics.top[si] ?? 0, h = metrics.h[si] ?? 0;
               if (top + h < lo || top > hi || s.items.length === 0) return null;
-              const head = metrics.head[si];
+              const head = metrics.head[si] ?? 0;
               const ms = mosaic.sections[si];
+              if (!ms) return null; // packed from these same sections, so always present
               const tiles: React.ReactNode[] = [];
               for (let k = ms.first; k < ms.end; k++) {
                 const t = mosaic.tiles[k];
+                if (!t) continue; // tiles/items line up 1:1 with this range
                 const b = tileBox(t, rowH, GAP, head);
                 if (top + b.y + b.h < lo || top + b.y > hi) continue;
                 const it = flat[k];
+                if (!it) continue;
                 tiles.push(
                   <button
                     key={it.path}

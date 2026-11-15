@@ -204,5 +204,5 @@ export function crumbParts(path: string, isDir: boolean): string[] {
 /** "C:" for "C:\a\b", "" when the path has no drive letter. */
 export function driveOf(path: string): string {
   const m = path.match(/^([A-Za-z]:)/);
-  return m ? m[1].toUpperCase() : "";
+  return m ? m[1]!.toUpperCase() : "";
 }

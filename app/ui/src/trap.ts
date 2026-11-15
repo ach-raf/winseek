@@ -7,8 +7,8 @@ export function trapKey(e: React.KeyboardEvent): void {
     root.querySelectorAll<HTMLElement>("button, input, select, textarea, a[href], [tabindex]:not([tabindex='-1'])"),
   ).filter((el) => !el.hasAttribute("disabled") && el.offsetParent !== null);
   if (items.length === 0) return;
-  const first = items[0];
-  const last = items[items.length - 1];
+  const first = items[0]!;
+  const last = items[items.length - 1]!;
   if (e.shiftKey && document.activeElement === first) {
     e.preventDefault();
     last.focus();

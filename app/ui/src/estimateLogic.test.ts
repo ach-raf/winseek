@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { estimateText } from "./estimateLogic.ts";
 import type { FolderEstimate } from "./types.ts";
 
-const base: FolderEstimate = { path: "D:\Photos", files: 1200, images: 1000, pdfs: 0, docs: 200, code: 0, bytes: 5 * 1024 * 1024 * 1024,
+const base: FolderEstimate = { path: "D:\\Photos", files: 1200, images: 1000, pdfs: 0, docs: 200, code: 0, bytes: 5 * 1024 * 1024 * 1024,
   secs: 600, lower_bound: false, capped: false, basis: "observed", rate: 2 };
 
 test("observed speed gives a plain estimate", () => {
