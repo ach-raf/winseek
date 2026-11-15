@@ -69,6 +69,8 @@ pub struct Tier1PageDto {
     /// The audio / video tool (ffmpeg): where its automatic download stands. Null while nothing is
     /// queued for it or it is already usable.
     pub ffmpeg: Option<crate::models::FfmpegFetch>,
+    /// Whether the meaning index matches this build (null when the worker is unavailable).
+    pub index: Option<IndexStateDto>,
 }
 
 /// Queued files of one kind that wait for something that is not there.
@@ -88,6 +90,85 @@ pub struct ReasonDto {
     pub examples: Vec<String>,
     /// Raw technical detail per example (for a tooltip / copy); the sentence never shows it.
     pub details: Vec<String>,
+}
+
+/// Whether the meaning index matches this build: after an app update this is how the Settings
+/// page can tell the user their index carried over — or that it is being rebuilt, and why.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IndexStateDto {
+    /// The stamp the index carries.
+    pub stamp: IndexMetaDto,
+    /// The stamp this build would give a fresh index.
+    pub current: IndexMetaDto,
+    /// "current" (stamp matches this build) | "build_drift" (only the engine build differs; the
+    /// probes decide) | "mismatch" (model / quant / budget / dims differ).
+    pub state: &'static str,
+    /// The last probe verdict (null before the first check of a store older than the feature).
+    pub verdict: Option<IndexVerdictDto>,
+    /// App version that last opened / verified this index.
+    pub app_version: Option<String>,
+    /// Unix seconds when the current index content was created or re-stamped.
+    pub stamped_unix: Option<i64>,
+    /// True when this build cannot use the index as-is. A rebuild always starts by itself; this
+    /// only says whether one was needed.
+    pub needs_rebuild: bool,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IndexMetaDto {
+    pub model_id: String,
+    pub llama_build: String,
+    pub quant: String,
+    pub image_budget: u32,
+    pub dims: u32,
+}
+
+impl From<&winseek_store::IndexMeta> for IndexMetaDto {
+    fn from(m: &winseek_store::IndexMeta) -> Self {
+        IndexMetaDto { model_id: m.model_id.clone(), llama_build: m.llama_build.clone(), quant: m.quant.clone(), image_budget: m.image_budget, dims: m.dims }
+    }
+}
+
+/// The verdict of the stored probe-vector comparison, parsed from the `provenance_verdict` setting.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct IndexVerdictDto {
+    /// "current" | "baselined" | "kept" | "moved" | "no_baseline" | "unverified"
+    pub kind: String,
+    /// Worst probe cosine, for kept / moved.
+    pub cos: Option<f64>,
+}
+
+fn parse_verdict(raw: &str) -> IndexVerdictDto {
+    let (kind, cos) = match raw.split_once(':') {
+        Some((k, c)) => (k, c.parse::<f64>().ok()),
+        None => (raw, None),
+    };
+    IndexVerdictDto { kind: kind.into(), cos }
+}
+
+/// Everything that decides keep vs. rebuild, read from the store.
+fn index_section(t: &Tier1) -> IndexStateDto {
+    let (stamp, verdict, app_version, stamped_unix) = {
+        let s = t.store.lock().unwrap_or_else(|e| e.into_inner());
+        (
+            s.stamp().clone(),
+            s.get_setting(winseek_store::SETTING_PROVENANCE_VERDICT).ok().flatten(),
+            s.get_setting(winseek_store::SETTING_INDEX_APP_VERSION).ok().flatten(),
+            s.get_setting(winseek_store::SETTING_INDEX_STAMPED_UNIX).ok().flatten().and_then(|v| v.parse().ok()),
+        )
+    };
+    let current = embedder::index_meta(&Manifest::embedded().llama.build);
+    let state =
+        if stamp == current { "current" } else if stamp.same_but_build(&current) { "build_drift" } else { "mismatch" };
+    IndexStateDto {
+        stamp: (&stamp).into(),
+        current: (&current).into(),
+        state,
+        verdict: verdict.as_deref().map(parse_verdict),
+        app_version,
+        stamped_unix,
+        needs_rebuild: state != "current",
+    }
 }
 
 fn reasons(g: Vec<winseek_store::ReasonGroup>) -> Vec<ReasonDto> {
@@ -163,6 +244,37 @@ pub struct RoutingDto {
     pub provisional: bool,
 }
 
+/// Progress of the current / most recent parse run: what was counted since the queue filled, not
+/// the queue table's whole lifetime.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct ParserRunDto {
+    /// Unix seconds when the first page of this run was queued.
+    pub started_unix: i64,
+    pub done: u64,
+    pub failed: u64,
+    pub skipped: u64,
+    /// Pages still waiting.
+    pub left: u64,
+    /// Everything this run will have handled once `left` reaches zero.
+    pub total: u64,
+    /// Unix seconds when the queue drained; null while the run is going.
+    pub ended_unix: Option<i64>,
+    /// Average pages per second over the run so far — a steady fallback when single pages take
+    /// minutes and the trailing-minute rate keeps going stale.
+    pub avg_rate: Option<f64>,
+}
+
+/// The page batch the document parser is reading right now.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct ParserLiveDto {
+    /// Path of the file whose batch went in flight first (a batch mixes files).
+    pub path: String,
+    /// Pages of this batch.
+    pub pages: u32,
+    /// Seconds since the batch was picked up.
+    pub age_s: u64,
+}
+
 /// The document parser (Infinity-Parser2): files, server, queue and the performance profile.
 #[derive(Debug, Clone, Serialize)]
 pub struct ParserDto {
@@ -179,6 +291,10 @@ pub struct ParserDto {
     /// "low" | "balanced" | "fast"
     pub profile: &'static str,
     pub routing: RoutingDto,
+    /// This burst of work since the queue filled (null on stores older than the feature).
+    pub run: Option<ParserRunDto>,
+    /// The page batch in flight right now, if any.
+    pub live: Option<ParserLiveDto>,
 }
 
 /// What the worker knows about the parser (the status page does not wait for a running parse).
@@ -190,6 +306,10 @@ pub struct ParserState {
     pub present: bool,
     /// Pages per second over the last minute of parsing.
     pub rate: Option<f64>,
+    /// Progress of the current / last run.
+    pub run: Option<winseek_store::ParseRun>,
+    /// The page batch in flight right now.
+    pub live: Option<crate::tier1::parse_pass::ParseLive>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -271,6 +391,7 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
             failed_reasons: vec![],
             skipped_reasons: vec![],
             ffmpeg: None,
+            index: None,
         };
     };
     let st = t.status();
@@ -305,6 +426,7 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
         rate,
         can_rebuild: true,
         ocr_unavailable: t.store.lock().map(|s| ocr_unavailable(&s)).unwrap_or(false),
+        index: Some(index_section(t)),
     }
 }
 
@@ -380,6 +502,21 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
 }
 
 fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> ParserDto {
+    let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let run = p.run.map(|r| ParserRunDto {
+        started_unix: r.started_unix,
+        done: r.done,
+        failed: r.failed,
+        skipped: r.skipped,
+        left: r.left,
+        total: r.total,
+        ended_unix: r.ended_unix,
+        avg_rate: r.avg_rate(now_unix),
+    });
+    // The trailing-minute rate goes stale whenever a page takes longer than its window; the run
+    // average keeps an honest ETA on screen while pages are still completing.
+    let rate = p.rate.or(run.as_ref().and_then(|r| r.avg_rate));
+    let live = p.live.map(|l| ParserLiveDto { path: l.path, pages: l.pages as u32, age_s: l.at.elapsed().as_secs() });
     ParserDto {
         model_id: parser::MODEL_ID,
         present: p.present,
@@ -392,7 +529,7 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
         },
         queue: ParserQueueDto { queued: p.counts.queued, done: p.counts.done, failed: p.counts.failed, skipped: p.counts.skipped },
         rate: p.rate,
-        eta_s: eta_secs(p.counts.queued, p.rate),
+        eta_s: eta_secs(p.counts.queued, rate),
         profile: p.profile.as_str(),
         routing: RoutingDto {
             doc_min: route::DOC_MIN,
@@ -400,6 +537,8 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
             screenshot_min_chars: route::SCREENSHOT_MIN_CHARS,
             provisional: false,
         },
+        run,
+        live,
     }
 }
 
@@ -424,6 +563,8 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
                 profile: t.profile(),
                 present: t.parser_present(),
                 rate: t.parse_rate(),
+                run: t.parse_run(),
+                live: t.parse_live(),
             })
             .unwrap_or_default();
         let det = app.state::<Models>().detected();
@@ -514,6 +655,20 @@ mod tests {
             std::thread::sleep(Duration::from_millis(20));
         }
         assert!(!BUSY.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn verdict_setting_parses_into_kind_and_cosine() {
+        let v = parse_verdict("kept:0.99973");
+        assert_eq!((v.kind.as_str(), v.cos), ("kept", Some(0.99973)));
+        let v = parse_verdict("moved:0.41");
+        assert_eq!((v.kind.as_str(), v.cos), ("moved", Some(0.41)));
+        for raw in ["current", "baselined", "no_baseline", "unverified"] {
+            let v = parse_verdict(raw);
+            assert_eq!((v.kind.as_str(), v.cos), (raw, None));
+        }
+        let v = parse_verdict("kept:not-a-number");
+        assert_eq!((v.kind.as_str(), v.cos), ("kept", None), "a broken cosine degrades to kind only");
     }
 
     #[test]
@@ -670,6 +825,16 @@ mod tests {
             profile: Profile::Fast,
             present: false,
             rate: Some(0.25),
+            run: Some(winseek_store::ParseRun {
+                started_unix: 0,
+                done: 4,
+                failed: 0,
+                skipped: 0,
+                left: 7,
+                total: 11,
+                ended_unix: None,
+            }),
+            live: None,
         };
         let none = parser_section(Some(dir.path()), &man, state.clone());
         assert_eq!(none.files.len(), 2);
@@ -682,6 +847,7 @@ mod tests {
         );
         assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1, skipped: 2 });
         assert_eq!((none.rate, none.eta_s), (Some(0.25), Some(28)), "7 queued pages at 0.25 pages/s");
+        assert_eq!(none.run.map(|r| (r.done, r.left, r.total)), Some((4, 7, 11)), "the run rides along");
         assert_eq!((none.profile, none.present), ("fast", false));
         assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.60, 0.04, 200));
         assert!(!none.routing.provisional, "measured with winseek-eval route");
@@ -689,5 +855,37 @@ mod tests {
         let some = parser_section(Some(dir.path()), &man, state);
         assert_eq!((some.files[0].bytes, some.files[1].bytes), (None, Some(3)));
         assert!(parser_section(None, &man, ParserState::default()).files.is_empty());
+
+        // A stale trailing rate falls back to the run average for the ETA: 6 pages in 30 s
+        // (vision parsing is slow enough that the minute-window rate keeps going stale).
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let slow = ParserState {
+            counts: ParseCounts { queued: 30, done: 6, failed: 0, skipped: 0 },
+            rate: None,
+            run: Some(winseek_store::ParseRun {
+                started_unix: now - 30,
+                done: 6,
+                failed: 0,
+                skipped: 0,
+                left: 30,
+                total: 36,
+                ended_unix: None,
+            }),
+            ..ParserState::default()
+        };
+        let s = parser_section(None, &man, slow);
+        assert!(s.rate.is_none(), "the trailing rate stays null");
+        assert_eq!(s.run.unwrap().avg_rate, Some(0.2));
+        assert_eq!(s.eta_s, Some(150), "30 pages left at the 0.2 pages/s run average");
+
+        let reading = parser_section(
+            None,
+            &man,
+            ParserState {
+                live: Some(crate::tier1::parse_pass::ParseLive { path: r"C:\x\scan.pdf".into(), pages: 4, at: std::time::Instant::now() }),
+                ..ParserState::default()
+            },
+        );
+        assert_eq!(reading.live.map(|l| (l.pages, l.path)), Some((4, r"C:\x\scan.pdf".to_string())));
     }
 }

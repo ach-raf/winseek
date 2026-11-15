@@ -41,6 +41,21 @@ const PROTO_RETRY: Duration = Duration::from_secs(60);
 /// behaviour (unload, respawn next pass) paid a 1.3 GB model reload to read the same page again.
 const OUTPUT_RETRY: Duration = Duration::from_secs(3);
 
+/// What the parse pass is reading right now (status page only, never persisted). Shared between
+/// the worker's [`ParsePass`] and the status thread through an [`Arc<Mutex<_>>`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ParseLive {
+    /// Path of the file whose page batch went in flight first (batches mix files).
+    pub path: String,
+    /// Pages of this batch.
+    pub pages: usize,
+    /// When the batch was picked up, so stale entries can be hidden.
+    pub at: Instant,
+}
+
+/// Shared slot holding the in-flight batch, if any.
+pub type ParseLiveSlot = std::sync::Arc<Mutex<Option<ParseLive>>>;
+
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -88,6 +103,8 @@ pub struct ParsePass {
     pdf_runtime: fn() -> Result<&'static Pdfium, PdfError>,
     /// Pause before the in-place retry of unusable parse output (tests use 0).
     output_retry: Duration,
+    /// Where the status page sees the in-flight batch (`None` in tests that do not care).
+    live: Option<ParseLiveSlot>,
 }
 
 impl Default for ParsePass {
@@ -98,7 +115,19 @@ impl Default for ParsePass {
 
 impl ParsePass {
     pub fn with_ocr(ocr: Box<dyn Ocr>) -> Self {
-        ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime, output_retry: OUTPUT_RETRY }
+        ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime, output_retry: OUTPUT_RETRY, live: None }
+    }
+
+    /// Publish each batch to `slot` (cleared when nothing is in flight) for the status page.
+    pub fn with_live(mut self, slot: ParseLiveSlot) -> Self {
+        self.live = Some(slot);
+        self
+    }
+
+    fn clear_live(&self) {
+        if let Some(slot) = &self.live {
+            *lock(slot) = None;
+        }
     }
 
     /// Override the in-place retry pause (tests).
@@ -257,7 +286,13 @@ impl ParsePass {
                 Input::Defer => break, // this job and the rest stay queued for when pdfium works
             }
         }
-        let Some(((first, first_jpeg), rest)) = pages.split_first() else { return Ok(n) };
+        let Some(((first, first_jpeg), rest)) = pages.split_first() else {
+            self.clear_live();
+            return Ok(n);
+        };
+        if let Some(slot) = &self.live {
+            *lock(slot) = Some(ParseLive { path: first.path.clone(), pages: pages.len(), at: Instant::now() });
+        }
         let r = parse_retry_output(parser, first_jpeg, parse_phased(parser, embedder, first_jpeg), paused, self.output_retry);
         match r {
             Ok(parsed) => {
@@ -300,8 +335,7 @@ impl ParsePass {
     }
 
     /// The page image of a job: the standalone image re-read from disk, or the PDF page rendered.
-    fn job_input(&self, job: &ParseJob) -> Input {
-        let bytes = match guard::read_guarded(Path::new(&job.path)) {
+    fn job_input(&self, job: &ParseJob) -> Input {        let bytes = match guard::read_guarded(Path::new(&job.path)) {
             Ok(b) => b,
             Err(e) => return Input::Fail(format!("read: {e}")),
         };
@@ -865,6 +899,22 @@ mod tests {
         assert_eq!(p.run(&e.store, &e.embedder, &e.parser, &paused).unwrap(), 0);
         assert_eq!(e.counts().queued, 1);
         assert_eq!(e.calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_in_flight_batch_is_published_and_cleared() {
+        let e = env(true, false);
+        e.add_image("scan.png", 1, unit(0), Some("old"));
+        let slot: ParseLiveSlot = Arc::default();
+        let mut p = pass_with(None).with_live(slot.clone());
+        assert!(e.pass(&mut p), "route");
+        assert!(slot.lock().unwrap().is_none(), "routing publishes nothing");
+        assert!(e.pass(&mut p), "parse");
+        let live = slot.lock().unwrap().clone().expect("the batch is published while it runs");
+        assert!(live.path.ends_with("scan.png"), "{}", live.path);
+        assert_eq!(live.pages, 1);
+        assert!(!e.pass(&mut p), "nothing left");
+        assert!(slot.lock().unwrap().is_none(), "an idle pass clears the entry");
     }
 
     #[test]

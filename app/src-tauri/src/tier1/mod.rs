@@ -96,6 +96,8 @@ pub struct Tier1 {
     throughput: Mutex<progress::Throughput>,
     /// Rolling parsed-pages rate for the status page (fed by the worker loop, parse passes only).
     parse_throughput: Mutex<progress::Throughput>,
+    /// The page batch the document parser is reading right now (fed by the parse pass).
+    parse_live: parse_pass::ParseLiveSlot,
     /// Last known embedding-server state (the embedder lock is held for whole passes).
     runtime: Mutex<RuntimeInfo>,
     /// Mean embedding of the generic hub prompts (relevance calibration), per query model.
@@ -329,6 +331,7 @@ impl Tier1 {
             last_recovery: Mutex::new(None),
             throughput: Mutex::new(progress::Throughput::default()),
             parse_throughput: Mutex::new(progress::Throughput::default()),
+            parse_live: std::sync::Arc::new(Mutex::new(None)),
             runtime: Mutex::new(RuntimeInfo::default()),
             hub: Mutex::new(None),
             sem_all: Mutex::new(None),
@@ -369,6 +372,7 @@ impl Tier1 {
         if defaulted {
             let _ = lock(&t.store).set_scopes(&scopes);
         }
+        t.note_index_stamp(false); // the status page shows which version last verified the index
         Ok(t)
     }
 
@@ -546,6 +550,19 @@ impl Tier1 {
         lock(&self.parse_throughput).rate(std::time::Instant::now())
     }
 
+    /// Progress of the current / last parse run, relative to when the queue filled (see
+    /// [`winseek_store::ParseRun`]): "this burst of work", not the queue table's whole lifetime.
+    pub fn parse_run(&self) -> Option<winseek_store::ParseRun> {
+        lock(&self.store).parse_run().ok().flatten()
+    }
+
+    /// What the document parser is reading right now, as long as that entry is still fresh.
+    pub fn parse_live(&self) -> Option<parse_pass::ParseLive> {
+        const MAX_AGE: Duration = Duration::from_secs(600);
+        let live = lock(&self.parse_live).clone();
+        live.filter(|l| l.at.elapsed() < MAX_AGE)
+    }
+
     /// Embedding-server state without waiting for a running pass: while the embedder is busy
     /// the server is by definition up, so the last known port is reused.
     pub fn runtime_info(&self) -> RuntimeInfo {
@@ -654,8 +671,29 @@ impl Tier1 {
     /// Tier 0.
     pub fn rebuild_with(&self, reset: impl FnOnce(&mut Store) -> Result<(), String>) -> Result<(), String> {
         reset(&mut lock(&self.store))?;
+        self.note_index_stamp(true);
         self.restart_indexing();
         Ok(())
+    }
+
+    /// Record which app version last opened / verified this index, and when its current content
+    /// was created or re-stamped (both for the index-status row in Settings). `restamped` marks a
+    /// fresh index or a re-stamp after a verified build change: the stamp time is renewed.
+    /// Otherwise only the version moves, so "built" keeps meaning what it says.
+    pub fn note_index_stamp(&self, restamped: bool) {
+        let version = env!("CARGO_PKG_VERSION");
+        let mut s = lock(&self.store);
+        if s.get_setting(winseek_store::SETTING_INDEX_APP_VERSION).ok().flatten().as_deref() != Some(version) {
+            if let Err(e) = s.set_setting(winseek_store::SETTING_INDEX_APP_VERSION, Some(version)) {
+                eprintln!("winseek: could not record the index app version: {e}");
+            }
+        }
+        if restamped {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+            if let Err(e) = s.set_setting(winseek_store::SETTING_INDEX_STAMPED_UNIX, Some(&now.to_string())) {
+                eprintln!("winseek: could not record the index stamp time: {e}");
+            }
+        }
     }
 
     fn restart_indexing(&self) {
@@ -1004,7 +1042,7 @@ fn worker_loop(t: Arc<Tier1>) {
         })) as Box<dyn Fn() + Send>
     };
     let mut proc = Processor::default().with_pdf_requester(requester).with_media_requester(media_requester);
-    let mut parse_pass = ParsePass::default();
+    let mut parse_pass = ParsePass::default().with_live(t.parse_live.clone());
     let (mut prov_done, mut prov_tries) = (false, 0u32);
     let mut last_media_gate: Option<std::time::Instant> = None;
     loop {
@@ -1117,6 +1155,13 @@ fn provenance_step(t: &Tier1, done: &mut bool, tries: &mut u32) -> bool {
     if *done {
         return true;
     }
+    // The verdict is mirrored into a store setting so the Settings page can tell the user, after
+    // an update, whether their index carried over or had to be rebuilt (status.rs::index_section).
+    let verdict = |v: String| {
+        if let Err(e) = lock(&t.store).set_setting(winseek_store::SETTING_PROVENANCE_VERDICT, Some(&v)) {
+            eprintln!("winseek: could not record the provenance verdict: {e}");
+        }
+    };
     let rebuild = |why: String| {
         eprintln!("winseek: {why}; re-embedding the index");
         let meta = lock(&t.embedder).meta();
@@ -1126,20 +1171,28 @@ fn provenance_step(t: &Tier1, done: &mut bool, tries: &mut u32) -> bool {
     };
     match provenance::check(&t.store, &t.embedder) {
         Ok(Outcome::Current) => {
+            verdict("current".into());
             *done = true;
             true
         }
         Ok(Outcome::Baselined) => {
             eprintln!("winseek: index stamped with {} and reference vectors stored", lock(&t.store).stamp().llama_build);
+            verdict("baselined".into());
             *done = true;
             true
         }
         Ok(Outcome::Kept(c)) => {
             eprintln!("winseek: llama.cpp build changed; reference vectors unchanged (cos {c:.5}), index kept");
+            verdict(format!("kept:{c:.5}"));
+            t.note_index_stamp(true); // the check re-stamped the index for this build
             *done = true;
             true
         }
         Ok(Outcome::Rebuild(c)) => {
+            verdict(match c {
+                Some(c) => format!("moved:{c:.5}"),
+                None => "no_baseline".into(),
+            });
             rebuild(match c {
                 Some(c) => format!("llama.cpp build changed and vectors moved (cos {c:.5} < {})", winseek_store::PROBE_MIN_COS),
                 None => "llama.cpp build changed and the index has no reference vectors".into(),
@@ -1155,9 +1208,11 @@ fn provenance_step(t: &Tier1, done: &mut bool, tries: &mut u32) -> bool {
             }
             *tries = 0;
             if stale {
+                verdict("unverified".into());
                 rebuild(format!("could not verify vectors after a llama.cpp build change ({e})"));
                 false
             } else {
+                verdict("unverified".into());
                 *done = true; // no baseline this session; indexing goes on
                 true
             }
