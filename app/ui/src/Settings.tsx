@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
-import { argsPreview, snippets } from "./agentLogic";
+import { argsPreview, pathNote, snippets } from "./agentLogic";
 import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { fileName } from "./reasonText";
@@ -479,10 +479,12 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
 function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [cfg, setCfg] = useState<AgentConfig | null>(null);
   const [mcp, setMcp] = useState<McpPath | null>(null);
+  const [path, setPath] = useState<AgentPathState | null>(null);
   const [log, setLog] = useState<AgentLogEntry[] | null>(null);
   const reload = useCallback(() => {
     backend.agentGetConfig().then(setCfg).catch(onError);
     backend.agentMcpPath().then(setMcp).catch(onError);
+    backend.agentPathStatus().then(setPath).catch(onError);
     backend.agentLog(50).then(setLog).catch(onError);
   }, [backend, onError]);
   // The log moves while an agent works; refresh while the section is on screen.
@@ -496,6 +498,12 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
     const next = { ...cfg, ...patch };
     setCfg(next);
     backend.agentSetConfig(next).then(setCfg).catch((e) => { onError(e); reload(); });
+  };
+  // The machine PATH is the installer's business; this switch manages the user PATH only.
+  const changePath = (on: boolean) => {
+    if (!path) return;
+    setPath({ ...path, user_path: on });
+    backend.agentPathSet(on).then(setPath).catch((e) => { onError(e); reload(); });
   };
   const snip = mcp ? snippets(mcp.path) : null;
   const copy = (text: string) => backend.copyTextHtml(text).catch(onError);
@@ -512,6 +520,14 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
           <Seg value={cfg?.content ?? null} disabled={!cfg?.enabled} onChange={(v) => change({ content: v })} label="What agents may read"
                options={[{ id: "indexed", label: "Indexed folders" }, { id: "any", label: "Any file" }]} />
         </Row>
+      </Grp>
+
+      <Grp title="Command line" label="PATH">
+        <Row title="Use winseek-cli from any terminal" desc="Puts the winseek folder on your PATH (winseek-cli, winseek-mcp). `winseek-cli path add` does the same from a shell.">
+          <Switch checked={!!path?.user_path || !!path?.machine_path} disabled={path === null || !!path?.machine_path}
+                  onChange={changePath} label="Add winseek to the PATH" />
+        </Row>
+        {path && <div className="grow"><span className="gnote">{pathNote(path)}</span></div>}
       </Grp>
 
       <Grp title="Connect an agent">

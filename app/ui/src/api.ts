@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -107,6 +107,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     agentLog: (limit) => inv<AgentLogEntry[]>("agent_log", { limit }),
     agentClearLog: () => inv("agent_clear_log"),
     agentMcpPath: () => inv<McpPath>("agent_mcp_path"),
+    agentPathStatus: () => inv<AgentPathState>("agent_path_status"),
+    agentPathSet: (enabled) => inv<AgentPathState>("agent_path_set", { enabled }),
     viewGet: () => inv<ViewState>("view_get"),
     viewSetDefault: (mode) => inv<ViewState>("view_set_default", { mode }),
     viewSetCurrent: (mode) => inv<ViewMode>("view_set_current", { mode }),

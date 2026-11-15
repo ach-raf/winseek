@@ -32,3 +32,12 @@ export function argsPreview(args: unknown): string {
     return ""; // circular or otherwise unserializable: show nothing rather than crash the log
   }
 }
+
+/** What the PATH row says under the switch. The installer manages the machine PATH; this row
+ *  manages the user PATH, so a machine entry wins and there is nothing left to do here. */
+export function pathNote(s: { user_path: boolean; machine_path: boolean }): string {
+  if (s.machine_path && s.user_path) return "On PATH for all users (the installer added it), and in your user PATH.";
+  if (s.machine_path) return "On PATH for all users — the installer added it.";
+  if (s.user_path) return "On your user PATH. New terminals will find winseek-cli and winseek-mcp.";
+  return "Not on PATH. Turn this on to run winseek-cli from any terminal.";
+}

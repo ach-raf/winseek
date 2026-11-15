@@ -3,7 +3,7 @@
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
 import { mockDiskUsage, mockUsageDetail } from "./mockUsage";
 import type { ViewMode, ViewState } from "./viewMode";
-import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -649,6 +649,7 @@ const LAUNCH_CATALOG: LaunchItem[] = [
 ];
 const launchCfg: LaunchCfg = { apps: true, settings: true, commands: true, portable: true, path: false, hide_uninstallers: true, folders: [], hidden: [] };
 let agentCfg: AgentConfig = { enabled: false, content: "indexed" };
+let agentPathUser = false; // the mock's fake user PATH
 let viewDefault: ViewMode = "compact";
 let viewCurrent: ViewMode = "compact";
 const viewListeners = new Set<(m: ViewMode) => void>();
@@ -1037,6 +1038,15 @@ export const mockBackend: Backend = {
   async agentMcpPath(): Promise<McpPath> {
     await sleep(10);
     return { path: "C:\\Program Files\\winseek\\winseek-mcp.exe", exists: true };
+  },
+  async agentPathStatus(): Promise<AgentPathState> {
+    await sleep(10);
+    return { dir: "C:\\Program Files\\winseek", user_path: agentPathUser, machine_path: false };
+  },
+  async agentPathSet(enabled): Promise<AgentPathState> {
+    await sleep(60);
+    agentPathUser = enabled;
+    return { dir: "C:\\Program Files\\winseek", user_path: agentPathUser, machine_path: false };
   },
   async modelsPlan(): Promise<ModelsPlan> {
     await sleep(MOCK_BACKEND === "cpu" ? 100 : 600); // GPU detection takes a moment

@@ -8,7 +8,7 @@ export const SECTION_KEYWORDS: Record<SettingsSection, string> = {
   meaning: "search by meaning semantic models download embedding gemma parser pdf documents images",
   indexing: "indexing folders skipped ignored names gitignore source code index drives volumes",
   launcher: "apps and commands launcher apps start menu settings commands portable path uninstallers hidden usage history catalog",
-  agents: "ai agents mcp claude tools server log connect",
+  agents: "ai agents mcp claude tools server log connect terminal command line path winseek-cli",
   general: "general performance profile low balanced fast gpu memory vram start with windows autostart shortcuts hotkeys alt space default view full screen compact library photos theme light dark appearance accent colour window transparency glass opacity",
   status: "status health service volumes files log diagnostics",
 };

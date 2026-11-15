@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { argsPreview, snippets } from "./agentLogic.ts";
+import { argsPreview, pathNote, snippets } from "./agentLogic.ts";
 
 test("snippets escape windows paths in JSON but not in shell / toml", () => {
   const s = snippets("C:\\Program Files\\winseek\\winseek-mcp.exe");
@@ -27,4 +27,23 @@ test("argsPreview truncates and survives junk", () => {
   const long = argsPreview({ query: "x".repeat(100) });
   assert.ok(long.endsWith("…"));
   assert.ok(long.length < 70);
+});
+
+test("pathNote explains where the install dir is on PATH", () => {
+  assert.equal(
+    pathNote({ user_path: false, machine_path: false }),
+    "Not on PATH. Turn this on to run winseek-cli from any terminal.",
+  );
+  assert.equal(
+    pathNote({ user_path: true, machine_path: false }),
+    "On your user PATH. New terminals will find winseek-cli and winseek-mcp.",
+  );
+  assert.equal(
+    pathNote({ user_path: false, machine_path: true }),
+    "On PATH for all users — the installer added it.",
+  );
+  assert.equal(
+    pathNote({ user_path: true, machine_path: true }),
+    "On PATH for all users (the installer added it), and in your user PATH.",
+  );
 });

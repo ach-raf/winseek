@@ -437,6 +437,12 @@ export interface McpPath {
   path: string;
   exists: boolean;
 }
+/** Where the command-line tools live and whether that directory is on PATH. */
+export interface AgentPathState {
+  dir: string;
+  user_path: boolean;
+  machine_path: boolean;
+}
 export interface LaunchCounts {
   apps: number;
   settings: number;
@@ -645,6 +651,10 @@ export interface Backend {
   agentClearLog(): Promise<void>;
   /** Where winseek-mcp.exe lives next to the app (exists=false in dev builds). */
   agentMcpPath(): Promise<McpPath>;
+  /** Whether the install directory (winseek-cli, winseek-mcp) is on PATH. */
+  agentPathStatus(): Promise<AgentPathState>;
+  /** Adds/removes the install directory to/from the user PATH (machine PATH is the installer's). */
+  agentPathSet(enabled: boolean): Promise<AgentPathState>;
   // ---- view mode (compact popup / full screen) ----
   viewGet(): Promise<import("./viewMode").ViewState>;
   /** Saves what the hotkey opens next time. */
