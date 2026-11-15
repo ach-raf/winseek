@@ -44,13 +44,14 @@ export function applyTheme(id: ThemeId): void {
   const resolved = resolveTheme(id, osPrefersDark);
   document.documentElement.dataset.theme = resolved;
   // The native window chrome follows as well; on "system" hand the decision back to the OS.
-  // Best effort: the browser mock has no Tauri, and a missing API must never break the theme.
+  // Best effort: the browser mock has no Tauri, a missing capability rejects the promise, and
+  // none of that may break the theme.
   try {
-    const tauri = (window as unknown as {
+    const w = (window as unknown as {
       __TAURI__?: { window?: { getCurrentWindow?: () => { setTheme?: (t: "light" | "dark" | null) => Promise<void> | void } } };
-    }).__TAURI__;
-    void tauri?.window?.getCurrentWindow?.().setTheme?.(id === "system" ? null : resolved);
-  } catch { /* native chrome keeps the OS theme */ }
+    }).__TAURI__?.window?.getCurrentWindow?.();
+    Promise.resolve(w?.setTheme?.(id === "system" ? null : resolved)).catch(() => { /* native chrome keeps the OS theme */ });
+  } catch { /* no Tauri or no API: nothing to sync */ }
 }
 
 /** Run cb whenever the OS flips its theme, for as long as the setting is "system".
