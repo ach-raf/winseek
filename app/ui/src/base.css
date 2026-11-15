@@ -2,9 +2,11 @@
    Light ships as :root; :root[data-theme="dark"] swaps the dark values. The attribute is set
    by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
    palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink).
-   Light is the iOS/macOS grouped-list recipe: a tinted grey canvas (--bg) that white surfaces
-   (--bg2) float on, lifted by --card-shadow; dark is layered graphite with recessed cards, so
-   the same rules read as raised in light and inset in dark — that asymmetry is the point. */
+   Light is the iOS/macOS grouped-list recipe on warm paper: a tinted grey canvas (--bg) that
+   eggshell surfaces (--bg2) float on, lifted by --card-shadow; dark is layered graphite with
+   recessed cards, so the same rules read as raised in light and inset in dark — that asymmetry
+   is the point. Light surfaces are warm on purpose (user: pure white reads clinical); text
+   stays cool-neutral, only the paper warms. */
 :root {
   color-scheme: light;
   --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -12,18 +14,19 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #f3f4f6; --bg2: #ffffff; --bg3: #e6e8ed; --line: #dcdfe5;
+  --bg: #f2ecdf; --bg2: #f7f0e0; --bg3: #eae3d3; --line: #ddd5c4;
   --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
   --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
-  --paper: #ffffff; --paper-line: #cfd3db; --fold: #e3e6ec;
+  --paper: #f8f2e3; --paper-line: #cdc3aa; --fold: #e2d9c4;
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
   /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
      are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
-     popovers, floating labels — softer than the window's --shadow, present in both themes. */
-  --card-shadow: 0 0 0 1px rgba(15,19,28,.05), 0 1px 2px rgba(15,19,28,.05), 0 4px 12px -4px rgba(15,19,28,.08);
-  --pop-shadow: 0 0 0 1px rgba(15,19,28,.07), 0 3px 8px rgba(15,19,28,.06), 0 16px 40px -8px rgba(15,19,28,.25);
+     popovers, floating labels — softer than the window's --shadow, present in both themes.
+     Light's shadow ink is warm umber, not blue-black, so it reads as shade on paper. */
+  --card-shadow: 0 0 0 1px rgba(50,42,30,.05), 0 1px 2px rgba(50,42,30,.05), 0 4px 12px -4px rgba(50,42,30,.08);
+  --pop-shadow: 0 0 0 1px rgba(50,42,30,.07), 0 3px 8px rgba(50,42,30,.06), 0 16px 40px -8px rgba(50,42,30,.25);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 8px; --radius-lg: 14px;
   /* Spacing scale — the only horizontal rhythm. Micro paddings (0-3px) stay literal; anything
@@ -35,7 +38,7 @@
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
   /* Library-window sidebar surfaces: both themes get a rail with its own identity, faintly
      accent-tinted, distinct from the canvas — light a warm grey, dark a lifted graphite. */
-  --side: color-mix(in oklab, var(--acc) 3%, #eaebee);
+  --side: color-mix(in oklab, var(--acc) 3%, #e9e3d5);
   --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
@@ -168,7 +171,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
 .switch::after {
   content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
-  background: #fff;
+  background: #fbf6e9;
   box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   transition: transform 200ms var(--ease);
 }

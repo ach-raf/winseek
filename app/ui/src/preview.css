@@ -116,7 +116,7 @@
 
 /* text / documents */
 .pv-text { position: absolute; inset: 0; overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent; text-wrap: pretty; }
-/* a reading pane is paper, not canvas: stays white in light (dark keeps --bg) */
+/* a reading pane is paper, not canvas: stays paper-warm in light (dark keeps --bg) */
 :root[data-theme="light"] .pv-text { background: var(--bg2); }
 .pv-text pre {
   margin: 0; padding: var(--sp-3) var(--sp-4); font: 12px/1.5 var(--mono); color: var(--fg);
