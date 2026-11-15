@@ -23,9 +23,27 @@
       MessageBox MB_ICONEXCLAMATION "The winseek name service could not be registered ($0).$\r$\nwinseek will offer to install it on first run. Details: %ProgramData%\winseek\searchd.log"
     ${EndIf}
   ${EndIf}
+  ; The command-line tools on the machine PATH (idempotent: `path add` skips when already there).
+  ; Convenience only — a failure never blocks the install; the app's Settings › Agents row and
+  ; `winseek-cli path add` can do it later.
+  ${If} ${FileExists} "$INSTDIR\winseek-cli.exe"
+    DetailPrint "Adding the winseek tools to PATH"
+    nsExec::ExecToLog '"$INSTDIR\winseek-cli.exe" path add --machine'
+    Pop $0
+    ${If} $0 != 0
+      DetailPrint "Adding winseek to PATH failed ($0); winseek Settings › Agents can add it later"
+    ${EndIf}
+  ${EndIf}
 !macroend
 
 !macro NSIS_HOOK_PREUNINSTALL
+  ; The tools come off the machine PATH first (needs winseek-cli.exe, which is deleted right
+  ; after this hook); idempotent, and a failure never blocks the uninstall.
+  ${If} ${FileExists} "$INSTDIR\winseek-cli.exe"
+    DetailPrint "Removing the winseek tools from PATH"
+    nsExec::ExecToLog '"$INSTDIR\winseek-cli.exe" path remove --machine'
+    Pop $0
+  ${EndIf}
   ; Stop + delete the service. %ProgramData%\winseek (name index) and %LOCALAPPDATA%\winseek
   ; (models, semantic index) are kept unless the user ticks "Delete the application data" on the
   ; uninstall page (see NSIS_HOOK_POSTUNINSTALL).
