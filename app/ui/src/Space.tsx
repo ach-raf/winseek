@@ -1,3 +1,4 @@
+import { KeyHints } from "./Hint";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import type { Backend, DiskUsage, DriveSpace, Hit, UsageDetail, UsageEntry, UsageType } from "./types";
 import type { LibActions } from "./Gallery";
@@ -257,6 +258,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             : <div className="su-tm"><div className="su-none"><span className="spin" aria-label="Loading" /></div></div>)}
         </section>
       </div>
+      <KeyHints className="su-hints" items={[["↑ ↓", "Move"], ["→ ←", "Expand / collapse"], ["Space", "Expand"], ["↵", "Open"], ["Del", "Recycle"], ["Backspace", "Up a folder"], ["Right-click", "More"]]} />
     </div>
   );
 }
@@ -598,9 +600,9 @@ function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
     <div className="su-sel">
       <div className="su-st" title={path}><b>{name}</b>{meta && <small>{meta}</small>}</div>
       <div className="su-sb">
-        {isDir && <button className="btn sm" onClick={() => onEnter(path)}>Open here</button>}
+        {isDir && <button className="btn sm" onClick={() => onEnter(path)} title="Zoom into this folder (Enter)">Open here</button>}
         {hit && <button className="btn sm" onClick={() => onShow(hit)}>Show in folder</button>}
-        {!isDir && <button className="btn sm" onClick={() => actions.open(path)}>Open</button>}
+        {!isDir && <button className="btn sm" onClick={() => actions.open(path)} title="Open the file (Enter)">Open</button>}
         <button className="btn sm" onClick={() => actions.reveal(path)}>Reveal</button>
         {!isRoot && <button className="btn sm su-del" onClick={() => onRecycle(path)} title="Move to Recycle Bin (Delete)">Recycle{size ? ` ${formatSize(size)}` : ""}</button>}
       </div>

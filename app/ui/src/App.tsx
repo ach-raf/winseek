@@ -11,6 +11,7 @@ import { parseSection } from "./settingsNav";
 import { isToggleKey, shellClass, toggleMode, type ViewMode } from "./viewMode";
 import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
+import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
 import { buildHome, buildOverview, bumpMru, chipCount, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
@@ -213,6 +214,14 @@ export default function App({ backend }: { backend: Backend }) {
   const hist = useRef<string[]>(qh.load());
   const [histList, setHistList] = useState<string[]>(() => hist.current); // mirror of `hist` for the home's "Recent searches"
   const histAt = useRef(-1); // -1 = the live input
+  // "Try" examples: the user can dismiss them for good (the x on the row).
+  const [tryHidden, setTryHidden] = useState<boolean>(() => {
+    try { return localStorage.getItem("winseek.tryHidden") === "1"; } catch { return false; }
+  });
+  const hideTry = useCallback(() => {
+    setTryHidden(true);
+    try { localStorage.setItem("winseek.tryHidden", "1"); } catch { /* remembered only when storage works */ }
+  }, []);
   const recordQuery = useCallback(() => {
     const q = inputRef.current?.value ?? "";
     if (!q.trim()) return;
@@ -1467,6 +1476,7 @@ export default function App({ backend }: { backend: Backend }) {
           </button>
         </div>
       )}
+      {!tryHidden && (
       <div className="qsrow">
         <span className="qslab">Try</span>
         {EXAMPLE_QUERIES.map((q) => (
@@ -1476,7 +1486,12 @@ export default function App({ backend }: { backend: Backend }) {
             {q}
           </button>
         ))}
+        <button className="qs-clear" tabIndex={-1} aria-label="Hide suggestions" title="Hide suggestions"
+                onMouseDown={(e) => e.preventDefault()} onClick={() => { hideTry(); inputRef.current?.focus(); }}>
+          Hide
+        </button>
       </div>
+      )}
       {loaded && ov.flat.length === 0 && (
         <div className="none qnone"><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</div>
       )}
@@ -1622,11 +1637,13 @@ export default function App({ backend }: { backend: Backend }) {
     : isCalcSel || !hasSel ? null
     : { label: "Show in folder", keys: ["Ctrl", "↵"], run: () => enter(true, false) };
   const keep = (e: React.MouseEvent) => e.preventDefault(); // buttons must not take the caret from the box
+  const canPreview = hasSel && !isCalcSel && !launchSelHit && !!current;
   const actions = !showPanel && hasSel ? (
     <>
+      {canPreview && <><button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => setPvOpen((o) => !o)}>{pvOpen ? "Close preview" : "Preview"} <kbd>Space</kbd></button><span className="vr" /></>}
       <button className="act pri" tabIndex={-1} onMouseDown={keep} onClick={() => enter(false, false)}>{primary} <kbd>{"↵"}</kbd></button>
       {second && <><span className="vr" /><button className="act" tabIndex={-1} onMouseDown={keep} onClick={second.run}>{second.label} {second.keys.map((k) => <kbd key={k}>{k}</kbd>)}</button></>}
-      {!isCalcSel && <button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => menuAtRef.current()}>More <kbd>Ctrl</kbd><kbd>K</kbd></button>}
+      {!isCalcSel && <button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => menuAtRef.current()} title="Rename (F2), Recycle (Del), Copy path, Properties and more">More <kbd>Ctrl</kbd><kbd>K</kbd></button>}
     </>
   ) : null;
 
@@ -1773,6 +1790,11 @@ export default function App({ backend }: { backend: Backend }) {
           ))}
         </div>
 
+        {full && page === "search" && !showPanel && (
+          <footer className="abar abar-full">
+            <KeyHints items={[["↑ ↓", "Move"], ["Space", "Preview"], ["↵", "Open"], ["Ctrl ↵", "Reveal"], ["F2", "Rename"], ["Del", "Recycle"], ["Ctrl K", "More"], ["Tab", "Filter type"], ["Alt S", "Sort"], ["F1", "All keys"]]} />
+          </footer>
+        )}
         {!full && (
           <footer className="abar">
             <span className="st"><span className={"dot" + (state === "live" ? "" : " warn")} />{statusText}</span>

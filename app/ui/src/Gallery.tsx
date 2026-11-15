@@ -382,9 +382,11 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
                 <kbd>{extra.key.toUpperCase()}</kbd> {extra.label}
               </button>
             )}
-            <span><kbd>Space</kbd> Preview</span>
+            <span><kbd>Space</kbd> {pvOpen ? "Close preview" : "Preview"}</span>
             <span><kbd>↵</kbd> Open</span>
             {!extra && <span><kbd>Ctrl ↵</kbd> Reveal</span>}
+            <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
+            <span><kbd>Shift F10</kbd> More</span>
             <span><kbd>Del</kbd> Recycle</span>
           </span>
         </div>

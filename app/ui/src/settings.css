@@ -20,7 +20,7 @@
 .firstrun .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--acc) 88%, #000); }
 .muted { color: var(--fg3); }
 
-.vols { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: var(--sp-4); border-radius: 14px; background: var(--bg2); box-shadow: var(--card-shadow); }
+.vols { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: var(--sp-4); border-radius: 14px; background: var(--bg2); border: var(--card-border); box-shadow: var(--card-shadow); }
 .vol { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; column-gap: 10px; row-gap: 6px; font-variant-numeric: tabular-nums; font-size: 14px; }
 .vol .letter { font-weight: 600; }
 .vol .nums { color: var(--fg2); font-size: 13px; }
@@ -94,7 +94,7 @@
 .grp { max-width: 640px; margin-bottom: var(--sp-5); }
 .grp:focus-within h3, .grp h3:focus { outline: 0; }
 .grp h3 { font-size: 15px; font-weight: 700; margin: 6px 0 8px; letter-spacing: 0; }
-.gcard { border-radius: 14px; background: var(--bg2); padding: 2px var(--sp-4); box-shadow: var(--card-shadow); }
+.gcard { border-radius: 14px; background: var(--bg2); padding: 2px var(--sp-4); border: var(--card-border); box-shadow: var(--card-shadow); }
 .gcard > * + *, .glist > * + * { border-top: 1px solid var(--line); }
 .grow { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-3) 0; min-width: 0; }
 .grow.wrap { flex-wrap: wrap; row-gap: 8px; }

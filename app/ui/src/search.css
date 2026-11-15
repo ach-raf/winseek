@@ -71,11 +71,13 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
   color: var(--fg);
   /* A real card inside the window: gutters on every side + a true border, so no edge is flush
      with (and clipped by) the window or the footer. */
-  margin: 0 var(--sp-3) var(--sp-2);
+  margin: var(--sp-2) var(--sp-3) var(--sp-2);
   border: 1px solid var(--line);
   border-radius: 14px;
   box-shadow: 0 1px 2px rgba(24,32,48,.10);
 }
+/* Dark: the black veil is too heavy for a page surface — use the same grey as the preview pane. */
+:root[data-theme="dark"] .list.ov { background: var(--bg); backdrop-filter: none; box-shadow: none; }
 /* On the white overview sheet a white hover vanishes, so rows dim to the soft grey instead. */
 :root[data-theme="light"] .list.ov .row:hover { background: var(--bg3); }
 
@@ -142,7 +144,12 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* ---- icons ---- */
 .ic { width: 36px; height: 36px; display: grid; place-items: center; position: relative; flex: none; }
 .ic > svg { width: 100%; height: 100%; }
-.ic.shell img { width: 84%; height: 84%; object-fit: contain; display: block; }
+.ic.plate { border-radius: 22.37%; overflow: hidden; background: linear-gradient(160deg, var(--pa, var(--bg3)), var(--pb, var(--bg3)));
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28); }
+:root[data-theme="light"] .ic.plate { box-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16); }
+.ic.plate img { width: 68%; height: 68%; object-fit: contain; display: block; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.28)); }
+.ic.plate.bleed img { width: 100%; height: 100%; object-fit: cover; filter: none; }
+.ic.sicon img { width: 84%; height: 84%; object-fit: contain; display: block; }
 .ic.ph { border-radius: 8px; overflow: hidden; background: var(--bg3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
 .ic.ph img, .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .ic.app { border-radius: 27%; background: linear-gradient(150deg, var(--a), var(--b)); color: #fff; font-weight: 700; font-size: 15px; letter-spacing: -.03em; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 1px 2px rgba(0,0,0,.25); transform: scale(.92); }
@@ -186,7 +193,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* a tile that is there for its name: the word that put it there stands out */
 .tile.named mark { background: rgba(255,255,255,.26); border-radius: 3px; padding: 0 2px; margin: 0 -2px; }
 
-.calc { margin: var(--sp-2) var(--sp-2) 2px; padding: var(--sp-4); border-radius: 12px; background: var(--bg2); box-shadow: var(--card-shadow); display: flex; align-items: center; gap: var(--sp-4); cursor: default; }
+.calc { margin: var(--sp-2) var(--sp-2) 2px; padding: var(--sp-4); border-radius: 12px; background: var(--bg2); border: var(--card-border); box-shadow: var(--card-shadow); display: flex; align-items: center; gap: var(--sp-4); cursor: default; }
 .shell.full .calc { margin-left: 10px; margin-right: 10px; } /* 12 + 10 = the 22px gutter */
 .calc.sel { box-shadow: inset 0 0 0 2px var(--sel-line); }
 .calc .ex { font-size: 15px; color: var(--fg3); }

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./types";
 import { Gallery, GalleryViewToggle, type GallerySection, type GridExtra, type GridItem, type LibActions } from "./Gallery";
 import { NameFilter } from "./NameFilter";
+import { KeyHints } from "./Hint";
 import { baseName } from "./Semantic";
 import { kindOf } from "./format";
 import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./libraryLogic";
@@ -323,14 +324,14 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           <NameFilter value={collQ} onChange={setCollQ} label="Filter in this collection" />
           <GalleryViewToggle view={gview} onChange={setGview} />
           <div className="co-btns">
-            <button className="btn" onClick={() => editCollection(sel)}>Edit</button>
+            <button className="btn" onClick={() => editCollection(sel)} title="Edit (F2)">Edit</button>
             {confirmDel ? (
               <>
                 <button className="btn pri" onClick={() => void del()}>Delete collection</button>
                 <button className="btn" onClick={() => setConfirmDel(false)}>Keep</button>
               </>
             ) : (
-              <button className="btn" onClick={() => setConfirmDel(true)}>Delete</button>
+              <button className="btn" onClick={() => setConfirmDel(true)} title="Delete this collection (Del)">Delete</button>
             )}
           </div>
         </header>
@@ -377,6 +378,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
         </button>
       </div>
       {formErr && <div className="co-err" role="alert">{formErr}</div>}
+      <KeyHints className="co-hints" items={[["← → ↑ ↓", "Move"], ["↵", "Open"], ["Ctrl N", "New collection"], ["F2", "Edit"], ["Del", "Delete"]]} />
       <p className="co-note">Each collection is a saved description: winseek keeps it filled from your photos, screenshots and documents (icons and app graphics stay out). Press X on anything that does not belong and it stays out. {embedded !== undefined && `${embedded.toLocaleString("en-US")} files understood so far.`}</p>
     </div>
   );

@@ -7,6 +7,7 @@ import { formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
 import { IChevL, ICheck } from "./icons";
 import { NameFilter } from "./NameFilter";
+import { KeyHints } from "./Hint";
 import { Space } from "./Space";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
@@ -299,6 +300,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
             <div className="cl-foot">
               {groups !== null && groups.length > 0 && <button className="btn sm" onClick={() => onReview(groups[0]!.id)}>Review {groups.length.toLocaleString("en-US")} group{groups.length === 1 ? "" : "s"}</button>}
               <button className="btn sm" onClick={onSimilar}>Find similar photos</button>
+              <KeyHints items={[["Space", "Pick"], ["↵", "Review"], ["Del", "Recycle"]]} />
             </div>
           </section>
           <section className="card">
@@ -317,6 +319,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
             <div className="cl-foot">
               {rows !== null && rows.length > HOME_ROWS && <button className="btn sm" onClick={onLarge}>See all {rows.length.toLocaleString("en-US")}</button>}
               {rows !== null && rows.length > 0 && rows.length <= HOME_ROWS && <button className="btn sm" onClick={onLarge}>Open list</button>}
+              <KeyHints items={[["Space", "Pick"], ["↵", "Open"], ["Del", "Recycle"], ["Right-click", "More"]]} />
             </div>
           </section>
           {shots.length > 0 && (
@@ -331,6 +334,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
               />
               <div className="cl-foot">
                 <button className="btn sm" onClick={onShots}>{shots.length > HOME_ROWS ? `See all ${shots.length.toLocaleString("en-US")}` : "Open list"}</button>
+                <KeyHints items={[["Space", "Pick"], ["↵", "Open"], ["Del", "Recycle"], ["Right-click", "More"]]} />
               </div>
             </section>
           )}
@@ -652,6 +656,7 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
       </div>
       <footer className="gd-bar">
         <span>Suggested keep: largest resolution, then newest, then shortest path.</span>
+        <KeyHints items={[["← →", "Move"], ["Space", "Keep / recycle"], ["↵", "Open"], ["Del", "Recycle"]]} />
         <span className="sp" />
         <button className="btn pri" disabled={busy || doomed.length === 0} onClick={() => void go()}>
           Move {doomed.length} to Recycle Bin{doomed.length ? ` · frees ${formatSize(freed)}` : ""}
@@ -776,6 +781,7 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
             })}
           </div>
         </div>
+        <div className="bg-hints"><KeyHints items={[["↑ ↓", "Move"], ["↵", "Open"], ["Ctrl ↵", "Reveal"], ["Del", "Recycle"], ["Right-click", "More"]]} /></div>
       </div>
     </>
   );

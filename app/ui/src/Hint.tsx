@@ -19,3 +19,12 @@ export function Hint({ text, className, children }: { text?: string; className?:
     </>
   );
 }
+
+/** A quiet line of `<kbd>key</kbd> verb` pairs: tells the user what the focused list can do. */
+export function KeyHints({ items, className }: { items: readonly (readonly [string, string])[]; className?: string }) {
+  return (
+    <span className={"keyhints" + (className ? " " + className : "")}>
+      {items.map(([k, v]) => <span key={k + v}><kbd>{k}</kbd> {v}</span>)}
+    </span>
+  );
+}
