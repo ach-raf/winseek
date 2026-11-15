@@ -2,11 +2,12 @@
    Light ships as :root; :root[data-theme="dark"] swaps the dark values. The attribute is set
    by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
    palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink).
-   Light is the iOS/macOS grouped-list recipe on warm paper: a tinted grey canvas (--bg) that
-   eggshell surfaces (--bg2) float on, lifted by --card-shadow; dark is layered graphite with
-   recessed cards, so the same rules read as raised in light and inset in dark — that asymmetry
-   is the point. Light surfaces are warm on purpose (user: pure white reads clinical); text
-   stays cool-neutral, only the paper warms. */
+   Light is "Porcelain" (user-judged variant, design-mockups/light-variant-porcelain.html): the
+   iOS/macOS grouped-list recipe on a cool grey canvas (--bg) that near-white surfaces (--bg2)
+   float on, lifted by --card-shadow; dark is layered graphite with recessed cards, so the same
+   rules read as raised in light and inset in dark — that asymmetry is the point. Light surfaces
+   are cool-neutral and hairlines sit one step crisper so edges survive the lighter canvas;
+   shadows use cool ink, shorter spread than the window's --shadow. */
 :root {
   color-scheme: light;
   --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -14,21 +15,21 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #dfdbd0; --bg2: #f8f6ef; --bg3: #d0ccbf; --line: #bfb9aa;
-  --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
+  --bg: #e8e9ec; --bg2: #fdfdfe; --bg3: #dcdde1; --line: #cfd2d8;
+  --fg: #16181d; --fg2: #585d68; --fg3: #9096a2;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
   --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
-  --paper: #faf9f5; --paper-line: #b3ad9d; --fold: #d9d5c8;
+  --paper: #ffffff; --paper-line: #c9ccd3; --fold: #e2e4e9;
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
   /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
      are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
      popovers, floating labels — softer than the window's --shadow, present in both themes.
-     Light's shadow ink is warm umber, not blue-black, so it reads as shade on paper. */
-  --card-shadow: 0 0 0 1px rgba(40,34,20,.24), 0 1px 2px rgba(40,34,20,.12), 0 10px 22px -10px rgba(40,34,20,.30);
-  --pop-shadow: 0 0 0 1px rgba(50,42,30,.07), 0 3px 8px rgba(50,42,30,.06), 0 16px 40px -8px rgba(50,42,30,.25);
+     Light's shadow ink is the same cool slate as the text, so shade reads neutral on porcelain. */
+  --card-shadow: 0 0 0 1px rgba(24,28,36,.14), 0 1px 2px rgba(24,28,36,.07), 0 8px 18px -10px rgba(24,28,36,.22);
+  --pop-shadow: 0 0 0 1px rgba(24,28,36,.06), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
-  --radius: 8px; --radius-lg: 14px;
+  --radius: 10px; --radius-lg: 16px;
   /* Spacing scale — the only horizontal rhythm. Micro paddings (0-3px) stay literal; anything
      >= 4px snaps to --sp-1..--sp-6. --gut is the full window's page gutter (titles, tabs, cards,
      rows all start on it); the popup's tighter gutter is --sp-4 (16px). */
@@ -36,9 +37,9 @@
   --gut: var(--sp-5);
   --lcol: 348px; --setside: 200px;
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
-  /* Library-window sidebar surfaces: both themes get a rail with its own identity, faintly
-     accent-tinted, distinct from the canvas — light a warm grey, dark a lifted graphite. */
-  --side: color-mix(in oklab, var(--acc) 3%, #d6d2c6);
+  /* Library-window sidebar surfaces: both themes get a rail with its own identity, distinct
+     from the canvas — light a flat cool grey one step off the canvas, dark a lifted graphite. */
+  --side: #eff0f3;
   --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
@@ -171,7 +172,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
 .switch::after {
   content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
-  background: #fdfcf9;
+  background: #fdfdfe;
   box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   transition: transform 200ms var(--ease);
 }
