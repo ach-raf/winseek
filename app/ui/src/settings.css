@@ -93,7 +93,6 @@
 .grow .gtxt > span .gline { display: block; margin-top: 2px; }
 .gctl { display: flex; align-items: center; gap: 8px; flex: none; }
 .grow .val, .gctl .val { font-size: 13px; color: var(--fg2); font-weight: 500; }
-.grow .val.ok { color: var(--ok); }
 .grow.kv .val { text-align: right; max-width: 62%; overflow-wrap: anywhere; }
 .grow.kv .gsub { color: var(--fg3); font-size: 12.5px; margin-top: 0; font-weight: 400; }
 details.reasons > summary { cursor: pointer; list-style: none; }
@@ -125,6 +124,14 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .s-rescanning .dot, .s-warn .dot { background: var(--warn); }
 .s-error .dot { background: var(--danger); }
 .st-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--fg3); white-space: nowrap; }
+/* Emphasis by difference: a healthy drive is the default (grey, quiet); colour is spent on work in
+ * progress and on failures, so the one scanning or failing row pops among the resting ones. The
+ * service headline above keeps its green dot as the single reassuring anchor. */
+.st-state .dot { background: var(--fg3); }
+.s-scanning .st-state, .s-rescanning .st-state { color: var(--warn); }
+.s-scanning .st-state .dot, .s-rescanning .st-state .dot { background: var(--warn); }
+.s-error .st-state { color: var(--danger); }
+.s-error .st-state .dot { background: var(--danger); }
 
 /* switch: prototype .sw (38x22, 16px knob, accent when on) restyled in place */
 .settings .switch, .setup .switch { width: 38px; height: 22px; border-radius: 11px; background: var(--bg3); box-shadow: inset 0 0 0 1px var(--line); transition: background .15s; }

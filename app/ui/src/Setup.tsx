@@ -175,12 +175,12 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
         ) : undefined}>
           {plan.items.filter((i) => !i.optional).map((i) => (
             <Row key={i.name} title={i.name}>
-              <span className={"val" + (i.present ? " ok" : "")}>{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
+              <span className="val">{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
             </Row>
           ))}
           {optional.length > 0 && (
             <Row title="Document parser" desc={`Optional. ${PARSER_DESC}`}>
-              <span className={"val" + (optMissing.length === 0 ? " ok" : "")}>{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
+              <span className="val">{optMissing.length === 0 ? "Installed" : formatSize(parserBytes)}</span>
               {optMissing.length > 0 && phase !== "downloading" && (
                 <label className="switch">
                   <input type="checkbox" checked={includeParser} onChange={(e) => setIncludeParser(e.target.checked)} aria-label="Also download the document parser" />
