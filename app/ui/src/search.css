@@ -130,14 +130,16 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .grid.photos { grid-template-columns: repeat(4, 1fr); }
 .shell.full .grid.photos { grid-template-columns: repeat(5, 1fr); }
 .shell.full .grid.apps { grid-template-columns: repeat(12, 1fr); }
-.atile { display: grid; justify-items: center; gap: 8px; padding: 14px 4px 10px; border-radius: 12px; cursor: default; min-width: 0; }
+.atile { display: grid; justify-items: center; gap: 8px; padding: 14px 4px 10px; border-radius: 12px; cursor: default; min-width: 0; position: relative; }
 .atile .ic { width: 46px; height: 46px; }
 .atile .ic.app { font-size: 19px; }
 .atile span { font-size: 12.5px; font-weight: 500; color: var(--fg2); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.atile:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
-/* Like the photo tiles: a neutral fill with an accent ring — `--sel` (accent mixed into the
- * near-black background) reads as a muddy brown slab on these wide grid cells. */
-.atile.sel { background: color-mix(in oklab, var(--fg) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
+/* Selection/hover is a rounded square behind the icon only (Launchpad-style): a highlight across
+ * the whole wide cell — or around icon + label — reads as a badly sized box. `--sel` (accent mixed
+ * into the near-black background) would also read as a muddy brown slab. */
+.atile::before { content: ""; position: absolute; top: 6px; left: 50%; translate: -50% 0; width: 62px; height: 62px; border-radius: 15px; pointer-events: none; }
+.atile:hover::before { background: color-mix(in oklab, var(--fg) 7%, transparent); }
+.atile.sel::before { background: color-mix(in oklab, var(--fg) 12%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
 .atile.sel span { color: var(--fg); }
 .tile { position: relative; aspect-ratio: 4/3; border-radius: 10px; overflow: hidden; background: var(--bg3); cursor: default; display: grid; place-items: center; }
 .tile > .ic { width: 40%; height: auto; aspect-ratio: 1; }
