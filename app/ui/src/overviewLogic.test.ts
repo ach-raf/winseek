@@ -257,3 +257,38 @@ test("matchPct is the one number behind the badge and the preview pill", () => {
   assert.equal(matchPct({ score: 0, source: "text" }), null);
   assert.equal(matchPct(undefined), null);
 });
+
+test("groupByKind splits the Files rows into kind sections with counts and folds", () => {
+  const dir = (name: string): Hit => ({ ...hit(name), is_dir: true });
+  const names = [hit("readme.md"), hit("notes.pdf"), hit("cat.jpg"), hit("clip.mp4"), hit("song.flac"), hit("backup.zip"), hit("tool.exe"), dir("work"), hit("report.docx")];
+  const { sections } = buildOverview({ names, nameTotal: 9, sem: [], text: "q", expand: null, isImage, groupByKind: true });
+  const kinds = sections.filter((s) => s.id.toString().startsWith("k:"));
+  assert.deepEqual(kinds.map((s) => s.id), ["k:folder", "k:doc", "k:image", "k:video", "k:audio", "k:archive", "k:other"]);
+  assert.deepEqual(kinds.map((s) => s.total), [1, 2, 1, 1, 1, 1, 1]);
+  assert.ok(kinds.every((s) => s.count && s.fold?.open && !s.more), "kind sections show their count, start open, and have no Show all");
+  const flat = kinds.flatMap((s) => s.items.map((i) => i.hit.name));
+  // 9 names, FILES_ALONE caps the section at 8 shown rows: report.docx stays out of every bucket
+  assert.deepEqual(flat, ["work", "readme.md", "notes.pdf", "cat.jpg", "clip.mp4", "song.flac", "backup.zip", "tool.exe"]);
+});
+
+test("groupByKind: a collapsed group hides its rows but keeps the count", () => {
+  const names = [hit("notes.pdf"), hit("report.docx"), hit("song.flac")];
+  const { sections, flat } = buildOverview({ names, nameTotal: 3, sem: [], text: "q", expand: null, isImage, groupByKind: true, kindFolds: { doc: true } });
+  const doc = sections.find((s) => s.id === "k:doc");
+  const audio = sections.find((s) => s.id === "k:audio");
+  assert.ok(doc && audio);
+  assert.equal(doc.total, 2);
+  assert.equal(doc.fold?.open, false);
+  assert.deepEqual(doc.items, [], "a collapsed group draws no rows");
+  assert.equal(audio.fold?.open, true);
+  assert.deepEqual(flat.filter((i) => i.section === "k:doc"), [], "the flat selection list skips the collapsed group");
+});
+
+test("without groupByKind the Files section stays flat", () => {
+  const names = [hit("notes.pdf"), hit("song.flac")];
+  const { sections } = buildOverview({ names, nameTotal: 2, sem: [], text: "q", expand: null, isImage });
+  const files = sections.find((s) => s.id === "files");
+  assert.ok(files);
+  assert.equal(files.total, 2);
+  assert.equal(sections.some((s) => s.id.toString().startsWith("k:")), false);
+});

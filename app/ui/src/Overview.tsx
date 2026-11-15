@@ -323,12 +323,14 @@ function Windowed({ scrollRef, count, className, render }: {
   );
 }
 
-function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak }: { s: OvSection; expanded: boolean; loading: boolean; onBack: () => void; onExpand: (id: SectionId) => void; onToggleWeak?: () => void }): ReactNode {
+function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak, onToggleFold }: { s: OvSection; expanded: boolean; loading: boolean; onBack: () => void; onExpand: (id: SectionId) => void; onToggleWeak?: () => void; onToggleFold?: (id: SectionId) => void }): ReactNode {
   if (s.fold) {
+    const toggle = s.id.startsWith("k:") ? () => onToggleFold?.(s.id) : onToggleWeak;
     return (
       <div className="sh">
-        <button className="more weak-toggle" tabIndex={-1} aria-expanded={s.fold.open} onMouseDown={(e) => e.preventDefault()} onClick={onToggleWeak}>
+        <button className="more weak-toggle" tabIndex={-1} aria-expanded={s.fold.open} onMouseDown={(e) => e.preventDefault()} onClick={toggle}>
           {s.fold.open ? "▾" : "▸"} {s.title}
+          {s.count && <i>{s.total.toLocaleString("en-US")}</i>}
         </button>
       </div>
     );
@@ -357,11 +359,13 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak }: {
   );
 }
 
-export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, scrollRef, armed }: {
+export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed }: {
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
   /** "Show all" is still reading pages: the list keeps growing. */
   loading?: boolean;
   handlers: ItemHandlers; onExpand: (id: SectionId) => void; onBack: () => void; onToggleWeak?: () => void;
+  /** Fold / unfold one kind group ("k:<kind>"). */
+  onToggleFold?: (id: SectionId) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>; armed: string | null;
 }) {
   let base = 0;
@@ -376,7 +380,7 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
         }
         return (
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
-            <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} />
+            <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} onToggleFold={onToggleFold} />
             {s.fold && !s.items.length ? null : s.id === "images" || s.id === "namepics" ? (
               <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" render={(from, to) =>
                 s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />

@@ -61,7 +61,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sh .more:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 .sh .back { display: inline-flex; align-items: baseline; gap: 6px; margin: -3px 0 -3px -6px; padding: 3px 8px 3px 2px; border-radius: 6px; font: inherit; color: var(--fg2); }
 .sh .back svg { align-self: center; }
-.sh > span > i { font-style: normal; font-weight: 400; margin-left: 6px; font-variant-numeric: tabular-nums; }
+.sh > span > i, .sh .weak-toggle i { font-style: normal; font-weight: 400; margin-left: 6px; font-variant-numeric: tabular-nums; }
 .sh > span > i.busy::before { content: "\00b7  "; }
 .sh .back i { font-style: normal; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
 .sh .back:hover { background: var(--bg3); color: var(--fg); }
@@ -268,7 +268,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .vlist.dense .row .sub { margin: 0; font-size: 12px; min-width: 0; }
 .vlist.dense .row.skeleton .w1 { width: 60%; } .vlist.dense .row.skeleton .w2 { width: 70%; margin: 0; }
 .dens { width: 28px; padding: 0; justify-content: center; }
-.dens.on { color: var(--fg); background: var(--bg3); }
+.dens.on, .sortb.on { color: var(--fg); background: var(--bg3); }
 
 /* ---- empty state: one-click ways out ---- */
 .fixes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }

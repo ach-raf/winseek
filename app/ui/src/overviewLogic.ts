@@ -1,9 +1,11 @@
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types";
 import { pickTop } from "./launchLogic.ts";
 import { picReason, queryWords, rankPictures, type NameMatch, type Pic } from "./pictureRank.ts";
+import { kindOf } from "./format.ts";
 
 /** Result overview: a Top result, then a few rows per section with "Show all"; home = Most used + Recent files. */
-export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "namepics" | "mostused" | "recent";
+export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "namepics" | "mostused" | "recent"
+  | "k:folder" | "k:doc" | "k:image" | "k:video" | "k:audio" | "k:archive" | "k:other";
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
 export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
 
@@ -71,6 +73,25 @@ const COMMANDS = 3;
 
 export const baseName = (path: string) => path.slice(path.lastIndexOf("\\") + 1);
 const stem = (name: string) => { const d = name.lastIndexOf("."); return (d > 0 ? name.slice(0, d) : name).toLowerCase(); };
+
+/** Kind sections of the grouped Files list, in display order. code/exe and the rest share "Other". */
+const KIND_GROUPS: { id: SectionId; title: string }[] = [
+  { id: "k:folder", title: "Folders" },
+  { id: "k:doc", title: "Documents" },
+  { id: "k:image", title: "Pictures" },
+  { id: "k:video", title: "Videos" },
+  { id: "k:audio", title: "Audio" },
+  { id: "k:archive", title: "Archives" },
+  { id: "k:other", title: "Other files" },
+];
+const kindSection = (kid: ReturnType<typeof kindOf>): SectionId =>
+  kid === "folder" ? "k:folder"
+  : kid === "doc" ? "k:doc"
+  : kid === "image" ? "k:image"
+  : kid === "video" ? "k:video"
+  : kid === "audio" ? "k:audio"
+  : kid === "archive" ? "k:archive"
+  : "k:other";
 
 export const semHit = (h: SemanticHit): Hit => ({ name: baseName(h.path), path: h.path, is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null });
 
@@ -140,6 +161,10 @@ export function buildOverview(opts: {
   semMore?: boolean;
   /** The folded section of the opened list ("Weaker matches", "Other names containing ...") is unfolded. */
   weakOpen?: boolean;
+  /** Group the Files rows into kind sections (Folders / Documents / Pictures / …) with counts and folds. */
+  groupByKind?: boolean;
+  /** Kind groups that are collapsed; keys are the SectionId minus the "k:" prefix. */
+  kindFolds?: Partial<Record<string, boolean>>;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
   const launch = opts.launch ?? [];
@@ -244,7 +269,27 @@ export function buildOverview(opts: {
     }
     const hidden = (top?.nameIdx !== undefined ? 1 : 0) + picTotal;
     const total = Math.max(items.length, nameTotal - hidden);
-    if (items.length) sections.push({ id: "files", title: "Files", items, total, more: total > items.length });
+    if (items.length && opts.groupByKind) {
+      // Kind sections replace the flat Files list: same rows in a fixed kind order, each with its
+      // count in the header and a fold (Spotify's collapsed groups). The whole flat list stays
+      // reachable through the Files chip / any sort, which render the column list.
+      const buckets = new Map<SectionId, OvItem[]>(KIND_GROUPS.map((g) => [g.id, []]));
+      for (const it of items) {
+        const kid = kindOf(baseName(it.hit.path), it.hit.is_dir);
+        buckets.get(kindSection(kid))!.push(it);
+      }
+      for (const { id, title } of KIND_GROUPS) {
+        const bucket = buckets.get(id)!;
+        if (!bucket.length) continue;
+        const collapsed = !!opts.kindFolds?.[id.slice(2)];
+        sections.push({
+          id, title, items: collapsed ? [] : bucket,
+          total: bucket.length, more: false, count: true, fold: { open: !collapsed },
+        });
+      }
+    } else if (items.length) {
+      sections.push({ id: "files", title: "Files", items, total, more: total > items.length });
+    }
   }
 
   if (!expand || expand === "images") {

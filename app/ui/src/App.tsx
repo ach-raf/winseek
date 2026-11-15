@@ -267,6 +267,27 @@ export default function App({ backend }: { backend: Backend }) {
   // meaning search runs whenever Tier 1 is up; without models it answers with text hits only.
   const [expand, setExpand] = useState<Expand>(null);
   const [weakOpen, setWeakOpen] = useState(false);
+  // Files grouped into kind sections (Folders / Documents / …), remembered. The collapsed groups are
+  // remembered too, so a group stays shut until it is opened again.
+  const [groupByKind, setGroupByKind] = useState(() => {
+    try { return localStorage.getItem("winseek.kindgroups") === "1"; } catch { return false; }
+  });
+  const toggleGroupKind = useCallback(() => {
+    setGroupByKind((g) => {
+      try { localStorage.setItem("winseek.kindgroups", g ? "0" : "1"); } catch { /* remembered only when storage works */ }
+      return !g;
+    });
+  }, []);
+  const [kindFolds, setKindFolds] = useState<Record<string, boolean>>(() => {
+    try { return JSON.parse(localStorage.getItem("winseek.kindfolds") ?? "{}") as Record<string, boolean>; } catch { return {}; }
+  });
+  const toggleKindFold = useCallback((id: string) => {
+    setKindFolds((f) => {
+      const next = { ...f, [id]: !f[id] };
+      try { localStorage.setItem("winseek.kindfolds", JSON.stringify(next)); } catch { /* remembered only when storage works */ }
+      return next;
+    });
+  }, []);
   const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed, effFilter) && onDrive(h.path, drive)), [sem.hits, parsed, effFilter, drive]);
@@ -361,9 +382,9 @@ export default function App({ backend }: { backend: Backend }) {
         names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, semMore: sem.more, text: parsed.text,
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
-        photoCols: gridCols.images, weakOpen,
+        photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen],
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen, groupByKind, kindFolds],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -1404,6 +1425,14 @@ export default function App({ backend }: { backend: Backend }) {
           <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M4 6h16M4 10h16M4 14h16M4 18h16" /></svg>
         </button>
       )}
+      {full && !isRecent && overview && (
+        <button className={"sortb" + (groupByKind ? " on" : "")} tabIndex={-1} aria-pressed={groupByKind}
+                aria-label="Group files by kind"
+                title={groupByKind ? "Grouped by kind. Click for one ranked list." : "Group the files into Folders, Documents, Pictures …"}
+                onMouseDown={(e) => e.preventDefault()} onClick={() => { toggleGroupKind(); inputRef.current?.focus(); }}>
+          Group
+        </button>
+      )}
       {!isRecent && (
         <button className="sortb" tabIndex={-1} title={tooltip("popup.sort")} onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
           {sortLabel}
@@ -1614,7 +1643,7 @@ export default function App({ backend }: { backend: Backend }) {
 
             {!showPanel && overview && (ov.flat.length > 0 ? (
               <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
-                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} scrollRef={ovRef} armed={armed} />
+                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} />
             ) : loaded && !waitingSem ? (
               <div className="none">
                 {isRecent ? (
