@@ -132,7 +132,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .crow .cn { min-width: 0; }
 .crow .n { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .crow small { display: block; font-size: 12.5px; color: var(--fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.crow > small { font-weight: 500; color: var(--fg2); display: block; font-variant-numeric: tabular-nums; }
+.crow > small { font-weight: 500; color: var(--fg2); display: block; text-align: right; font-variant-numeric: tabular-nums; }
 .pl:focus-visible .crow.cur { outline: 2px solid var(--acc); outline-offset: 2px; border-radius: 8px; }
 .ck { width: 18px; height: 18px; border-radius: 5px; box-shadow: inset 0 0 0 1.5px var(--fg3); display: grid; place-items: center; color: transparent; }
 .ck.on { background: var(--acc); box-shadow: none; color: var(--acc-ink); }

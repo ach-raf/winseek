@@ -91,13 +91,13 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .nm.hasp .pct { flex: none; }
 .pv-pct { display: inline-block; margin-top: 6px; font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 20px; background: color-mix(in oklab, var(--acc) 28%, var(--bg3)); color: var(--fg); }
 .row.sel .pct { background: color-mix(in oklab, var(--acc) 40%, var(--bg)); color: var(--fg); }
-.dt, .sz { font-size: 12.5px; color: var(--fg3); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
+.dt, .sz { font-size: 12.5px; color: var(--fg2); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .sz { display: none; }
 .go { display: none; align-items: center; gap: 7px; font-size: 12.5px; font-weight: 500; color: var(--fg2); white-space: nowrap; }
 .row.sel .go { display: inline-flex; }
 .row.sel .dt { display: none; }
 .row.sel kbd { background: color-mix(in oklab, var(--acc) 45%, var(--bg)); color: var(--fg); }
-.row.top { min-height: 72px; grid-template-columns: 52px 1fr auto; gap: 14px; padding: 9px 14px 9px 10px; }
+.row.top { min-height: 72px; grid-template-columns: 52px 1fr auto; gap: var(--sp-3); padding: 9px var(--sp-3) 9px 10px; }
 .row.top .nm { font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
 .row.top .sub { font-size: 13px; margin-top: 2px; }
 .row.top .ic { width: 52px; height: 52px; }
@@ -292,7 +292,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* the full window's page gutter (--gut, base.css): filter pills, column heads and row content start on it */
 .shell.full .frow { padding: 0 var(--gut) var(--sp-3); }
 .shell.full .list { padding: var(--sp-1) var(--sp-3) 14px; }
-.shell.full .colh, .shell.full .colh.dense { padding: var(--sp-2) 24px 6px var(--gut); } /* 24 right = the scrollbar lane */
+.shell.full .colh, .shell.full .colh.dense { padding: var(--sp-2) 34px 6px var(--gut); } /* 24 + the list's 10px scrollbar lane, so Modified/Size sit exactly over the row values */
 /* section headers sit inside the padded list (12px): 12 + 10 puts their text on the gutter, the same
  * line as the row icons and the filter chips above them */
 .shell.full .sh { padding-left: 10px; padding-right: 10px; }
