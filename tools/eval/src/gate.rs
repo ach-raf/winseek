@@ -67,7 +67,7 @@ pub fn report(rows: &[QueryRow]) -> String {
     };
     let (b, a) = (sum(&|r| &r.before), sum(&|r| &r.after));
     let pool: usize = rows.iter().map(|r| r.labelled.min(SHOW)).sum();
-    s += &format!("gate z>={} adj>={}  ({} queries, top {SHOW})\n", relevance::Z_MIN, relevance::ADJ_MIN, rows.len());
+    s += &format!("gate z>={}  ({} queries, top {SHOW})\n", relevance::Z_MIN, rows.len());
     s += &format!("{:<22} {:>10} {:>10}\n", "query", "before", "after");
     for r in rows {
         s += &format!("{:<22} {:>10} {:>10}\n", r.query, format!("{}/{}", r.before.relevant, r.before.shown), format!("{}/{}", r.after.relevant, r.after.shown));
