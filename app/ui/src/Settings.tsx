@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, RerankState, StatusModels, StatusReranker, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
@@ -143,7 +143,7 @@ function UpdatesRow({ backend, onError }: { backend: Backend; onError: (e: unkno
     setU((c) => (c ? { ...c, enabled: v } : c));
     backend.updatesSetEnabled(v).then(setU).catch((e) => { onError(e); backend.updatesGet().then(setU).catch(onError); });
   };
-  const check = () => { setBusy(true); backend.updatesCheckNow().then(setU).catch(onError).finally(() => setBusy(false)); };
+  const check = () => { setBusy(true); backend.updatesCheckNow().then(setU).catch(() => {}).finally(() => setBusy(false)); };
   const note = u?.latest
     ? `${u.latest} is available.`
     : u && u.last_check > 0 ? `Up to date (checked ${formatDate(u.last_check * 1000)}).` : "Not checked yet.";
@@ -269,13 +269,16 @@ const engineName = (m: StatusModels) =>
   m.backend === "cpu" ? "the processor" : `${m.gpu ?? "the graphics card"} (${m.backend === "cuda12" ? "CUDA" : "Vulkan"})`;
 
 /** One component: installed status, or what can be done about it (download, progress, retry). */
-function ModelLine({ name, detail, act, optional, label, onGet, onCancel, children }: {
+function ModelLine({ name, detail, act, optional, label, onGet, onCancel, extra, children }: {
   name: string; detail?: string; act: RowAction;
   /** Missing is fine (pdfium arrives with the first PDF, the parser is an extra): no warning mark. */
   optional?: boolean;
   /** Button verb: "Download" or "Install". */
   label: string;
-  onGet: () => void; onCancel: () => void; children: ReactNode;
+  onGet: () => void; onCancel: () => void;
+  /** Shown in the control column once installed (a status chip and a switch). */
+  extra?: ReactNode;
+  children: ReactNode;
 }) {
   const ok = act.kind === "installed" ? true : optional ? null : false;
   const size = (b: number | null) => (b != null ? ` · ${formatSize(b)}` : "");
@@ -295,10 +298,35 @@ function ModelLine({ name, detail, act, optional, label, onGet, onCancel, childr
         {act.kind === "downloading" ? <button className="gbtn" onClick={onCancel}>Cancel</button>
           : act.kind === "failed" ? <button className="gbtn" onClick={onGet}>{paused ? "Resume" : "Retry"}{size(act.bytes)}</button>
           : act.kind === "download" ? <button className="gbtn" onClick={onGet}>{label}{size(act.bytes)}</button>
+          : act.kind === "installed" ? extra ?? null
           : null}
       </div>
       {act.kind === "downloading" && <div className="gsub"><Bar value={act.frac} label={`Downloading ${name}`} /></div>}
     </div>
+  );
+}
+
+const REFINER_CHIP: Record<RerankState, { text: string; cls: string }> = {
+  off: { text: "Off", cls: "" },
+  warming: { text: "Warming up", cls: " warm" },
+  ready: { text: "On", cls: " on" },
+  error: { text: "Unavailable", cls: " bad" },
+};
+
+/** The result refiner's switch and status chip (shown once its model is installed). */
+function RefinerControl({ backend, r, onChanged }: { backend: Backend; r: StatusReranker; onChanged: () => void }) {
+  const [pending, setPending] = useState<boolean | null>(null);
+  const on = pending ?? r.enabled;
+  const change = (v: boolean) => {
+    setPending(v);
+    backend.rerankSetEnabled(v).catch(() => {}).finally(() => { setPending(null); onChanged(); });
+  };
+  const chip = REFINER_CHIP[on ? (r.enabled ? r.state : "warming") : "off"];
+  return (
+    <>
+      <span className={"rr-chip" + chip.cls} role="status">{chip.text}</span>
+      <Switch checked={on} onChange={change} label="Refine search results" />
+    </>
   );
 }
 
@@ -419,6 +447,13 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
                 : lifeTotal > 0 ? `Done · ${fmt(lifeTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
                 : m.parser.server.running ? "Loaded" : "Installed"}
             </ModelLine>
+            <ModelLine name="Result refiner" optional
+                       act={act("reranker", m.reranker.present)} label="Install" onGet={get("reranker")} onCancel={models.cancel}
+                       extra={m.reranker.present ? <RefinerControl backend={backend} r={m.reranker} onChanged={reload} /> : undefined}>
+              {m.reranker.present
+                ? "Re-checks the top results for a closer match. Runs on the processor, no graphics memory."
+                : "Optional. Search already works without it — this re-checks the top results for a closer match. Runs on the processor, no graphics memory."}
+            </ModelLine>
           </div>
         </section>
       )}
@@ -436,13 +471,13 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
 
   const rescan = useCallback((letter: string) => {
     setBusy((b) => new Set(b).add(letter));
-    backend.rescanVolume(letter).then(reload).catch(onError).finally(() => {
+    backend.rescanVolume(letter).then(reload).catch(() => {}).finally(() => {
       setBusy((b) => { const n = new Set(b); n.delete(letter); return n; });
     });
   }, [backend, reload, onError]);
   const rebuild = useCallback(() => {
     setRebuilding(true);
-    backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
+    backend.tier1Rebuild().then(reload).catch(() => {}).finally(() => setRebuilding(false));
   }, [backend, reload, onError]);
 
   if (!page) {

@@ -155,7 +155,8 @@ export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause,
   // The optional document parser never blocks the default setup: it is a switch (and, once the rest is
   // installed, a separate offer).
   const [includeParser, setIncludeParser] = useState(false);
-  const optional = plan ? plan.items.filter((i) => i.optional) : [];
+  // Only the parser: the optional result refiner is offered in Settings, never in the first-run setup.
+  const optional = plan ? plan.items.filter((i) => i.optional && i.group === "parser") : [];
   const optMissing = optional.filter((i) => !i.present);
   const parserBytes = optMissing.reduce((a, i) => a + (i.bytes ?? 0), 0);
   const missing = plan ? plan.items.some((i) => !i.present && !i.optional) : false;

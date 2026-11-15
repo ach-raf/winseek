@@ -54,6 +54,8 @@ export interface OvSection {
   count?: boolean;
   /** `total` is only what was read so far (a quick top-k): "Show all" names no number. */
   open?: boolean;
+  /** The optional refiner re-checked this section's top hits (a quiet cue next to the title). */
+  refined?: boolean;
 }
 
 /** Photo grid columns in the compact popup (the full window shows 5, the app grid 6 / 8). */
@@ -100,9 +102,11 @@ export const WEAK_RATIO = 0.5;
 
 /** The "NN% match" a hit shows (row badge, photo tile, preview pill): one definition so they agree.
  *  `score` is the final ranking score relative to the best result of the list (1 = the top one), so the
- *  badge reads 100% on top and never rises down the list. Hits without a score (code, words only
+ *  badge reads 100% on top and never rises down the list. A hit the optional refiner re-checked shows
+ *  its own 0..1 probability instead. Hits without a score (code, words only
  *  before the models are installed) show none. */
-export function matchPct(sem: Pick<SemanticHit, "score" | "source"> | undefined | null): number | null {
+export function matchPct(sem: Pick<SemanticHit, "score" | "source" | "rerank"> | undefined | null): number | null {
+  if (sem && sem.source !== "code" && sem.rerank != null) return Math.max(1, Math.min(100, Math.round(sem.rerank * 100)));
   return sem && sem.source !== "code" && sem.score > 0 ? Math.max(1, Math.min(100, Math.round(sem.score * 100))) : null;
 }
 
@@ -159,6 +163,8 @@ export function buildOverview(opts: {
   picNameTotal?: number;
   /** `sem` is a quick top-k and relevant files were left out of it: "Show all" has more. */
   semMore?: boolean;
+  /** The optional refiner re-checked the top hits: the meaning section says so. */
+  reranked?: boolean;
   /** The folded section of the opened list ("Weaker matches", "Other names containing ...") is unfolded. */
   weakOpen?: boolean;
   /** Group the Files rows into kind sections (Folders / Documents / Pictures / …) with counts and folds. */
@@ -332,7 +338,7 @@ export function buildOverview(opts: {
     const cap = expand ? strong.length : DOCS;
     const items = strong.slice(0, cap).map((h): OvItem => ({ key: "s:" + h.path, section: "docs", hit: semHit(h), sem: h }));
     if (items.length) {
-      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, more: !expand && (strong.length > items.length || weak.length > 0 || !!opts.semMore), open: !expand && !!opts.semMore });
+      sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, refined: !!opts.reranked, more: !expand && (strong.length > items.length || weak.length > 0 || !!opts.semMore), open: !expand && !!opts.semMore });
     }
     if (expand === "docs" && weak.length) {
       const open = !!opts.weakOpen;

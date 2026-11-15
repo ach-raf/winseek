@@ -355,3 +355,8 @@ dialog.confirm::backdrop {
 .op-row { display: inline-flex; align-items: center; gap: 10px; flex: none; }
 .op-row input[type=range] { accent-color: var(--acc); width: 150px; }
 .op-val { min-width: 40px; text-align: right; font: 500 12.5px/1 var(--mono); color: var(--fg2); }
+/* result refiner: status chip next to its switch */
+.rr-chip { font-size: 12px; color: var(--fg3); white-space: nowrap; }
+.rr-chip.on { color: var(--ok); }
+.rr-chip.warm { color: var(--warn); }
+.rr-chip.bad { color: var(--danger); }

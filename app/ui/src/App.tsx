@@ -397,12 +397,12 @@ export default function App({ backend }: { backend: Backend }) {
     () => (isRecent
       ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
       : buildOverview({
-        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, semMore: sem.more, text: parsed.text,
+        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, semMore: sem.more, reranked: sem.reranked, text: parsed.text,
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen, groupByKind, kindFolds],
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen, groupByKind, kindFolds],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);

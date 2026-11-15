@@ -81,6 +81,8 @@ export interface SemanticHit {
   source?: "meaning" | "text" | "code";
   /** Where the query words sit on the image / PDF page (fractions 0-1); only boxes that contain a query word. */
   boxes?: HitBox[] | null;
+  /** Reranker probability that the file answers the query (0..1); null when it was not re-checked. Shown as the match badge. */
+  rerank?: number | null;
 }
 /** A rectangle on an image or PDF page, as fractions 0-1 of its size. */
 export interface HitBox {
@@ -109,6 +111,8 @@ export interface SemanticResult {
   total?: number;
   /** More relevant files exist than were returned. */
   more?: boolean;
+  /** The optional reranker re-checked the top hits (they carry `rerank`). */
+  reranked?: boolean;
 }
 export interface PlanItem {
   name: string;
@@ -121,7 +125,7 @@ export interface PlanItem {
   group: ModelGroup;
 }
 /** One component of search by meaning: the llama.cpp build, the embedding model, pdfium, the optional parser. */
-export type ModelGroup = "llama" | "embedder" | "pdfium" | "parser";
+export type ModelGroup = "llama" | "embedder" | "pdfium" | "parser" | "reranker";
 /** Tier 1 ignore list: folder/file names skipped anywhere inside the indexed folders. */
 export interface IgnoreList {
   list: string[];
@@ -231,6 +235,21 @@ export interface StatusPdfium {
   /** On-disk size of the DLL; null when missing. */
   bytes: number | null;
 }
+/** Optional result refiner (reranker model). `state`: off / warming (loading) / ready / error. */
+export type RerankState = "off" | "warming" | "ready" | "error";
+export interface StatusReranker {
+  model_id: string;
+  present: boolean;
+  enabled: boolean;
+  state: RerankState;
+  files: StatusModelFile[];
+}
+/** Answer of `rerank_set_enabled`. */
+export interface RerankSet {
+  present: boolean;
+  enabled: boolean;
+  state: RerankState;
+}
 /** The document parser (Infinity-Parser2) as the status page shows it. */
 export interface StatusParser {
   model_id: string;
@@ -314,6 +333,7 @@ export interface StatusModels {
   pdfium: StatusPdfium;
   server: { running: boolean; port: number | null; unload_in_s: number | null; idle_unload_s: number };
   parser: StatusParser;
+  reranker: StatusReranker;
 }
 export interface StatusPage {
   tier0: StatusTier0;
@@ -583,6 +603,8 @@ export interface Backend {
   modelsDownload(includeParser?: boolean, groups?: ModelGroup[]): Promise<void>;
   /** Aborts but keeps partial files; a later modelsDownload resumes. */
   modelsCancel(): Promise<void>;
+  /** Turns the optional result refiner on or off (CPU only); resolves to its state after the change. */
+  rerankSetEnabled(enabled: boolean): Promise<RerankSet>;
   /** Try the audio / video tool (ffmpeg) download again now. */
   ffmpegRetry(): Promise<void>;
   onModelsProgress(cb: (p: ModelsProgress) => void): Promise<() => void>;

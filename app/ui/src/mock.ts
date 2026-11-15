@@ -3,7 +3,7 @@
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
 import { mockDiskUsage, mockUsageDetail } from "./mockUsage";
 import type { ViewMode, ViewState } from "./viewMode";
-import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, RerankSet, RerankState, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -142,8 +142,15 @@ const PARSER_ITEMS: MockItem[] = [
   { name: "Document parser model", bytes: 1274396736, real: 1274396736, group: "parser" },
   { name: "Document parser vision projector", bytes: 336000000, real: 336000000, group: "parser" },
 ];
+// Optional result refiner (Qwen3-Reranker). ?reranker=0: not installed, so Settings offers the download.
+const RERANK_ITEMS: MockItem[] = [
+  { name: "Reranker model", bytes: 495_000_000, real: 495_000_000, group: "reranker" },
+];
 const missingParam = new Set((params.get("missing") ?? "").split(",").filter(Boolean));
 const parserInstalled = params.get("parser") !== "0" && !missingParam.has("parser");
+const rerankerInstalled = params.get("reranker") !== "0" && !missingParam.has("reranker");
+let rerankOn = params.get("reranker") === "on";
+let rerankWarmAt = 0; // when it was switched on (it "warms up" for a couple of seconds)
 let lastParseAt: number | null = null; // when the parser server was last used (it unloads after IDLE_UNLOAD_S)
 let mockProfile: Profile = "balanced";
 let modelsInstalled = params.get("models") === "1";
@@ -174,11 +181,14 @@ const itemHave = (i: { name: string; real: number }) => (dlDone[i.name] ?? 0) >=
 // Installed parts start out "downloaded": ?models=1 everything but ?missing=…, the parser unless ?parser=0.
 for (const i of MOCK_ITEMS) if (modelsInstalled && !missingParam.has(i.group) && !(i.group === "pdfium" && params.get("pdfium") === "0")) dlDone[i.name] = i.real;
 if (parserInstalled) for (const i of PARSER_ITEMS) dlDone[i.name] = i.real;
+if (rerankerInstalled) for (const i of RERANK_ITEMS) dlDone[i.name] = i.real;
 /** Search by meaning runs once the llama build and the embedding model are there. */
 const coreHave = () => MOCK_ITEMS.filter((i) => i.group !== "pdfium").every(itemHave);
 modelsInstalled = coreHave();
-const groupHave = (g: ModelGroup) => [...MOCK_ITEMS, ...PARSER_ITEMS].filter((i) => i.group === g).every(itemHave);
+const groupHave = (g: ModelGroup) => [...MOCK_ITEMS, ...PARSER_ITEMS, ...RERANK_ITEMS].filter((i) => i.group === g).every(itemHave);
 const parserHave = () => groupHave("parser");
+const rerankerHave = () => groupHave("reranker");
+const rerankState = (): RerankState => (!rerankerHave() || !rerankOn ? "off" : performance.now() - rerankWarmAt < 2500 ? "warming" : "ready");
 // ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there (first run included).
 const pdfiumHave = () => groupHave("pdfium") || (!modelsInstalled && params.get("pdfium") !== "0" && !missingParam.has("pdfium"));
 
@@ -186,7 +196,7 @@ async function runDownload(groups: ModelGroup[]) {
   dlRunning = true;
   dlCancel = false;
   // Only what is missing in the asked-for parts is downloaded.
-  const items = [...MOCK_ITEMS, ...PARSER_ITEMS].filter((i) => groups.includes(i.group) && !itemHave(i));
+  const items = [...MOCK_ITEMS, ...PARSER_ITEMS, ...RERANK_ITEMS].filter((i) => groups.includes(i.group) && !itemHave(i));
   const all = items.reduce((a, i) => a + i.real, 0);
   const fail = (error: string) => { dlRunning = false; doneCbs.forEach((f) => f({ ok: false, error })); };
   for (const item of items) {
@@ -338,6 +348,15 @@ function mockStatusPage(): StatusPage {
         port: running ? SERVER_PORT : null,
         unload_in_s: running ? Math.max(0, Math.round(IDLE_UNLOAD_S - idleFor)) : null,
         idle_unload_s: IDLE_UNLOAD_S,
+      },
+      reranker: {
+        model_id: "qwen3-reranker-0.6b",
+        present: rerankerHave(),
+        enabled: rerankOn,
+        state: rerankState(),
+        files: [
+          { name: "Qwen3-Reranker-0.6B.Q8_0.gguf", role: "model", expected_bytes: 495000000, bytes: rerankerHave() ? 495000000 : null },
+        ],
       },
       parser: {
         model_id: "infinity-parser2-flash",
@@ -945,9 +964,12 @@ export const mockBackend: Backend = {
       // The app sends two numbers: the score on the gate's scale, and the same relative to the best hit.
       .map((h, _i, arr) => ({ ...h, rank: 4 + (h.score - 0.297) * 12, score: Math.max(0.01, h.score / arr[0]!.score) })); // map only runs when arr is non-empty
     // Like the app: a small first page is the quick top-k, anything else a page of the whole list.
+    // With the optional refiner on, the top 10 are re-checked: they carry a 0..1 probability instead of the relative score.
+    const refined = rerankState() === "ready" && all.length > 0;
+    if (refined) all.slice(0, 10).forEach((h, i) => { h.rerank = Math.max(0.05, 0.96 - i * 0.085 - 0.05 * hash01(q + "|rr|" + h.path)); });
     const hits = all.slice(offset, offset + Math.max(1, k));
     const deep = offset > 0 || k > 200;
-    return { state: st, hits, total: deep ? all.length : hits.length, more: offset + hits.length < all.length };
+    return { state: st, hits, total: deep ? all.length : hits.length, more: offset + hits.length < all.length, reranked: refined };
   },
   async parserPresent() { await sleep(20); return parserHave(); },
   async parseDocument(path, page): Promise<ParsedDoc> {
@@ -1043,6 +1065,7 @@ export const mockBackend: Backend = {
     const items: ModelsPlan["items"] = [
       ...MOCK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: itemHave(i), group: i.group })),
       ...PARSER_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: itemHave(i), optional: true, group: i.group })),
+      ...RERANK_ITEMS.map((i) => ({ name: i.name, bytes: i.bytes, present: itemHave(i), optional: true, group: i.group })),
     ];
     return {
       backend: MOCK_BACKEND,
@@ -1059,6 +1082,13 @@ export const mockBackend: Backend = {
     void runDownload(groups ?? ["llama", "embedder", "pdfium", ...(includeParser ? ["parser" as const] : [])]);
   },
   async modelsCancel() { dlCancel = true; },
+  async rerankSetEnabled(enabled): Promise<RerankSet> {
+    await sleep(60);
+    if (!rerankerHave()) throw new Error("The result refiner is not installed.");
+    if (enabled && !rerankOn) rerankWarmAt = performance.now();
+    rerankOn = enabled;
+    return { present: true, enabled: rerankOn, state: rerankState() };
+  },
   async ffmpegRetry() {},
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },

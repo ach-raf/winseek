@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -96,6 +96,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     modelsPlan: () => inv<ModelsPlan>("models_plan"),
     modelsDownload: (includeParser, groups) => inv("models_download", { includeParser: !!includeParser, groups: groups ?? null }),
     modelsCancel: () => inv("models_cancel"),
+    rerankSetEnabled: (enabled) => inv<RerankSet>("rerank_set_enabled", { enabled }),
     ffmpegRetry: () => inv("ffmpeg_retry"),
     onModelsProgress: (cb) => t.event.listen<ModelsProgress>("models-progress", (e) => cb(e.payload)),
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),

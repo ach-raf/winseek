@@ -259,6 +259,21 @@ test("matchPct is the one number behind the badge and the preview pill", () => {
   assert.equal(matchPct(undefined), null);
 });
 
+test("matchPct shows the refiner's probability when the hit was re-checked", () => {
+  assert.equal(matchPct({ score: 0.4, source: "meaning", rerank: 0.873 }), 87);
+  assert.equal(matchPct({ score: 1, source: "meaning", rerank: 0.001 }), 1);
+  assert.equal(matchPct({ score: 0.5, source: "meaning", rerank: 1 }), 100);
+  assert.equal(matchPct({ score: 0.4, source: "meaning", rerank: null }), 40, "not re-checked: the relative score");
+  assert.equal(matchPct({ score: 0.4, source: "code", rerank: 0.9 }), null);
+});
+
+test("the meaning section carries the Refined cue only when the refiner ran", () => {
+  const s = [sem("a.pdf"), sem("b.pdf"), sem("c.pdf")];
+  const docs = (reranked: boolean) => buildOverview({ names: [], nameTotal: 0, sem: s, text: "x", expand: null, isImage: () => false, reranked }).sections.find((x) => x.id === "docs");
+  assert.equal(docs(true)?.refined, true);
+  assert.equal(docs(false)?.refined, false);
+});
+
 test("groupByKind splits the Files rows into kind sections with counts and folds", () => {
   const dir = (name: string): Hit => ({ ...hit(name), is_dir: true });
   const names = [hit("readme.md"), hit("notes.pdf"), hit("cat.jpg"), hit("clip.mp4"), hit("song.flac"), hit("backup.zip"), hit("tool.exe"), dir("work"), hit("report.docx")];
