@@ -164,7 +164,8 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     setTab("tree"); setFocus(dir); setSel(h.path); if (root) { openChain(h.path, root); }
   }, [root, openChain]);
 
-  const recycle = (p: string) => { void actions.recycle([p]); setSel(null); };
+  // The selection clears only once the recycle really happened (the confirm dialog may answer no).
+  const recycle = async (p: string) => { await actions.recycle([p]); setSel(null); };
 
   // ---- keyboard (tree) ---------------------------------------------------------------------------------------
   const nodeRows = useMemo(() => rows.filter((r) => r.type === "node"), [rows]);
@@ -189,7 +190,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
       else { const pr = parentPath(cur.entry!.path); const i = nodeRows.findIndex((r) => r.entry!.path === pr); if (i >= 0) goRow(i); }
     } else if (e.key === " " && cur?.entry!.is_dir) { e.preventDefault(); toggle(cur.entry!.path); }
     else if (e.key === "Enter" && cur) { e.preventDefault(); if (cur.entry!.is_dir) enterRoot(cur.entry!.path); else actions.open(cur.entry!.path); }
-    else if (e.key === "Delete" && sel) { e.preventDefault(); recycle(sel); }
+    else if (e.key === "Delete" && sel) { e.preventDefault(); void recycle(sel); }
     else if ((e.key === "Backspace" || (e.altKey && e.key === "ArrowLeft") || e.key === "Escape") && root) { e.preventDefault(); up(); }
   };
 

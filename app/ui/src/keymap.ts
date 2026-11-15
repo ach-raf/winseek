@@ -33,7 +33,7 @@ export const KEYMAP: KeyDef[] = [
   { id: "popup.admin", keys: ["Ctrl+Shift+Enter"], label: "Run as administrator (apps)", scope: "popup", group: "Selection" },
   { id: "popup.properties", keys: ["Alt+Enter"], label: "Properties", scope: "popup", group: "Selection" },
   { id: "popup.rename", keys: ["F2"], label: "Rename", scope: "popup", group: "Selection" },
-  { id: "popup.recycle", keys: ["Delete"], label: "Move to Recycle Bin", scope: "popup", group: "Selection" },
+  { id: "popup.recycle", keys: ["Delete"], label: "Move to Recycle Bin (press Delete twice)", scope: "popup", group: "Selection" },
   { id: "popup.undo", keys: ["Ctrl+Z"], label: "Undo recycle", scope: "popup", group: "Selection" },
   { id: "popup.menu", keys: ["Shift+F10", "Menu"], label: "Context menu", scope: "popup", group: "Selection" },
   { id: "popup.more", keys: ["Ctrl+K"], label: "More actions (context menu)", scope: "popup", group: "Selection" },

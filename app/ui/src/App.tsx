@@ -799,6 +799,21 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
   useEffect(() => { setArmed(null); }, [oselKey, query]); // selection / query change disarms
 
+  // Recycle asks twice (the launcher commands' second-Enter pattern): the first Delete arms for
+  // 4 s, the second one recycles. The message rides the toast; Esc or a moved selection disarms.
+  const delTimer = useRef<number | undefined>(undefined);
+  const [delArm, setDelArm] = useState(false);
+  const armDel = useCallback(() => {
+    window.clearTimeout(delTimer.current);
+    setDelArm(true);
+    delTimer.current = window.setTimeout(() => setDelArm(false), 4000);
+  }, []);
+  const disarmDel = useCallback(() => {
+    window.clearTimeout(delTimer.current);
+    setDelArm(false);
+  }, []);
+  useEffect(() => { disarmDel(); }, [current?.path, query, disarmDel]);
+
   const launchAct = useCallback(async (h: LaunchHit, mode: "open" | "reveal" | "copy" | "admin") => {
     const id = h.item.id;
     const q = parsed.text;
@@ -1126,6 +1141,7 @@ export default function App({ backend }: { backend: Backend }) {
           e.preventDefault();
           if (cheat) setCheat(false);
           else if (armed) setArmed(null);
+          else if (delArm) disarmDel();
           else if (launchMenu) setLaunchMenu(null);
           else if (pvOpen) { setPvOpen(false); navigated.current = false; }
           else if (expand && !setupOpenRef.current) setExpand(null);
@@ -1180,6 +1196,13 @@ export default function App({ backend }: { backend: Backend }) {
         case "Delete":
           if (atEnd && current && !ovItem?.launch) { // launch rows: nothing to delete
             e.preventDefault();
+            // Are-you-sure: the first Delete arms ("press Delete again"), the second recycles.
+            if (!delArm) {
+              armDel();
+              flash(`Press Delete again to move “${current.name}” to the Recycle Bin`, false, 4000);
+              break;
+            }
+            disarmDel();
             if (curIdx !== undefined) void doRecycle(curIdx);
             else backend.recycle([current.path]).then(() => { pushUndo({ kind: "recycle", paths: [current.path] }, "Moved to Recycle Bin"); setEpoch((x) => x + 1); }).catch(fail);
           }
@@ -1201,7 +1224,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols, changeSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols, changeSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();

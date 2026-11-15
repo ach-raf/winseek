@@ -6,6 +6,8 @@ import { formatSize } from "./format";
 import { pausedText } from "./statusVerdict";
 import { trapKey } from "./trap";
 import { Grp, Row, XIcon } from "./settingsUi";
+import { useConfirm } from "./Confirm";
+import { removeFolderAsk } from "./confirmLogic";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 
@@ -34,6 +36,8 @@ export function Folders({ t1, onChange, onRemove, estimate }: {
   const [pending, setPending] = useState<Pending | null>(null);
   const [known, setKnown] = useState<string[]>([]); // every folder seen this session, so an unchecked one can be re-checked
   const [text, setText] = useState("");
+  // Removal forgets what was indexed, so it asks first (the shared "are you sure" dialog).
+  const rmConfirm = useConfirm();
   const include = t1?.include ?? [];
   useEffect(() => {
     setKnown((k) => {
@@ -57,13 +61,17 @@ export function Folders({ t1, onChange, onRemove, estimate }: {
   };
   const confirm = () => { if (pending) onChange([...include, pending.path]); setPending(null); };
   // Removal is final (the backend forgets the folder's indexed files), unlike unchecking,
-  // which keeps both the entry and the data for a quick re-check.
+  // which keeps both the entry and the data for a quick re-check — hence the ask.
   const remove = (p: string) => {
-    setKnown((k) => k.filter((x) => x.toLowerCase() !== p.toLowerCase()));
-    onRemove(p);
+    void rmConfirm.askIt(removeFolderAsk(p)).then((ok) => {
+      if (!ok) return;
+      setKnown((k) => k.filter((x) => x.toLowerCase() !== p.toLowerCase()));
+      onRemove(p);
+    });
   };
   return (
-    <Grp title={`Folders to index${known.length > 0 ? ` · ${known.length}` : ""}`}>
+    <>
+      <Grp title={`Folders to index${known.length > 0 ? ` · ${known.length}` : ""}`}>
       {/* the add box leads: it is the primary action, the list below is what is already there */}
       <div className="grow addrow">
         <input className="gin" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
@@ -100,7 +108,9 @@ export function Folders({ t1, onChange, onRemove, estimate }: {
         </div>
       )}
       {known.length === 0 && <div className="grow none">No folders yet</div>}
-    </Grp>
+      </Grp>
+      {rmConfirm.node}
+    </>
   );
 }
 
@@ -177,7 +187,7 @@ export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause,
 
   return (
     <section ref={root} className="firstrun setup" aria-label="Search by meaning setup"
-             onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else trapKey(e); }}>
+             onKeyDown={(e) => { if ((e.target as Element | null)?.closest?.("dialog")) return; /* the confirm dialog owns the keys while open */ if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else trapKey(e); }}>
       <h2>Want search by meaning?</h2>
       <p>Search &ldquo;sunset at the beach&rdquo; and get beach photos, whatever they&rsquo;re named. Everything stays on this PC. Name search already works — this only adds meaning.</p>
       {doneList}

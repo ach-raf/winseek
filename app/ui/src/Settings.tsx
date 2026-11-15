@@ -16,6 +16,7 @@ import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./a
 import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
+import { ConfirmButton } from "./Confirm";
 import { IChevL, ISearch } from "./icons";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -510,7 +511,8 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
 
       <Grp title="Activity">
         <Row title="Last 50 calls" desc="Who called what, and whether it worked. Paths are shown; file contents never are.">
-          <button className="gbtn" onClick={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0}>Clear log</button>
+          <ConfirmButton label="Clear log" confirmLabel="Sure? Clear the log"
+                         onConfirm={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0} />
         </Row>
         <div className="grow stack">
           <ul className="agent-log" aria-label="Agent activity">
@@ -715,7 +717,8 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
           );
         })}
         <Row title="Usage history" desc="Results you pick get a boost next time. Clearing forgets that, not the catalog.">
-          <button className="gbtn" onClick={() => backend.launchClearHistory().catch(onError)}>Clear</button>
+          <ConfirmButton label="Clear" confirmLabel="Sure? Clear history"
+                         onConfirm={() => backend.launchClearHistory().catch(onError)} />
         </Row>
       </Grp>
     </>
@@ -778,6 +781,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   return (
     <section className={"firstrun settings" + (embedded ? " embedded" : "")} aria-label="Settings"
              onKeyDown={(e) => {
+               if ((e.target as Element | null)?.closest?.("dialog")) return; // a confirm dialog owns the keys while open
                if (e.key === "Escape") {
                  e.preventDefault(); e.stopPropagation();
                  if (find) { setFind(""); return; } // the first Esc clears a search in progress

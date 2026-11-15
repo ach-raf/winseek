@@ -14,6 +14,8 @@ import { useTier1, useModels } from "./hooks";
 import { groupByMonth } from "./libraryLogic";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
+import { useConfirm } from "./Confirm";
+import { recycleAsk } from "./confirmLogic";
 
 export type LibTab = "timeline" | "collections" | "cleanup";
 const TABS: LibTab[] = ["timeline", "collections", "cleanup"];
@@ -91,6 +93,9 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const undoRef = useRef<string[] | null>(null);
   const [cheat, setCheat] = useState(false); // F1 / Ctrl+/
   const [status, setStatus] = useState<VolumeStatus[]>([]);
+  // The "are you sure" gate for destructive actions: every recycle in this window asks here first.
+  // Destructured so callers depend on the stable functions, not the fresh-each-render object.
+  const { open: confirmOpen, askIt: askConfirm, dismiss: dismissConfirm, node: confirmNode } = useConfirm();
 
   const done = t1?.stats?.done ?? 0;
   const gen = useSettled(done, 20000);
@@ -171,18 +176,26 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     },
     recycle: async (paths) => {
       if (paths.length === 0) return;
+      // The are-you-sure gate: single hit or whole batch, nothing recycles before it is answered.
+      if (!(await askConfirm(recycleAsk(paths)))) return;
       try {
         await backend.recycle(paths);
         trashed(paths);
       } catch (e) { fail(e); }
     },
-  }), [backend, fail, flash, trashed]);
+  }), [backend, fail, flash, trashed, askConfirm]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (combos("library.cheatsheet").some((c) => matches(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (cheat && e.key === "Escape") { e.preventDefault(); setCheat(false); return; }
+      // An open confirm dialog owns every key until it is answered (focus starts on Cancel, so
+      // Enter answers no; Tab+Enter or a click go through). Esc / Alt+Left answer no as well.
+      if (confirmOpen) {
+        if (e.key === "Escape" || matches(e, "Alt+Left")) { e.preventDefault(); dismissConfirm(); }
+        return;
+      }
       if (showSettings && (e.key === "Escape" || matches(e, "Alt+Left"))) { e.preventDefault(); setShowSettings(false); return; }
       if (!embedded && e.ctrlKey && !e.shiftKey && !e.altKey) {
         const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
@@ -202,7 +215,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo, goBack, cheat, embedded, showSettings]);
+  }, [doUndo, goBack, cheat, embedded, showSettings, confirmOpen, dismissConfirm]);
 
   // A tab switch puts the keyboard on the tab's main widget (gallery, first collection, cleanup list).
   useEffect(() => {
@@ -281,6 +294,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {tab === "cleanup" && <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} drive={drive} />}
       </main>
       {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
+      {confirmNode}
       {toast && (
         <div className="lib-toast" role="status">
           {toast.msg}
