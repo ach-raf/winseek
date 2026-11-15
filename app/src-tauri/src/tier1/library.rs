@@ -474,6 +474,7 @@ impl Tier1 {
                     at: super::media::locator_time(h.locator.as_deref()),
                     source: "meaning",
                     boxes: None,
+                    rerank: None,
                 }
             })
             .collect();

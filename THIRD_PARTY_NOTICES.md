@@ -30,3 +30,10 @@ BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR P
 NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM,
 DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+## Qwen3-Reranker-0.6B (optional download)
+
+The optional reranker model is Qwen3-Reranker-0.6B by the Qwen team (Alibaba Cloud), Apache License 2.0
+(https://huggingface.co/Qwen/Qwen3-Reranker-0.6B). winseek downloads the Q6_K GGUF conversion published
+in the Hugging Face repository Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp, pinned by commit and sha256
+in `crates/llama/manifest.json`. The file is not bundled with winseek.

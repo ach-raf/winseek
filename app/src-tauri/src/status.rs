@@ -340,6 +340,19 @@ pub struct ParserState {
     pub live: Option<crate::tier1::parse_pass::ParseLive>,
 }
 
+/// The optional reranker (Qwen3-Reranker): file, switch and server state.
+#[derive(Debug, Clone, Serialize)]
+pub struct RerankerDto {
+    pub model_id: &'static str,
+    /// Model file and a llama build are on disk.
+    pub present: bool,
+    /// Present and not switched off.
+    pub enabled: bool,
+    /// "off" | "warming" | "ready" | "error"
+    pub state: &'static str,
+    pub files: Vec<ModelFileDto>,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ModelsPageDto {
     pub llama_build: String,
@@ -354,6 +367,7 @@ pub struct ModelsPageDto {
     pub pdfium: PdfiumDto,
     pub server: ServerDto,
     pub parser: ParserDto,
+    pub reranker: RerankerDto,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -556,6 +570,7 @@ fn models_section(
     det: &Detected,
     rt: RuntimeInfo,
     parser: ParserState,
+    reranker: tier1::RerankStatus,
 ) -> ModelsPageDto {
     ModelsPageDto {
         llama_build: manifest.llama.build.clone(),
@@ -578,6 +593,21 @@ fn models_section(
             idle_unload_s: embedder::IDLE_UNLOAD.as_secs(),
         },
         parser: parser_section(root, manifest, parser),
+        reranker: RerankerDto {
+            model_id: tier1::reranker::MODEL_ID,
+            present: reranker.present,
+            enabled: reranker.enabled,
+            state: reranker.state,
+            files: root
+                .map(|r| {
+                    files_of(
+                        manifest,
+                        tier1::reranker::MODEL_ID,
+                        &embedder::models_dir(r),
+                    )
+                })
+                .unwrap_or_default(),
+        },
     }
 }
 
@@ -665,11 +695,26 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
                 live: t.parse_live(),
             })
             .unwrap_or_default();
+        let reranker = worker
+            .as_ref()
+            .map(|t| t.rerank_status())
+            .unwrap_or(tier1::RerankStatus {
+                present: false,
+                enabled: false,
+                state: "off",
+            });
         let det = app.state::<Models>().detected();
         let root = tier1::data_root();
         (
             tier1_section(worker.as_deref(), why),
-            models_section(root.as_deref(), &Manifest::embedded(), &det, rt, parser),
+            models_section(
+                root.as_deref(),
+                &Manifest::embedded(),
+                &det,
+                rt,
+                parser,
+                reranker,
+            ),
         )
     });
     let tier0 = t0.await.map_err(|e| e.to_string())?;
@@ -827,6 +872,11 @@ mod tests {
                 unload_in_s: Some(90),
             },
             ParserState::default(),
+            tier1::RerankStatus {
+                present: false,
+                enabled: false,
+                state: "off",
+            },
         );
         assert!(!m.llama_present && m.files.is_empty());
         assert_eq!(
@@ -962,6 +1012,11 @@ mod tests {
                 },
                 RuntimeInfo::default(),
                 ParserState::default(),
+                tier1::RerankStatus {
+                    present: true,
+                    enabled: false,
+                    state: "off",
+                },
             ),
         };
         let v = serde_json::to_value(&page).unwrap();
@@ -985,6 +1040,14 @@ mod tests {
         );
         assert_eq!(v["models"]["parser"]["profile"], "balanced");
         assert_eq!(v["models"]["parser"]["routing"]["provisional"], false);
+        assert_eq!(v["models"]["reranker"]["model_id"], "qwen3-reranker-0.6b");
+        assert_eq!(v["models"]["reranker"]["present"], true);
+        assert_eq!(v["models"]["reranker"]["enabled"], false);
+        assert_eq!(v["models"]["reranker"]["state"], "off");
+        assert!(v["models"]["reranker"]["files"]
+            .as_array()
+            .unwrap()
+            .is_empty());
     }
 
     #[test]

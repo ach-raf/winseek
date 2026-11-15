@@ -205,6 +205,27 @@ mod tests {
     }
 
     #[test]
+    fn reranker_entry_is_pinned() {
+        let m = Manifest::embedded();
+        let e = m
+            .model("qwen3-reranker-0.6b", ModelProfile::Default)
+            .expect("reranker listed");
+        assert_eq!(e.files.len(), 1);
+        let f = &e.files[0];
+        assert_eq!(f.role, ModelRole::Model);
+        assert_eq!(f.file_name(), "Qwen3-Reranker-0.6B-Q6_K.gguf");
+        assert_eq!(
+            f.sha256,
+            "5916ab2926388177a0a7b6eedfd909d214a29592ce35153a7d9ff86c08e4b99e"
+        );
+        assert!(!is_unpinned(&f.sha256));
+        assert_eq!(f.size, 494_879_136);
+        assert!(m
+            .model("qwen3-reranker-0.6b", ModelProfile::Quality)
+            .is_none());
+    }
+
+    #[test]
     fn pdfium_entry_is_pinned() {
         let p = Manifest::embedded().pdfium;
         assert_eq!(p.build, "7881");

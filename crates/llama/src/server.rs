@@ -20,6 +20,9 @@ pub enum Role {
     EmbedIndex,
     /// Chat / vision parsing (Infinity-Parser2).
     Parser,
+    /// Qwen3-Reranker-0.6B (`/v1/rerank`): CPU, ~0 VRAM, one slot. The ubatch holds a whole
+    /// query + document pair, otherwise llama-server rejects the request.
+    Rerank,
 }
 
 /// Resource profile (PLAN section 7). Only `Low` changes the argument lists.
@@ -116,6 +119,30 @@ pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
             "512",
             "-ub",
             "512",
+            "-ngl",
+            "0",
+            "--device",
+            "none",
+            "-t",
+            "4",
+            "-tb",
+            "4",
+        ],
+        Role::Rerank => &[
+            "--reranking",
+            "--embedding",
+            "--pooling",
+            "rank",
+            "--cache-ram",
+            "0",
+            "-np",
+            "1",
+            "-c",
+            "1024",
+            "-b",
+            "1024",
+            "-ub",
+            "1024",
             "-ngl",
             "0",
             "--device",
@@ -614,6 +641,21 @@ mod tests {
                 want(true, &tail),
                 "{profile:?}"
             );
+        }
+    }
+
+    #[test]
+    fn rerank_role_is_cpu_only_single_slot_with_rank_pooling() {
+        for p in ALL {
+            let a = args(Role::Rerank, p, false);
+            let has = |w: &[&str]| a.windows(w.len()).any(|x| x == w);
+            assert!(
+                has(&["--reranking", "--embedding", "--pooling", "rank"]),
+                "{a:?}"
+            );
+            assert!(has(&["-ngl", "0", "--device", "none"]), "{a:?}");
+            assert!(has(&["-np", "1"]) && has(&["-ub", "1024"]) && has(&["-c", "1024"]));
+            assert!(has(&["--cache-ram", "0"]));
         }
     }
 
