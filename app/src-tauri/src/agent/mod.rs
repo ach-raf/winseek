@@ -110,3 +110,55 @@ pub async fn agent_mcp_path() -> Result<McpPath, String> {
         exists: p.exists(),
     })
 }
+
+/// Where the command-line tools live and whether that directory is on PATH. The installer
+/// manages the machine PATH; the Settings row manages the user PATH (no elevation needed).
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct AgentPathState {
+    pub dir: String,
+    pub user_path: bool,
+    pub machine_path: bool,
+}
+
+fn path_state() -> Result<AgentPathState, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe
+        .parent()
+        .ok_or("no install directory")?
+        .to_string_lossy()
+        .into_owned();
+    let user = winseek_ipc::path_raw(false).map_err(|e| e.to_string())?;
+    let machine = winseek_ipc::path_raw(true).map_err(|e| e.to_string())?;
+    Ok(AgentPathState {
+        user_path: winseek_ipc::path_contains(&user, &dir),
+        machine_path: winseek_ipc::path_contains(&machine, &dir),
+        dir,
+    })
+}
+
+#[tauri::command]
+pub async fn agent_path_status() -> Result<AgentPathState, String> {
+    path_state()
+}
+
+#[tauri::command]
+pub async fn agent_path_set(enabled: bool) -> Result<AgentPathState, String> {
+    let exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = exe.parent().ok_or("no install directory")?.to_path_buf();
+    let dir = dir.to_string_lossy().into_owned();
+    crate::commands::blocking(move || {
+        if enabled {
+            winseek_ipc::add_to_path(&dir, false)
+        } else {
+            winseek_ipc::remove_from_path(&dir, false)
+        }
+    })
+    .await
+    .map_err(|e| e.to_string())?
+    .map_err(|e| e.to_string())?;
+    eprintln!(
+        "winseek: install dir {} the user PATH",
+        if enabled { "added to" } else { "removed from" }
+    );
+    path_state()
+}

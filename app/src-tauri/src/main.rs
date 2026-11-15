@@ -88,6 +88,8 @@ fn main() {
             agent::agent_log,
             agent::agent_clear_log,
             agent::agent_mcp_path,
+            agent::agent_path_status,
+            agent::agent_path_set,
             commands::search,
             commands::status,
             commands::app_version,
