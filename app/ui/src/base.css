@@ -1,7 +1,10 @@
 /* ===== winseek v4 design tokens =====
    Light ships as :root; :root[data-theme="dark"] swaps the dark values. The attribute is set
    by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
-   palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink). */
+   palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink).
+   Light is the iOS/macOS grouped-list recipe: a tinted grey canvas (--bg) that white surfaces
+   (--bg2) float on, lifted by --card-shadow; dark is layered graphite with recessed cards, so
+   the same rules read as raised in light and inset in dark — that asymmetry is the point. */
 :root {
   color-scheme: light;
   --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
@@ -9,13 +12,18 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #ffffff; --bg2: #f5f6f8; --bg3: #eceef2; --line: #e7e9ee;
+  --bg: #f3f4f6; --bg2: #ffffff; --bg3: #e6e8ed; --line: #dcdfe5;
   --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
   --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
   --paper: #ffffff; --paper-line: #cfd3db; --fold: #e3e6ec;
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
+  /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
+     are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
+     popovers, floating labels — softer than the window's --shadow, present in both themes. */
+  --card-shadow: 0 0 0 1px rgba(15,19,28,.05), 0 1px 2px rgba(15,19,28,.05), 0 4px 12px -4px rgba(15,19,28,.08);
+  --pop-shadow: 0 0 0 1px rgba(15,19,28,.07), 0 3px 8px rgba(15,19,28,.06), 0 16px 40px -8px rgba(15,19,28,.25);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 8px; --radius-lg: 14px;
   /* Spacing scale — the only horizontal rhythm. Micro paddings (0-3px) stay literal; anything
@@ -25,10 +33,10 @@
   --gut: var(--sp-5);
   --lcol: 348px; --setside: 200px;
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
-  /* Library-window sidebar surfaces. Dark gets a lifted, faintly accent-tinted
-     graphite (plain --bg2 was near-black); light keeps the classic scheme. */
-  --side: var(--bg2);
-  --side-card: var(--bg);
+  /* Library-window sidebar surfaces: both themes get a rail with its own identity, faintly
+     accent-tinted, distinct from the canvas — light a warm grey, dark a lifted graphite. */
+  --side: color-mix(in oklab, var(--acc) 3%, #eaebee);
+  --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -39,6 +47,8 @@
   --mark: transparent; --mark-fg: var(--acc);
   --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
   --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+  --card-shadow: none;
+  --pop-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 14px 34px -8px rgba(0,0,0,.55);
   --side: color-mix(in oklab, var(--acc) 5%, #23252c);
   --side-card: color-mix(in oklab, var(--acc) 6%, #2f323b);
 }
@@ -187,6 +197,10 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .nfilter input::placeholder { color: var(--fg3); }
 .nfilter .nfx { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; border: 0; background: none; color: var(--fg3); cursor: pointer; padding: 0; flex: none; }
 .nfilter .nfx:hover { color: var(--fg); background: var(--bg3); }
+/* In light the field sits on the grey canvas as a recessed well (dark's --bg2 role) and
+   brightens to white when focused; on a white sheet the --bg2/--bg defaults already do that. */
+:root[data-theme="light"] .nfilter { background: var(--bg3); }
+:root[data-theme="light"] .nfilter:focus-within { background: var(--bg2); }
 
 /* ---- chips: exactly two archetypes, defined here once ----
  * Filter chips (.fc) are CONTROLS that narrow the results: squared like the tabs they are, they

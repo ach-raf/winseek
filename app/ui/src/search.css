@@ -39,6 +39,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sortb { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; border-radius: 8px; font-size: 12px; font-weight: 500; color: var(--fg3); white-space: nowrap; }
 .sortb:hover { background: var(--bg3); color: var(--fg); }
 :root[data-theme="dark"] .dseg button.on { background: var(--bg3); }
+/* Light: grey track, white raised segment (macOS segmented control); the dark ramp does the
+   inverse (dark track on bg2, lighter bg3 segment). */
+:root[data-theme="light"] .dseg { background: var(--bg3); }
+:root[data-theme="light"] .dseg button.on { background: var(--bg2); }
 
 /* ---- results ---- */
 /* Row math: row text x = list padding + row padding. Popup: 8 + 8 = 16 (--sp-4). Full window:
@@ -67,6 +71,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
   color: var(--fg);
   box-shadow: inset 0 0 0 1px var(--line);
 }
+/* On the white overview sheet a white hover vanishes, so rows dim to the soft grey instead. */
+:root[data-theme="light"] .list.ov .row:hover { background: var(--bg3); }
 
 /* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
  * Chips are buttons that act on the query — never filter chips (.fc), never info chips (.qchip). */
@@ -162,7 +168,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* Full name on hover / selection (Finder opens the label the same way): it floats over the tile, so the
  * row never changes height, and it may be a little wider than the tile. */
 .atile:hover > span:not(.ic), .atile.sel > span:not(.ic) { position: absolute; z-index: 5; top: calc(14px + var(--ai) + 9px); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% + 20px); display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
-.atile:hover > span:not(.ic) { background: var(--bg3); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+.atile:hover > span:not(.ic) { background: var(--bg3); box-shadow: var(--pop-shadow); }
 .atile:active .ic { transform: scale(.94); }
 .atile.sel::before { background: color-mix(in oklab, var(--acc) 22%, transparent); box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 75%, transparent); }
 .atile.sel > span:not(.ic) { background: var(--acc); color: var(--acc-ink); font-weight: 600; }
@@ -175,7 +181,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* a tile that is there for its name: the word that put it there stands out */
 .tile.named mark { background: rgba(255,255,255,.26); border-radius: 3px; padding: 0 2px; margin: 0 -2px; }
 
-.calc { margin: var(--sp-2) var(--sp-2) 2px; padding: var(--sp-4); border-radius: 12px; background: var(--bg2); display: flex; align-items: center; gap: var(--sp-4); cursor: default; }
+.calc { margin: var(--sp-2) var(--sp-2) 2px; padding: var(--sp-4); border-radius: 12px; background: var(--bg2); box-shadow: var(--card-shadow); display: flex; align-items: center; gap: var(--sp-4); cursor: default; }
 .shell.full .calc { margin-left: 10px; margin-right: 10px; } /* 12 + 10 = the 22px gutter */
 .calc.sel { box-shadow: inset 0 0 0 2px var(--sel-line); }
 .calc .ex { font-size: 15px; color: var(--fg3); }
@@ -251,12 +257,14 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .ctx-scrim { position: fixed; inset: 0; z-index: 60; }
 .ctx-menu {
   position: fixed; inset: auto; margin: 0; border: 0; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
-  background: var(--bg); box-shadow: var(--shadow);
+  background: var(--bg); box-shadow: var(--pop-shadow);
   display: flex; flex-direction: column;
 }
 .ctx-menu:popover-open { display: flex; }
 .ctx-menu button { text-align: left; font-size: 13px; padding: 7px 10px; border-radius: 6px; color: var(--fg); }
 .ctx-menu button:hover, .ctx-menu button:focus-visible { background: var(--bg3); outline: 0; }
+/* the light menu sits on the grey canvas: hover raises to white instead of dimming to bg3 */
+:root[data-theme="light"] .ctx-menu button:hover { background: var(--bg2); }
 
 /* filter row must never push the drive selector out of the window */
 .frow { gap: 4px; }
@@ -295,7 +303,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* drive scope as one chip + menu (popup, or more drives than fit as buttons) */
 .dpick { position: relative; flex: none; }
 .dpick .sortb.set { color: var(--fg); background: var(--bg3); }
-.dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: 0 14px 34px -8px rgb(0 0 0 / .5); display: flex; flex-direction: column; gap: 1px; }
+.dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: var(--pop-shadow); display: flex; flex-direction: column; gap: 1px; }
 .dmenu button { height: 32px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-radius: 7px; font-size: 13px; font-weight: 500; color: var(--fg2); text-align: left; white-space: nowrap; }
 .dmenu button:hover { background: var(--bg3); color: var(--fg); }
 .dmenu button.on { color: var(--fg); font-weight: 600; background: var(--bg3); }

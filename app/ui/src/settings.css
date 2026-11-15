@@ -20,7 +20,7 @@
 .firstrun .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--acc) 88%, #000); }
 .muted { color: var(--fg3); }
 
-.vols { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: var(--sp-4); border-radius: 14px; background: var(--bg2); }
+.vols { display: flex; flex-direction: column; gap: 10px; max-width: 520px; padding: var(--sp-4); border-radius: 14px; background: var(--bg2); box-shadow: var(--card-shadow); }
 .vol { display: grid; grid-template-columns: 28px 1fr auto; align-items: center; column-gap: 10px; row-gap: 6px; font-variant-numeric: tabular-nums; font-size: 14px; }
 .vol .letter { font-weight: 600; }
 .vol .nums { color: var(--fg2); font-size: 13px; }
@@ -53,6 +53,9 @@
 .settings .ibtn:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
 .sfind { width: 260px; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--bg2); display: flex; align-items: center; gap: 8px; box-shadow: inset 0 0 0 1px var(--line); margin-left: auto; cursor: text; flex: none; }
 .sfind:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
+/* same light field recipe as .tbar .field (shell.css): recessed grey, white on focus */
+:root[data-theme="light"] .sfind { background: var(--bg3); }
+:root[data-theme="light"] .sfind:focus-within { background: var(--bg2); }
 .sfind svg { width: 16px; height: 16px; color: var(--fg3); }
 .sfind input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; color: var(--fg); background: none; border: 0; outline: 0; padding: 0; user-select: text; cursor: text; caret-color: var(--acc); }
 .sfind input:focus-visible { outline: 0; }
@@ -86,7 +89,7 @@
 .grp { max-width: 640px; margin-bottom: var(--sp-5); }
 .grp:focus-within h3, .grp h3:focus { outline: 0; }
 .grp h3 { font-size: 15px; font-weight: 700; margin: 6px 0 8px; letter-spacing: 0; }
-.gcard { border-radius: 14px; background: var(--bg2); padding: 2px var(--sp-4); }
+.gcard { border-radius: 14px; background: var(--bg2); padding: 2px var(--sp-4); box-shadow: var(--card-shadow); }
 .gcard > * + *, .glist > * + * { border-top: 1px solid var(--line); }
 .grow { display: flex; align-items: center; justify-content: space-between; gap: var(--sp-5); padding: var(--sp-3) 0; min-width: 0; }
 .grow.wrap { flex-wrap: wrap; row-gap: 8px; }
@@ -180,6 +183,8 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .firstrun.settings .scont .seg button { height: 26px; padding: 0 12px; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--fg2); text-align: center; box-shadow: none; background: none; white-space: nowrap; }
 .firstrun.settings .scont .seg button:hover:not(.on) { color: var(--fg); background: none; }
 .firstrun.settings .scont .seg button.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+/* light: white raised segment on the grey track (the dseg recipe, search.css) */
+:root[data-theme="light"] .firstrun.settings .scont .seg button.on { background: var(--bg2); }
 .firstrun.settings .scont .seg button:disabled { opacity: .5; }
 
 /* buttons: .gbtn 30px / radius 8 / bg3 / 600 */
@@ -259,6 +264,8 @@ dialog.cheat::backdrop {
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(6px);
 }
+/* a modal reads as a document, not a canvas: white sheet in light (dark keeps --bg) */
+:root[data-theme="light"] dialog.cheat { background: var(--bg2); }
 .cheat-head { display: flex; align-items: baseline; gap: 10px; padding: var(--sp-3) var(--sp-4) 10px; border-bottom: 1px solid var(--line); }
 .cheat-head .muted { margin-right: auto; font-size: 12px; }
 .cheat-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px var(--sp-5); padding: 10px var(--sp-4) var(--sp-4); overflow: auto; }
