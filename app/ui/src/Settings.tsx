@@ -336,7 +336,7 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
         {m?.parser.present && pTotal > 0 && (pLeft > 0 || pRate != null) && (
           <div className="grow stack">
             <div className="idx-line">
-              <span className="nums"><b>{fmt(pDone)} of {fmt(pTotal)} pages</b></span>
+              <span className="nums"><b>{fmt(pDone)} of {fmt(pTotal)} {pTotal === 1 ? "page" : "pages"}</b></span>
               <span className="nums">
                 {[pLeft > 0 ? `${fmt(pLeft)} left` : null,
                   pRate != null ? formatPages(pRate) : null,
@@ -352,7 +352,7 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
           </div>
         )}
         {m?.parser.present && pRun && pRun.ended_unix != null && pLeft === 0 && pRun.total > 0 && (
-          <div className="gsub">Last round: {fmt(pRun.total)} pages read in {formatDuration(Math.max(0, pRun.ended_unix - pRun.started_unix))}</div>
+          <div className="grow stack"><div className="gsub">Last round: {fmt(pRun.total)} {pRun.total === 1 ? "page" : "pages"} read in {formatDuration(Math.max(0, pRun.ended_unix - pRun.started_unix))}</div></div>
         )}
       </Grp>
       {m && (

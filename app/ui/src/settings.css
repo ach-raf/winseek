@@ -141,7 +141,11 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .s-error .st-state .dot { background: var(--danger); }
 
 /* verdict: the one calm headline the Status page opens with; the groups fold under it */
-.verdict { display: flex; align-items: flex-start; gap: 10px; padding: 2px 2px var(--sp-1); }
+.verdict { display: flex; align-items: flex-start; gap: 10px; padding: 2px var(--sp-4) var(--sp-2); column-span: all; }
+/* Status inside the Settings columns: the verdict spans the top, the Details block flows across the columns
+ * (its groups stay whole) instead of being dropped into one column beside an empty one. */
+.settings.embedded .scols > .st-details { break-inside: auto; }
+.settings.embedded .st-details > summary { padding-left: var(--sp-4); }
 .verdict .dot { margin-top: 6px; }
 .verdict b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
 .verdict .vsub { display: block; margin-top: 3px; font-size: 12.5px; color: var(--fg3); }
@@ -222,8 +226,11 @@ div.fpath, span.fpath { display: block; overflow: hidden; text-overflow: ellipsi
 /* inline code / agents */
 code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; background: var(--bg3); color: var(--fg); }
 .agent-snip { display: block; padding: 8px 10px; border-radius: 9px; background: var(--bg3); white-space: pre-wrap; word-break: break-all; line-height: 1.45; }
-.agent-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
-.agent-log li { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; min-width: 0; }
+.agent-log { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+/* one entry = a header line (when, who, which tool) and the arguments on their own line, so a narrow column never wraps the header */
+.agent-log li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 8px; font-size: 12.5px; min-width: 0; }
+.agent-log li > * { white-space: nowrap; }
+.agent-log .agent-args, .agent-log .agent-err { flex: 1 0 100%; box-sizing: border-box; padding-left: 14px; white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
 .agent-log li.none { color: var(--fg3); }
 .agent-log .dot { width: 6px; height: 6px; align-self: center; }
 .agent-log code { flex: none; background: var(--bg3); }
