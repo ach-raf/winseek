@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, fitScale, formatClock, highlight, pdfRenderWidth, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt } from "./previewLogic.ts";
+import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, codeLanguage, fenceLanguage, fitScale, formatClock, highlight, isMarkdown, markTextNodes, pdfRenderWidth, prettyJson, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode } from "./previewLogic.ts";
 
 test("clampPage keeps a PDF page inside the document", () => {
   assert.equal(clampPage(3, 10), 3);
@@ -26,6 +26,89 @@ test("pdfRenderWidth rounds up to 100 px and stays within 400..1600", () => {
 test("previewTerms drops operators, negations, wildcards", () => {
   assert.deepEqual(previewTerms('invoice "due date" !draft ext:pdf *.log Invoice a'), ["invoice", "due", "date", ".log"]);
   assert.deepEqual(previewTerms("  "), []);
+});
+
+test("isMarkdown picks the extensions that render formatted", () => {
+  assert.equal(isMarkdown("md"), true);
+  assert.equal(isMarkdown("markdown"), true);
+  assert.equal(isMarkdown("MD"), true, "extension case does not matter");
+  assert.equal(isMarkdown("mkd"), true);
+  assert.equal(isMarkdown("txt"), false);
+  assert.equal(isMarkdown("mdx"), false, "MDX is JSX, not plain Markdown");
+  assert.equal(isMarkdown(""), false);
+});
+
+test("codeLanguage maps extensions to Prism grammars, null when plain", () => {
+  assert.equal(codeLanguage("ts"), "typescript");
+  assert.equal(codeLanguage("TSX"), "tsx", "extension case does not matter");
+  assert.equal(codeLanguage("rs"), "rust");
+  assert.equal(codeLanguage("toml"), "toml");
+  assert.equal(codeLanguage("bat"), "batch");
+  assert.equal(codeLanguage("ps1"), "powershell");
+  assert.equal(codeLanguage("sh"), "bash");
+  assert.equal(codeLanguage("ini"), "ini");
+  assert.equal(codeLanguage("json"), "json");
+  assert.equal(codeLanguage("html"), "markup");
+  assert.equal(codeLanguage("cs"), "csharp");
+  assert.equal(codeLanguage("h"), "c");
+  assert.equal(codeLanguage("cpp"), "cpp");
+  assert.equal(codeLanguage("txt"), null);
+  assert.equal(codeLanguage("log"), null);
+  assert.equal(codeLanguage(""), null);
+});
+
+test("fenceLanguage maps markdown fence info strings", () => {
+  assert.equal(fenceLanguage("rust"), "rust");
+  assert.equal(fenceLanguage("python"), "python");
+  assert.equal(fenceLanguage("  TS  "), "typescript", "info strings arrive padded");
+  assert.equal(fenceLanguage("shell"), "bash");
+  assert.equal(fenceLanguage("c++"), "cpp");
+  assert.equal(fenceLanguage("golang"), "go");
+  assert.equal(fenceLanguage("text"), null, "an unknown fence renders as a plain block");
+  assert.equal(fenceLanguage(""), null);
+});
+
+test("prettyJson re-indents objects and arrays, leaves everything else raw", () => {
+  assert.equal(prettyJson('{"a":1,"b":[2,3]}'), '{\n  "a": 1,\n  "b": [\n    2,\n    3\n  ]\n}');
+  assert.equal(prettyJson("[1,2]"), "[\n  1,\n  2\n]");
+  assert.equal(prettyJson("42"), null, "a bare scalar reads better raw");
+  assert.equal(prettyJson('"hello"'), null);
+  assert.equal(prettyJson("{not json"), null);
+  assert.equal(prettyJson("function f() {}"), null);
+});
+
+test("markTextNodes splits term hits into mark elements, walking nested nodes", () => {
+  const text = (value: string): MdNode => ({ type: "text", value });
+  const root: MdNode = {
+    type: "root",
+    children: [
+      text("an invoice due soon"),
+      { type: "element", tagName: "p", children: [text("pay the invoice"), text("no term here")] },
+      { type: "element", tagName: "code", children: [text("invoice_id = 1")] },
+    ],
+  };
+  markTextNodes(root, ["invoice"]);
+  assert.ok(root.children!.some((c) => c.type === "element" && c.tagName === "mark"),
+    "the top-level hit became a mark element");
+  const kids = (tag: string) => root.children!.find((c) => c.type === "element" && c.tagName === tag)!.children!;
+  assert.ok(kids("p").some((c) => c.type === "element" && c.tagName === "mark"), "nested elements are walked too");
+  assert.equal(kids("p")[2]!.value, "no term here");
+  assert.ok(kids("code").some((c) => c.type === "element" && c.tagName === "mark"), "code blocks are marked as well");
+});
+
+test("markTextNodes keeps case and leaves term-free trees untouched", () => {
+  const root: MdNode = { type: "root", children: [{ type: "text", value: "Search hit" }] };
+  markTextNodes(root, ["hit"]);
+  assert.equal(root.children!.length, 2, "the hit text node became plain + mark siblings");
+  assert.equal(root.children![0]!.value, "Search ");
+  const mark = root.children![1]!;
+  assert.equal(mark.type, "element");
+  assert.equal(mark.tagName, "mark");
+  assert.equal(mark.children![0]!.value, "hit", "the matched case is kept");
+
+  const empty: MdNode = { type: "root", children: [{ type: "text", value: "unchanged" }] };
+  markTextNodes(empty, []);
+  assert.equal(empty.children![0]!.value, "unchanged", "no terms: no walk");
 });
 
 test("highlight marks case-insensitive matches and keeps the text intact", () => {

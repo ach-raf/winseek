@@ -122,10 +122,12 @@
   margin: 0; padding: var(--sp-3) var(--sp-4); font: 12px/1.5 var(--mono); color: var(--fg);
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text;
 }
-.pv-hits {
-  position: sticky; top: 8px; float: right; margin: 8px 8px 0 0; padding: 1px 9px; border-radius: 999px; z-index: 1;
-  background: var(--sel); color: var(--fg); font: 600 11px/1.6 var(--font);
-}
+/* sticky bar over a text file: view toggle (Markdown) + match count, content scrolls under it */
+.pv-textbar { position: sticky; top: 8px; z-index: 1; display: flex; align-items: center; gap: 6px; padding: 0 8px; margin-top: 8px; pointer-events: none; }
+.pv-textbar > * { pointer-events: auto; }
+.pv-textbar .dseg { padding: 1px; }
+.pv-textbar .dseg button { height: 20px; padding: 0 9px; font-size: 11.5px; }
+.pv-hits { margin-left: auto; padding: 1px 9px; border-radius: 999px; background: var(--sel); color: var(--fg); font: 600 11px/1.6 var(--font); }
 .pv-trunc { padding: 6px var(--sp-4) var(--sp-3); font-size: 12px; color: var(--fg-3); }
 
 /* everything else */
@@ -147,9 +149,12 @@
 .pv .pv-pick .btn.pv-btn { justify-content: flex-start; background: transparent; font-weight: 500; }
 .pv .pv-pick .btn.pv-btn:hover { background: var(--bg3); }
 .pv-parse-panel { display: flex; flex-direction: column; min-height: 0; max-height: 34vh; border-radius: 12px; background: var(--bg2); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
-.pv-parse-head { flex: none; display: flex; align-items: center; gap: 8px; padding: var(--sp-2) 10px 4px var(--sp-4); font-size: 12.5px; }
+/* the head wraps: on a narrow pane the Rendered/Plain toggle takes its own line */
+.pv-parse-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: var(--sp-2) 10px 4px var(--sp-4); font-size: 12.5px; }
 .pv-parse-head b { font-weight: 600; }
 .pv-parse-head .muted { flex: 1; }
+.pv-parse-head .dseg { order: 10; flex-basis: 100%; }
+.pv-parse-head .dseg button { height: 20px; padding: 0 9px; font-size: 11.5px; }
 .pv-parse-panel pre { margin: 0; padding: 4px var(--sp-4) var(--sp-3); overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
 .dl-opt { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
 .dl-opt-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
@@ -160,3 +165,76 @@
 /* The "Match at 1:23" jump button of a video / audio hit. */
 .pv-media .pv-at { position: absolute; left: 12px; bottom: 12px; z-index: 2; font-variant-numeric: tabular-nums; } /* container: .ov */
 .pv-media.audio .pv-at { position: static; justify-self: start; }
+
+/* ---- rich text & code: formatted Markdown, Prism-highlighted source ------------------------------------ */
+
+/* formatted Markdown (a .md file's Preview view, the parser panel's Rendered view) */
+.pv-md { padding: var(--sp-2) var(--sp-4) var(--sp-3); font-size: 13px; line-height: 1.55; color: var(--fg); overflow-wrap: anywhere; user-select: text; }
+.pv-md > :first-child { margin-top: 0; }
+.pv-md h1, .pv-md h2 { font-size: 1.25em; font-weight: 650; line-height: 1.3; margin: 1em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--line); }
+.pv-md h3 { font-size: 1.1em; font-weight: 650; margin: 0.9em 0 0.4em; }
+.pv-md h4, .pv-md h5, .pv-md h6 { font-size: 1em; font-weight: 650; margin: 0.8em 0 0.35em; }
+.pv-md p { margin: 0.45em 0; }
+.pv-md ul, .pv-md ol { margin: 0.45em 0; padding-left: 1.4em; }
+.pv-md li { margin: 0.15em 0; }
+.pv-md li > ul, .pv-md li > ol { margin: 0.1em 0; }
+.pv-md li::marker { color: var(--fg-3); }
+.pv-md blockquote { margin: 0.5em 0; padding: 0.1em 0 0.1em 0.8em; border-left: 3px solid var(--line); color: var(--fg-2); }
+.pv-md a { color: var(--acc); text-underline-offset: 2px; }
+.pv-md hr { border: 0; border-top: 1px solid var(--line); margin: 1em 0; }
+.pv-md img { max-width: 100%; }
+/* GFM tables: block so a wide one scrolls instead of squashing the pane */
+.pv-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6em 0; font-size: 12px; }
+.pv-md th, .pv-md td { border: 1px solid var(--line); padding: 3px 9px; text-align: left; vertical-align: top; }
+.pv-md th { background: var(--bg3); font-weight: 650; }
+/* inline code — structural selector so fenced code (pre > code) is untouched */
+.pv-md :not(pre) > code { background: var(--bg3); border-radius: 5px; padding: 1px 5px; font: 12px var(--mono); }
+/* fenced block without a known language */
+.pv-md .pv-mdblock { margin: 0.5em 0; padding: 8px 10px; background: var(--bg3); border-radius: 8px; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
+.pv-md .pv-mdblock code { font: inherit; background: transparent; padding: 0; border-radius: 0; }
+
+/* highlighted source (Prism). `.pv-text pre` would wrap it: re-assert the code layout. */
+.pv-text pre.pv-code {
+  margin: 0; padding: var(--sp-3) 0 var(--sp-3) var(--sp-4); counter-reset: pvline;
+  font: 12px/1.55 var(--mono); color: var(--fg); white-space: pre; overflow-wrap: normal;
+  tab-size: 4; user-select: text; width: max-content; min-width: 100%;
+}
+/* one row per line; reset the global inline-code pill (settings.css styles bare `code`) */
+.pv-text pre.pv-code .line { display: block; min-height: 1.55em; padding: 0 var(--sp-4) 0 0; background: transparent; border-radius: 0; font: inherit; }
+/* line numbers: sticky CSS counter — pinned while the code scrolls, never selected, never copied */
+.pv-text pre.pv-code.num .line::before {
+  content: counter(pvline); counter-increment: pvline;
+  display: inline-block; position: sticky; left: 0; width: 2.4em; margin-right: 10px;
+  text-align: right; color: var(--fg-3); font-variant-numeric: tabular-nums; user-select: none;
+}
+/* the pinning numbers mask code sliding under them: same paper the pane reads on */
+:root[data-theme="dark"] .pv-text pre.pv-code.num .line::before { background: var(--bg); }
+:root[data-theme="light"] .pv-text pre.pv-code.num .line::before { background: var(--bg2); }
+/* fenced code inside rendered Markdown: a soft block, no gutter */
+.pv-md .pv-code.bare { width: auto; min-width: 0; margin: 0.5em 0; padding: 8px 10px; background: var(--bg3); border-radius: 8px; overflow-x: auto; }
+.pv-md .pv-code.bare .line { padding-right: 0; }
+.pv-md .pv-code.bare .line::before { content: none; }
+
+/* Prism token colours: calm IDE hues fitted to the palette. A token carries its first non-plain
+ * Prism type as `tok-<type>`; unmapped types fall back to the fg. */
+.tok-comment, .tok-prolog, .tok-cdata, .tok-doctype { color: var(--fg-3); font-style: italic; }
+.tok-keyword, .tok-important, .tok-atrule, .tok-rule { color: #d98e5c; }
+.tok-string, .tok-char, .tok-attr-value, .tok-regex { color: #9cc98a; }
+.tok-number, .tok-boolean, .tok-constant, .tok-symbol { color: #6fc7b6; }
+.tok-function, .tok-method { color: #d9b86c; }
+.tok-class-name, .tok-maybe-class-name, .tok-builtin, .tok-tag, .tok-attr-name, .tok-selector { color: #74b3dc; }
+.tok-deleted { color: #e2706e; }
+.tok-inserted { color: #7dbb72; }
+.tok-operator, .tok-punctuation { color: inherit; }
+:root[data-theme="light"] .tok-comment, :root[data-theme="light"] .tok-prolog, :root[data-theme="light"] .tok-cdata, :root[data-theme="light"] .tok-doctype { color: var(--fg-3); }
+:root[data-theme="light"] .tok-keyword, :root[data-theme="light"] .tok-important, :root[data-theme="light"] .tok-atrule, :root[data-theme="light"] .tok-rule { color: #a8591c; }
+:root[data-theme="light"] .tok-string, :root[data-theme="light"] .tok-char, :root[data-theme="light"] .tok-attr-value, :root[data-theme="light"] .tok-regex { color: #2f7a3d; }
+:root[data-theme="light"] .tok-number, :root[data-theme="light"] .tok-boolean, :root[data-theme="light"] .tok-constant, :root[data-theme="light"] .tok-symbol { color: #0e8377; }
+:root[data-theme="light"] .tok-function, :root[data-theme="light"] .tok-method { color: #8f6f00; }
+:root[data-theme="light"] .tok-class-name, :root[data-theme="light"] .tok-maybe-class-name, :root[data-theme="light"] .tok-builtin, :root[data-theme="light"] .tok-tag, :root[data-theme="light"] .tok-attr-name, :root[data-theme="light"] .tok-selector { color: #2069b4; }
+:root[data-theme="light"] .tok-deleted { color: #b23b32; }
+:root[data-theme="light"] .tok-inserted { color: #22742f; }
+
+/* the parser panel's Rendered view */
+.pv-parse-md { overflow: auto; min-height: 0; }
+.pv-parse-md .pv-md { padding-top: 2px; }

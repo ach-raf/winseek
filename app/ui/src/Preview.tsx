@@ -1,9 +1,13 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import Markdown, { type Components } from "react-markdown";
+import remarkGfm from "remark-gfm";
+import { Highlight } from "prism-react-renderer";
+import "./prismLangs";
 import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, crumbParts, extOf, fitScale, formatClock, kindLabel, highlight, MAX_SCALE, pdfRenderWidth, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -133,7 +137,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
         )}
         {metaInfo && <Meta info={metaInfo} folderSize={hit.is_dir ? hit.size : null} dim={stale} />}
         {metaInfo && parser !== null && (metaInfo.kind === "image" || (metaInfo.kind === "pdf" && metaInfo.pdf?.engine && metaInfo.pdf.pages !== null)) && (
-          <ParseBar backend={backend} path={metaInfo.path} available={parser} dim={stale} registerApi={registerApi}
+          <ParseBar backend={backend} path={metaInfo.path} available={parser} dim={stale} registerApi={registerApi} query={query}
                     page={metaInfo.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, metaInfo.pdf?.pages ?? null)) : null} />
         )}
         <div className="btns">
@@ -436,20 +440,23 @@ function PdfView({ backend, info, query, page, boxes, onPage, registerApi }: {
 
 // ---- on-demand document parser: extract text, copy a table, copy as Markdown ----------------------------------
 
-function ParseBar({ backend, path, page, available, dim, registerApi }: {
-  backend: Backend; path: string; page: number | null; available: boolean; dim?: boolean; registerApi: (patch: Partial<PreviewApi>) => void;
+function ParseBar({ backend, path, page, available, dim, registerApi, query }: {
+  backend: Backend; path: string; page: number | null; available: boolean; dim?: boolean; registerApi: (patch: Partial<PreviewApi>) => void; query: string;
 }) {
   const [doc, setDoc] = useState<ParsedDoc | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<{ text: string; bad: boolean } | null>(null);
   const [panel, setPanel] = useState(false);
   const [pick, setPick] = useState(false);
+  // The extracted markdown reads formatted by default; "Plain" shows the raw markdown source.
+  const [plain, setPlain] = useState(false);
+  const terms = useMemo(() => previewTerms(query), [query]);
   const key = `${path}#${page ?? 0}`;
   const run = useRef(0);
   // Another file or page: forget the result and ignore an answer that is still on its way.
   useEffect(() => {
     run.current++;
-    setDoc(null); setBusy(false); setMsg(null); setPanel(false); setPick(false);
+    setDoc(null); setBusy(false); setMsg(null); setPanel(false); setPick(false); setPlain(false);
   }, [key]);
   useEffect(() => {
     if (!msg || msg.bad) return;
@@ -536,10 +543,22 @@ function ParseBar({ backend, path, page, available, dim, registerApi }: {
           <div className="pv-parse-head">
             <b>Extracted text</b>
             <span className="muted">{doc.elements_count} block{doc.elements_count === 1 ? "" : "s"}</span>
+            <div className="dseg" role="group" aria-label="How the extracted text is shown">
+              <button className={plain ? "" : "on"} tabIndex={-1} aria-pressed={!plain} onMouseDown={keep} onClick={() => setPlain(false)}>Rendered</button>
+              <button className={plain ? "on" : ""} tabIndex={-1} aria-pressed={plain} onMouseDown={keep} onClick={() => setPlain(true)}>Plain</button>
+            </div>
             <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} disabled={!doc.markdown} onClick={() => void copy(doc.markdown, null, "Text")}>Copy</button>
             <button className="btn quiet pv-btn" tabIndex={-1} onMouseDown={keep} onClick={() => setPanel(false)} aria-label="Close the extracted text">Close</button>
           </div>
-          <pre>{doc.markdown || "No text found on this page."}</pre>
+          {plain ? (
+            <pre>{doc.markdown || "No text found on this page."}</pre>
+          ) : (
+            <div className="pv-parse-md">
+              {doc.markdown
+                ? <MdView content={doc.markdown} terms={terms} />
+                : <div className="pv-md">No text found on this page.</div>}
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -611,12 +630,24 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
 
 const WAVE = Array.from({ length: 52 }, (_, j) => 16 + Math.abs(Math.sin(j * 0.7) * 52 + Math.sin(j * 2.3) * 28));
 
-// ---- text / code --------------------------------------------------------------------------------------
+// ---- text / code: formatted Markdown or Prism-highlighted source ---------------------------------------
+
+/** Which way a Markdown file is shown: formatted ("Preview") or highlighted source ("Source"). */
+type TextViewMode = "preview" | "source";
 
 function TextView({ info, query }: { info: PreviewInfo; query: string }) {
   const box = useRef<HTMLDivElement>(null);
   const t = info.text;
-  const { segments, hits } = useMemo(() => highlight(t?.content ?? "", previewTerms(query)), [t, query]);
+  const md = isMarkdown(extOf(info.name));
+  const lang = codeLanguage(extOf(info.name));
+  const terms = useMemo(() => previewTerms(query), [query]);
+  // JSON is re-indented for reading; anything unparseable (or a bare scalar) shows raw.
+  const content = useMemo(
+    () => (t && lang === "json" ? prettyJson(t.content) ?? t.content : t?.content ?? ""),
+    [t, lang],
+  );
+  const { segments, hits } = useMemo(() => highlight(content, terms), [content, terms]);
+  const [mode, setMode] = useState<TextViewMode>("preview");
 
   // Scroll to the first hit (a third of the way down, so some context above it stays visible).
   useLayoutEffect(() => {
@@ -624,16 +655,96 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
     if (!el) return;
     const m = el.querySelector("mark");
     el.scrollTop = m ? Math.max(0, (m as HTMLElement).offsetTop - el.clientHeight / 3) : 0;
-  }, [segments]);
+  }, [segments, mode]);
 
   if (!t) return <OtherView info={info} />;
+  const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
   return (
     <div className="pv-text" ref={box}>
-      {hits > 0 && <div className="pv-hits">{hits >= 2000 ? "2000+" : hits} match{hits === 1 ? "" : "es"}</div>}
-      <pre>{segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</pre>
+      {(md || hits > 0) && (
+        <div className="pv-textbar">
+          {md && (
+            <div className="dseg" role="group" aria-label="How the Markdown file is shown">
+              <button className={mode === "preview" ? "on" : ""} tabIndex={-1} aria-pressed={mode === "preview"}
+                      onMouseDown={keep} onClick={() => setMode("preview")}>Preview</button>
+              <button className={mode === "source" ? "on" : ""} tabIndex={-1} aria-pressed={mode === "source"}
+                      onMouseDown={keep} onClick={() => setMode("source")}>Source</button>
+            </div>
+          )}
+          {hits > 0 && <span className="pv-hits">{hits >= 2000 ? "2000+" : hits} match{hits === 1 ? "" : "es"}</span>}
+        </div>
+      )}
+      {md && mode === "preview" ? (
+        <MdView content={t.content} terms={terms} />
+      ) : lang ? (
+        <CodeBlock content={content} lang={lang} terms={terms} numbers />
+      ) : (
+        <pre>{segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</pre>
+      )}
       {t.truncated && <div className="pv-trunc">Showing the beginning of the file</div>}
     </div>
   );
+}
+
+const REMARK_GFM = [remarkGfm];
+
+/** Formatted Markdown (GFM: tables, task lists, strikethrough, autolinks). Query terms are
+ *  marked inside the rendered text — the same segments the source views use, so one highlighter
+ *  decides what a hit is everywhere. */
+function MdView({ content, terms }: { content: string; terms: string[] }) {
+  // A unified "plugin" is an attacher that RETURNS the tree transformer (the attacher itself runs
+  // once at use-time without a tree). Memoised so a plain re-render never re-parses.
+  const rehypeMarks = useMemo(() => [() => (tree: unknown) => { markTextNodes(tree as MdNode, terms); }], [terms]);
+  const components = useMemo<Components>(() => ({
+    // <pre> unwraps: fenced code renders its own block through `code` below.
+    pre: ({ children }) => <>{children}</>,
+    code: (props) => <MdCode {...props} terms={terms} />,
+  }), [terms]);
+  return (
+    <div className="pv-md">
+      <Markdown remarkPlugins={REMARK_GFM} rehypePlugins={rehypeMarks} components={components}>{content}</Markdown>
+    </div>
+  );
+}
+
+/** Fenced code inside rendered Markdown: highlighted through the fence's info string. Inline
+ *  code stays styled text; a fence with an unknown language renders as a plain block. */
+function MdCode({ className, children, terms }: { className?: string; children?: React.ReactNode; terms?: string[] }) {
+  const info = /language-([\w#+.-]+)/.exec(className ?? "")?.[1] ?? null;
+  const lang = info ? fenceLanguage(info) : null;
+  if (!info) return <code>{children}</code>;
+  if (!lang) return <pre className="pv-mdblock"><code>{children}</code></pre>;
+  return <CodeBlock content={String(children).replace(/\n$/, "")} lang={lang} terms={terms} numbers={false} />;
+}
+
+/** Prism-highlighted source, one row per line. Query terms are marked inside the tokens (a term
+ *  split by the tokenizer across two tokens loses its mark — the match count stays complete).
+ *  Line numbers: a sticky CSS counter, never selected, never copied — whole-file views only. */
+function CodeBlock({ content, lang, terms, numbers }: { content: string; lang: string; terms?: string[]; numbers: boolean }) {
+  return (
+    <Highlight code={content} language={lang}>
+      {({ tokens }) => (
+        <pre className={"pv-code " + (numbers ? "num" : "bare")} dir="ltr">
+          {tokens.map((line, i) => (
+            <code className="line" key={i}>
+              {line.map((token, k) => {
+                const type = token.types.find((x) => x !== "plain") ?? "";
+                return <span className={type ? `tok-${type}` : undefined} key={k}>{termMarks(token.content, terms)}</span>;
+              })}
+            </code>
+          ))}
+        </pre>
+      )}
+    </Highlight>
+  );
+}
+
+/** Query-term marks inside one Prism token (the same highlight() as everywhere else). */
+function termMarks(text: string, terms: string[] | undefined): React.ReactNode {
+  if (!terms || terms.length === 0) return text;
+  const { segments } = highlight(text, terms);
+  if (!segments.some((s) => s.hit)) return text;
+  return segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text));
 }
 
 // ---- everything else: big icon / thumbnail + facts --------------------------------------------------------

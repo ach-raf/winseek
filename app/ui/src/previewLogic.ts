@@ -69,6 +69,108 @@ export function highlight(text: string, terms: string[], cap = 2000): { segments
   return { segments, hits };
 }
 
+// ---- rich text & code preview ---------------------------------------------------------------------------
+// What a file preview shows: formatted Markdown ("Preview" view) or Prism-highlighted source.
+// Pure data only — the React views in Preview.tsx wire these into the libraries.
+
+/** Extensions the preview renders as formatted Markdown instead of source text. */
+const MD_EXTS = new Set(["md", "markdown", "mdown", "mkd"]);
+
+/** True when a file of this extension reads as Markdown in the preview. */
+export function isMarkdown(ext: string): boolean {
+  return MD_EXTS.has(ext.toLowerCase());
+}
+
+/** File extension / fence language name -> Prism language id for the highlighter (the set
+ *  prism-react-renderer vendors plus the prismjs components registered in prismLangs.ts).
+ *  Canonical language names are keys too, so Markdown fence info strings resolve directly. */
+const LANG_BY_EXT: Record<string, string> = {
+  ts: "typescript", mts: "typescript", cts: "typescript", tsx: "tsx", typescript: "typescript",
+  js: "javascript", mjs: "javascript", cjs: "javascript", jsx: "jsx", javascript: "javascript",
+  json: "json", jsonc: "json",
+  html: "markup", htm: "markup", xml: "markup", svg: "markup", xhtml: "markup", vue: "markup",
+  csproj: "markup", vbproj: "markup", resx: "markup",
+  css: "css", scss: "scss", less: "less",
+  md: "markdown", markdown: "markdown",
+  py: "python", pyw: "python", python: "python",
+  rs: "rust", rust: "rust",
+  go: "go", golang: "go",
+  c: "c", h: "c",
+  cpp: "cpp", cc: "cpp", cxx: "cpp", hpp: "cpp", hh: "cpp", hxx: "cpp",
+  cs: "csharp", csharp: "csharp",
+  java: "java",
+  rb: "ruby", ruby: "ruby",
+  sql: "sql",
+  sh: "bash", bash: "bash", zsh: "bash",
+  ps1: "powershell", psm1: "powershell", psd1: "powershell", powershell: "powershell",
+  bat: "batch", cmd: "batch", batch: "batch",
+  yaml: "yaml", yml: "yaml",
+  toml: "toml",
+  ini: "ini", cfg: "ini", conf: "ini", properties: "ini",
+  diff: "diff", patch: "diff",
+  swift: "swift",
+  kt: "kotlin", kts: "kotlin", kotlin: "kotlin",
+  graphql: "graphql", gql: "graphql",
+};
+
+/** The Prism language that fits a file extension, or null to show the file as plain text. */
+export function codeLanguage(ext: string): string | null {
+  return LANG_BY_EXT[ext.toLowerCase()] ?? null;
+}
+
+/** Markdown fence info string -> Prism language id (a few aliases the map above misses). */
+export function fenceLanguage(info: string): string | null {
+  const lang = info.toLowerCase().trim();
+  if (LANG_BY_EXT[lang]) return LANG_BY_EXT[lang]!;
+  const alias: Record<string, string> = {
+    shell: "bash", console: "bash", terminal: "bash", "c++": "cpp", objc: "objectivec",
+  };
+  return alias[lang] ?? null; // an unknown fence renders as an unstyled block
+}
+
+/** Pretty-print JSON for the preview. Null when the content is not JSON worth re-indenting
+ *  (unparseable text, or a bare scalar): then the raw text is the right preview. */
+export function prettyJson(content: string): string | null {
+  try {
+    const value: unknown = JSON.parse(content);
+    return value !== null && typeof value === "object" ? JSON.stringify(value, null, 2) : null;
+  } catch {
+    return null; // not JSON: the raw text stands (this is the expected path for any other file)
+  }
+}
+
+/** A hast node as react-markdown hands it over — just the fields the term-marker touches.
+ *  Structural on purpose: no library types, so `node --test` can load this file. */
+export interface MdNode {
+  type: string;
+  value?: string;
+  tagName?: string;
+  properties?: Record<string, unknown>;
+  children?: MdNode[];
+}
+
+/** Mark the query terms inside a rendered-Markdown tree, in place: every text node holding a
+ *  term is split into plain / `mark` element children — the same segments the source views use,
+ *  so one highlighter decides what a hit is everywhere. */
+export function markTextNodes(node: MdNode, terms: string[]): void {
+  if (terms.length === 0 || !node.children) return;
+  for (let i = 0; i < node.children.length; i++) {
+    const child = node.children[i]!;
+    if (child.type === "text" && typeof child.value === "string") {
+      const lower = child.value.toLowerCase();
+      if (!terms.some((t) => lower.includes(t.toLowerCase()))) continue;
+      const parts = highlight(child.value, terms).segments;
+      if (!parts.some((p) => p.hit)) continue;
+      node.children.splice(i, 1, ...parts.map((p) => p.hit
+        ? { type: "element", tagName: "mark", properties: {}, children: [{ type: "text", value: p.text }] }
+        : { type: "text", value: p.text }));
+      i += parts.length - 1;
+    } else {
+      markTextNodes(child, terms);
+    }
+  }
+}
+
 // ---- image zoom / pan -----------------------------------------------------------------------------------
 // The image is centred in the stage; `t` is its offset from the centre in stage pixels, `s` its scale.
 
