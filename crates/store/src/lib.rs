@@ -9,7 +9,7 @@ use std::collections::{BinaryHeap, HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use rusqlite::{params, Connection, OptionalExtension};
+use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 pub mod fuse;
 mod provenance;
@@ -279,6 +279,19 @@ pub const SETTING_PARSE_GATE_REEVAL: &str = "parse_gate_reeval_v1";
 /// (`title: {file name} | text: {body}`). While it is missing, existing text vectors use the
 /// untitled scheme and are re-queued once via [`Store::reset_text_vectors`].
 pub const SETTING_TEXT_TITLE_SCHEME: &str = "text_title_scheme";
+/// Settings key: JSON snapshot of the queue counters taken when the parse queue last went from
+/// empty to non-empty ([`Store::queue_parse`]). [`Store::parse_run`] derives "this run" progress
+/// from it, so the UI can report the current batch of work instead of the table's whole lifetime.
+pub const SETTING_PARSE_RUN_BASE: &str = "parse_run_base";
+/// Settings key: unix seconds when the parse queue last drained (the end of a parse run).
+pub const SETTING_PARSE_RUN_ENDED: &str = "parse_run_ended";
+/// Settings key: verdict of the last vector-provenance probe (`current`, `kept:0.99973`,
+/// `moved:0.41`, `no_baseline`, `unverified`, `baselined`), for the index-status row in the UI.
+pub const SETTING_PROVENANCE_VERDICT: &str = "provenance_verdict";
+/// Settings key: app version that last opened / re-stamped this index (informational, UI only).
+pub const SETTING_INDEX_APP_VERSION: &str = "index_app_version";
+/// Settings key: unix seconds when the current index content was created or re-stamped.
+pub const SETTING_INDEX_STAMPED_UNIX: &str = "index_stamped_unix";
 
 /// One queued item for the document parser. `page` 0 is a standalone image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -314,6 +327,41 @@ pub struct ParseCounts {
     pub failed: u64,
     /// Skipped by the parser (empty output / unsupported script): their previous text stays.
     pub skipped: u64,
+}
+
+/// Progress of the current (or most recent) parse run: everything counted since the queue last
+/// went from empty to non-empty. Unlike [`ParseCounts`] this is scoped to the burst of work the
+/// user is waiting on, not the table's whole lifetime.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ParseRun {
+    /// Unix seconds when the first page of this run was queued.
+    pub started_unix: i64,
+    /// Pages parsed since the run began.
+    pub done: u64,
+    /// Pages given up on since the run began.
+    pub failed: u64,
+    /// Pages skipped since the run began (readable OCR text, empty output, changed file, ...).
+    pub skipped: u64,
+    /// Pages still waiting.
+    pub left: u64,
+    /// Everything this run will have handled once `left` reaches zero.
+    pub total: u64,
+    /// Unix seconds when the queue last drained; `None` while the run is still going.
+    pub ended_unix: Option<i64>,
+}
+
+impl ParseRun {
+    /// Pages handled so far (`done + failed + skipped`).
+    pub fn handled(&self) -> u64 {
+        self.done + self.failed + self.skipped
+    }
+
+    /// Average pages per second over the whole run so far. Unlike a trailing-minute rate this
+    /// stays meaningful when single pages take minutes (vision parsing at one slot).
+    pub fn avg_rate(&self, now_unix: i64) -> Option<f64> {
+        let secs = (now_unix.saturating_sub(self.started_unix)).max(1) as f64;
+        (self.handled() > 0 && self.ended_unix.is_none()).then(|| self.handled() as f64 / secs)
+    }
 }
 
 /// An image vector for the document-image route pass.
@@ -1638,13 +1686,30 @@ impl Store {
     // ------------------------------------------------------------ parse queue
 
     /// Queue an item for the document parser (no-op when it is already queued / done / skipped).
-    /// Returns whether a row was added.
+    /// Returns whether a row was added. When this fills an empty queue the run baseline is
+    /// (re)taken, so [`parse_run`](Self::parse_run) reports progress for this burst of work.
     pub fn queue_parse(&mut self, hash: &str, page: u32, reason: &str) -> Result<bool> {
-        let n = self.conn.execute(
-            "INSERT OR IGNORE INTO parse_queue(hash, page, reason) VALUES (?1, ?2, ?3)",
-            params![hash, page, reason],
-        )?;
-        Ok(n > 0)
+        let tx = self.conn.transaction()?;
+        let added = tx
+            .execute(
+                "INSERT OR IGNORE INTO parse_queue(hash, page, reason) VALUES (?1, ?2, ?3)",
+                params![hash, page, reason],
+            )?
+            > 0;
+        let waiting: i64 = tx.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [STATE_PENDING], |r| r.get(0))?;
+        if added && waiting == 1 {
+            let (done, failed, skipped) = counts_by_state(&tx, [STATE_DONE, STATE_FAILED, STATE_SKIPPED]);
+            tx.execute(
+                "INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)",
+                params![
+                    SETTING_PARSE_RUN_BASE,
+                    serde_json::json!({ "done": done, "failed": failed, "skipped": skipped, "started": unix_now() }).to_string()
+                ],
+            )?;
+            tx.execute("DELETE FROM settings WHERE key = ?1", [SETTING_PARSE_RUN_ENDED])?;
+        }
+        tx.commit()?;
+        Ok(added)
     }
 
     /// Up to `limit` queued items, newest file first. Items whose content no live file has any more
@@ -1682,6 +1747,7 @@ impl Store {
             "UPDATE parse_queue SET state = ?3, error = NULL WHERE hash = ?1 AND page = ?2",
             params![hash, page, STATE_DONE],
         )?;
+        mark_run_ended(&tx)?;
         tx.commit()?;
         Ok(())
     }
@@ -1723,10 +1789,13 @@ impl Store {
     }
 
     fn set_parse_state(&mut self, hash: &str, page: u32, state: i64, msg: &str) -> Result<()> {
-        self.conn.execute(
+        let tx = self.conn.transaction()?;
+        tx.execute(
             "UPDATE parse_queue SET state = ?3, error = ?4 WHERE hash = ?1 AND page = ?2",
             params![hash, page, state, msg],
         )?;
+        mark_run_ended(&tx)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -1735,6 +1804,38 @@ impl Store {
             Ok(self.conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0))? as u64)
         };
         Ok(ParseCounts { queued: n(STATE_PENDING)?, done: n(STATE_DONE)?, failed: n(STATE_FAILED)?, skipped: n(STATE_SKIPPED)? })
+    }
+
+    /// Progress of the current / most recent parse run (see [`ParseRun`]): the counters recorded
+    /// when the queue filled, minus what they are now. `None` when nothing has been queued since
+    /// the store was created or reset.
+    pub fn parse_run(&self) -> Result<Option<ParseRun>> {
+        let Some(base) = self.get_setting(SETTING_PARSE_RUN_BASE)? else { return Ok(None) };
+        let Some((done0, failed0, skipped0, started)) =
+            serde_json::from_str::<serde_json::Value>(&base).ok().and_then(|v| {
+                Some((
+                    v.get("done")?.as_u64()?,
+                    v.get("failed")?.as_u64()?,
+                    v.get("skipped")?.as_u64()?,
+                    v.get("started")?.as_i64()?,
+                ))
+            })
+        else {
+            return Ok(None);
+        };
+        let c = self.parse_counts()?;
+        let ended_unix = self.get_setting(SETTING_PARSE_RUN_ENDED)?.and_then(|s| s.parse().ok());
+        let mut run = ParseRun {
+            started_unix: started,
+            done: c.done.saturating_sub(done0),
+            failed: c.failed.saturating_sub(failed0),
+            skipped: c.skipped.saturating_sub(skipped0),
+            left: c.queued,
+            total: 0,
+            ended_unix,
+        };
+        run.total = run.handled() + run.left;
+        Ok(Some(run))
     }
 
     /// Standalone image vectors (chunk kind `image` without a PDF page in the locator) with a rowid
@@ -2017,6 +2118,30 @@ fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, pa
     Ok(())
 }
 
+/// Unix seconds now (parse-run bookkeeping stamps).
+fn unix_now() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Current row count per state, in the order of `states`.
+fn counts_by_state(conn: &Connection, states: [i64; 3]) -> (u64, u64, u64) {
+    let n = |s: i64| conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0)).unwrap_or(0) as u64;
+    (n(states[0]), n(states[1]), n(states[2]))
+}
+
+/// When the update drained the queue, stamp the run's end (`SETTING_PARSE_RUN_ENDED`). Runs inside
+/// the caller's transaction.
+fn mark_run_ended(tx: &Transaction) -> Result<()> {
+    let waiting: i64 = tx.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [STATE_PENDING], |r| r.get(0))?;
+    if waiting == 0 {
+        tx.execute(
+            "INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)",
+            params![SETTING_PARSE_RUN_ENDED, unix_now().to_string()],
+        )?;
+    }
+    Ok(())
+}
+
 /// Everything derived from file content goes; files go back to pending; settings stay.
 fn clear_derived(conn: &Connection) -> Result<()> {
     conn.execute_batch(
@@ -2028,7 +2153,7 @@ fn clear_derived(conn: &Connection) -> Result<()> {
          DELETE FROM parse_queue;
          DELETE FROM pdf_tail;
          DELETE FROM ref_vectors;
-         DELETE FROM settings WHERE key = 'parse_route_cursor';
+         DELETE FROM settings WHERE key IN ('parse_route_cursor', 'parse_run_base', 'parse_run_ended', 'provenance_verdict', 'index_stamped_unix');
          DELETE FROM index_meta;
          UPDATE files SET content_hash = NULL, state = 0, error = NULL;
          COMMIT;",
@@ -3186,5 +3311,66 @@ mod tests {
         let s = Store::reset(&p, &meta()).unwrap();
         assert_eq!(s.parse_counts().unwrap(), ParseCounts::default());
         assert_eq!(s.get_setting(SETTING_PARSE_ROUTE_CURSOR).unwrap(), None);
+    }
+
+    #[test]
+    fn parse_run_scopes_progress_to_the_current_burst_of_work() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert!(s.parse_run().unwrap().is_none(), "nothing queued yet: no run");
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        let b = add(&mut s, 2, r"C:\p\b.jpg", 2);
+        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        // A lifetime of history before this run: 2 done, 1 failed, 1 skipped.
+        s.queue_parse("old1", 0, "doc_image").unwrap();
+        s.finish_parse("old1", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.queue_parse("old2", 0, "doc_image").unwrap();
+        s.fail_parse("old2", 0, "boom").unwrap();
+        s.queue_parse("old3", 0, "doc_image").unwrap();
+        s.skip_parse("old3", 0, "empty").unwrap();
+        // The run starts when the queue fills from empty.
+        s.queue_parse("ha", 0, "doc_image").unwrap();
+        s.queue_parse("hb", 0, "doc_image").unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!((r.left, r.total, r.done, r.failed, r.skipped), (2, 2, 0, 0, 0), "baseline at 2 queued, history excluded");
+        assert_eq!(r.ended_unix, None);
+        s.finish_parse("ha", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.fail_parse("hb", 0, "boom").unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!((r.done, r.failed, r.left, r.total), (1, 1, 0, 2));
+        assert!(r.ended_unix.is_some(), "draining the queue stamps the run's end");
+        assert_eq!(r.avg_rate(r.started_unix + 10), None, "a finished run has no rate");
+        // More work later is a NEW run (a fresh page hash: re-queuing a finished one is a no-op).
+        s.queue_parse("new1", 0, "doc_image").unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!((r.left, r.total, r.done, r.failed, r.skipped), (1, 1, 0, 0, 0), "baseline retaken, last run's results excluded");
+        assert_eq!(r.ended_unix, None, "the old end stamp does not leak into the new run");
+        // Pages queued while a run is going count into it.
+        s.queue_parse("new2", 0, "doc_image").unwrap();
+        s.finish_parse("new1", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!((r.done, r.left, r.total), (1, 1, 2));
+        // A reset clears the bookkeeping with the rest of the derived data.
+        s.reset_in_place(&meta()).unwrap();
+        assert!(s.parse_run().unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_run_avg_rate_survives_slow_pages() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
+        let b = add(&mut s, 2, r"C:\p\b.jpg", 2);
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        s.queue_parse("ha", 0, "doc_image").unwrap();
+        s.queue_parse("hb", 0, "doc_image").unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!(r.avg_rate(r.started_unix), None, "nothing handled yet");
+        s.finish_parse("ha", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        let r = s.parse_run().unwrap().unwrap();
+        assert_eq!(r.done, 1);
+        assert!(r.ended_unix.is_none(), "one page still waits");
+        assert!(r.avg_rate(r.started_unix + 30).is_some(), "one page in 30 s is a rate, not 'unknown'");
+        assert_eq!(r.avg_rate(r.started_unix - 5), Some(1.0), "clamped to at least one second");
     }
 }
