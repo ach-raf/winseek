@@ -193,16 +193,13 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
   );
 });
 
-/** Source labels that say nothing the tile does not: no hover box for them (it only covers the neighbours). */
-const GENERIC_SUB = new Set(["Installed", "Start menu", "App Paths", "PATH"]);
-
 /** Most used: an app tile. */
 const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; i: number; sel: boolean; backend: Backend; h: ItemHandlers }) {
   const item = it.launch!.item;
   const src = launchIconSrc(backend, item, true);
   return (
     <div className={"atile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={item.title}
-         data-sel={sel ? "1" : undefined} data-i={i} title={GENERIC_SUB.has(item.subtitle) ? undefined : item.subtitle}
+         data-sel={sel ? "1" : undefined} data-i={i}
          onClick={() => h.onOpen(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
       <FileIcon name={item.title} isDir={false} src={src} variant="app" />

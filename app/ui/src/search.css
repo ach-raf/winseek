@@ -124,21 +124,31 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .ic.sys > svg { width: 56%; height: 56%; }
 
 /* ---- grids: most-used apps, photos ---- */
-/* .grid.apps column counts (6 compact / 12 full) mirror App.tsx gridCols.mostused. */
+/* .grid.apps column counts (6 compact / 7 full) mirror App.tsx gridCols.mostused. */
 .grid { display: grid; gap: 8px; padding: 4px 10px 6px; }
 .grid.apps { grid-template-columns: repeat(6, 1fr); }
 .grid.photos { grid-template-columns: repeat(4, 1fr); }
 .shell.full .grid.photos { grid-template-columns: repeat(5, 1fr); }
-.shell.full .grid.apps { grid-template-columns: repeat(12, 1fr); }
-.atile { display: grid; justify-items: center; gap: 8px; padding: 14px 4px 10px; border-radius: 12px; cursor: default; min-width: 0; }
-.atile .ic { width: 46px; height: 46px; border-radius: 12px; }
-.atile .ic.app { font-size: 19px; }
-.atile span { font-size: 12.5px; font-weight: 500; color: var(--fg2); max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.atile:hover { background: var(--bg2); }
-/* Selection rings the icon square itself — the same language as the photo tiles — so it is
- * centred by construction and can never drift or overlap a neighbour. */
-.atile.sel .ic { outline: 2px solid color-mix(in oklab, var(--acc) 65%, transparent); outline-offset: 3px; }
-.atile.sel span { color: var(--fg); }
+.shell.full .grid.apps { grid-template-columns: repeat(7, 1fr); }
+/* App tile (Apple Launchpad / Finder language): one rounded plate holds icon AND name, names wrap to
+ * two lines instead of cutting to "Visua...", hover lifts the icon, selection fills the whole plate. */
+.atile { --ai: 46px; display: grid; grid-template-rows: var(--ai) 33px; justify-items: center; align-content: start; gap: 9px; padding: 14px 0 8px; cursor: default; min-width: 0; position: relative; transition: transform .1s ease; }
+.shell.full .atile { --ai: 50px; }
+/* Finder icon-view language: the highlight is a rounded square hugging the ICON (never the whole
+ * tile, so it cannot stretch with a two-line name); a selected name sits in a small accent pill. */
+.atile::before { content: ""; position: absolute; top: calc(14px - 9px); left: 50%; width: calc(var(--ai) + 18px); height: calc(var(--ai) + 18px); margin-left: calc((var(--ai) + 18px) / -2); border-radius: 22px; background: transparent; transition: background .14s ease, box-shadow .14s ease; pointer-events: none; }
+.atile .ic { position: relative; width: var(--ai); height: var(--ai); border-radius: 22%; transition: transform .16s cubic-bezier(.2,.8,.3,1.2); }
+.atile .ic.app { font-size: calc(var(--ai) * .41); }
+.atile > span:not(.ic) { position: relative; font-size: 12px; line-height: 1.25; font-weight: 500; color: var(--fg2); max-width: 100%; text-align: center; overflow-wrap: break-word; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; padding: 1px 4px; border-radius: 9px; transition: background .14s ease, color .14s ease; }
+.atile:hover::before { background: color-mix(in oklab, var(--fg) 9%, transparent); }
+.atile:hover > span:not(.ic) { color: var(--fg); }
+/* Full name on hover / selection (Finder opens the label the same way): it floats over the tile, so the
+ * row never changes height, and it may be a little wider than the tile. */
+.atile:hover > span:not(.ic), .atile.sel > span:not(.ic) { position: absolute; z-index: 5; top: calc(14px + var(--ai) + 9px); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% + 20px); display: block; -webkit-line-clamp: unset; line-clamp: unset; overflow: visible; }
+.atile:hover > span:not(.ic) { background: var(--bg3); box-shadow: 0 2px 10px rgba(0,0,0,.35); }
+.atile:active .ic { transform: scale(.94); }
+.atile.sel::before { background: color-mix(in oklab, var(--acc) 22%, transparent); box-shadow: inset 0 0 0 2px color-mix(in oklab, var(--acc) 75%, transparent); }
+.atile.sel > span:not(.ic) { background: var(--acc); color: var(--acc-ink); font-weight: 600; }
 .tile { position: relative; aspect-ratio: 4/3; border-radius: 10px; overflow: hidden; background: var(--bg3); cursor: default; display: grid; place-items: center; }
 .tile > .ic { width: 40%; height: auto; aspect-ratio: 1; }
 .tile.sel { outline: 3px solid var(--acc); outline-offset: 2px; }
