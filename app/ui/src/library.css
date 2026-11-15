@@ -70,7 +70,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .coll:focus-visible .c4 { outline: 2px solid var(--acc); outline-offset: 2px; }
 .coll h4 { margin: 9px 0 0; font-size: 14.5px; font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
 .coll h4 span { font-size: 12.5px; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
-.coll p { margin: 1px 0 0; font-size: 12.5px; color: var(--fg3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.coll p { margin: 2px 0 0; font-size: 12.5px; line-height: 1.35; color: var(--fg3); text-wrap: balance; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden; }
 .coll.new .c4 { display: grid; place-items: center; grid-template: none; background: none; box-shadow: inset 0 0 0 1.5px var(--line); color: var(--fg3); }
 .coll.new:hover .c4 { color: var(--acc); box-shadow: inset 0 0 0 1.5px var(--acc); filter: none; }
 .coll.new .c4 svg { width: 28px; height: 28px; }

@@ -193,7 +193,7 @@ export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause,
         ) : undefined}>
           {plan.items.filter((i) => !i.optional).map((i) => (
             <Row key={i.name} title={i.name}>
-              <span className="val">{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "size shown when it starts"}</span>
+              <span className="val" title={i.present || i.bytes != null ? undefined : "The size is shown when the download starts"}>{i.present ? "Installed" : i.bytes != null ? formatSize(i.bytes) : "Size on start"}</span>
             </Row>
           ))}
           {optional.length > 0 && (

@@ -37,7 +37,8 @@
 .firstrun.setup { justify-content: flex-start; padding: var(--sp-4) var(--sp-6) 0; gap: var(--sp-3); overflow-y: auto; }
 .setup-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: var(--sp-5); align-items: start; }
 .setup .grp { max-width: none; margin-bottom: 0; }
-.setup .actions { margin-top: auto; position: sticky; bottom: 0; padding: 10px 0 14px; background: var(--bg); }
+.setup .actions { margin-top: auto; position: sticky; bottom: 0; padding: 12px 0 14px; background: var(--bg); box-shadow: 0 -1px 0 var(--line), 0 -14px 14px -6px var(--bg); }
+.setup .val { white-space: nowrap; }
 .setup .actions .muted { margin-right: 4px; }
 .idx-line { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; font-size: 14px; }
 .idx-line b { font-weight: 600; font-size: 14px; }
@@ -294,6 +295,14 @@ dialog.cheat::backdrop {
 
 /* setup panel: its title and intro sit on the same text column as the card headings and rows below them */
 .firstrun.setup > h2, .firstrun.setup > p { padding-left: var(--sp-4); }
+/* Setup is a full-width panel: no 520px measure (it made the intro and the done-list wrap early), and the grey
+ * note follows its line instead of being thrown to the far edge (a wide empty gap). */
+.firstrun.setup > p { max-width: 68ch; text-wrap: pretty; }
+.setup .done-list { max-width: none; padding-left: var(--sp-4); }
+.setup .done-row { flex-wrap: wrap; row-gap: 2px; }
+.setup .done-row em { margin-left: 0; padding-left: var(--sp-3); white-space: nowrap; }
+.setup .done-row em::before { content: "·"; margin-right: var(--sp-3); }
+.setup .actions { padding-left: 0; }
 
 /* accent colour swatches: 24px dots, the selected one wears a ring (Settings › General) */
 .acc-swatches { display: inline-flex; align-items: center; gap: 10px; flex: none; }

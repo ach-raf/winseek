@@ -260,7 +260,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .frow .dseg button { padding: 0 8px; }
 /* compact popup (780px): tighter chips so every count fits whole instead of clipping */
 .shell:not(.full) .frow { gap: 2px; }
-.shell:not(.full) .frow .fc { padding: 0 6px; gap: 3px; }
+.shell:not(.full) .frow .fc { padding: 0 8px; gap: 4px; }
 /* compact popup: the sort chip joins the row (780px wide), so let it wrap instead of clipping */
 .shell:not(.full) .frow { flex-wrap: nowrap; }
 
