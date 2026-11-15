@@ -14,18 +14,18 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #ebe8e1; --bg2: #f8f7f3; --bg3: #dedad0; --line: #d2cdc0;
+  --bg: #dfdbd0; --bg2: #f8f6ef; --bg3: #d0ccbf; --line: #bfb9aa;
   --fg: #15171c; --fg2: #555b67; --fg3: #8b909c;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
   --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
-  --paper: #faf9f5; --paper-line: #c4beae; --fold: #e0dccf;
+  --paper: #faf9f5; --paper-line: #b3ad9d; --fold: #d9d5c8;
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
   /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
      are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
      popovers, floating labels — softer than the window's --shadow, present in both themes.
      Light's shadow ink is warm umber, not blue-black, so it reads as shade on paper. */
-  --card-shadow: 0 0 0 1px rgba(40,36,26,.11), 0 1px 2px rgba(40,36,26,.07), 0 8px 18px -8px rgba(40,36,26,.18);
+  --card-shadow: 0 0 0 1px rgba(40,34,20,.24), 0 1px 2px rgba(40,34,20,.12), 0 10px 22px -10px rgba(40,34,20,.30);
   --pop-shadow: 0 0 0 1px rgba(50,42,30,.07), 0 3px 8px rgba(50,42,30,.06), 0 16px 40px -8px rgba(50,42,30,.25);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 8px; --radius-lg: 14px;
@@ -38,7 +38,7 @@
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
   /* Library-window sidebar surfaces: both themes get a rail with its own identity, faintly
      accent-tinted, distinct from the canvas — light a warm grey, dark a lifted graphite. */
-  --side: color-mix(in oklab, var(--acc) 3%, #e2ded4);
+  --side: color-mix(in oklab, var(--acc) 3%, #d6d2c6);
   --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
