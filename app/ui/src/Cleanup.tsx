@@ -256,6 +256,14 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
 
   const toggle = useCallback((key: string) => setPicked((s) => { const n = new Set(s); if (n.has(key)) n.delete(key); else n.add(key); return n; }), []);
 
+  // Select all / clear: every pickable row and duplicate group on the three lists.
+  const allKeys = useMemo(() => [
+    ...(groups ?? []).map((g) => "d:" + g.id),
+    ...(rows ?? []).map((f) => "b:" + f.path),
+    ...shots.map((f) => "s:" + f.path),
+  ], [groups, rows, shots]);
+  const allOn = allKeys.length > 0 && allKeys.every((k) => picked.has(k));
+
   const go = async () => {
     if (live.paths.length === 0) return;
     setBusy(true);
@@ -329,8 +337,10 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
       </div>
       {live.n > 0 && (
         <div className="selbar" role="region" aria-label="Selection">
-          <span>{live.n} selected · frees <b>{formatSize(live.freed)}</b></span>
-          <button className="btn" disabled={busy} onClick={() => void go()}>Move to Recycle Bin</button>
+          <span>{live.n} selected</span>
+          <button className="btn sm ghost" disabled={allOn} onClick={() => setPicked(new Set(allKeys))}>Select all</button>
+          <button className="btn sm ghost" onClick={() => setPicked(new Set())}>Clear</button>
+          <button className="btn" disabled={busy} onClick={() => void go()}>Move {formatSize(live.freed)} to Recycle Bin</button>
         </div>
       )}
     </div>

@@ -136,9 +136,15 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .pl:focus-visible .crow.cur { outline: 2px solid var(--acc); outline-offset: 2px; border-radius: 8px; }
 .ck { width: 18px; height: 18px; border-radius: 5px; box-shadow: inset 0 0 0 1.5px var(--fg3); display: grid; place-items: center; color: transparent; }
 .ck.on { background: var(--acc); box-shadow: none; color: var(--acc-ink); }
-.selbar { position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: var(--sp-4); padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4); border-radius: 14px; background: var(--fg); color: var(--bg); font-size: 13.5px; white-space: nowrap; box-shadow: 0 14px 34px -8px rgba(0,0,0,.5); animation: fade 160ms var(--ease); }
+/* Selection bar: an in-flow strip below the page (in the flex column, outside the scroller), so it
+   never covers the last row. The count sits left with select-all / clear beside it; the effect's
+   total lives inside the primary button. */
+.selbar { flex: none; display: flex; align-items: center; gap: var(--sp-2); margin: 0 var(--gut) 10px; padding: var(--sp-2) var(--sp-2) var(--sp-2) var(--sp-4); border-radius: 14px; background: var(--fg); color: var(--bg); font-size: 13.5px; white-space: nowrap; box-shadow: 0 14px 34px -8px rgba(0,0,0,.5); animation: grow 160ms var(--ease); }
+.selbar > span { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lib-main .selbar .btn { background: var(--acc); color: var(--acc-ink); height: 34px; }
 .lib-main .selbar .btn:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #000); }
+.selbar .btn.ghost, .lib-main .selbar .btn.ghost { background: none; color: inherit; height: 26px; font-size: 12.5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
+.selbar .btn.ghost:hover:not(:disabled), .lib-main .selbar .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,.14); }
 .cl-sub { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) var(--gut) var(--sp-3); flex: none; }
 .cl-sub b { font-size: 15px; font-weight: 700; }
 .cl-sumtxt { font-size: 12.5px; color: var(--fg3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

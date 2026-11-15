@@ -578,6 +578,7 @@ function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
     mtime ? formatDate(mtime) : null,
   ].filter(Boolean).join(" · ");
   const isRoot = /^[A-Za-z]:\\?$/.test(path);
+  const size = entry?.size ?? hit?.size ?? null;
   return (
     <div className="su-sel">
       <div className="su-st" title={path}><b>{name}</b>{meta && <small>{meta}</small>}</div>
@@ -586,7 +587,7 @@ function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
         {hit && <button className="btn sm" onClick={() => onShow(hit)}>Show in folder</button>}
         {!isDir && <button className="btn sm" onClick={() => actions.open(path)}>Open</button>}
         <button className="btn sm" onClick={() => actions.reveal(path)}>Reveal</button>
-        {!isRoot && <button className="btn sm su-del" onClick={() => onRecycle(path)} title="Move to Recycle Bin (Delete)">Recycle</button>}
+        {!isRoot && <button className="btn sm su-del" onClick={() => onRecycle(path)} title="Move to Recycle Bin (Delete)">Recycle{size ? ` ${formatSize(size)}` : ""}</button>}
       </div>
     </div>
   );
