@@ -124,11 +124,12 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .ic.sys > svg { width: 56%; height: 56%; }
 
 /* ---- grids: most-used apps, photos ---- */
+/* .grid.apps column counts (6 compact / 12 full) mirror App.tsx gridCols.mostused. */
 .grid { display: grid; gap: 8px; padding: 4px 10px 6px; }
 .grid.apps { grid-template-columns: repeat(6, 1fr); }
 .grid.photos { grid-template-columns: repeat(4, 1fr); }
 .shell.full .grid.photos { grid-template-columns: repeat(5, 1fr); }
-.shell.full .grid.apps { grid-template-columns: repeat(8, 1fr); }
+.shell.full .grid.apps { grid-template-columns: repeat(12, 1fr); }
 .atile { display: grid; justify-items: center; gap: 8px; padding: 14px 4px 10px; border-radius: 12px; cursor: default; min-width: 0; }
 .atile .ic { width: 46px; height: 46px; }
 .atile .ic.app { font-size: 19px; }

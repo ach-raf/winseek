@@ -350,8 +350,9 @@ export default function App({ backend }: { backend: Backend }) {
     () => (lcfg?.portable === false ? [] : portableApps(headRows.filter((h): h is Hit => !!h), parsed.text, launch)),
     [lcfg, headRows, parsed.text, launch],
   );
-  // Tile grids per layout: photos 4 / 5 columns, apps 6 / 8.
-  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, namepics: full ? 5 : 4, mostused: full ? 8 : 6 }), [full]);
+  // Tile grids per layout: photos 4 / 5 columns, most-used apps 6 / 12 (full mode at 1280 px fits
+  // the whole MRU; MRU_MAX stores 12). Keep in sync with .grid.apps in search.css.
+  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, namepics: full ? 5 : 4, mostused: full ? 12 : 6 }), [full]);
   const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
   const ov = useMemo(
     () => (isRecent

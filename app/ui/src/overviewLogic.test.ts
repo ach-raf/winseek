@@ -186,6 +186,8 @@ test("home: Most used grid (capped at the columns) then Recent files; ovMove wal
   const recent = Array.from({ length: 10 }, (_, i) => hit("r" + i));
   const h = buildHome({ mru, recent, appCols: 6, recentCap: 7 });
   assert.deepEqual(h.sections.map((x) => [x.id, x.items.length]), [["mostused", 6], ["recent", 7]]);
+  const h12 = buildHome({ mru, recent, appCols: 12, recentCap: 7 });
+  assert.deepEqual(h12.sections.map((x) => [x.id, x.items.length]), [["mostused", 9], ["recent", 7]], "full mode's 12 columns show every stored MRU entry");
   assert.equal(h.flat[7].nameIdx, 1, "recent rows point into the name results");
   const C = { mostused: 6 };
   assert.equal(ovMove(h.flat, 2, "down", C), 6, "grid -> first recent row");
