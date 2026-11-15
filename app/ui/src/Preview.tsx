@@ -327,7 +327,7 @@ function ImageStage({ src, name, dims, note, boxes, onError, registerApi }: {
       {/* The zoom bar: wheel and drag work too, but these say so without a manual.
           Pointer events stop at the bar so a press does not start a stage drag. */}
       {nat && (
-        <div className="pv-zoombar" onPointerDown={(e) => e.stopPropagation()}>
+        <div className="pv-zoombar ov" onPointerDown={(e) => e.stopPropagation()}>
           <button className="pv-zb" tabIndex={-1} onMouseDown={keep} disabled={cur.s <= fit + 1e-6}
                   onClick={() => zoomStep(0.8)} aria-label="Zoom out"
                   title={`Zoom out (scroll wheel, ${combos("preview.zoomOut")[0] ?? "Ctrl+-"})`}>−</button>
@@ -586,7 +586,7 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
     void el.play().catch(() => {});
   };
   const at = anchor !== null && (
-    <button className="btn quiet pv-at" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={jump} title="Jump to the moment that matched">
+    <button className="btn pv-at ov" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={jump} title="Jump to the moment that matched">
       Match at {formatClock(anchor)}
     </button>
   );

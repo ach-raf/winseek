@@ -303,7 +303,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .th-in { animation: th-fade .14s ease-out; }
 @keyframes th-fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .th-wait, .th-in { animation: none; } }
-.tile .tpct { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 12px); display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.62); color: #fff; backdrop-filter: blur(6px); pointer-events: none; white-space: nowrap; overflow: hidden; }
+/* the match badge on a photo tile: the .ov recipe (base.css) — dark translucent container, light ink, hairline outline */
+.tile .tpct { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 12px); display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.58); color: #fff; backdrop-filter: blur(6px); box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); pointer-events: none; white-space: nowrap; overflow: hidden; }
 .tile .tpct b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
 .tile .tpct i { font-style: normal; font-weight: 500; opacity: .78; font-variant-numeric: tabular-nums; }
 .tile .tpct b::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--acc); }
