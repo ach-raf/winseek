@@ -166,7 +166,13 @@ extern "system" {
         defaulted: *mut i32,
     ) -> i32;
     fn OpenProcessToken(process: isize, access: u32, token: *mut isize) -> i32;
-    fn GetTokenInformation(token: isize, class: u32, info: *mut c_void, len: u32, ret_len: *mut u32) -> i32;
+    fn GetTokenInformation(
+        token: isize,
+        class: u32,
+        info: *mut c_void,
+        len: u32,
+        ret_len: *mut u32,
+    ) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -192,7 +198,13 @@ pub fn is_elevated() -> bool {
             return false;
         }
         let (mut elevated, mut n) = (0u32, 0u32);
-        let ok = GetTokenInformation(tok, TOKEN_ELEVATION, (&mut elevated as *mut u32).cast(), 4, &mut n);
+        let ok = GetTokenInformation(
+            tok,
+            TOKEN_ELEVATION,
+            (&mut elevated as *mut u32).cast(),
+            4,
+            &mut n,
+        );
         CloseHandle(tok);
         ok != 0 && elevated != 0
     }
@@ -209,7 +221,8 @@ pub fn bin_path(exe: &Path, volumes: Option<&[char]>) -> String {
 }
 
 fn install_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into())).join("winseek")
+    PathBuf::from(std::env::var_os("ProgramFiles").unwrap_or_else(|| r"C:\Program Files".into()))
+        .join("winseek")
 }
 
 // ---------------------------------------------------------------- SCM helpers
@@ -280,7 +293,10 @@ fn stop_and_wait(svc: &Handle) -> Result<(), String> {
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err(format!("service did not stop within {} s", STOP_WAIT.as_secs()))
+    Err(format!(
+        "service did not stop within {} s",
+        STOP_WAIT.as_secs()
+    ))
 }
 
 /// Parse SDDL into a self-relative SD (free with `LocalFree`).
@@ -289,7 +305,12 @@ fn sddl_to_sd(sddl: &str) -> Result<*mut c_void, String> {
     let mut sd: *mut c_void = null_mut();
     // SAFETY: out-pointer valid.
     let ok = unsafe {
-        ConvertStringSecurityDescriptorToSecurityDescriptorW(w.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut())
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            w.as_ptr(),
+            SDDL_REVISION_1,
+            &mut sd,
+            null_mut(),
+        )
     };
     if ok == 0 {
         return Err(os_err("ConvertStringSecurityDescriptor"));
@@ -302,7 +323,9 @@ fn apply_data_dacl(dir: &Path) -> Result<(), String> {
     let (mut present, mut defaulted, mut dacl) = (0i32, 0i32, null_mut());
     // SAFETY: sd valid until LocalFree; dacl points into sd.
     let r = unsafe {
-        if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0 || present == 0 {
+        if GetSecurityDescriptorDacl(sd, &mut present, &mut dacl, &mut defaulted) == 0
+            || present == 0
+        {
             let e = os_err("GetSecurityDescriptorDacl");
             LocalFree(sd);
             return Err(e);
@@ -321,18 +344,32 @@ fn apply_data_dacl(dir: &Path) -> Result<(), String> {
         r
     };
     if r != 0 {
-        return Err(format!("SetNamedSecurityInfo({}): error {r}", dir.display()));
+        return Err(format!(
+            "SetNamedSecurityInfo({}): error {r}",
+            dir.display()
+        ));
     }
     Ok(())
 }
 
 fn configure(svc: &Handle) -> Result<(), String> {
     let mut desc = wide(DESCRIPTION);
-    let mut d = ServiceDescription { description: desc.as_mut_ptr() };
+    let mut d = ServiceDescription {
+        description: desc.as_mut_ptr(),
+    };
     let mut acts = [
-        ScAction { kind: SC_ACTION_RESTART, delay: 5_000 },
-        ScAction { kind: SC_ACTION_RESTART, delay: 30_000 },
-        ScAction { kind: SC_ACTION_RESTART, delay: 60_000 },
+        ScAction {
+            kind: SC_ACTION_RESTART,
+            delay: 5_000,
+        },
+        ScAction {
+            kind: SC_ACTION_RESTART,
+            delay: 30_000,
+        },
+        ScAction {
+            kind: SC_ACTION_RESTART,
+            delay: 60_000,
+        },
     ];
     let mut fa = ServiceFailureActions {
         reset_period: 86_400,
@@ -344,11 +381,19 @@ fn configure(svc: &Handle) -> Result<(), String> {
     let mut flag = FailureActionsFlag { flag: 1 };
     // SAFETY: structs outlive the calls.
     unsafe {
-        if ChangeServiceConfig2W(svc.0, SERVICE_CONFIG_DESCRIPTION, (&mut d as *mut ServiceDescription).cast()) == 0 {
+        if ChangeServiceConfig2W(
+            svc.0,
+            SERVICE_CONFIG_DESCRIPTION,
+            (&mut d as *mut ServiceDescription).cast(),
+        ) == 0
+        {
             return Err(os_err("ChangeServiceConfig2(description)"));
         }
-        if ChangeServiceConfig2W(svc.0, SERVICE_CONFIG_FAILURE_ACTIONS, (&mut fa as *mut ServiceFailureActions).cast())
-            == 0
+        if ChangeServiceConfig2W(
+            svc.0,
+            SERVICE_CONFIG_FAILURE_ACTIONS,
+            (&mut fa as *mut ServiceFailureActions).cast(),
+        ) == 0
         {
             return Err(os_err("ChangeServiceConfig2(failure actions)"));
         }
@@ -382,7 +427,11 @@ pub fn manage(args: &Args) -> i32 {
     }
     let data = crate::default_data_dir();
     crate::log::init(&args.log);
-    let r = if args.mode == Mode::Install { install(args.volumes.as_deref(), &data) } else { uninstall() };
+    let r = if args.mode == Mode::Install {
+        install(args.volumes.as_deref(), &data)
+    } else {
+        uninstall()
+    };
     match r {
         Ok(()) => 0,
         Err(e) => {
@@ -404,7 +453,8 @@ pub fn install(volumes: Option<&[char]>, data: &Path) -> Result<(), String> {
     let dest = dir.join("searchd.exe");
     let same = matches!((std::fs::canonicalize(&src), std::fs::canonicalize(&dest)), (Ok(a), Ok(b)) if a == b);
     if !same {
-        std::fs::copy(&src, &dest).map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
+        std::fs::copy(&src, &dest)
+            .map_err(|e| format!("copy {} -> {}: {e}", src.display(), dest.display()))?;
         info!("copied {} -> {}", src.display(), dest.display());
     }
     std::fs::create_dir_all(data).map_err(|e| format!("create {}: {e}", data.display()))?;
@@ -567,7 +617,12 @@ fn begin_stop_pending() {
     *BUMPER.lock().unwrap() = Some(h);
 }
 
-extern "system" fn ctrl_handler(ctrl: u32, _event: u32, _data: *mut c_void, _ctx: *mut c_void) -> u32 {
+extern "system" fn ctrl_handler(
+    ctrl: u32,
+    _event: u32,
+    _data: *mut c_void,
+    _ctx: *mut c_void,
+) -> u32 {
     match ctrl {
         SERVICE_CONTROL_STOP | SERVICE_CONTROL_PRESHUTDOWN | SERVICE_CONTROL_SHUTDOWN => {
             info!("service control {ctrl}: stopping");
@@ -594,7 +649,13 @@ extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     let was_ready = AtomicBool::new(false);
     let code = crate::run(args, &STOP, &|| {
         was_ready.store(true, Ordering::SeqCst);
-        report(SERVICE_RUNNING, SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN, 0, 0, 0);
+        report(
+            SERVICE_RUNNING,
+            SERVICE_ACCEPT_STOP | SERVICE_ACCEPT_PRESHUTDOWN,
+            0,
+            0,
+            0,
+        );
     });
     if !was_ready.load(Ordering::SeqCst) {
         error!("startup failed (exit {code}); see log");
@@ -606,7 +667,13 @@ extern "system" fn service_main(_argc: u32, _argv: *mut *mut u16) {
     if code == 0 {
         report(SERVICE_STOPPED, 0, 0, 0, 0);
     } else {
-        report(SERVICE_STOPPED, 0, ERROR_SERVICE_SPECIFIC_ERROR, code as u32, 0);
+        report(
+            SERVICE_STOPPED,
+            0,
+            ERROR_SERVICE_SPECIFIC_ERROR,
+            code as u32,
+            0,
+        );
     }
 }
 
@@ -615,12 +682,21 @@ pub fn run_dispatcher(args: Args) -> i32 {
     let _ = ARGS.set(args);
     let name = wide(SERVICE_NAME);
     let table = [
-        ServiceTableEntry { name: name.as_ptr(), proc_: Some(service_main) },
-        ServiceTableEntry { name: null(), proc_: None },
+        ServiceTableEntry {
+            name: name.as_ptr(),
+            proc_: Some(service_main),
+        },
+        ServiceTableEntry {
+            name: null(),
+            proc_: None,
+        },
     ];
     // SAFETY: table is NULL-terminated and outlives the call.
     if unsafe { StartServiceCtrlDispatcherW(table.as_ptr()) } == 0 {
-        error!("{} (--service must be started by the service control manager)", os_err("StartServiceCtrlDispatcher"));
+        error!(
+            "{} (--service must be started by the service control manager)",
+            os_err("StartServiceCtrlDispatcher")
+        );
         return 1;
     }
     0
@@ -633,7 +709,10 @@ mod tests {
     #[test]
     fn bin_path_quotes() {
         let exe = Path::new(r"C:\Program Files\winseek\searchd.exe");
-        assert_eq!(bin_path(exe, None), r#""C:\Program Files\winseek\searchd.exe" --service"#);
+        assert_eq!(
+            bin_path(exe, None),
+            r#""C:\Program Files\winseek\searchd.exe" --service"#
+        );
         assert_eq!(
             bin_path(exe, Some(&['C', 'D'])),
             r#""C:\Program Files\winseek\searchd.exe" --service --volumes C,D"#

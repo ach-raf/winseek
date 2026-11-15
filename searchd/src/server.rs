@@ -37,7 +37,10 @@ fn handle(mut conn: PipeConn, sh: &Shared) {
         let req: Request = match read_message(&mut conn) {
             Ok(r) => r,
             Err(e) if e.kind() == io::ErrorKind::InvalidData => {
-                let msg = Response::Error { id: 0, message: format!("bad request: {e}") };
+                let msg = Response::Error {
+                    id: 0,
+                    message: format!("bad request: {e}"),
+                };
                 if write_message(&mut conn, &msg).is_err() {
                     return;
                 }
@@ -60,7 +63,13 @@ fn handle(mut conn: PipeConn, sh: &Shared) {
 
 fn respond(sh: &Shared, req: Request) -> Response {
     match req {
-        Request::Search { id, query, offset, limit, sort } => {
+        Request::Search {
+            id,
+            query,
+            offset,
+            limit,
+            sort,
+        } => {
             let t = Instant::now();
             let (total, hits, note) = state::search(sh, &query, offset, limit, sort);
             if let Some(n) = note {
@@ -69,10 +78,18 @@ fn respond(sh: &Shared, req: Request) -> Response {
                     warn!("search sort {sort:?}: {n}");
                 }
             }
-            Response::SearchResult { id, total, hits, elapsed_us: t.elapsed().as_micros() as u64 }
+            Response::SearchResult {
+                id,
+                total,
+                hits,
+                elapsed_us: t.elapsed().as_micros() as u64,
+            }
         }
         Request::Status { id } => status(sh, id),
-        Request::Recent { id, limit } => Response::RecentResult { id, hits: state::recent(sh, limit) },
+        Request::Recent { id, limit } => Response::RecentResult {
+            id,
+            hits: state::recent(sh, limit),
+        },
         Request::Rescan { id, volume } => {
             let v = volume.to_ascii_uppercase();
             match sh.has_ctl(v).then(|| sh.ctl(v)) {
@@ -83,23 +100,37 @@ fn respond(sh: &Shared, req: Request) -> Response {
                     c.stop.store(true, Ordering::Relaxed);
                     status(sh, id)
                 }
-                None => Response::Error { id, message: format!("volume {v}: is not indexed") },
+                None => Response::Error {
+                    id,
+                    message: format!("volume {v}: is not indexed"),
+                },
             }
         }
         Request::Usage { id, path, limit } => match state::usage(sh, &path, limit) {
             Ok(usage) => Response::UsageResult { id, usage },
             Err(message) => Response::Error { id, message },
         },
-        Request::UsageDetail { id, path, top_files } => match state::usage_detail(sh, &path, top_files) {
+        Request::UsageDetail {
+            id,
+            path,
+            top_files,
+        } => match state::usage_detail(sh, &path, top_files) {
             Ok(detail) => Response::UsageDetailResult { id, detail },
             Err(message) => Response::Error { id, message },
         },
-        Request::Subscribe { id, .. } => Response::Error { id, message: "subscribe handled elsewhere".into() },
+        Request::Subscribe { id, .. } => Response::Error {
+            id,
+            message: "subscribe handled elsewhere".into(),
+        },
     }
 }
 
 fn status(sh: &Shared, id: u64) -> Response {
-    Response::StatusResult { id, volumes: state::status(sh), uptime_s: sh.started.elapsed().as_secs() }
+    Response::StatusResult {
+        id,
+        volumes: state::status(sh),
+        uptime_s: sh.started.elapsed().as_secs(),
+    }
 }
 
 fn stream_changes(conn: &mut PipeConn, sh: &Shared, roots: &[String]) {

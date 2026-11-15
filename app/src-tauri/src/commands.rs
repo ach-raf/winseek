@@ -14,7 +14,10 @@ impl AppState {
         }
     }
     pub fn source(&self) -> Arc<dyn NameSource> {
-        self.source.read().unwrap_or_else(|e| e.into_inner()).clone()
+        self.source
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone()
     }
     pub fn set_source(&self, s: Arc<dyn NameSource>) {
         *self.source.write().unwrap_or_else(|e| e.into_inner()) = s;
@@ -51,8 +54,12 @@ impl LatestSearch {
 
 /// Run blocking work off the main thread. A plain (non-async) Tauri command runs *on* it, so a
 /// slow pipe or store call would freeze the whole window, typing included.
-pub async fn blocking<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())
+pub async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -78,7 +85,11 @@ pub async fn search(
     blocking(move || {
         let _turn = lock(&gate);
         if lock(&latest).superseded(stream.as_deref(), &key) {
-            return SearchResult { total: 0, hits: vec![], elapsed_us: 0 }; // superseded: the UI drops it anyway
+            return SearchResult {
+                total: 0,
+                hits: vec![],
+                elapsed_us: 0,
+            }; // superseded: the UI drops it anyway
         }
         src.search(&query, &filter, offset, limit.min(5000), &sort)
     })
@@ -116,7 +127,17 @@ fn volume_label(root: &[u16]) -> String {
     use windows::Win32::Storage::FileSystem::GetVolumeInformationW;
     let mut buf = [0u16; 261];
     // SAFETY: `root` is NUL-terminated and outlives the call; `buf` is a valid writable buffer.
-    let ok = unsafe { GetVolumeInformationW(PCWSTR(root.as_ptr()), Some(&mut buf), None, None, None, None) }.is_ok();
+    let ok = unsafe {
+        GetVolumeInformationW(
+            PCWSTR(root.as_ptr()),
+            Some(&mut buf),
+            None,
+            None,
+            None,
+            None,
+        )
+    }
+    .is_ok();
     if !ok {
         return String::new();
     }
@@ -130,17 +151,39 @@ fn space_of(letter: char) -> Option<DriveSpace> {
     if !letter.is_ascii_alphabetic() {
         return None;
     }
-    let root: Vec<u16> = format!("{}:\\", letter.to_ascii_uppercase()).encode_utf16().chain(std::iter::once(0)).collect();
+    let root: Vec<u16> = format!("{}:\\", letter.to_ascii_uppercase())
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let (mut free, mut total) = (0u64, 0u64);
     // SAFETY: `root` is NUL-terminated and outlives the call; the out pointers are valid u64s.
-    unsafe { GetDiskFreeSpaceExW(PCWSTR(root.as_ptr()), Some(&mut free), Some(&mut total), None) }.ok()?;
-    (total > 0).then(|| DriveSpace { letter: letter.to_ascii_uppercase().to_string(), total, free, label: volume_label(&root) })
+    unsafe {
+        GetDiskFreeSpaceExW(
+            PCWSTR(root.as_ptr()),
+            Some(&mut free),
+            Some(&mut total),
+            None,
+        )
+    }
+    .ok()?;
+    (total > 0).then(|| DriveSpace {
+        letter: letter.to_ascii_uppercase().to_string(),
+        total,
+        free,
+        label: volume_label(&root),
+    })
 }
 
 /// Free and total bytes of the given drive letters (a drive that does not answer is left out).
 #[tauri::command]
 pub async fn drive_space(letters: Vec<String>) -> Result<Vec<DriveSpace>, String> {
-    blocking(move || letters.iter().filter_map(|l| l.chars().next().and_then(space_of)).collect()).await
+    blocking(move || {
+        letters
+            .iter()
+            .filter_map(|l| l.chars().next().and_then(space_of))
+            .collect()
+    })
+    .await
 }
 
 /// A folder's disk usage plus, for the drive list and a drive root, what the drives themselves have free.
@@ -153,13 +196,20 @@ pub struct DiskUsage {
 
 /// What each child of `path` holds (empty path: every indexed drive), from the name index.
 #[tauri::command]
-pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, limit: Option<u32>) -> Result<DiskUsage, String> {
+pub async fn disk_usage(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    limit: Option<u32>,
+) -> Result<DiskUsage, String> {
     let src = state.source();
     blocking(move || {
         let tree = src.usage(&path, limit.unwrap_or(0))?;
         let at_top = path.trim_end_matches(['\\', '/']).len() <= 2;
         let drives = if path.trim().is_empty() {
-            tree.entries.iter().filter_map(|e| e.name.chars().next().and_then(space_of)).collect()
+            tree.entries
+                .iter()
+                .filter_map(|e| e.name.chars().next().and_then(space_of))
+                .collect()
         } else if at_top {
             path.chars().next().and_then(space_of).into_iter().collect()
         } else {
@@ -172,7 +222,11 @@ pub async fn disk_usage(state: tauri::State<'_, AppState>, path: String, limit: 
 
 /// File types and biggest files under `path`.
 #[tauri::command]
-pub async fn disk_usage_detail(state: tauri::State<'_, AppState>, path: String, top_files: Option<u32>) -> Result<winseek_ipc::UsageDetail, String> {
+pub async fn disk_usage_detail(
+    state: tauri::State<'_, AppState>,
+    path: String,
+    top_files: Option<u32>,
+) -> Result<winseek_ipc::UsageDetail, String> {
     let src = state.source();
     blocking(move || src.usage_detail(&path, top_files.unwrap_or(100))).await?
 }
@@ -186,7 +240,11 @@ pub async fn recent(state: tauri::State<'_, AppState>, limit: usize) -> Result<V
 #[tauri::command(async)]
 pub fn open_path(path: String) -> Result<(), String> {
     // `explorer <path>` opens files with the default handler and folders in Explorer.
-    Command::new("explorer.exe").arg(&path).spawn().map(|_| ()).map_err(|e| e.to_string())
+    Command::new("explorer.exe")
+        .arg(&path)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command(async)]
@@ -217,12 +275,20 @@ pub fn open_terminal(dir: String) -> Result<(), String> {
 #[tauri::command]
 pub fn copy_path(path: String) -> Result<(), String> {
     // clip.exe accepts UTF-16LE with BOM on stdin.
-    let mut child = Command::new("clip.exe").stdin(Stdio::piped()).spawn().map_err(|e| e.to_string())?;
+    let mut child = Command::new("clip.exe")
+        .stdin(Stdio::piped())
+        .spawn()
+        .map_err(|e| e.to_string())?;
     let mut buf: Vec<u8> = vec![0xFF, 0xFE];
     for u in path.encode_utf16() {
         buf.extend_from_slice(&u.to_le_bytes());
     }
-    child.stdin.take().ok_or("no stdin")?.write_all(&buf).map_err(|e| e.to_string())?;
+    child
+        .stdin
+        .take()
+        .ok_or("no stdin")?
+        .write_all(&buf)
+        .map_err(|e| e.to_string())?;
     child.wait().map_err(|e| e.to_string())?;
     Ok(())
 }

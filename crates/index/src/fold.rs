@@ -18,7 +18,11 @@ const fn build_table() -> [u8; 256] {
     let mut t = [0u8; 256];
     let mut i = 0;
     while i < 256 {
-        t[i] = if i >= 65 && i <= 90 { (i + 32) as u8 } else { i as u8 };
+        t[i] = if i >= 65 && i <= 90 {
+            (i + 32) as u8
+        } else {
+            i as u8
+        };
         i += 1;
     }
     t
@@ -75,7 +79,9 @@ pub fn find_word_ascii_ci(hay: &[u8], needle: &[u8]) -> bool {
     let last = hay.len() - n;
     let mut i = 0;
     while i <= last {
-        if ASCII_FOLD[hay[i] as usize] == first && (i == 0 || word_start(hay[i - 1] as char, hay[i] as char)) {
+        if ASCII_FOLD[hay[i] as usize] == first
+            && (i == 0 || word_start(hay[i - 1] as char, hay[i] as char))
+        {
             let mut j = 1;
             while j < n && ASCII_FOLD[hay[i + j] as usize] == needle[j] {
                 j += 1;
@@ -99,7 +105,11 @@ pub fn find_word(hay: &[char], needle: &[char]) -> bool {
         return false;
     }
     (0..=hay.len() - n).any(|i| {
-        (i == 0 || word_start(hay[i - 1], hay[i])) && hay[i..i + n].iter().zip(needle).all(|(h, x)| fold_char(*h) == *x)
+        (i == 0 || word_start(hay[i - 1], hay[i]))
+            && hay[i..i + n]
+                .iter()
+                .zip(needle)
+                .all(|(h, x)| fold_char(*h) == *x)
     })
 }
 
@@ -140,7 +150,10 @@ pub fn cmp_fold(a: &str, b: &str) -> Ordering {
         let (x, y) = (ab[i], bb[i]);
         if x >= 0x80 || y >= 0x80 {
             // everything before i was ASCII so i is a char boundary in both
-            return a[i..].chars().map(fold_char).cmp(b[i..].chars().map(fold_char));
+            return a[i..]
+                .chars()
+                .map(fold_char)
+                .cmp(b[i..].chars().map(fold_char));
         }
         let (fx, fy) = (ASCII_FOLD[x as usize], ASCII_FOLD[y as usize]);
         if fx != fy {
@@ -182,7 +195,9 @@ pub fn glob_match_ascii_ci(pat: &[u8], hay: &[u8]) -> bool {
     let (mut p, mut h) = (0usize, 0usize);
     let (mut star, mut mark) = (usize::MAX, 0usize);
     while h < hay.len() {
-        if p < pat.len() && (pat[p] == b'?' || (pat[p] != b'*' && pat[p] == ASCII_FOLD[hay[h] as usize])) {
+        if p < pat.len()
+            && (pat[p] == b'?' || (pat[p] != b'*' && pat[p] == ASCII_FOLD[hay[h] as usize]))
+        {
             p += 1;
             h += 1;
         } else if p < pat.len() && pat[p] == b'*' {

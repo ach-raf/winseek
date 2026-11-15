@@ -48,7 +48,8 @@ const SEARCH_BY_MEANING_DESC: &str = "Find documents, screenshots and photos by 
 source (meaning = vector match, text = found in extracted text). Also set `state` (ready|indexing|models_missing) — \
 explain it to the user when hits are missing.";
 
-const RECENT_FILES_DESC: &str = "Files changed most recently (from the USN journal), newest first. Use it for \
+const RECENT_FILES_DESC: &str =
+    "Files changed most recently (from the USN journal), newest first. Use it for \
 \"what was I just working on\" questions without a search term.";
 
 const FILE_INFO_DESC: &str = "Metadata for one file: kind (image/video/audio/text/document/pdf/folder/other), size, \
@@ -72,7 +73,8 @@ const INDEX_STATUS_DESC: &str = "winseek's health: indexed volumes (drive, files
 semantic-index state and counts, whether the models and the document parser are installed, and whether agent access is on. \
 Call this first when another tool says access is off or returns an index error.";
 
-const LIBRARY_BIG_FILES_DESC: &str = "The biggest files under the user's profile folder, largest first. Good for \
+const LIBRARY_BIG_FILES_DESC: &str =
+    "The biggest files under the user's profile folder, largest first. Good for \
 \"what is eating my disk\". Returns name, path, size, modified.";
 
 const LIBRARY_DUPLICATES_DESC: &str = "Groups of byte-identical files (same size, same SHA-256), biggest reclaimable \
@@ -86,32 +88,36 @@ const TOOLS: &[ToolDef] = &[
         name: "search_files",
         title: "Search files by name",
         description: SEARCH_FILES_DESC,
-        schema: || obj(
-            json!({
-                "query": s("Name search query (syntax in the description)"),
-                "type": s("all (default) | folders | images | docs | video | audio | apps"),
-                "sort": s("relevance (default) | name | date | size"),
-                "modified_after": s("ISO date or today|yesterday|this_week|last_week|this_month|this_year"),
-                "modified_before": s("ISO date or a relative word, same as modified_after"),
-                "min_size": s("bytes, or \"10MB\", \"1.5GB\""),
-                "max_size": s("bytes, or \"10MB\", \"1.5GB\""),
-                "limit": n("Results to return (default 50)", 1, 200),
-                "offset": n("Skip this many results after filtering", 0, i64::MAX),
-            }),
-            &["query"],
-        ),
+        schema: || {
+            obj(
+                json!({
+                    "query": s("Name search query (syntax in the description)"),
+                    "type": s("all (default) | folders | images | docs | video | audio | apps"),
+                    "sort": s("relevance (default) | name | date | size"),
+                    "modified_after": s("ISO date or today|yesterday|this_week|last_week|this_month|this_year"),
+                    "modified_before": s("ISO date or a relative word, same as modified_after"),
+                    "min_size": s("bytes, or \"10MB\", \"1.5GB\""),
+                    "max_size": s("bytes, or \"10MB\", \"1.5GB\""),
+                    "limit": n("Results to return (default 50)", 1, 200),
+                    "offset": n("Skip this many results after filtering", 0, i64::MAX),
+                }),
+                &["query"],
+            )
+        },
     },
     ToolDef {
         name: "search_by_meaning",
         title: "Search files by content",
         description: SEARCH_BY_MEANING_DESC,
-        schema: || obj(
-            json!({
-                "query": s("What the files contain"),
-                "limit": n("Results (default 20)", 1, 50),
-            }),
-            &["query"],
-        ),
+        schema: || {
+            obj(
+                json!({
+                    "query": s("What the files contain"),
+                    "limit": n("Results (default 20)", 1, 50),
+                }),
+                &["query"],
+            )
+        },
     },
     ToolDef {
         name: "recent_files",
@@ -123,45 +129,56 @@ const TOOLS: &[ToolDef] = &[
         name: "file_info",
         title: "File metadata",
         description: FILE_INFO_DESC,
-        schema: || obj(json!({"path": s("Full path of the file or folder")}), &["path"]),
+        schema: || {
+            obj(
+                json!({"path": s("Full path of the file or folder")}),
+                &["path"],
+            )
+        },
     },
     ToolDef {
         name: "read_text",
         title: "Read text from a file",
         description: READ_TEXT_DESC,
-        schema: || obj(
-            json!({
-                "path": s("Full path of the file"),
-                "page": n("PDF page to read (1-based); omit for the whole document", 1, 1_000_000),
-                "max_chars": n("Cap on returned text (default 20000)", 1, 200_000),
-            }),
-            &["path"],
-        ),
+        schema: || {
+            obj(
+                json!({
+                    "path": s("Full path of the file"),
+                    "page": n("PDF page to read (1-based); omit for the whole document", 1, 1_000_000),
+                    "max_chars": n("Cap on returned text (default 20000)", 1, 200_000),
+                }),
+                &["path"],
+            )
+        },
     },
     ToolDef {
         name: "parse_document",
         title: "Parse a scanned document",
         description: PARSE_DOCUMENT_DESC,
-        schema: || obj(
-            json!({
-                "path": s("Full path of the scanned PDF or image"),
-                "page": n("Parse only this PDF page (1-based)", 1, 1_000_000),
-            }),
-            &["path"],
-        ),
+        schema: || {
+            obj(
+                json!({
+                    "path": s("Full path of the scanned PDF or image"),
+                    "page": n("Parse only this PDF page (1-based)", 1, 1_000_000),
+                }),
+                &["path"],
+            )
+        },
     },
     ToolDef {
         name: "find_apps",
         title: "Find apps and settings",
         description: FIND_APPS_DESC,
-        schema: || obj(
-            json!({
-                "query": s("Name of the app, setting or command"),
-                "kind": s("app | setting | command (omit for all)"),
-                "limit": n("Results (default 10)", 1, 50),
-            }),
-            &["query"],
-        ),
+        schema: || {
+            obj(
+                json!({
+                    "query": s("Name of the app, setting or command"),
+                    "kind": s("app | setting | command (omit for all)"),
+                    "limit": n("Results (default 10)", 1, 50),
+                }),
+                &["query"],
+            )
+        },
     },
     ToolDef {
         name: "index_status",
@@ -179,13 +196,23 @@ const TOOLS: &[ToolDef] = &[
         name: "library_duplicates",
         title: "Duplicate files",
         description: LIBRARY_DUPLICATES_DESC,
-        schema: || obj(json!({"limit": n("Groups to return (default 50)", 1, 500)}), &[]),
+        schema: || {
+            obj(
+                json!({"limit": n("Groups to return (default 50)", 1, 500)}),
+                &[],
+            )
+        },
     },
     ToolDef {
         name: "library_collections",
         title: "Smart collections",
         description: LIBRARY_COLLECTIONS_DESC,
-        schema: || obj(json!({"name": s("Collection name; omit to list the collections")}), &[]),
+        schema: || {
+            obj(
+                json!({"name": s("Collection name; omit to list the collections")}),
+                &[],
+            )
+        },
     },
 ];
 
@@ -215,7 +242,12 @@ pub fn list_for(enabled: bool) -> Value {
 
 /// Does `path` sit under one of `include` (and not under `exclude`)? Pure, case-insensitive,
 /// separator-normalised, prefix-trap safe (`C:\a\Docs2` is not under `C:\a\Docs`).
-pub fn content_allowed(path: &str, indexed_only: bool, include: &[String], exclude: &[String]) -> bool {
+pub fn content_allowed(
+    path: &str,
+    indexed_only: bool,
+    include: &[String],
+    exclude: &[String],
+) -> bool {
     if !indexed_only {
         return true;
     }
@@ -225,7 +257,8 @@ pub fn content_allowed(path: &str, indexed_only: bool, include: &[String], exclu
         return false;
     }
     let under = |root: &str| p == root || p.starts_with(&format!("{root}\\"));
-    include.iter().map(|r| norm(r)).any(|r| under(&r)) && !exclude.iter().map(|r| norm(r)).any(|r| under(&r))
+    include.iter().map(|r| norm(r)).any(|r| under(&r))
+        && !exclude.iter().map(|r| norm(r)).any(|r| under(&r))
 }
 
 #[cfg(test)]
@@ -287,13 +320,33 @@ mod tests {
     fn content_scope_rules() {
         let inc = vec!["C:\\Users\\A\\Docs".to_string(), "D:/Media".to_string()];
         let exc = vec!["C:\\Users\\A\\Docs\\secret".to_string()];
-        assert!(content_allowed(r"C:\Users\a\Docs\report.docx", true, &inc, &exc));
-        assert!(content_allowed(r"C:\Users\A\DOCS", true, &inc, &exc), "root itself is in scope");
-        assert!(!content_allowed(r"C:\Users\a\Docs2\report.docx", true, &inc, &exc), "prefix trap");
-        assert!(!content_allowed(r"C:\Users\a\Docs\secret\k.pdf", true, &inc, &exc), "excluded");
-        assert!(content_allowed(r"D:\Media\video/x.mp4", true, &inc, &exc), "mixed slashes");
+        assert!(content_allowed(
+            r"C:\Users\a\Docs\report.docx",
+            true,
+            &inc,
+            &exc
+        ));
+        assert!(
+            content_allowed(r"C:\Users\A\DOCS", true, &inc, &exc),
+            "root itself is in scope"
+        );
+        assert!(
+            !content_allowed(r"C:\Users\a\Docs2\report.docx", true, &inc, &exc),
+            "prefix trap"
+        );
+        assert!(
+            !content_allowed(r"C:\Users\a\Docs\secret\k.pdf", true, &inc, &exc),
+            "excluded"
+        );
+        assert!(
+            content_allowed(r"D:\Media\video/x.mp4", true, &inc, &exc),
+            "mixed slashes"
+        );
         assert!(!content_allowed(r"E:\other.docx", true, &inc, &exc));
-        assert!(!content_allowed(r"C:\Users\a\Docs\..\Docs\secret\x", true, &inc, &exc), ".. escape");
+        assert!(
+            !content_allowed(r"C:\Users\a\Docs\..\Docs\secret\x", true, &inc, &exc),
+            ".. escape"
+        );
         // "any" scope reads everywhere
         assert!(content_allowed(r"E:\anywhere.bin", false, &inc, &exc));
     }

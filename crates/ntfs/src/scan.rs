@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 use crate::ffi::{self, AlignedBuf, AsyncRead, Handle};
 use crate::record::{
-    apply_fixup, decode_data_runs, parse_record, select_names_owned, u16_at, u32_at, u64_at, Parsed,
-    RecordError, ATTR_ATTRIBUTE_LIST, ATTR_DATA, REC_NO_MASK,
+    apply_fixup, decode_data_runs, parse_record, select_names_owned, u16_at, u32_at, u64_at,
+    Parsed, RecordError, ATTR_ATTRIBUTE_LIST, ATTR_DATA, REC_NO_MASK,
 };
 
 /// Default bytes per read.
@@ -105,24 +105,39 @@ impl ScanStats {
 #[derive(Debug)]
 pub enum ScanError {
     /// Could not open the raw volume (usually: not elevated).
-    Open { letter: char, source: io::Error },
+    Open {
+        letter: char,
+        source: io::Error,
+    },
     /// Volume data query failed (not NTFS?).
-    VolumeData { letter: char, source: io::Error },
+    VolumeData {
+        letter: char,
+        source: io::Error,
+    },
     /// Implausible geometry from the volume data.
     BadGeometry(String),
     /// Could not build the $MFT extent map.
     Locator(String),
-    Read { offset: u64, source: io::Error },
+    Read {
+        offset: u64,
+        source: io::Error,
+    },
 }
 
 impl fmt::Display for ScanError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScanError::Open { letter, source } => {
-                write!(f, "cannot open volume {letter}: ({source}); administrator rights required")
+                write!(
+                    f,
+                    "cannot open volume {letter}: ({source}); administrator rights required"
+                )
             }
             ScanError::VolumeData { letter, source } => {
-                write!(f, "FSCTL_GET_NTFS_VOLUME_DATA failed on {letter}: ({source}); not NTFS?")
+                write!(
+                    f,
+                    "FSCTL_GET_NTFS_VOLUME_DATA failed on {letter}: ({source}); not NTFS?"
+                )
             }
             ScanError::BadGeometry(s) => write!(f, "bad volume geometry: {s}"),
             ScanError::Locator(s) => write!(f, "cannot locate $MFT: {s}"),
@@ -180,7 +195,9 @@ fn query_volume_data(h: &Handle) -> io::Result<Geometry> {
 pub fn list_ntfs_volumes() -> Vec<VolumeInfo> {
     let mut out = Vec::new();
     for letter in ffi::logical_drives() {
-        let Some((fs, serial32)) = ffi::volume_fs_and_serial(letter) else { continue };
+        let Some((fs, serial32)) = ffi::volume_fs_and_serial(letter) else {
+            continue;
+        };
         if !fs.eq_ignore_ascii_case("NTFS") {
             continue;
         }
@@ -226,7 +243,10 @@ fn validate_geometry(g: &Geometry) -> Result<(), ScanError> {
     if !(512..=65536).contains(&g.record_size) || !g.record_size.is_power_of_two() {
         return bad("record size");
     }
-    if g.bytes_per_cluster < 512 || g.bytes_per_cluster > (1 << 26) || !g.bytes_per_cluster.is_power_of_two() {
+    if g.bytes_per_cluster < 512
+        || g.bytes_per_cluster > (1 << 26)
+        || !g.bytes_per_cluster.is_power_of_two()
+    {
         return bad("cluster size");
     }
     if g.mft_valid_len == 0 || g.mft_start_lcn == 0 {
@@ -392,7 +412,16 @@ pub(crate) struct Decoded {
 }
 
 fn build_entries(p: Parsed, stats: &mut ScanStats, out: &mut impl FnMut(MftEntry)) {
-    let Parsed { recno, seq, is_dir, names, std, size, alloc, .. } = p;
+    let Parsed {
+        recno,
+        seq,
+        is_dir,
+        names,
+        std,
+        size,
+        alloc,
+        ..
+    } = p;
     let frn = (recno as u64) | ((seq as u64) << 48);
     let names = select_names_owned(names);
     if names.is_empty() {
@@ -434,7 +463,10 @@ pub(crate) fn decode_slice(
     rs: usize,
     cluster: u64,
 ) -> Decoded {
-    let mut out = Decoded { entries: Vec::with_capacity(n), ..Default::default() };
+    let mut out = Decoded {
+        entries: Vec::with_capacity(n),
+        ..Default::default()
+    };
     let mut local_orphans: HashMap<u32, Vec<Parsed>> = HashMap::new();
     for k in 0..n {
         let base = skip + k * rs;
@@ -527,7 +559,11 @@ impl Default for ScanOptions {
     /// Currently the original path (cached, synchronous, 2 MiB). Flip this once
     /// `examples/scan_bench.rs` has picked a winner.
     fn default() -> Self {
-        ScanOptions { no_buffering: false, queue_depth: 1, batch_bytes: DEFAULT_BATCH_BYTES }
+        ScanOptions {
+            no_buffering: false,
+            queue_depth: 1,
+            batch_bytes: DEFAULT_BATCH_BYTES,
+        }
     }
 }
 
@@ -535,8 +571,17 @@ impl ScanOptions {
     /// Short label like `nobuf qd8 1MiB`.
     pub fn label(&self) -> String {
         let kib = self.batch_bytes / 1024;
-        let size = if kib.is_multiple_of(1024) { format!("{}MiB", kib / 1024) } else { format!("{kib}KiB") };
-        format!("{} qd{} {}", if self.no_buffering { "nobuf" } else { "cached" }, self.queue_depth, size)
+        let size = if kib.is_multiple_of(1024) {
+            format!("{}MiB", kib / 1024)
+        } else {
+            format!("{kib}KiB")
+        };
+        format!(
+            "{} qd{} {}",
+            if self.no_buffering { "nobuf" } else { "cached" },
+            self.queue_depth,
+            size
+        )
     }
 }
 
@@ -583,7 +628,13 @@ fn plan_reads(
             break;
         }
         let (aligned, skip, read_len) = align_read(offset, n, rs, sector);
-        plan.push(ReadReq { aligned, read_len, recno, skip, n });
+        plan.push(ReadReq {
+            aligned,
+            read_len,
+            recno,
+            skip,
+            n,
+        });
         recno += n as u64;
     }
     plan
@@ -617,11 +668,21 @@ impl ReaderEnv<'_> {
     fn deliver(&self, st: &mut ReaderStats, r: &ReadReq, buf: AlignedBuf, got: usize) -> bool {
         st.bytes += got as u64;
         st.reads += 1;
-        self.batch_tx.send(Batch { buf, recno: r.recno, skip: r.skip, n: r.n, got }).is_ok()
+        self.batch_tx
+            .send(Batch {
+                buf,
+                recno: r.recno,
+                skip: r.skip,
+                n: r.n,
+                got,
+            })
+            .is_ok()
     }
 
     fn fail(&self, offset: u64, source: io::Error) {
-        let _ = self.out_tx.send(Msg::Failed(ScanError::Read { offset, source }));
+        let _ = self
+            .out_tx
+            .send(Msg::Failed(ScanError::Read { offset, source }));
     }
 }
 
@@ -629,9 +690,13 @@ impl ReaderEnv<'_> {
 fn read_sync(env: &ReaderEnv) -> ReaderStats {
     let mut st = ReaderStats::default();
     for r in env.plan {
-        let Some(mut buf) = env.next_buf(&mut st) else { break };
+        let Some(mut buf) = env.next_buf(&mut st) else {
+            break;
+        };
         let tr = Instant::now();
-        let res = env.vol.read_at(&mut buf.as_mut_slice()[..r.read_len], r.aligned);
+        let res = env
+            .vol
+            .read_at(&mut buf.as_mut_slice()[..r.read_len], r.aligned);
         st.read_time += tr.elapsed();
         match res {
             Ok(got) => {
@@ -656,7 +721,9 @@ fn read_overlapped(env: &ReaderEnv, qd: usize) -> ReaderStats {
     let mut next = 0usize;
     'outer: loop {
         while inflight.len() < qd && next < env.plan.len() {
-            let Some(buf) = env.next_buf(&mut st) else { break 'outer };
+            let Some(buf) = env.next_buf(&mut st) else {
+                break 'outer;
+            };
             let r = &env.plan[next];
             match AsyncRead::start(env.vol, buf, r.read_len, r.aligned) {
                 Ok(a) => inflight.push_back((a, next)),
@@ -667,7 +734,9 @@ fn read_overlapped(env: &ReaderEnv, qd: usize) -> ReaderStats {
             }
             next += 1;
         }
-        let Some((a, idx)) = inflight.pop_front() else { break };
+        let Some((a, idx)) = inflight.pop_front() else {
+            break;
+        };
         let r = &env.plan[idx];
         let tr = Instant::now();
         let (res, buf) = a.finish();
@@ -715,7 +784,11 @@ pub fn scan_volume_with(
 ) -> Result<ScanStats, ScanError> {
     let t0 = Instant::now();
     let letter = letter.to_ascii_uppercase();
-    let base_flags = if opts.no_buffering { ffi::FILE_FLAG_NO_BUFFERING } else { 0 };
+    let base_flags = if opts.no_buffering {
+        ffi::FILE_FLAG_NO_BUFFERING
+    } else {
+        0
+    };
     let qd = opts.queue_depth.clamp(1, MAX_QUEUE_DEPTH);
     // Synchronous handle: geometry, locator, and (qd == 1) the sweep itself.
     let vol = open_volume_for_scan(letter, base_flags)?;
@@ -725,7 +798,9 @@ pub fn scan_volume_with(
     let cluster = g.bytes_per_cluster;
     let sector = (g.bytes_per_sector as usize).max(512);
     if sector > 4096 {
-        return Err(ScanError::BadGeometry(format!("sector size {sector} exceeds buffer alignment")));
+        return Err(ScanError::BadGeometry(format!(
+            "sector size {sector} exceeds buffer alignment"
+        )));
     }
     let total = g.mft_valid_len / rs as u64;
     let extents = extents_from_record0(&vol, &g)?;
@@ -733,13 +808,18 @@ pub fn scan_volume_with(
     let plan = plan_reads(&extents, total, cluster, rs, sector, batch_records);
     // Overlapped handle for the sweep when more than one read is in flight.
     let async_vol = if qd > 1 {
-        Some(open_volume_for_scan(letter, base_flags | ffi::FILE_FLAG_OVERLAPPED)?)
+        Some(open_volume_for_scan(
+            letter,
+            base_flags | ffi::FILE_FLAG_OVERLAPPED,
+        )?)
     } else {
         None
     };
     let scan_vol = async_vol.as_ref().unwrap_or(&vol);
 
-    let workers = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, MAX_WORKERS);
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .clamp(1, MAX_WORKERS);
     let nbufs = workers * 2 + READ_AHEAD + if qd > 1 { qd } else { 0 };
     let buf_size = batch_records * rs + sector;
     let (out_tx, out_rx) = mpsc::channel::<Msg>();
@@ -765,7 +845,13 @@ pub fn scan_volume_with(
         let reader = {
             let (plan, out_tx) = (&plan[..], out_tx.clone());
             s.spawn(move || {
-                let env = ReaderEnv { vol: scan_vol, plan, free_rx: &free_rx, batch_tx: &batch_tx, out_tx: &out_tx };
+                let env = ReaderEnv {
+                    vol: scan_vol,
+                    plan,
+                    free_rx: &free_rx,
+                    batch_tx: &batch_tx,
+                    out_tx: &out_tx,
+                };
                 if qd > 1 {
                     read_overlapped(&env, qd)
                 } else {
@@ -781,13 +867,28 @@ pub fn scan_volume_with(
                 s.spawn(move || {
                     let mut decode_time = Duration::ZERO;
                     loop {
-                        let Ok(mut b) = batch_rx.lock().unwrap().recv() else { break };
+                        let Ok(mut b) = batch_rx.lock().unwrap().recv() else {
+                            break;
+                        };
                         let t = Instant::now();
-                        let decoded =
-                            decode_slice(b.buf.as_mut_slice(), b.recno, b.skip, b.n, b.got, rs, cluster);
+                        let decoded = decode_slice(
+                            b.buf.as_mut_slice(),
+                            b.recno,
+                            b.skip,
+                            b.n,
+                            b.got,
+                            rs,
+                            cluster,
+                        );
                         decode_time += t.elapsed();
                         let _ = free_tx.send(b.buf);
-                        if out_tx.send(Msg::Done { n: b.n, decoded: Box::new(decoded) }).is_err() {
+                        if out_tx
+                            .send(Msg::Done {
+                                n: b.n,
+                                decoded: Box::new(decoded),
+                            })
+                            .is_err()
+                        {
                             break;
                         }
                     }
@@ -854,7 +955,12 @@ pub fn scan_volume_with(
 /// decode/merge path as [`scan_volume`]. Returns `(records, entries, elapsed)`.
 #[cfg(feature = "testutil")]
 #[doc(hidden)]
-pub fn bench_decode(template: &[u8], rs: usize, batches: usize, threads: usize) -> (u64, u64, Duration) {
+pub fn bench_decode(
+    template: &[u8],
+    rs: usize,
+    batches: usize,
+    threads: usize,
+) -> (u64, u64, Duration) {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let per = template.len() / rs;
     let next = AtomicUsize::new(0);
@@ -960,7 +1066,11 @@ mod tests {
             recno,
             seq: 2,
             has_attr_list: true,
-            names: vec![NameAttr { parent_ref: 5, namespace: 1, name: format!("f{recno}") }],
+            names: vec![NameAttr {
+                parent_ref: 5,
+                namespace: 1,
+                name: format!("f{recno}"),
+            }],
             ..Default::default()
         };
         let ext = |recno: u32, b: u32| Parsed {
@@ -993,11 +1103,17 @@ mod tests {
         let recs: Vec<Vec<u8>> = vec![
             Rb::new(true, false).name(5, "zero", 1).seal(), // 0
             Rb::new(true, false).name(5, "big", 1).attr_list().seal(), // 1
-            Rb::new(true, false).base(3 | (7 << 48)).data_nonres(0, 777, 2).seal(), // 2: ext of 3
+            Rb::new(true, false)
+                .base(3 | (7 << 48))
+                .data_nonres(0, 777, 2)
+                .seal(), // 2: ext of 3
             Rb::new(true, false).name(5, "later", 1).attr_list().seal(), // 3
             Rb::new(false, false).name(5, "gone", 1).seal(), // 4
-            vec![0u8; 1024], // 5
-            Rb::new(true, false).base(1 | (7 << 48)).data_nonres(0, 555, 3).seal(), // 6: ext of 1
+            vec![0u8; 1024],                                // 5
+            Rb::new(true, false)
+                .base(1 | (7 << 48))
+                .data_nonres(0, 555, 3)
+                .seal(), // 6: ext of 1
             Rb::new(true, true).name(5, "d", 1).name(5, "D~1", 2).seal(), // 7
         ];
         let flat: Vec<u8> = recs.concat();
@@ -1016,7 +1132,12 @@ mod tests {
             }
             resolve_parked(parked, orphans, &mut st, &mut |e| got.push(e));
             got.sort_by_key(|e| (e.frn & REC_NO_MASK, e.name.clone()));
-            (got, st.bad_magic, st.deleted_or_unused, st.extension_records)
+            (
+                got,
+                st.bad_magic,
+                st.deleted_or_unused,
+                st.extension_records,
+            )
         };
         let whole = run(8);
         for per in [1, 2, 3, 5] {
@@ -1071,12 +1192,18 @@ mod tests {
             assert_eq!(seen, total - 16, "batch={batch}");
         }
         let plan = plan_reads(&ex, total, cl, rs, sector, 5);
-        assert!(plan.windows(2).all(|w| w[0].recno + w[0].n as u64 <= w[1].recno));
+        assert!(plan
+            .windows(2)
+            .all(|w| w[0].recno + w[0].n as u64 <= w[1].recno));
     }
 
     #[test]
     fn options_label_and_default() {
-        let o = ScanOptions { no_buffering: true, queue_depth: 8, batch_bytes: 4 << 20 };
+        let o = ScanOptions {
+            no_buffering: true,
+            queue_depth: 8,
+            batch_bytes: 4 << 20,
+        };
         assert_eq!(o.label(), "nobuf qd8 4MiB");
         assert_eq!(ScanOptions::default().label(), "cached qd1 2MiB");
     }

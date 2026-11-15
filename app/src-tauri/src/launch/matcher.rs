@@ -36,7 +36,9 @@ pub struct Prepared {
 }
 
 pub fn prepare(query: &str) -> Prepared {
-    Prepared { chars: query.trim().chars().map(fold_char).collect() }
+    Prepared {
+        chars: query.trim().chars().map(fold_char).collect(),
+    }
 }
 
 /// Like `score`, but also reports whether an acronym match covered every group (title bonus).
@@ -67,7 +69,8 @@ impl Scorer {
         self.orig.clear();
         self.orig.extend(candidate.chars());
         self.folded.clear();
-        self.folded.extend(self.orig.iter().map(|&ch| fold_char(ch)));
+        self.folded
+            .extend(self.orig.iter().map(|&ch| fold_char(ch)));
         // Prune before scoring: neither pass can match without the query's first char in the
         // candidate (fuzzy needs it to start the first token, acronym needs it on a group).
         let q0 = q[0];
@@ -91,22 +94,27 @@ fn fold_char(ch: char) -> char {
         return ch.to_ascii_lowercase();
     }
     match ch {
-        'A' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' | 'à' | 'á' | 'â' | 'ã' | 'ä' | 'å' | 'ā' | 'ă' | 'ą' => 'a',
+        'A' | 'Á' | 'Â' | 'Ã' | 'Ä' | 'Å' | 'Ā' | 'Ă' | 'Ą' | 'à' | 'á' | 'â' | 'ã' | 'ä' | 'å'
+        | 'ā' | 'ă' | 'ą' => 'a',
         'Ç' | 'Ć' | 'Ĉ' | 'Ċ' | 'Č' | 'ç' | 'ć' | 'ĉ' | 'ċ' | 'č' => 'c',
         'Ď' | 'ď' => 'd',
-        'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' | 'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ' | 'ė' | 'ę' | 'ě' => 'e',
+        'È' | 'É' | 'Ê' | 'Ë' | 'Ē' | 'Ĕ' | 'Ė' | 'Ę' | 'Ě' | 'è' | 'é' | 'ê' | 'ë' | 'ē' | 'ĕ'
+        | 'ė' | 'ę' | 'ě' => 'e',
         'Ĝ' | 'Ğ' | 'Ġ' | 'Ģ' | 'ĝ' | 'ğ' | 'ġ' | 'ģ' => 'g',
         'Ĥ' | 'ĥ' => 'h',
-        'Ì' | 'Í' | 'Î' | 'Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' | 'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī' | 'ĭ' | 'į' => 'i',
+        'Ì' | 'Í' | 'Î' | 'Ï' | 'Ĩ' | 'Ī' | 'Ĭ' | 'Į' | 'İ' | 'ì' | 'í' | 'î' | 'ï' | 'ĩ' | 'ī'
+        | 'ĭ' | 'į' => 'i',
         'Ĵ' | 'ĵ' => 'j',
         'Ķ' | 'ķ' => 'k',
         'Ĺ' | 'Ļ' | 'Ľ' | 'Ŀ' | 'Ł' | 'ĺ' | 'ļ' | 'ľ' | 'ŀ' | 'ł' => 'l',
         'Ñ' | 'Ń' | 'Ņ' | 'Ň' | 'ñ' | 'ń' | 'ņ' | 'ň' => 'n',
-        'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' | 'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø' | 'ō' | 'ŏ' | 'ő' => 'o',
+        'Ò' | 'Ó' | 'Ô' | 'Õ' | 'Ö' | 'Ø' | 'Ō' | 'Ŏ' | 'Ő' | 'ò' | 'ó' | 'ô' | 'õ' | 'ö' | 'ø'
+        | 'ō' | 'ŏ' | 'ő' => 'o',
         'Ŕ' | 'Ŗ' | 'Ř' | 'ŕ' | 'ŗ' | 'ř' => 'r',
         'Ś' | 'Ŝ' | 'Ş' | 'Š' | 'ś' | 'ŝ' | 'ş' | 'š' => 's',
         'Ţ' | 'Ť' | 'Ŧ' | 'ţ' | 'ť' | 'ŧ' => 't',
-        'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' | 'ù' | 'ú' | 'û' | 'ü' | 'ũ' | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
+        'Ù' | 'Ú' | 'Û' | 'Ü' | 'Ũ' | 'Ū' | 'Ŭ' | 'Ů' | 'Ű' | 'Ų' | 'ù' | 'ú' | 'û' | 'ü' | 'ũ'
+        | 'ū' | 'ŭ' | 'ů' | 'ű' | 'ų' => 'u',
         'Ŵ' | 'ŵ' => 'w',
         'Ý' | 'Ÿ' | 'Ŷ' | 'ý' | 'ÿ' | 'ŷ' => 'y',
         'Ź' | 'Ż' | 'Ž' | 'ź' | 'ż' | 'ž' => 'z',
@@ -171,14 +179,24 @@ fn acronym(q: &[char], c: &[char], orig: &[char]) -> Option<(Match, bool)> {
     }
     let mut full = groups == total;
     let mut score = (groups * 200 + total) / (total * 2); // round to nearest (see module doc)
-    // A CamelCase acronym inside ONE word (`MsPdbCmf` for `mpc`) is a coincidence, not a
-    // spelled-out title: it scores a fraction of a spaced-word acronym and earns no title bonus.
-    let single_word = !orig.iter().any(|ch| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'));
+                                                          // A CamelCase acronym inside ONE word (`MsPdbCmf` for `mpc`) is a coincidence, not a
+                                                          // spelled-out title: it scores a fraction of a spaced-word acronym and earns no title bonus.
+    let single_word = !orig
+        .iter()
+        .any(|ch| ch.is_whitespace() || matches!(ch, '-' | '_' | '.'));
     if single_word && total > 1 {
         full = false;
         score /= 3;
     }
-    (score >= PRECISION).then(|| (Match { score, ranges: ranges(matched) }, full))
+    (score >= PRECISION).then(|| {
+        (
+            Match {
+                score,
+                ranges: ranges(matched),
+            },
+            full,
+        )
+    })
 }
 
 /// Groups among matched indices: each non-digit index is one group; a digit run is one group.
@@ -240,7 +258,11 @@ fn fuzzy(q: &[char], c: &[char]) -> Option<(Match, bool)> {
                 if sub_i == 0 {
                     first_match = Some(start);
                 }
-                let kept: Vec<usize> = index_list.iter().copied().filter(|&x| x < first_in_word).collect();
+                let kept: Vec<usize> = index_list
+                    .iter()
+                    .copied()
+                    .filter(|&x| x < first_in_word)
+                    .collect();
                 index_list = kept;
                 index_list.extend(start..start + sub_ci);
             }
@@ -269,7 +291,10 @@ fn fuzzy(q: &[char], c: &[char]) -> Option<(Match, bool)> {
     if !is_word_start(c, fm) {
         return None;
     }
-    Some((finish(q, c, fm, last_match, all_contained, index_list), false))
+    Some((
+        finish(q, c, fm, last_match, all_contained, index_list),
+        false,
+    ))
 }
 
 fn is_word_start(c: &[char], i: usize) -> bool {
@@ -312,7 +337,9 @@ fn single_token(q: &[char], c: &[char]) -> Option<(Match, bool)> {
             }
             let mut fixed = q.to_vec();
             fixed.swap(i, i + 1);
-            if let Some(s) = (0..=c.len().saturating_sub(n)).find(|&s| c.len() >= n && c[s..s + n] == fixed[..] && is_word_start(c, s)) {
+            if let Some(s) = (0..=c.len().saturating_sub(n))
+                .find(|&s| c.len() >= n && c[s..s + n] == fixed[..] && is_word_start(c, s))
+            {
                 let mut m = finish(&fixed, c, s, s + n, true, (s..s + n).collect());
                 m.score = m.score.saturating_sub(15);
                 return Some((m, false));
@@ -337,7 +364,10 @@ fn single_token(q: &[char], c: &[char]) -> Option<(Match, bool)> {
         if qi < n {
             continue;
         }
-        if best.as_ref().is_none_or(|b| idx[n - 1] - i < b[n - 1] - b[0]) {
+        if best
+            .as_ref()
+            .is_none_or(|b| idx[n - 1] - i < b[n - 1] - b[0])
+        {
             best = Some(idx);
         }
     }
@@ -350,7 +380,14 @@ fn single_token(q: &[char], c: &[char]) -> Option<(Match, bool)> {
 }
 
 /// Flow's scoring formula over a finished match.
-fn finish(q: &[char], c: &[char], fm: usize, last_match: usize, all_contained: bool, index_list: Vec<usize>) -> Match {
+fn finish(
+    q: &[char],
+    c: &[char],
+    fm: usize,
+    last_match: usize,
+    all_contained: bool,
+    index_list: Vec<usize>,
+) -> Match {
     // Measure from the word that contains the match, not the string start: 'world' in
     // 'hello world' scores like a match at index 0 (Flow's nearest-space adjustment).
     let first_rel = fm - space_before(c, fm);
@@ -374,7 +411,10 @@ fn finish(q: &[char], c: &[char], fm: usize, last_match: usize, all_contained: b
             sc += (THRESHOLD * 10 + (count - THRESHOLD) * 5) as i32;
         }
     }
-    Match { score: sc.max(0) as u32, ranges: ranges(index_list) }
+    Match {
+        score: sc.max(0) as u32,
+        ranges: ranges(index_list),
+    }
 }
 
 /// Index just after the last space at or before `at` (0 when none) — Flow's closest-space shift.
@@ -427,7 +467,9 @@ pub(crate) fn score_item_with(s: &mut Scorer, q: &Prepared, item: &LaunchItem) -
     let fq = &q.chars;
     // An alias / exe name typed in full (`code`, `wt`, `ps`) is as good as the exact title.
     if m.ranges.is_empty()
-        && item.keywords.iter().any(|kw| kw.chars().count() == fq.len() && kw.chars().map(fold_char).eq(fq.iter().copied()))
+        && item.keywords.iter().any(|kw| {
+            kw.chars().count() == fq.len() && kw.chars().map(fold_char).eq(fq.iter().copied())
+        })
     {
         m.score += 40;
     }
@@ -460,7 +502,10 @@ mod tests {
             title: title.into(),
             subtitle: "test".into(),
             keywords: keywords.iter().map(|k| k.to_string()).collect(),
-            target: Target::Path { path: format!("C:\\{title}.exe"), args: None },
+            target: Target::Path {
+                path: format!("C:\\{title}.exe"),
+                args: None,
+            },
             icon: None,
             admin_ok: true,
         }
@@ -530,7 +575,13 @@ mod tests {
     #[test]
     fn scattered_subsequences_are_not_matches() {
         // The "atos" bug: a loose in-order scan hit all of these.
-        for junk in ["Rise of Nations", "AtomicParsley Documentation", "Adobe Photoshop 2025", "Macro Buttons", "Change font settings"] {
+        for junk in [
+            "Rise of Nations",
+            "AtomicParsley Documentation",
+            "Adobe Photoshop 2025",
+            "Macro Buttons",
+            "Change font settings",
+        ] {
             assert!(score("atos", junk).is_none(), "{junk}");
         }
         assert!(score("atos", "MyAtos Portal").is_some());
@@ -543,7 +594,10 @@ mod tests {
     fn typos_and_abbreviations_still_match() {
         assert!(score("chrm", "Google Chrome").is_some());
         assert!(score("firefx", "Firefox").is_some());
-        assert!(score("chrome", "Google Chrome").unwrap().score > score("chrm", "Google Chrome").unwrap().score);
+        assert!(
+            score("chrome", "Google Chrome").unwrap().score
+                > score("chrm", "Google Chrome").unwrap().score
+        );
     }
 
     #[test]

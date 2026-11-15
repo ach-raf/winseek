@@ -61,7 +61,14 @@ pub struct Tier0Detail {
 }
 
 pub trait NameSource: Send + Sync {
-    fn search(&self, query: &str, filter: &str, offset: usize, limit: usize, sort: &str) -> SearchResult;
+    fn search(
+        &self,
+        query: &str,
+        filter: &str,
+        offset: usize,
+        limit: usize,
+        sort: &str,
+    ) -> SearchResult;
     fn status(&self) -> Vec<VolumeStatus>;
     fn recent(&self, limit: usize) -> Vec<Hit>;
     /// Detailed Tier 0 state for the status page.
@@ -73,7 +80,11 @@ pub trait NameSource: Send + Sync {
         Err("Disk usage needs the name service, which is not running.".into())
     }
     /// File types and biggest files under a folder.
-    fn usage_detail(&self, _path: &str, _top_files: u32) -> Result<winseek_ipc::UsageDetail, String> {
+    fn usage_detail(
+        &self,
+        _path: &str,
+        _top_files: u32,
+    ) -> Result<winseek_ipc::UsageDetail, String> {
         Err("Disk usage needs the name service, which is not running.".into())
     }
 }
@@ -107,25 +118,104 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "invoice", "report", "budget", "holiday", "photo", "screenshot", "meeting", "notes", "draft", "final",
-    "contract", "resume", "backup", "project", "design", "summer", "winter", "family", "tax", "receipt",
-    "presentation", "analysis", "readme", "config", "archive", "setup", "installer", "demo", "logo", "icon",
-    "paris", "tokyo", "berlin", "wedding", "birthday", "lecture", "thesis", "model", "dataset", "export",
+    "invoice",
+    "report",
+    "budget",
+    "holiday",
+    "photo",
+    "screenshot",
+    "meeting",
+    "notes",
+    "draft",
+    "final",
+    "contract",
+    "resume",
+    "backup",
+    "project",
+    "design",
+    "summer",
+    "winter",
+    "family",
+    "tax",
+    "receipt",
+    "presentation",
+    "analysis",
+    "readme",
+    "config",
+    "archive",
+    "setup",
+    "installer",
+    "demo",
+    "logo",
+    "icon",
+    "paris",
+    "tokyo",
+    "berlin",
+    "wedding",
+    "birthday",
+    "lecture",
+    "thesis",
+    "model",
+    "dataset",
+    "export",
 ];
 const EXTS: &[(&str, u8)] = &[
-    ("jpg", 1), ("png", 1), ("heic", 1), ("gif", 1), ("pdf", 2), ("docx", 2), ("xlsx", 2), ("txt", 2),
-    ("md", 2), ("pptx", 2), ("mp4", 3), ("mkv", 3), ("mov", 3), ("mp3", 4), ("flac", 4), ("wav", 4),
-    ("zip", 0), ("exe", 0), ("rs", 0), ("py", 0), ("json", 0), ("dll", 0), ("log", 0),
+    ("jpg", 1),
+    ("png", 1),
+    ("heic", 1),
+    ("gif", 1),
+    ("pdf", 2),
+    ("docx", 2),
+    ("xlsx", 2),
+    ("txt", 2),
+    ("md", 2),
+    ("pptx", 2),
+    ("mp4", 3),
+    ("mkv", 3),
+    ("mov", 3),
+    ("mp3", 4),
+    ("flac", 4),
+    ("wav", 4),
+    ("zip", 0),
+    ("exe", 0),
+    ("rs", 0),
+    ("py", 0),
+    ("json", 0),
+    ("dll", 0),
+    ("log", 0),
 ];
 const ROOTS: &[&str] = &[
-    "C:\\Users\\User\\Documents", "C:\\Users\\User\\Pictures", "C:\\Users\\User\\Downloads",
-    "C:\\Users\\User\\Desktop", "D:\\Projects", "D:\\Media\\Videos", "D:\\Media\\Music", "D:\\Archive",
-    "C:\\Program Files\\Common Files", "C:\\Windows\\System32",
+    "C:\\Users\\User\\Documents",
+    "C:\\Users\\User\\Pictures",
+    "C:\\Users\\User\\Downloads",
+    "C:\\Users\\User\\Desktop",
+    "D:\\Projects",
+    "D:\\Media\\Videos",
+    "D:\\Media\\Music",
+    "D:\\Archive",
+    "C:\\Program Files\\Common Files",
+    "C:\\Windows\\System32",
 ];
-const SUBS: &[&str] = &["2023", "2024", "2025", "Work", "Personal", "Old", "Misc", "Clients", "Scans", "Camera Roll", "src", "assets"];
+const SUBS: &[&str] = &[
+    "2023",
+    "2024",
+    "2025",
+    "Work",
+    "Personal",
+    "Old",
+    "Misc",
+    "Clients",
+    "Scans",
+    "Camera Roll",
+    "src",
+    "assets",
+];
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 impl MockSource {
@@ -146,19 +236,40 @@ impl MockSource {
             if i % 40 == 0 {
                 let name = format!("{} {}", rng.pick(WORDS), rng.pick(SUBS));
                 let age = (rng.next() % 31_536_000_000) as i64;
-                entries.push(Entry { lower: name.to_lowercase(), name, dir, is_dir: true, size: 0, mtime: now - age, kind: 5 });
+                entries.push(Entry {
+                    lower: name.to_lowercase(),
+                    name,
+                    dir,
+                    is_dir: true,
+                    size: 0,
+                    mtime: now - age,
+                    kind: 5,
+                });
                 continue;
             }
             let (ext, kind) = *rng.pick(EXTS);
             let name = match kind {
                 1 => format!("IMG_{:04}.{ext}", rng.next() % 9999),
-                _ => format!("{}_{}_{}.{ext}", rng.pick(WORDS), rng.pick(WORDS), rng.next() % 100),
+                _ => format!(
+                    "{}_{}_{}.{ext}",
+                    rng.pick(WORDS),
+                    rng.pick(WORDS),
+                    rng.next() % 100
+                ),
             };
             let size = (rng.next() % 4_000_000) * if kind == 3 { 300 } else { 1 } + 200;
             // skew toward recent: cubic distribution over ~1 year
             let u = (rng.next() % 1_000_000) as f64 / 1_000_000.0;
             let age = (u * u * u * 31_536_000_000.0) as i64;
-            entries.push(Entry { lower: name.to_lowercase(), name, dir, is_dir: false, size, mtime: now - age, kind });
+            entries.push(Entry {
+                lower: name.to_lowercase(),
+                name,
+                dir,
+                is_dir: false,
+                size,
+                mtime: now - age,
+                kind,
+            });
         }
         MockSource { entries, dirs }
     }
@@ -177,7 +288,12 @@ impl MockSource {
 
 /// The demo twin of the name index's `ws:` term: `word` begins a word of `name` (both lower-case).
 fn has_word(name: &str, word: &str) -> bool {
-    name.match_indices(word).any(|(i, _)| name[..i].chars().next_back().is_none_or(|p| !p.is_alphanumeric()))
+    name.match_indices(word).any(|(i, _)| {
+        name[..i]
+            .chars()
+            .next_back()
+            .is_none_or(|p| !p.is_alphanumeric())
+    })
 }
 
 fn matches_filter(e: &Entry, filter: &str) -> bool {
@@ -194,28 +310,60 @@ fn matches_filter(e: &Entry, filter: &str) -> bool {
 }
 
 impl NameSource for MockSource {
-    fn search(&self, query: &str, filter: &str, offset: usize, limit: usize, sort: &str) -> SearchResult {
+    fn search(
+        &self,
+        query: &str,
+        filter: &str,
+        offset: usize,
+        limit: usize,
+        sort: &str,
+    ) -> SearchResult {
         let t = Instant::now();
-        let all: Vec<String> = query.to_lowercase().split_whitespace().map(String::from).collect();
+        let all: Vec<String> = query
+            .to_lowercase()
+            .split_whitespace()
+            .map(String::from)
+            .collect();
         // Tier 0 `ext:pdf;docx` terms (the UI sends one for "pdf invoice").
         let exts: Vec<String> = all
             .iter()
             .filter_map(|t| t.strip_prefix("ext:"))
-            .flat_map(|x| x.split([';', ',']).map(|e| format!(".{e}")).collect::<Vec<_>>())
+            .flat_map(|x| {
+                x.split([';', ','])
+                    .map(|e| format!(".{e}"))
+                    .collect::<Vec<_>>()
+            })
             .collect();
         // Tier 0 `size:A..B` (bytes, files only) and `dm:A..B` (unix ms) terms: the UI's size / date chips.
         let range = |t: &str, p: &str| -> Option<(i64, i64)> {
             let (a, b) = t.strip_prefix(p)?.split_once("..")?;
-            Some((if a.is_empty() { i64::MIN } else { a.parse().ok()? }, if b.is_empty() { i64::MAX } else { b.parse().ok()? }))
+            Some((
+                if a.is_empty() {
+                    i64::MIN
+                } else {
+                    a.parse().ok()?
+                },
+                if b.is_empty() {
+                    i64::MAX
+                } else {
+                    b.parse().ok()?
+                },
+            ))
         };
         let sizes: Vec<(i64, i64)> = all.iter().filter_map(|t| range(t, "size:")).collect();
         let dates: Vec<(i64, i64)> = all.iter().filter_map(|t| range(t, "dm:")).collect();
-        let terms: Vec<String> =
-            all.into_iter().filter(|t| !t.starts_with("ext:") && range(t, "size:").is_none() && range(t, "dm:").is_none()).collect();
+        let terms: Vec<String> = all
+            .into_iter()
+            .filter(|t| {
+                !t.starts_with("ext:") && range(t, "size:").is_none() && range(t, "dm:").is_none()
+            })
+            .collect();
         let mut idx: Vec<u32> = Vec::new();
         for (i, e) in self.entries.iter().enumerate() {
             if matches_filter(e, filter)
-                && sizes.iter().all(|&(lo, hi)| !e.is_dir && e.size as i64 >= lo && e.size as i64 <= hi)
+                && sizes
+                    .iter()
+                    .all(|&(lo, hi)| !e.is_dir && e.size as i64 >= lo && e.size as i64 <= hi)
                 && dates.iter().all(|&(lo, hi)| e.mtime >= lo && e.mtime < hi)
                 && (exts.is_empty() || exts.iter().any(|x| e.lower.ends_with(x.as_str())))
                 && terms.iter().all(|t| match t.strip_prefix("ws:") {
@@ -229,22 +377,42 @@ impl NameSource for MockSource {
         let total = idx.len() as u64;
         let e = &self.entries;
         // Empty query has no relevance: fall back to newest first.
-        let sort = if sort == "rel" && terms.is_empty() { "date" } else { sort };
+        let sort = if sort == "rel" && terms.is_empty() {
+            "date"
+        } else {
+            sort
+        };
         match sort {
             "name" => idx.sort_unstable_by(|a, b| e[*a as usize].lower.cmp(&e[*b as usize].lower)),
             "size" => idx.sort_unstable_by(|a, b| e[*b as usize].size.cmp(&e[*a as usize].size)),
             "date" => idx.sort_unstable_by(|a, b| e[*b as usize].mtime.cmp(&e[*a as usize].mtime)),
-            "name_desc" => idx.sort_unstable_by(|a, b| e[*b as usize].lower.cmp(&e[*a as usize].lower)),
-            "size_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].size.cmp(&e[*b as usize].size)),
-            "date_asc" => idx.sort_unstable_by(|a, b| e[*a as usize].mtime.cmp(&e[*b as usize].mtime)),
+            "name_desc" => {
+                idx.sort_unstable_by(|a, b| e[*b as usize].lower.cmp(&e[*a as usize].lower))
+            }
+            "size_asc" => {
+                idx.sort_unstable_by(|a, b| e[*a as usize].size.cmp(&e[*b as usize].size))
+            }
+            "date_asc" => {
+                idx.sort_unstable_by(|a, b| e[*a as usize].mtime.cmp(&e[*b as usize].mtime))
+            }
             "type" | "type_desc" => {
                 // folders and extension-less names lead, then by extension, ties by name
                 let key = |i: u32| {
                     let n = &e[i as usize];
-                    let ext = if n.is_dir { "" } else { n.lower.rfind('.').map_or("", |p| &n.lower[p + 1..]) };
+                    let ext = if n.is_dir {
+                        ""
+                    } else {
+                        n.lower.rfind('.').map_or("", |p| &n.lower[p + 1..])
+                    };
                     (ext, n.lower.as_str())
                 };
-                idx.sort_unstable_by(|a, b| if sort == "type" { key(*a).cmp(&key(*b)) } else { key(*b).cmp(&key(*a)) });
+                idx.sort_unstable_by(|a, b| {
+                    if sort == "type" {
+                        key(*a).cmp(&key(*b))
+                    } else {
+                        key(*b).cmp(&key(*a))
+                    }
+                });
             }
             _ => {
                 // relevance: prefix match first, then shorter names
@@ -255,15 +423,38 @@ impl NameSource for MockSource {
                 });
             }
         }
-        let hits = idx.iter().skip(offset).take(limit).map(|i| self.hit(&e[*i as usize])).collect();
-        SearchResult { total, hits, elapsed_us: t.elapsed().as_micros() as u64 }
+        let hits = idx
+            .iter()
+            .skip(offset)
+            .take(limit)
+            .map(|i| self.hit(&e[*i as usize]))
+            .collect();
+        SearchResult {
+            total,
+            hits,
+            elapsed_us: t.elapsed().as_micros() as u64,
+        }
     }
 
     fn status(&self) -> Vec<VolumeStatus> {
         let folders = self.entries.iter().filter(|e| e.is_dir).count() as u64;
         vec![
-            VolumeStatus { letter: "C".into(), files: 12_580_243, folders: 1_204_511, state: "demo".into(), done: None, total: None },
-            VolumeStatus { letter: "D".into(), files: self.entries.len() as u64 - folders, folders, state: "demo".into(), done: None, total: None },
+            VolumeStatus {
+                letter: "C".into(),
+                files: 12_580_243,
+                folders: 1_204_511,
+                state: "demo".into(),
+                done: None,
+                total: None,
+            },
+            VolumeStatus {
+                letter: "D".into(),
+                files: self.entries.len() as u64 - folders,
+                folders,
+                state: "demo".into(),
+                done: None,
+                total: None,
+            },
         ]
     }
 
@@ -283,7 +474,11 @@ impl NameSource for MockSource {
                 monitor: String::new(),
             })
             .collect();
-        Tier0Detail { kind: "demo", uptime_s: None, volumes }
+        Tier0Detail {
+            kind: "demo",
+            uptime_s: None,
+            volumes,
+        }
     }
 
     fn rescan(&self, _volume: char) -> Result<(), String> {

@@ -55,12 +55,15 @@ impl Deps<'_> {
         if tools::content_allowed(path, self.indexed_only(), &inc, &exc) {
             Ok(())
         } else {
-            Err(format!("\"{path}\" is outside the folders winseek may read for agents (Settings › Agents)"))
+            Err(format!(
+                "\"{path}\" is outside the folders winseek may read for agents (Settings › Agents)"
+            ))
         }
     }
 
     fn tier1(&self) -> Result<&tier1::Tier1, String> {
-        self.tier1.ok_or_else(|| "The semantic index is not running".to_string())
+        self.tier1
+            .ok_or_else(|| "The semantic index is not running".to_string())
     }
 }
 
@@ -86,7 +89,12 @@ pub fn run(deps: &Deps, tool: &str, args: &Value) -> Result<Value, String> {
 }
 
 /// Entry the pipe server uses: run with the per-call timeout (PRD RA5) and log the call.
-pub fn call(app: &tauri::AppHandle, client: &str, tool: &str, args: Value) -> Result<Value, String> {
+pub fn call(
+    app: &tauri::AppHandle,
+    client: &str,
+    tool: &str,
+    args: Value,
+) -> Result<Value, String> {
     let started = std::time::Instant::now();
     let secs: u64 = if tool == "parse_document" { 180 } else { 60 };
     let (tx, rx) = std::sync::mpsc::channel();
@@ -105,7 +113,12 @@ pub fn call(app: &tauri::AppHandle, client: &str, tool: &str, args: Value) -> Re
         tool: tool.to_owned(),
         args: log::truncate_args(&args),
         ok: res.is_ok(),
-        count: res.as_ref().ok().and_then(|v| v.get("hits")).and_then(Value::as_array).map(Vec::len),
+        count: res
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("hits"))
+            .and_then(Value::as_array)
+            .map(Vec::len),
         error: res.as_ref().err().cloned(),
         ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
     });
@@ -129,7 +142,10 @@ fn with_app(app: &tauri::AppHandle, tool: &str, args: &Value) -> Result<Value, S
 }
 
 pub(crate) fn now_ms() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
 }
 
 /// Local offset from UTC in minutes (`GetTimeZoneInformation`'s Bias is UTC = local + bias).
@@ -158,7 +174,9 @@ fn arg_int(args: &Value, key: &str, default: usize, lo: usize, hi: usize) -> Res
     match args.get(key) {
         None | Some(Value::Null) => Ok(default),
         Some(v) => {
-            let n = v.as_u64().ok_or_else(|| format!("\"{key}\" must be a whole number"))?;
+            let n = v
+                .as_u64()
+                .ok_or_else(|| format!("\"{key}\" must be a whole number"))?;
             usize::try_from(n)
                 .ok()
                 .filter(|n| (lo..=hi).contains(n))
@@ -171,7 +189,10 @@ fn opt_int(args: &Value, key: &str) -> Result<Option<u32>, String> {
     match args.get(key) {
         None | Some(Value::Null) => Ok(None),
         Some(v) => {
-            let n = v.as_u64().filter(|n| *n <= u64::from(u32::MAX)).ok_or_else(|| format!("\"{key}\" must be a page number"))?;
+            let n = v
+                .as_u64()
+                .filter(|n| *n <= u64::from(u32::MAX))
+                .ok_or_else(|| format!("\"{key}\" must be a page number"))?;
             Ok(Some(n as u32))
         }
     }
@@ -181,7 +202,10 @@ fn enum_arg<'a>(args: &'a Value, key: &str, allowed: &[&str]) -> Result<Option<&
     match opt_str(args, key) {
         None => Ok(None),
         Some(s) if allowed.contains(&s) => Ok(Some(s)),
-        Some(s) => Err(format!("{key} must be one of {} (got \"{s}\")", allowed.join(", "))),
+        Some(s) => Err(format!(
+            "{key} must be one of {} (got \"{s}\")",
+            allowed.join(", ")
+        )),
     }
 }
 
@@ -199,11 +223,21 @@ struct SearchArgs {
 
 impl SearchArgs {
     fn parse(args: &Value, now_ms: i64, tz_offset_min: i32) -> Result<Self, String> {
-        let filter = enum_arg(args, "type", &["all", "folders", "images", "docs", "video", "audio", "apps"])?
-            .unwrap_or("all")
-            .to_owned();
+        let filter = enum_arg(
+            args,
+            "type",
+            &["all", "folders", "images", "docs", "video", "audio", "apps"],
+        )?
+        .unwrap_or("all")
+        .to_owned();
         let sort = enum_arg(args, "sort", &["relevance", "name", "date", "size"])?
-            .map(|s| if s == "relevance" { "rel".to_owned() } else { s.to_owned() })
+            .map(|s| {
+                if s == "relevance" {
+                    "rel".to_owned()
+                } else {
+                    s.to_owned()
+                }
+            })
             .unwrap_or_else(|| "rel".into());
         // Dates: a bound pair each; "after" takes the range start, "before" the range start too
         // (modified_before 2025-01-31 means "before that day began", like the popup's date chip).
@@ -217,10 +251,21 @@ impl SearchArgs {
         };
         let bound = match (after, before) {
             (None, None) => None,
-            (Some(f), None) => Some(Bound::Date { from_ms: f, to_ms: i64::MAX }),
-            (None, Some(t)) => Some(Bound::Date { from_ms: i64::MIN, to_ms: t }),
-            (Some(f), Some(t)) if t <= f => return Err("modified_before must be after modified_after".into()),
-            (Some(f), Some(t)) => Some(Bound::Date { from_ms: f, to_ms: t }),
+            (Some(f), None) => Some(Bound::Date {
+                from_ms: f,
+                to_ms: i64::MAX,
+            }),
+            (None, Some(t)) => Some(Bound::Date {
+                from_ms: i64::MIN,
+                to_ms: t,
+            }),
+            (Some(f), Some(t)) if t <= f => {
+                return Err("modified_before must be after modified_after".into())
+            }
+            (Some(f), Some(t)) => Some(Bound::Date {
+                from_ms: f,
+                to_ms: t,
+            }),
         };
         let min = match args.get("min_size") {
             None | Some(Value::Null) => None,
@@ -264,11 +309,18 @@ fn search_files(deps: &Deps, args: &Value) -> Result<Value, String> {
     let a = SearchArgs::parse(args, deps.now_ms, deps.tz_offset_min)?;
     let src = deps.source;
     // Date wins when both filters are present (the popup's rule); the other rides in `extra`.
-    let bound = a.bound.clone().or_else(|| a.size.map(|(min, max)| Bound::Size { min, max }));
+    let bound = a
+        .bound
+        .clone()
+        .or_else(|| a.size.map(|(min, max)| Bound::Size { min, max }));
     let (total, hits, truncated) = match (&bound, &a.size) {
         (Some(bound), size) => {
             // Date pulls newest-first pages, size biggest-first (same as the popup's scan).
-            let sort = if matches!(bound, Bound::Date { .. }) { "date" } else { "size" };
+            let sort = if matches!(bound, Bound::Date { .. }) {
+                "date"
+            } else {
+                "size"
+            };
             // Folders report the bytes they hold; a size filter is about files (the popup's rule).
             let file_size = |h: &Hit| if h.is_dir { None } else { h.size };
             let extra = |h: &Hit| size.is_none_or(|(min, max)| size_in(file_size(h), min, max));
@@ -291,7 +343,9 @@ fn search_files(deps: &Deps, args: &Value) -> Result<Value, String> {
         }
     };
     let rows: Vec<Value> = hits.iter().map(hit_row).collect();
-    Ok(cap_size(json!({"total": total, "hits": rows, "truncated": truncated})))
+    Ok(cap_size(
+        json!({"total": total, "hits": rows, "truncated": truncated}),
+    ))
 }
 
 /// RA5: keep list-shaped results under ~1 MB by cutting the `hits` list, flagging truncated.
@@ -303,10 +357,17 @@ fn cap_size(mut v: Value) -> Value {
     // Take `hits` out of `v` so the size probe can read the rest without a borrow conflict.
     let mut hits = v.get_mut("hits").map(Value::take).unwrap_or(Value::Null);
     // Shorten the list until the whole payload fits again (shortest borrow per step).
-    if serde_json::to_vec(&(&v, &hits)).map(|b| b.len()).unwrap_or(CAP + 1) > CAP {
+    if serde_json::to_vec(&(&v, &hits))
+        .map(|b| b.len())
+        .unwrap_or(CAP + 1)
+        > CAP
+    {
         loop {
             let len = hits.as_array().map(Vec::len).unwrap_or(0);
-            let over = serde_json::to_vec(&(&v, &hits)).map(|b| b.len()).unwrap_or(CAP + 1) > CAP;
+            let over = serde_json::to_vec(&(&v, &hits))
+                .map(|b| b.len())
+                .unwrap_or(CAP + 1)
+                > CAP;
             if !over || len <= 1 {
                 break;
             }
@@ -336,7 +397,9 @@ fn search_by_meaning(deps: &Deps, args: &Value) -> Result<Value, String> {
             })
         })
         .collect();
-    Ok(cap_size(json!({"state": r.state, "hits": hits, "total": hits.len(), "truncated": false})))
+    Ok(cap_size(
+        json!({"state": r.state, "hits": hits, "total": hits.len(), "truncated": false}),
+    ))
 }
 
 fn recent_files(deps: &Deps, args: &Value) -> Result<Value, String> {
@@ -370,7 +433,8 @@ fn read_text(deps: &Deps, args: &Value) -> Result<Value, String> {
     let (text, source_cut) = match info.kind {
         preview::Kind::Pdf => {
             let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-            let rt = tier1::pdf::runtime().map_err(|e| format!("the PDF engine is not available ({e:?})"))?;
+            let rt = tier1::pdf::runtime()
+                .map_err(|e| format!("the PDF engine is not available ({e:?})"))?;
             let doc = tier1::pdf::read_pdf(rt, &bytes, false).map_err(|e| format!("pdf: {e:?}"))?;
             let text = match page {
                 Some(p) => doc
@@ -379,7 +443,12 @@ fn read_text(deps: &Deps, args: &Value) -> Result<Value, String> {
                     .find(|pg| pg.page == p)
                     .map(|pg| pg.text.clone())
                     .ok_or_else(|| format!("no page {p} (the document has {})", doc.total_pages))?,
-                None => doc.pages.iter().map(|pg| pg.text.as_str()).collect::<Vec<_>>().join("\n\n"),
+                None => doc
+                    .pages
+                    .iter()
+                    .map(|pg| pg.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n\n"),
             };
             (text, ("pdf", false))
         }
@@ -396,7 +465,14 @@ fn read_text(deps: &Deps, args: &Value) -> Result<Value, String> {
             if texts.is_empty() {
                 return Err("no text: run parse_document".into());
             }
-            (texts.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n"), ("ocr", false))
+            (
+                texts
+                    .into_iter()
+                    .map(|(_, t)| t)
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                ("ocr", false),
+            )
         }
         preview::Kind::Text => {
             let ti = info.text.ok_or("no text: the file has none")?;
@@ -407,7 +483,9 @@ fn read_text(deps: &Deps, args: &Value) -> Result<Value, String> {
             (ti.content, ("office", ti.truncated))
         }
         preview::Kind::Folder => return Err("cannot read text from a folder".into()),
-        preview::Kind::Other => return Err("no text: the file is binary or has no readable text".into()),
+        preview::Kind::Other => {
+            return Err("no text: the file is binary or has no readable text".into())
+        }
         // Video/Audio carry no text today.
         _ => return Err("no text: this file kind has none".into()),
     };
@@ -418,7 +496,9 @@ fn read_text(deps: &Deps, args: &Value) -> Result<Value, String> {
     } else {
         (text, file_cut)
     };
-    Ok(json!({"text": text, "chars": text.chars().count(), "truncated": truncated, "source": source}))
+    Ok(
+        json!({"text": text, "chars": text.chars().count(), "truncated": truncated, "source": source}),
+    )
 }
 
 fn parse_document(deps: &Deps, args: &Value) -> Result<Value, String> {
@@ -538,8 +618,15 @@ fn library_collections(deps: &Deps, args: &Value) -> Result<Value, String> {
                 .iter()
                 .find(|c| c.name.eq_ignore_ascii_case(name))
                 .ok_or_else(|| format!("no collection named \"{name}\""))?;
-            let query = if c.query.is_empty() { &c.name } else { &c.query };
-            let opts = tier1::library::CollectionOpts { exclude: &c.exclude, graphics: c.graphics };
+            let query = if c.query.is_empty() {
+                &c.name
+            } else {
+                &c.query
+            };
+            let opts = tier1::library::CollectionOpts {
+                exclude: &c.exclude,
+                graphics: c.graphics,
+            };
             let r = t.collection_hits(query, c.threshold, tier1::library::COLLECTION_CAP, opts)?;
             let hits: Vec<Value> = r
                 .hits
@@ -570,7 +657,10 @@ mod tests {
     }
 
     fn enabled() -> AgentConfig {
-        AgentConfig { enabled: true, content: ContentScope::Any }
+        AgentConfig {
+            enabled: true,
+            content: ContentScope::Any,
+        }
     }
 
     #[test]
@@ -578,9 +668,14 @@ mod tests {
         let src = MockSource::generate(10);
         let launcher = Launcher::new();
         let d = deps(&src, AgentConfig::default(), &launcher);
-        let msg = run(&d, "search_files", &json!({"query": "x"})).err().unwrap();
+        let msg = run(&d, "search_files", &json!({"query": "x"}))
+            .err()
+            .unwrap();
         assert!(msg.contains("Agent access is off"), "{msg}");
-        assert_eq!(run(&d, "index_status", &json!({})).unwrap(), json!({"access": "off"}));
+        assert_eq!(
+            run(&d, "index_status", &json!({})).unwrap(),
+            json!({"access": "off"})
+        );
     }
 
     #[test]
@@ -588,7 +683,17 @@ mod tests {
         let src = MockSource::generate(10);
         let launcher = Launcher::new();
         let d = deps(&src, enabled(), &launcher);
-        for t in ["open", "launch", "recycle", "rename", "run", "copy", "restore", "shutdown", "show_in_winseek"] {
+        for t in [
+            "open",
+            "launch",
+            "recycle",
+            "rename",
+            "run",
+            "copy",
+            "restore",
+            "shutdown",
+            "show_in_winseek",
+        ] {
             let msg = run(&d, t, &json!({})).err().unwrap();
             assert_eq!(msg, format!("unknown tool {t}"));
         }
@@ -599,7 +704,12 @@ mod tests {
         let src = MockSource::generate(2_000);
         let launcher = Launcher::new();
         let d = deps(&src, enabled(), &launcher);
-        let v = run(&d, "search_files", &json!({"query": "invoice", "type": "docs", "limit": 5})).unwrap();
+        let v = run(
+            &d,
+            "search_files",
+            &json!({"query": "invoice", "type": "docs", "limit": 5}),
+        )
+        .unwrap();
         assert!(v["total"].as_u64().unwrap() > 0);
         let hits = v["hits"].as_array().unwrap();
         assert!(hits.len() <= 5);
@@ -627,13 +737,29 @@ mod tests {
         let d = deps(&src, enabled(), &launcher);
         let e = run(&d, "search_files", &json!({})).err().unwrap();
         assert!(e.contains("\"query\""), "{e}");
-        let e = run(&d, "search_files", &json!({"query": "x", "limit": 5000})).err().unwrap();
+        let e = run(&d, "search_files", &json!({"query": "x", "limit": 5000}))
+            .err()
+            .unwrap();
         assert!(e.contains("limit must be 1\u{2013}200"), "{e}");
-        let e = run(&d, "search_files", &json!({"query": "x", "type": "movies"})).err().unwrap();
+        let e = run(&d, "search_files", &json!({"query": "x", "type": "movies"}))
+            .err()
+            .unwrap();
         assert!(e.contains("type must be one of"), "{e}");
-        let e = run(&d, "search_files", &json!({"query": "x", "min_size": "12 XX"})).err().unwrap();
+        let e = run(
+            &d,
+            "search_files",
+            &json!({"query": "x", "min_size": "12 XX"}),
+        )
+        .err()
+        .unwrap();
         assert!(e.contains("bad size"), "{e}");
-        let e = run(&d, "search_files", &json!({"query": "x", "modified_after": "notadate"})).err().unwrap();
+        let e = run(
+            &d,
+            "search_files",
+            &json!({"query": "x", "modified_after": "notadate"}),
+        )
+        .err()
+        .unwrap();
         assert!(e.contains("bad date"), "{e}");
         let e = run(&d, "read_text", &json!({})).err().unwrap();
         assert!(e.contains("\"path\""), "{e}");
@@ -647,14 +773,28 @@ mod tests {
         let src = MockSource::generate(10);
         let launcher = Launcher::new();
         let d = deps(&src, enabled(), &launcher);
-        let v = run(&d, "read_text", &json!({"path": p.to_string_lossy(), "max_chars": 20})).unwrap();
+        let v = run(
+            &d,
+            "read_text",
+            &json!({"path": p.to_string_lossy(), "max_chars": 20}),
+        )
+        .unwrap();
         assert_eq!(v["chars"], 20);
         assert_eq!(v["truncated"], true);
         assert_eq!(v["source"], "file");
         // Outside the scope -> refused (indexed-only scope with no Tier 1 scopes = nothing allowed).
         let launcher2 = Launcher::new();
-        let d2 = deps(&src, AgentConfig { enabled: true, content: ContentScope::Indexed }, &launcher2);
-        let e = run(&d2, "read_text", &json!({"path": p.to_string_lossy()})).err().unwrap();
+        let d2 = deps(
+            &src,
+            AgentConfig {
+                enabled: true,
+                content: ContentScope::Indexed,
+            },
+            &launcher2,
+        );
+        let e = run(&d2, "read_text", &json!({"path": p.to_string_lossy()}))
+            .err()
+            .unwrap();
         assert!(e.contains("outside the folders"), "{e}");
     }
 
@@ -676,7 +816,8 @@ mod tests {
         use zip::write::SimpleFileOptions;
         let f = std::fs::File::create(path).unwrap();
         let mut z = zip::ZipWriter::new(f);
-        z.start_file("word/document.xml", SimpleFileOptions::default()).unwrap();
+        z.start_file("word/document.xml", SimpleFileOptions::default())
+            .unwrap();
         write!(z, "<?xml version=\"1.0\"?><w:document xmlns:w=\"http://schemas.openxmlformats.org/wordprocessingml/2006/main\"><w:body><w:p><w:r><w:t>{body}</w:t></w:r></w:p></w:body></w:document>").unwrap();
         z.finish().unwrap();
     }

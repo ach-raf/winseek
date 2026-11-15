@@ -23,19 +23,70 @@ const MAX_PAGES: usize = 60;
 
 /// Path components that never hold a launchable program (lower-case compare).
 const SKIP_DIRS: &[&str] = &[
-    "windows", "winsxs", "system32", "syswow64", "$recycle.bin", "$windows.~bt", "windows.old", "system volume information",
-    "node_modules", ".git", ".hg", ".svn", "site-packages", "__pycache__", "venv", ".venv", "temp", "tmp", "cache",
-    "caches", "driverstore", "windowsapps", "programdata", "installer", "$sysreset", "deps", "incremental", ".cargo",
-    ".rustup", ".gradle", ".nuget", ".vs", "wine",
+    "windows",
+    "winsxs",
+    "system32",
+    "syswow64",
+    "$recycle.bin",
+    "$windows.~bt",
+    "windows.old",
+    "system volume information",
+    "node_modules",
+    ".git",
+    ".hg",
+    ".svn",
+    "site-packages",
+    "__pycache__",
+    "venv",
+    ".venv",
+    "temp",
+    "tmp",
+    "cache",
+    "caches",
+    "driverstore",
+    "windowsapps",
+    "programdata",
+    "installer",
+    "$sysreset",
+    "deps",
+    "incremental",
+    ".cargo",
+    ".rustup",
+    ".gradle",
+    ".nuget",
+    ".vs",
+    "wine",
 ];
 /// `target\debug`-style build output (cargo/cmake/dotnet) is not a "program" the user installed.
-const BUILD_PAIRS: &[(&str, &str)] = &[("target", "debug"), ("target", "release"), ("bin", "debug"), ("bin", "release"), ("obj", "debug"), ("obj", "release")];
+const BUILD_PAIRS: &[(&str, &str)] = &[
+    ("target", "debug"),
+    ("target", "release"),
+    ("bin", "debug"),
+    ("bin", "release"),
+    ("obj", "debug"),
+    ("obj", "release"),
+];
 /// Folder names that say nothing about the app; the real name is one level up.
-const GENERIC_DIRS: &[&str] = &["bin", "x64", "x86", "win64", "win32", "app", "release", "portable", "program", "application", "binaries", "windows"];
+const GENERIC_DIRS: &[&str] = &[
+    "bin",
+    "x64",
+    "x86",
+    "win64",
+    "win32",
+    "app",
+    "release",
+    "portable",
+    "program",
+    "application",
+    "binaries",
+    "windows",
+];
 
 /// Program Files / Start-menu territory is already covered by the catalog sources.
 fn in_installed_tree(lower: &str) -> bool {
-    lower.contains("\\program files") || lower.contains("\\appdata\\local\\programs\\") || lower.contains("\\appdata\\local\\microsoft\\")
+    lower.contains("\\program files")
+        || lower.contains("\\appdata\\local\\programs\\")
+        || lower.contains("\\appdata\\local\\microsoft\\")
 }
 
 fn skip_path(lower: &str) -> bool {
@@ -47,24 +98,45 @@ fn skip_path(lower: &str) -> bool {
     if dirs.iter().skip(1).any(|c| SKIP_DIRS.contains(c)) {
         return true;
     }
-    dirs.windows(2).any(|w| BUILD_PAIRS.iter().any(|(a, b)| w[0] == *a && w[1] == *b))
+    dirs.windows(2)
+        .any(|w| BUILD_PAIRS.iter().any(|(a, b)| w[0] == *a && w[1] == *b))
 }
 
 /// Folder names of toolchain / SDK / build internals: their exes are kept (they are real) but
 /// must never outrank what a person actually launches. Compared per path component, lower-case.
 const JUNK_COMPS: &[&str] = &[
-    "appxpackage", "msbuild", "winsdk", "windows kits", "visualstudio", "vs_studio", "_backups", "backup", "backups", "redist",
-    "sdk", "sdks", "toolchains", "buildtools", "build tools",
+    "appxpackage",
+    "msbuild",
+    "winsdk",
+    "windows kits",
+    "visualstudio",
+    "vs_studio",
+    "_backups",
+    "backup",
+    "backups",
+    "redist",
+    "sdk",
+    "sdks",
+    "toolchains",
+    "buildtools",
+    "build tools",
 ];
 
 /// True when any directory component of `path` (any case) is toolchain / SDK / backup territory.
 pub fn is_junk_path(path: &str) -> bool {
     let lower = path.to_lowercase();
-    lower.split('\\').any(|c| JUNK_COMPS.contains(&c) || c.starts_with("microsoft.visualstudio") || c.starts_with("windows kits"))
+    lower.split('\\').any(|c| {
+        JUNK_COMPS.contains(&c)
+            || c.starts_with("microsoft.visualstudio")
+            || c.starts_with("windows kits")
+    })
 }
 
 fn norm(s: &str) -> String {
-    s.chars().filter(|c| c.is_alphanumeric()).flat_map(|c| c.to_lowercase()).collect()
+    s.chars()
+        .filter(|c| c.is_alphanumeric())
+        .flat_map(|c| c.to_lowercase())
+        .collect()
 }
 
 fn parent_names(path: &str) -> (String, Option<String>) {
@@ -119,8 +191,18 @@ pub fn select(hits: &[Hit]) -> Vec<LaunchItem> {
         if !ns && h.size.is_some_and(|s| s < MIN_SIZE) {
             continue;
         }
-        let dir = lower.rsplit_once('\\').map(|(d, _)| d.to_string()).unwrap_or_default();
-        by_dir.entry(dir.clone()).or_default().push(Cand { hit: h, stem, folder, extra, lower_dir: dir, namesake: ns });
+        let dir = lower
+            .rsplit_once('\\')
+            .map(|(d, _)| d.to_string())
+            .unwrap_or_default();
+        by_dir.entry(dir.clone()).or_default().push(Cand {
+            hit: h,
+            stem,
+            folder,
+            extra,
+            lower_dir: dir,
+            namesake: ns,
+        });
     }
 
     let mut keep: Vec<Cand> = Vec::new();
@@ -157,7 +239,10 @@ pub fn select(hits: &[Hit]) -> Vec<LaunchItem> {
 fn to_item(c: &Cand) -> LaunchItem {
     let mut keywords = vec![c.stem.clone()];
     for k in [Some(&c.folder), c.extra.as_ref()].into_iter().flatten() {
-        if !k.is_empty() && !k.eq_ignore_ascii_case(&c.stem) && !keywords.iter().any(|x| x.eq_ignore_ascii_case(k)) {
+        if !k.is_empty()
+            && !k.eq_ignore_ascii_case(&c.stem)
+            && !keywords.iter().any(|x| x.eq_ignore_ascii_case(k))
+        {
             keywords.push(k.clone());
         }
     }
@@ -167,7 +252,10 @@ fn to_item(c: &Cand) -> LaunchItem {
         title: title_of(&c.stem),
         subtitle: format!("Portable · {}", c.hit.path),
         keywords,
-        target: Target::Path { path: c.hit.path.clone(), args: None },
+        target: Target::Path {
+            path: c.hit.path.clone(),
+            args: None,
+        },
         icon: None,
         admin_ok: true,
     }
@@ -175,13 +263,18 @@ fn to_item(c: &Cand) -> LaunchItem {
 
 /// `my_tool-x64` -> "My tool x64"; names that already mix case ("WinMerge") are left alone.
 fn title_of(stem: &str) -> String {
-    let spaced: String = stem.chars().map(|c| if c == '_' || c == '-' { ' ' } else { c }).collect();
+    let spaced: String = stem
+        .chars()
+        .map(|c| if c == '_' || c == '-' { ' ' } else { c })
+        .collect();
     let spaced = spaced.trim().to_string();
     if spaced.chars().any(|c| c.is_uppercase()) {
         return spaced;
     }
     let mut ch = spaced.chars();
-    ch.next().map_or_else(String::new, |f| f.to_uppercase().collect::<String>() + ch.as_str())
+    ch.next().map_or_else(String::new, |f| {
+        f.to_uppercase().collect::<String>() + ch.as_str()
+    })
 }
 
 /// Sweep every `.exe` in the name index (paged). `None` when searchd is not the live source.
@@ -202,7 +295,11 @@ pub fn scan(src: &dyn NameSource) -> Option<Vec<LaunchItem>> {
         return None; // index still scanning or unreachable: keep whatever we had
     }
     let out = select(&all);
-    eprintln!("winseek: portable scan: {} exes in the index -> {} programs", all.len(), out.len());
+    eprintln!(
+        "winseek: portable scan: {} exes in the index -> {} programs",
+        all.len(),
+        out.len()
+    );
     Some(out)
 }
 
@@ -212,7 +309,13 @@ mod tests {
 
     fn exe(path: &str, size: u64, mtime: i64) -> Hit {
         let name = path.rsplit('\\').next().unwrap().to_string();
-        Hit { name, path: path.into(), is_dir: false, size: Some(size), mtime: Some(mtime) }
+        Hit {
+            name,
+            path: path.into(),
+            is_dir: false,
+            size: Some(size),
+            mtime: Some(mtime),
+        }
     }
 
     fn titles(items: &[LaunchItem]) -> Vec<String> {
@@ -237,12 +340,18 @@ mod tests {
 
     #[test]
     fn generic_folder_uses_the_grandparent_and_namesake_survives_small_size() {
-        let hits = vec![exe(r"D:\Portable\Everything\x64\Everything.exe", 60_000, 5), exe(r"D:\Portable\Foo\bin\foo.exe", 80_000, 5)];
+        let hits = vec![
+            exe(r"D:\Portable\Everything\x64\Everything.exe", 60_000, 5),
+            exe(r"D:\Portable\Foo\bin\foo.exe", 80_000, 5),
+        ];
         let out = select(&hits);
         assert_eq!(out.len(), 2); // both are their folder's namesake, so the size floor does not apply
         let ev = out.iter().find(|i| i.title == "Everything").unwrap();
         assert!(ev.keywords.iter().any(|k| k == "Everything"));
-        assert_eq!(ev.subtitle, r"Portable · D:\Portable\Everything\x64\Everything.exe");
+        assert_eq!(
+            ev.subtitle,
+            r"Portable · D:\Portable\Everything\x64\Everything.exe"
+        );
         assert_eq!(ev.id, r"app:d:\portable\everything\x64\everything.exe");
     }
 
@@ -250,7 +359,11 @@ mod tests {
     fn suite_folders_keep_namesake_and_the_two_largest() {
         let mut hits = vec![exe(r"D:\Tools\suite\suite.exe", 5_000_000, 5)];
         for i in 0..12 {
-            hits.push(exe(&format!(r"D:\Tools\suite\tool{i}.exe"), 1_000_000 + i * 10_000, 5));
+            hits.push(exe(
+                &format!(r"D:\Tools\suite\tool{i}.exe"),
+                1_000_000 + i * 10_000,
+                5,
+            ));
         }
         let out = select(&hits);
         assert_eq!(out.len(), 3); // namesake + 2 largest of the rest
@@ -275,7 +388,9 @@ mod tests {
 
     #[test]
     fn junk_paths_are_flagged() {
-        assert!(is_junk_path(r"E:\vs_studio\Msbuild\Microsoft\VisualStudio\v17.0\AppxPackage\x86\MsPdbCmf.exe"));
+        assert!(is_junk_path(
+            r"E:\vs_studio\Msbuild\Microsoft\VisualStudio\v17.0\AppxPackage\x86\MsPdbCmf.exe"
+        ));
         assert!(is_junk_path(r"C:\tools\mpv\_backups\mpv-v0.41\mpv.exe"));
         assert!(!is_junk_path(r"C:\tools\mpv\mpv.exe"));
     }

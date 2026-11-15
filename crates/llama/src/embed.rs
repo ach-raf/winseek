@@ -32,7 +32,11 @@ fn http_err(e: ureq::Error) -> Error {
             let body = resp.into_string().unwrap_or_default();
             let msg = serde_json::from_str::<Value>(&body)
                 .ok()
-                .and_then(|v| v.pointer("/error/message").and_then(Value::as_str).map(str::to_string))
+                .and_then(|v| {
+                    v.pointer("/error/message")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
                 .unwrap_or(body);
             let msg: String = msg.trim().chars().take(300).collect();
             if msg.is_empty() {
@@ -112,24 +116,37 @@ pub fn parse_embeddings(resp: &Value, expected: usize) -> Result<Vec<Vec<f32>>> 
         .and_then(Value::as_array)
         .ok_or_else(|| embed_err("response has no `data` array"))?;
     if data.len() != expected {
-        return Err(embed_err(format!("expected {expected} embeddings, got {}", data.len())));
+        return Err(embed_err(format!(
+            "expected {expected} embeddings, got {}",
+            data.len()
+        )));
     }
     let mut rows: Vec<(usize, Vec<f32>)> = Vec::with_capacity(data.len());
     for (pos, item) in data.iter().enumerate() {
-        let index = item.get("index").and_then(Value::as_u64).map(|i| i as usize).unwrap_or(pos);
+        let index = item
+            .get("index")
+            .and_then(Value::as_u64)
+            .map(|i| i as usize)
+            .unwrap_or(pos);
         let emb = item
             .get("embedding")
             .and_then(Value::as_array)
             .ok_or_else(|| embed_err("item has no `embedding` array"))?
             .iter()
-            .map(|x| x.as_f64().map(|f| f as f32).ok_or_else(|| embed_err("non-numeric embedding value")))
+            .map(|x| {
+                x.as_f64()
+                    .map(|f| f as f32)
+                    .ok_or_else(|| embed_err("non-numeric embedding value"))
+            })
             .collect::<Result<Vec<f32>>>()?;
         rows.push((index, emb));
     }
     rows.sort_by_key(|r| r.0);
     for (i, r) in rows.iter().enumerate() {
         if r.0 != i {
-            return Err(embed_err(format!("embedding indices are not 0..{expected}")));
+            return Err(embed_err(format!(
+                "embedding indices are not 0..{expected}"
+            )));
         }
     }
     Ok(rows.into_iter().map(|r| r.1).collect())
@@ -139,13 +156,22 @@ pub fn parse_embeddings(resp: &Value, expected: usize) -> Result<Vec<Vec<f32>>> 
 /// An all-zero vector stays zero.
 pub fn truncate_normalize(v: &[f32], dims: usize) -> Result<Vec<f32>> {
     if !MATRYOSHKA_DIMS.contains(&dims) {
-        return Err(embed_err(format!("unsupported dims {dims} (use 768/512/256/128)")));
+        return Err(embed_err(format!(
+            "unsupported dims {dims} (use 768/512/256/128)"
+        )));
     }
     if v.len() < dims {
-        return Err(embed_err(format!("vector has {} dims, need at least {dims}", v.len())));
+        return Err(embed_err(format!(
+            "vector has {} dims, need at least {dims}",
+            v.len()
+        )));
     }
     let mut out = v[..dims].to_vec();
-    let norm = out.iter().map(|x| f64::from(*x) * f64::from(*x)).sum::<f64>().sqrt();
+    let norm = out
+        .iter()
+        .map(|x| f64::from(*x) * f64::from(*x))
+        .sum::<f64>()
+        .sqrt();
     if norm > 0.0 {
         for x in &mut out {
             *x = (f64::from(*x) / norm) as f32;
@@ -156,12 +182,18 @@ pub fn truncate_normalize(v: &[f32], dims: usize) -> Result<Vec<f32>> {
 
 /// True iff a `/props` document reports vision support (`modalities.vision == true`).
 pub fn props_vision(props: &Value) -> bool {
-    props.pointer("/modalities/vision").and_then(Value::as_bool).unwrap_or(false)
+    props
+        .pointer("/modalities/vision")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 /// True iff a `/props` document reports audio support (`modalities.audio == true`).
 pub fn props_audio(props: &Value) -> bool {
-    props.pointer("/modalities/audio").and_then(Value::as_bool).unwrap_or(false)
+    props
+        .pointer("/modalities/audio")
+        .and_then(Value::as_bool)
+        .unwrap_or(false)
 }
 
 pub struct EmbedClient {
@@ -176,7 +208,11 @@ impl EmbedClient {
             .timeout_connect(Duration::from_secs(5))
             .timeout_read(Duration::from_secs(300))
             .build();
-        EmbedClient { base_url: base_url.trim_end_matches('/').to_string(), api_key: api_key.to_string(), agent }
+        EmbedClient {
+            base_url: base_url.trim_end_matches('/').to_string(),
+            api_key: api_key.to_string(),
+            agent,
+        }
     }
 
     fn auth(&self) -> String {
@@ -196,7 +232,8 @@ impl EmbedClient {
             .map_err(http_err)?;
         let mut text = String::new();
         resp.into_reader().read_to_string(&mut text)?;
-        let v: Value = serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
         parse_embeddings(&v, expected)
     }
 
@@ -206,16 +243,30 @@ impl EmbedClient {
     /// fail the whole request (and so the file). On a rejected batch every text is sent on its own,
     /// and a text that is still too long is cut in half until it fits.
     pub fn embed_documents(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        self.embed_documents_titled(texts.iter().map(|t| ("", *t)).collect::<Vec<_>>().as_slice())
+        self.embed_documents_titled(
+            texts
+                .iter()
+                .map(|t| ("", *t))
+                .collect::<Vec<_>>()
+                .as_slice(),
+        )
     }
 
     /// Document embeddings with a title per document (e.g. the file name). An empty title is
     /// the untitled form. Same reject/retry behaviour as [`Self::embed_documents`].
     pub fn embed_documents_titled(&self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
-        let inputs: Vec<String> = docs.iter().map(|(t, x)| document_input_titled(t, x)).collect();
+        let inputs: Vec<String> = docs
+            .iter()
+            .map(|(t, x)| document_input_titled(t, x))
+            .collect();
         match self.post_embeddings(&text_body(&inputs), inputs.len()) {
-            Err(e) if docs.len() > 1 && rejected(&e) => docs.iter().map(|(t, x)| self.embed_one_document(t, x)).collect(),
-            Err(e) if rejected(&e) => self.embed_one_document(docs[0].0, docs[0].1).map(|v| vec![v]),
+            Err(e) if docs.len() > 1 && rejected(&e) => docs
+                .iter()
+                .map(|(t, x)| self.embed_one_document(t, x))
+                .collect(),
+            Err(e) if rejected(&e) => self
+                .embed_one_document(docs[0].0, docs[0].1)
+                .map(|v| vec![v]),
             r => r,
         }
     }
@@ -226,7 +277,10 @@ impl EmbedClient {
             let input = [document_input_titled(title, t)];
             match self.post_embeddings(&text_body(&input), 1) {
                 Err(e) if rejected(&e) && t.chars().count() > MIN_SHRINK_CHARS => {
-                    let half = t.char_indices().nth(t.chars().count() / 2).map_or(t.len(), |(i, _)| i);
+                    let half = t
+                        .char_indices()
+                        .nth(t.chars().count() / 2)
+                        .map_or(t.len(), |(i, _)| i);
                     t = &t[..half];
                 }
                 r => return r.map(|mut v| v.remove(0)),
@@ -272,7 +326,8 @@ impl EmbedClient {
             .map_err(http_err)?;
         let mut text = String::new();
         resp.into_reader().read_to_string(&mut text)?;
-        let v: Value = serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
+        let v: Value =
+            serde_json::from_str(&text).map_err(|e| embed_err(format!("bad json: {e}")))?;
         Ok((props_vision(&v), props_audio(&v)))
     }
 }
@@ -297,9 +352,18 @@ mod tests {
 
     #[test]
     fn titled_document_inputs() {
-        assert_eq!(document_input_titled("", "hello"), "title: none | text: hello");
-        assert_eq!(document_input_titled("   ", "hello"), "title: none | text: hello");
-        assert_eq!(document_input_titled("Invoice.pdf", "total due"), "title: Invoice.pdf | text: total due");
+        assert_eq!(
+            document_input_titled("", "hello"),
+            "title: none | text: hello"
+        );
+        assert_eq!(
+            document_input_titled("   ", "hello"),
+            "title: none | text: hello"
+        );
+        assert_eq!(
+            document_input_titled("Invoice.pdf", "total due"),
+            "title: Invoice.pdf | text: total due"
+        );
     }
 
     #[test]
@@ -326,7 +390,9 @@ mod tests {
                 {"content":[{"type":"input_audio","input_audio":{"data":"YWI=","format":"wav"}}]}
             ]})
         );
-        assert!(props_audio(&json!({"modalities":{"vision":true,"audio":true}})));
+        assert!(props_audio(
+            &json!({"modalities":{"vision":true,"audio":true}})
+        ));
         assert!(!props_audio(&json!({"modalities":{"vision":true}})));
         assert!(!props_audio(&json!({"modalities":{"audio":"yes"}})));
     }
@@ -349,7 +415,10 @@ mod tests {
         assert!(truncate_normalize(&v, 100).is_err());
         assert!(truncate_normalize(&v, 1024).is_err());
         assert!(truncate_normalize(&v[..200], 256).is_err());
-        assert_eq!(truncate_normalize(&vec![0.0; 128], 128).unwrap(), vec![0.0; 128]);
+        assert_eq!(
+            truncate_normalize(&vec![0.0; 128], 128).unwrap(),
+            vec![0.0; 128]
+        );
     }
 
     #[test]
@@ -358,7 +427,10 @@ mod tests {
             {"index":1,"embedding":[3.0,4.0]},
             {"index":0,"embedding":[1.0,2.0]}
         ]});
-        assert_eq!(parse_embeddings(&r, 2).unwrap(), vec![vec![1.0, 2.0], vec![3.0, 4.0]]);
+        assert_eq!(
+            parse_embeddings(&r, 2).unwrap(),
+            vec![vec![1.0, 2.0], vec![3.0, 4.0]]
+        );
         assert!(parse_embeddings(&r, 3).is_err());
         assert!(parse_embeddings(&json!({"data":[{"index":5,"embedding":[1.0]}]}), 1).is_err());
         assert!(parse_embeddings(&json!({"oops":1}), 1).is_err());
@@ -367,7 +439,9 @@ mod tests {
 
     #[test]
     fn props_vision_parsing() {
-        assert!(props_vision(&json!({"modalities":{"vision":true,"audio":false}})));
+        assert!(props_vision(
+            &json!({"modalities":{"vision":true,"audio":false}})
+        ));
         assert!(!props_vision(&json!({"modalities":{"vision":false}})));
         assert!(!props_vision(&json!({"modalities":{}})));
         assert!(!props_vision(&json!({"other":1})));
@@ -422,7 +496,9 @@ mod tests {
 
     #[test]
     fn client_roundtrip_against_mock() {
-        let emb = r#"{"data":[{"index":1,"embedding":[0.0,1.0]},{"index":0,"embedding":[1.0,0.0]}]}"#.to_string();
+        let emb =
+            r#"{"data":[{"index":1,"embedding":[0.0,1.0]},{"index":0,"embedding":[1.0,0.0]}]}"#
+                .to_string();
         let props = r#"{"modalities":{"vision":true}}"#.to_string();
         let noprops = r#"{"default_generation_settings":{}}"#.to_string();
         let (url, seen) = mock(5, vec![emb.clone(), emb.clone(), emb, props, noprops]);
@@ -443,7 +519,10 @@ mod tests {
         }
         assert_eq!(seen[0].0, "POST /v1/embeddings HTTP/1.1");
         let b0: Value = serde_json::from_str(&seen[0].2).unwrap();
-        assert_eq!(b0, json!({"input": ["title: none | text: a", "title: none | text: b"]}));
+        assert_eq!(
+            b0,
+            json!({"input": ["title: none | text: a", "title: none | text: b"]})
+        );
         let b1: Value = serde_json::from_str(&seen[1].2).unwrap();
         assert_eq!(b1["input"][0], "task: search result | query: a");
         let b2: Value = serde_json::from_str(&seen[2].2).unwrap();
@@ -481,11 +560,20 @@ mod tests {
             let mut body = vec![0u8; len];
             r.read_exact(&mut body).unwrap();
             let v: Value = serde_json::from_slice(&body).unwrap();
-            let inputs: Vec<usize> = v["input"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().chars().count()).collect();
+            let inputs: Vec<usize> = v["input"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().chars().count())
+                .collect();
             let (status, resp) = if inputs.iter().any(|&n| n > max) {
                 ("500 Internal Server Error", r#"{"error":{"code":500,"message":"input is too large to process. increase the physical batch size","type":"server_error"}}"#.to_string())
             } else {
-                let data: Vec<Value> = inputs.iter().enumerate().map(|(i, &n)| json!({"index": i, "embedding": [n as f32]})).collect();
+                let data: Vec<Value> = inputs
+                    .iter()
+                    .enumerate()
+                    .map(|(i, &n)| json!({"index": i, "embedding": [n as f32]}))
+                    .collect();
                 ("200 OK", json!({ "data": data }).to_string())
             };
             let _ = write!(s, "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}", resp.len());
@@ -500,9 +588,16 @@ mod tests {
         let v = c.embed_documents(&["short", &long, "also short"]).unwrap();
         assert_eq!(v.len(), 3);
         assert_eq!(v[0], vec![(DOC_PREFIX.len() + 5) as f32]);
-        assert!(v[1][0] as usize <= DOC_PREFIX.len() + 300 && v[1][0] as usize > DOC_PREFIX.len() + 100, "{:?}", v[1]);
+        assert!(
+            v[1][0] as usize <= DOC_PREFIX.len() + 300 && v[1][0] as usize > DOC_PREFIX.len() + 100,
+            "{:?}",
+            v[1]
+        );
         // the server's message reaches the error text
-        let e = EmbedClient::new(&picky(1), "K").embed_queries(&["x"]).unwrap_err().to_string();
+        let e = EmbedClient::new(&picky(1), "K")
+            .embed_queries(&["x"])
+            .unwrap_err()
+            .to_string();
         assert!(e.contains("500") && e.contains("too large"), "{e}");
     }
 }

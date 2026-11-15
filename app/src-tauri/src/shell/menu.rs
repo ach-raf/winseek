@@ -6,13 +6,13 @@ use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM};
 use windows::Win32::Graphics::Gdi::ClientToScreen;
 use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
 use windows::Win32::UI::Shell::{
-    BHID_SFUIObject, DefSubclassProc, IContextMenu, IContextMenu2, IContextMenu3, RemoveWindowSubclass,
-    SetWindowSubclass, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL, CMIC_MASK_PTINVOKE, SEE_MASK_UNICODE,
-    CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBA,
+    BHID_SFUIObject, DefSubclassProc, IContextMenu, IContextMenu2, IContextMenu3,
+    RemoveWindowSubclass, SetWindowSubclass, CMF_CANRENAME, CMF_EXTENDEDVERBS, CMF_NORMAL,
+    CMIC_MASK_PTINVOKE, CMINVOKECOMMANDINFO, CMINVOKECOMMANDINFOEX, GCS_VERBA, SEE_MASK_UNICODE,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CreatePopupMenu, SetForegroundWindow, TrackPopupMenuEx, SW_SHOWNORMAL, TPM_RETURNCMD, TPM_RIGHTBUTTON,
-    WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
+    CreatePopupMenu, SetForegroundWindow, TrackPopupMenuEx, SW_SHOWNORMAL, TPM_RETURNCMD,
+    TPM_RIGHTBUTTON, WM_DRAWITEM, WM_INITMENUPOPUP, WM_MEASUREITEM, WM_MENUCHAR,
 };
 
 const SUBCLASS_ID: usize = 0x5753_4D45; // "WSME"
@@ -33,7 +33,10 @@ unsafe extern "system" fn subclass_proc(
     _id: usize,
     refdata: usize,
 ) -> LRESULT {
-    if matches!(msg, WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR) {
+    if matches!(
+        msg,
+        WM_INITMENUPOPUP | WM_DRAWITEM | WM_MEASUREITEM | WM_MENUCHAR
+    ) {
         // SAFETY: refdata points at the MsgTarget owned by `show`, alive while the subclass is installed.
         let t = unsafe { &*(refdata as *const MsgTarget) };
         let mut res = LRESULT(0);
@@ -60,7 +63,12 @@ impl Subclass {
     fn install(hwnd: HWND, target: &MsgTarget) -> Result<Self, String> {
         // SAFETY: `target` outlives the guard (declared before it in `show`).
         let ok = unsafe {
-            SetWindowSubclass(hwnd, Some(subclass_proc), SUBCLASS_ID, target as *const MsgTarget as usize)
+            SetWindowSubclass(
+                hwnd,
+                Some(subclass_proc),
+                SUBCLASS_ID,
+                target as *const MsgTarget as usize,
+            )
         };
         if ok.as_bool() {
             Ok(Self(hwnd))
@@ -82,7 +90,15 @@ impl Drop for Subclass {
 fn verb_of(cm: &IContextMenu, offset: usize) -> String {
     let mut buf = [0u8; 128];
     // SAFETY: buffer length is passed as cchmax.
-    let r = unsafe { cm.GetCommandString(offset, GCS_VERBA, None, PSTR(buf.as_mut_ptr()), buf.len() as u32) };
+    let r = unsafe {
+        cm.GetCommandString(
+            offset,
+            GCS_VERBA,
+            None,
+            PSTR(buf.as_mut_ptr()),
+            buf.len() as u32,
+        )
+    };
     if r.is_err() {
         return String::new();
     }
@@ -94,8 +110,12 @@ fn verb_of(cm: &IContextMenu, offset: usize) -> String {
 pub(super) fn show(hwnd: HWND, path: &str, x: f64, y: f64) -> Result<String, String> {
     let item = shell_item(path)?;
     // SAFETY: valid item; the bound handler is an owned COM object.
-    let cm: IContextMenu = unsafe { item.BindToHandler(None, &BHID_SFUIObject) }.map_err(|e| e.to_string())?;
-    let target = MsgTarget { cm2: cm.cast().ok(), cm3: cm.cast().ok() };
+    let cm: IContextMenu =
+        unsafe { item.BindToHandler(None, &BHID_SFUIObject) }.map_err(|e| e.to_string())?;
+    let target = MsgTarget {
+        cm2: cm.cast().ok(),
+        cm3: cm.cast().ok(),
+    };
 
     // SAFETY: GetKeyState is a plain query.
     let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
@@ -104,15 +124,28 @@ pub(super) fn show(hwnd: HWND, path: &str, x: f64, y: f64) -> Result<String, Str
         flags |= CMF_EXTENDEDVERBS;
     }
 
-    let mut pt = POINT { x: x.round() as i32, y: y.round() as i32 };
+    let mut pt = POINT {
+        x: x.round() as i32,
+        y: y.round() as i32,
+    };
     // SAFETY: menu is owned by MenuGuard; subclass removed by Subclass drop; all COM calls on the main STA.
     let cmd = unsafe {
         let menu = MenuGuard(CreatePopupMenu().map_err(|e| e.to_string())?);
-        cm.QueryContextMenu(menu.0, 0, ID_FIRST, ID_LAST, flags).ok().map_err(|e| e.to_string())?;
+        cm.QueryContextMenu(menu.0, 0, ID_FIRST, ID_LAST, flags)
+            .ok()
+            .map_err(|e| e.to_string())?;
         let _ = ClientToScreen(hwnd, &mut pt);
         let _sub = Subclass::install(hwnd, &target)?;
         let _ = SetForegroundWindow(hwnd);
-        TrackPopupMenuEx(menu.0, (TPM_RETURNCMD | TPM_RIGHTBUTTON).0, pt.x, pt.y, hwnd, None).0 as u32
+        TrackPopupMenuEx(
+            menu.0,
+            (TPM_RETURNCMD | TPM_RIGHTBUTTON).0,
+            pt.x,
+            pt.y,
+            hwnd,
+            None,
+        )
+        .0 as u32
     };
     if cmd == 0 {
         return Ok("cancelled".into());
@@ -138,6 +171,7 @@ pub(super) fn show(hwnd: HWND, path: &str, x: f64, y: f64) -> Result<String, Str
         ..Default::default()
     };
     // SAFETY: EX struct is layout-compatible with CMINVOKECOMMANDINFO (cbSize says which).
-    unsafe { cm.InvokeCommand(&info as *const _ as *const CMINVOKECOMMANDINFO) }.map_err(|e| e.to_string())?;
+    unsafe { cm.InvokeCommand(&info as *const _ as *const CMINVOKECOMMANDINFO) }
+        .map_err(|e| e.to_string())?;
     Ok("invoked".into())
 }

@@ -17,9 +17,9 @@ use std::fmt;
 
 pub use backend::{detect_backend, Backend, Detected};
 pub use embed::EmbedClient;
-pub use fetch::{fetch, fetch_with, rewrite_hf, FetchOptions, sha256_file, sha256_hex, Progress};
-pub use parse::{Element, ParseClient, Parsed, Table, PARSE_PROMPT_VERSION};
+pub use fetch::{fetch, fetch_with, rewrite_hf, sha256_file, sha256_hex, FetchOptions, Progress};
 pub use manifest::{Manifest, ModelProfile, ModelRole};
+pub use parse::{Element, ParseClient, Parsed, Table, PARSE_PROMPT_VERSION};
 pub use reaper::{Clock, IdleReaper, IdleSlot, SystemClock};
 pub use server::{fallback_chain, fallback_order, LlamaServer, Profile, Role, SpawnConfig};
 
@@ -27,7 +27,10 @@ pub use server::{fallback_chain, fallback_order, LlamaServer, Profile, Role, Spa
 pub enum Error {
     Io(std::io::Error),
     Http(String),
-    Sha256Mismatch { expected: String, actual: String },
+    Sha256Mismatch {
+        expected: String,
+        actual: String,
+    },
     /// The manifest still carries a `TODO-pin-in-CI` hash.
     UnpinnedHash(String),
     Manifest(String),

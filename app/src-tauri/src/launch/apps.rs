@@ -12,14 +12,17 @@ use std::time::Instant;
 use windows::core::{Interface, PCWSTR, PWSTR};
 use windows::Win32::Foundation::{PROPERTYKEY, WIN32_ERROR};
 use windows::Win32::Storage::FileSystem::WIN32_FIND_DATAW;
-use windows::Win32::System::Com::{CoCreateInstance, CoTaskMemFree, CLSCTX_ALL, IPersistFile, STGM_READ};
+use windows::Win32::System::Com::{
+    CoCreateInstance, CoTaskMemFree, IPersistFile, CLSCTX_ALL, STGM_READ,
+};
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ,
-    RRF_RT_REG_SZ,
+    RegCloseKey, RegEnumKeyExW, RegGetValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER,
+    HKEY_LOCAL_MACHINE, KEY_READ, RRF_RT_REG_SZ,
 };
 use windows::Win32::UI::Shell::{
-    IEnumShellItems, IShellItem, IShellItem2, IShellLinkW, BHID_EnumItems, FOLDERID_AppsFolder, KF_FLAG_DEFAULT,
-    ShellLink, SIGDN_NORMALDISPLAY, SIGDN_PARENTRELATIVEPARSING, SLGP_RAWPATH, SHGetKnownFolderItem,
+    BHID_EnumItems, FOLDERID_AppsFolder, IEnumShellItems, IShellItem, IShellItem2, IShellLinkW,
+    SHGetKnownFolderItem, ShellLink, KF_FLAG_DEFAULT, SIGDN_NORMALDISPLAY,
+    SIGDN_PARENTRELATIVEPARSING, SLGP_RAWPATH,
 };
 
 use super::appsrules;
@@ -33,7 +36,8 @@ const PKEY_LINK_TARGET_PARSING_PATH: PROPERTYKEY = PROPERTYKEY {
     pid: 2,
 };
 
-const APP_PATHS_KEY: PCWSTR = windows::core::w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths");
+const APP_PATHS_KEY: PCWSTR =
+    windows::core::w!("SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\App Paths");
 
 /// Sources for one catalog build. Mirrors `LaunchCfg` in the launcher state.
 #[derive(Clone, Debug)]
@@ -52,7 +56,10 @@ pub fn enumerate(opts: &AppOpts) -> Vec<LaunchItem> {
     items.extend(app_paths());
     for folder in &opts.folders {
         let found = folder_items(folder, opts);
-        eprintln!("winseek: app catalog: {} items from folder {folder}", found.len());
+        eprintln!(
+            "winseek: app catalog: {} items from folder {folder}",
+            found.len()
+        );
         items.extend(found);
     }
     if opts.path {
@@ -73,13 +80,14 @@ pub fn enumerate(opts: &AppOpts) -> Vec<LaunchItem> {
 /// shell:AppsFolder — one enumeration for Start menu shortcuts AND Store/UWP apps.
 fn apps_folder(opts: &AppOpts) -> Vec<LaunchItem> {
     // SAFETY: known-folder GUID is static; the item is COM-owned and freed on drop.
-    let folder: IShellItem = match unsafe { SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) } {
-        Ok(f) => f,
-        Err(e) => {
-            eprintln!("winseek: AppsFolder unavailable: {e}");
-            return Vec::new();
-        }
-    };
+    let folder: IShellItem =
+        match unsafe { SHGetKnownFolderItem(&FOLDERID_AppsFolder, KF_FLAG_DEFAULT, None) } {
+            Ok(f) => f,
+            Err(e) => {
+                eprintln!("winseek: AppsFolder unavailable: {e}");
+                return Vec::new();
+            }
+        };
     // SAFETY: valid item + static BHID GUID.
     let items: IEnumShellItems = match unsafe { folder.BindToHandler(None, &BHID_EnumItems) } {
         Ok(i) => i,
@@ -128,7 +136,12 @@ fn apps_folder_item(item: &IShellItem, opts: &AppOpts, startup: &[String]) -> Op
     let admin_ok = path.is_some();
 
     // Launch-by-URL entries: only the store-run protocols Flow allows survive.
-    if path.is_none() && !store && aumid.contains("://") && !aumid.starts_with('\\') && !appsrules::allowed_url(&aumid) {
+    if path.is_none()
+        && !store
+        && aumid.contains("://")
+        && !aumid.starts_with('\\')
+        && !appsrules::allowed_url(&aumid)
+    {
         return None;
     }
     let exe = path.as_deref();
@@ -136,7 +149,8 @@ fn apps_folder_item(item: &IShellItem, opts: &AppOpts, startup: &[String]) -> Op
         return None; // autolaunch entries, not apps
     }
     if opts.hide_uninstallers
-        && (appsrules::is_uninstaller(&title, exe) || exe.is_some_and(|p| appsrules::is_helper_exe(&appsrules::path_stem(p))))
+        && (appsrules::is_uninstaller(&title, exe)
+            || exe.is_some_and(|p| appsrules::is_helper_exe(&appsrules::path_stem(p))))
     {
         return None;
     }
@@ -146,7 +160,9 @@ fn apps_folder_item(item: &IShellItem, opts: &AppOpts, startup: &[String]) -> Op
         _ if store => "Store app".into(),
         _ => "Start menu".into(),
     };
-    let keywords = exe.map(|p| vec![appsrules::path_stem(p)]).unwrap_or_default();
+    let keywords = exe
+        .map(|p| vec![appsrules::path_stem(p)])
+        .unwrap_or_default();
     Some(LaunchItem {
         id: format!("app:{}", aumid.to_lowercase()),
         kind: Kind::App,
@@ -164,7 +180,10 @@ fn app_paths() -> Vec<LaunchItem> {
     let mut out = Vec::new();
     for (root, label) in [(HKEY_LOCAL_MACHINE, "HKLM"), (HKEY_CURRENT_USER, "HKCU")] {
         let found = app_paths_hive(root);
-        eprintln!("winseek: app catalog: {} entries from {label} App Paths", found.len());
+        eprintln!(
+            "winseek: app catalog: {} entries from {label} App Paths",
+            found.len()
+        );
         out.extend(found);
     }
     out
@@ -183,7 +202,16 @@ fn app_paths_hive(root: HKEY) -> Vec<LaunchItem> {
         let mut name_len = name_buf.len() as u32;
         // SAFETY: out buffers sized above; this is the documented enumeration loop.
         let r: WIN32_ERROR = unsafe {
-            RegEnumKeyExW(key, index, Some(PWSTR(name_buf.as_mut_ptr())), &mut name_len, None, None, None, None)
+            RegEnumKeyExW(
+                key,
+                index,
+                Some(PWSTR(name_buf.as_mut_ptr())),
+                &mut name_len,
+                None,
+                None,
+                None,
+                None,
+            )
         };
         if r.0 != 0 {
             break; // ERROR_NO_MORE_ITEMS or a real error: stop this hive
@@ -219,10 +247,14 @@ fn app_paths_entry(key: HKEY, key_name: &str) -> Option<LaunchItem> {
         )
     };
     if r.0 != 0 {
-        eprintln!("winseek: app catalog: App Paths entry {key_name} has no default value (error {})", r.0);
+        eprintln!(
+            "winseek: app catalog: App Paths entry {key_name} has no default value (error {})",
+            r.0
+        );
         return None;
     }
-    let mut raw = String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1).min(buf.len())]);
+    let mut raw =
+        String::from_utf16_lossy(&buf[..(len as usize / 2).saturating_sub(1).min(buf.len())]);
     // Trim quotes/whitespace, expand env vars; `"C:\a b\x.exe" /flag` keeps only the path.
     raw = raw.trim().trim_matches('"').trim().to_string();
     if raw.contains('"') {
@@ -240,8 +272,14 @@ fn app_paths_entry(key: HKEY, key_name: &str) -> Option<LaunchItem> {
         kind: Kind::App,
         title: capitalize(&stem),
         subtitle: "App Paths".into(),
-        keywords: [stem, key_stem].into_iter().filter(|k| !k.is_empty()).collect(),
-        target: Target::Path { path: exe, args: None },
+        keywords: [stem, key_stem]
+            .into_iter()
+            .filter(|k| !k.is_empty())
+            .collect(),
+        target: Target::Path {
+            path: exe,
+            args: None,
+        },
         icon: None,
         admin_ok: true,
     })
@@ -258,10 +296,14 @@ fn walk_folder(dir: &Path, depth: u8, opts: &AppOpts, out: &mut Vec<LaunchItem>)
     if depth > 4 {
         return;
     }
-    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
     for entry in entries.flatten() {
         let path = entry.path();
-        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else { continue };
+        let Some(name) = path.file_name().map(|n| n.to_string_lossy().into_owned()) else {
+            continue;
+        };
         if name.starts_with('.') {
             continue;
         }
@@ -269,19 +311,27 @@ fn walk_folder(dir: &Path, depth: u8, opts: &AppOpts, out: &mut Vec<LaunchItem>)
             walk_folder(&path, depth + 1, opts, out);
             continue;
         }
-        let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+        let ext = path
+            .extension()
+            .map(|e| e.to_string_lossy().to_lowercase())
+            .unwrap_or_default();
         if !matches!(ext.as_str(), "exe" | "lnk" | "appref-ms") {
             continue;
         }
         let stem = appsrules::path_stem(&name);
-        if opts.hide_uninstallers && (appsrules::is_uninstaller(&stem, path.to_str()) || appsrules::is_helper_exe(&stem)) {
+        if opts.hide_uninstallers
+            && (appsrules::is_uninstaller(&stem, path.to_str()) || appsrules::is_helper_exe(&stem))
+        {
             continue;
         }
         let (target_path, args) = if ext == "lnk" {
             match path.to_str().and_then(lnk_target) {
                 Some(t) => (t, None),
                 None => {
-                    eprintln!("winseek: app catalog: .lnk target unreadable: {}", path.display());
+                    eprintln!(
+                        "winseek: app catalog: .lnk target unreadable: {}",
+                        path.display()
+                    );
                     continue;
                 }
             }
@@ -294,7 +344,10 @@ fn walk_folder(dir: &Path, depth: u8, opts: &AppOpts, out: &mut Vec<LaunchItem>)
             title: capitalize(&stem),
             subtitle: path.to_string_lossy().into_owned(),
             keywords: vec![stem],
-            target: Target::Path { path: target_path, args },
+            target: Target::Path {
+                path: target_path,
+                args,
+            },
             icon: None,
             admin_ok: true,
         });
@@ -304,12 +357,20 @@ fn walk_folder(dir: &Path, depth: u8, opts: &AppOpts, out: &mut Vec<LaunchItem>)
 /// PATH dirs, non-recursive, exes only (off by default: noisy).
 fn path_items() -> Vec<LaunchItem> {
     let mut out = Vec::new();
-    let Some(path_var) = std::env::var_os("PATH") else { return out };
+    let Some(path_var) = std::env::var_os("PATH") else {
+        return out;
+    };
     for dir in std::env::split_paths(&path_var) {
-        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        let Ok(entries) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map(|e| !e.eq_ignore_ascii_case("exe")).unwrap_or(true) {
+            if path
+                .extension()
+                .map(|e| !e.eq_ignore_ascii_case("exe"))
+                .unwrap_or(true)
+            {
                 continue;
             }
             let stem = appsrules::path_stem(&path.to_string_lossy());
@@ -322,7 +383,10 @@ fn path_items() -> Vec<LaunchItem> {
                 title: capitalize(&stem),
                 subtitle: "PATH".into(),
                 keywords: vec![stem],
-                target: Target::Path { path: path.to_string_lossy().into_owned(), args: None },
+                target: Target::Path {
+                    path: path.to_string_lossy().into_owned(),
+                    args: None,
+                },
                 icon: None,
                 admin_ok: true,
             });
@@ -354,7 +418,10 @@ fn startup_dirs() -> Vec<String> {
     let suffix = r"Microsoft\Windows\Start Menu\Programs\Startup";
     for var in ["APPDATA", "ProgramData"] {
         if let Some(base) = std::env::var_os(var) {
-            out.push(format!("{}\\{suffix}\\", base.to_string_lossy().to_lowercase()));
+            out.push(format!(
+                "{}\\{suffix}\\",
+                base.to_string_lossy().to_lowercase()
+            ));
         }
     }
     out
@@ -392,7 +459,11 @@ mod tests {
     #[test]
     #[ignore]
     fn enumerate_lists_some_apps() {
-        let opts = AppOpts { hide_uninstallers: true, folders: vec![], path: false };
+        let opts = AppOpts {
+            hide_uninstallers: true,
+            folders: vec![],
+            path: false,
+        };
         let items = enumerate(&opts);
         eprintln!("app catalog: {} items", items.len());
         for i in items.iter().take(20) {

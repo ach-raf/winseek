@@ -28,7 +28,11 @@ pub struct Session {
 
 impl Session {
     pub fn new() -> Self {
-        Session { client: "unknown".into(), protocol: SUPPORTED[0].into(), initialized: false }
+        Session {
+            client: "unknown".into(),
+            protocol: SUPPORTED[0].into(),
+            initialized: false,
+        }
     }
 }
 
@@ -42,7 +46,13 @@ impl Default for Session {
 pub fn handle_line(s: &mut Session, line: &str, b: &mut dyn Backend) -> Option<String> {
     let v: Value = match serde_json::from_str(line) {
         Ok(v) => v,
-        Err(e) => return Some(error_line(Value::Null, -32700, &format!("parse error: {e}"))),
+        Err(e) => {
+            return Some(error_line(
+                Value::Null,
+                -32700,
+                &format!("parse error: {e}"),
+            ))
+        }
     };
     let id = v.get("id").cloned().unwrap_or(Value::Null);
     let Some(method) = v.get("method").and_then(Value::as_str).map(String::from) else {
@@ -69,17 +79,15 @@ pub fn handle_line(s: &mut Session, line: &str, b: &mut dyn Backend) -> Option<S
                 .and_then(Value::as_str)
                 .unwrap_or("unknown")
                 .to_owned();
-            Some(
-                ok_line(
-                    id,
-                    json!({
-                        "protocolVersion": s.protocol,
-                        "capabilities": {"tools": {}},
-                        "serverInfo": {"name": "winseek", "version": env!("CARGO_PKG_VERSION")},
-                        "instructions": INSTRUCTIONS,
-                    }),
-                ),
-            )
+            Some(ok_line(
+                id,
+                json!({
+                    "protocolVersion": s.protocol,
+                    "capabilities": {"tools": {}},
+                    "serverInfo": {"name": "winseek", "version": env!("CARGO_PKG_VERSION")},
+                    "instructions": INSTRUCTIONS,
+                }),
+            ))
         }
         "ping" => Some(ok_line(id, json!({}))),
         "tools/list" => Some(match b.list() {
@@ -91,18 +99,35 @@ pub fn handle_line(s: &mut Session, line: &str, b: &mut dyn Backend) -> Option<S
             let Some(tool) = params.get("name").and_then(Value::as_str) else {
                 return Some(error_line(id, -32602, "tools/call needs a string \"name\""));
             };
-            let args = params.get("arguments").cloned().unwrap_or_else(|| json!({}));
+            let args = params
+                .get("arguments")
+                .cloned()
+                .unwrap_or_else(|| json!({}));
             let answer = match b.call(&s.client, tool, args) {
                 Ok(v) => {
                     // Tool errors are results (isError), not JSON-RPC errors (MCP spec).
-                    let structured = if v.is_object() { v.clone() } else { json!({"result": v}) };
-                    ok_line(id, json!({"content": [{"type": "text", "text": v.to_string()}], "structuredContent": structured}))
+                    let structured = if v.is_object() {
+                        v.clone()
+                    } else {
+                        json!({"result": v})
+                    };
+                    ok_line(
+                        id,
+                        json!({"content": [{"type": "text", "text": v.to_string()}], "structuredContent": structured}),
+                    )
                 }
-                Err(msg) => ok_line(id, json!({"content": [{"type": "text", "text": msg}], "isError": true})),
+                Err(msg) => ok_line(
+                    id,
+                    json!({"content": [{"type": "text", "text": msg}], "isError": true}),
+                ),
             };
             Some(answer)
         }
-        other => Some(error_line(id, -32601, &format!("method not found: {other}"))),
+        other => Some(error_line(
+            id,
+            -32601,
+            &format!("method not found: {other}"),
+        )),
     }
 }
 
@@ -132,7 +157,11 @@ mod tests {
 
     impl Backend for Fake {
         fn list(&mut self) -> Result<Value, String> {
-            self.0.iter().find(|(n, _)| n == "list").map(|(_, r)| r.clone()).unwrap_or_else(|| Ok(json!([{"name": "x"}])))
+            self.0
+                .iter()
+                .find(|(n, _)| n == "list")
+                .map(|(_, r)| r.clone())
+                .unwrap_or_else(|| Ok(json!([{"name": "x"}])))
         }
         fn call(&mut self, client: &str, tool: &str, _args: Value) -> Result<Value, String> {
             self.0
@@ -161,7 +190,10 @@ mod tests {
         let r = line(&mut s, json!({"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"1999-01-01"}}), &mut b).unwrap();
         assert_eq!(r["result"]["protocolVersion"], SUPPORTED[0]); // unknown: newest
         assert_eq!(r["result"]["serverInfo"]["name"], "winseek");
-        assert!(r["result"]["instructions"].as_str().unwrap().contains("search_files"));
+        assert!(r["result"]["instructions"]
+            .as_str()
+            .unwrap()
+            .contains("search_files"));
     }
 
     #[test]
@@ -169,16 +201,31 @@ mod tests {
         let mut b = Fake(vec![]);
         let mut s = Session::new();
         init(&mut s, &mut b);
-        assert!(handle_line(&mut s, r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#, &mut b).is_none());
+        assert!(handle_line(
+            &mut s,
+            r#"{"jsonrpc":"2.0","method":"notifications/initialized"}"#,
+            &mut b
+        )
+        .is_none());
         assert!(s.initialized);
-        assert!(handle_line(&mut s, r#"{"jsonrpc":"2.0","method":"notifications/whatever"}"#, &mut b).is_none());
+        assert!(handle_line(
+            &mut s,
+            r#"{"jsonrpc":"2.0","method":"notifications/whatever"}"#,
+            &mut b
+        )
+        .is_none());
     }
 
     #[test]
     fn unknown_method_is_32601() {
         let mut b = Fake(vec![]);
         let mut s = Session::new();
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":"a","method":"resources/list"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":"a","method":"resources/list"}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["error"]["code"], -32601);
         assert_eq!(r["id"], "a");
     }
@@ -206,9 +253,19 @@ mod tests {
         let mut b = Fake(vec![("list".into(), Ok(json!([{"name": "search_files"}])))]);
         let mut s = Session::new();
         init(&mut s, &mut b);
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":3,"method":"ping"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":3,"method":"ping"}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["result"], json!({}));
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":4,"method":"tools/list"}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["result"]["tools"][0]["name"], "search_files");
     }
 
@@ -216,7 +273,12 @@ mod tests {
     fn list_failure_falls_back_to_index_status() {
         let mut b = Fake(vec![("list".into(), Err("app down".into()))]);
         let mut s = Session::new();
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":6,"method":"tools/list"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":6,"method":"tools/list"}),
+            &mut b,
+        )
+        .unwrap();
         let tools = r["result"]["tools"].as_array().unwrap();
         assert_eq!(tools.len(), 1);
         assert_eq!(tools[0]["name"], "index_status");
@@ -224,13 +286,19 @@ mod tests {
 
     #[test]
     fn tool_call_ok_is_content_plus_structured() {
-        let mut b = Fake(vec![("search_files".into(), Ok(json!({"total": 1, "hits": []})))]);
+        let mut b = Fake(vec![(
+            "search_files".into(),
+            Ok(json!({"total": 1, "hits": []})),
+        )]);
         let mut s = Session::new();
         init(&mut s, &mut b);
         let r = line(&mut s, json!({"jsonrpc":"2.0","id":7,"method":"tools/call","params":{"name":"search_files","arguments":{"query":"x"}}}), &mut b).unwrap();
         let res = &r["result"];
         assert_eq!(res["content"][0]["type"], "text");
-        assert_eq!(from_str::<Value>(res["content"][0]["text"].as_str().unwrap()).unwrap()["total"], 1);
+        assert_eq!(
+            from_str::<Value>(res["content"][0]["text"].as_str().unwrap()).unwrap()["total"],
+            1
+        );
         assert_eq!(res["structuredContent"]["total"], 1);
         assert!(res.get("isError").is_none());
     }
@@ -240,7 +308,12 @@ mod tests {
         let mut b = Fake(vec![("recycle".into(), Err("unknown tool recycle".into()))]);
         let mut s = Session::new();
         init(&mut s, &mut b);
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"recycle"}}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":8,"method":"tools/call","params":{"name":"recycle"}}),
+            &mut b,
+        )
+        .unwrap();
         let res = &r["result"];
         assert_eq!(res["isError"], true);
         assert_eq!(res["content"][0]["text"], "unknown tool recycle");
@@ -252,10 +325,20 @@ mod tests {
         let mut b = Fake(vec![("search_files".into(), Ok(json!({"ok": true})))]);
         let mut s = Session::new();
         init(&mut s, &mut b);
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{}}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["error"]["code"], -32602);
         // no "arguments" key at all -> empty object reaches the backend (hits the Fake)
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"search_files"}}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"search_files"}}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["result"]["structuredContent"]["ok"], true);
     }
 
@@ -263,9 +346,19 @@ mod tests {
     fn string_and_number_ids_are_echoed() {
         let mut b = Fake(vec![("list".into(), Ok(json!([])))]);
         let mut s = Session::new();
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":"str-id","method":"ping"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":"str-id","method":"ping"}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["id"], "str-id");
-        let r = line(&mut s, json!({"jsonrpc":"2.0","id":42,"method":"ping"}), &mut b).unwrap();
+        let r = line(
+            &mut s,
+            json!({"jsonrpc":"2.0","id":42,"method":"ping"}),
+            &mut b,
+        )
+        .unwrap();
         assert_eq!(r["id"], 42);
     }
 }

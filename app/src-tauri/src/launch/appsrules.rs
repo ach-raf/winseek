@@ -41,7 +41,9 @@ pub fn is_helper_exe(stem: &str) -> bool {
 /// `.url`/link entries are only kept for these store-run protocols (Flow's Program plugin rule).
 pub fn allowed_url(uri: &str) -> bool {
     let u = uri.to_lowercase();
-    u.starts_with("steam://run/") || u.starts_with("steam://rungameid/") || u.starts_with("com.epicgames.launcher://apps/")
+    u.starts_with("steam://run/")
+        || u.starts_with("steam://rungameid/")
+        || u.starts_with("com.epicgames.launcher://apps/")
 }
 
 /// Dedupe by lower-case resolved target (+ args), else AUMID. Input order is the source
@@ -76,7 +78,11 @@ pub fn dedupe(items: Vec<LaunchItem>) -> Vec<LaunchItem> {
 
 pub(crate) fn dedupe_key(item: &LaunchItem) -> Option<String> {
     match &item.target {
-        Target::Path { path, args } => Some(format!("p:{}|{}", path.to_lowercase(), args.as_deref().unwrap_or(""))),
+        Target::Path { path, args } => Some(format!(
+            "p:{}|{}",
+            path.to_lowercase(),
+            args.as_deref().unwrap_or("")
+        )),
         Target::Aumid { aumid, path } => match path {
             Some(p) => Some(format!("p:{}|", p.to_lowercase())),
             None => Some(format!("aumid:{}", aumid.to_lowercase())),
@@ -105,8 +111,14 @@ mod tests {
             subtitle: subtitle.into(),
             keywords: vec![],
             target: match path {
-                Some(p) => Target::Path { path: p.into(), args: None },
-                None => Target::Aumid { aumid: id.into(), path: None },
+                Some(p) => Target::Path {
+                    path: p.into(),
+                    args: None,
+                },
+                None => Target::Aumid {
+                    aumid: id.into(),
+                    path: None,
+                },
             },
             icon: None,
             admin_ok: path.is_some(),
@@ -115,7 +127,10 @@ mod tests {
 
     #[test]
     fn uninstaller_rules() {
-        assert!(is_uninstaller("Uninstall Firefox", Some(r"C:\x\helper.exe")));
+        assert!(is_uninstaller(
+            "Uninstall Firefox",
+            Some(r"C:\x\helper.exe")
+        ));
         assert!(is_uninstaller("Firefox", Some(r"C:\x\unins000.exe")));
         assert!(is_uninstaller("Firefox", Some(r"C:\x\uninstall.exe")));
         assert!(is_uninstaller("Some app", Some(r"C:\x\setup.msi")));
@@ -139,15 +154,27 @@ mod tests {
     fn url_allowlist() {
         assert!(allowed_url("steam://run/570"));
         assert!(allowed_url("steam://rungameid/730"));
-        assert!(allowed_url("com.epicgames.launcher://apps/Fortnite?action=play"));
+        assert!(allowed_url(
+            "com.epicgames.launcher://apps/Fortnite?action=play"
+        ));
         assert!(!allowed_url("https://example.com/app.url"));
         assert!(!allowed_url("msedge://some"));
     }
 
     #[test]
     fn dedupe_keeps_source_priority_and_first_id() {
-        let start_menu = app("app:chrome-lnk", "Google Chrome", "Start menu", Some(r"C:\Program Files\Google\chrome.exe"));
-        let app_paths = app("app:c:\\program files\\google\\chrome.exe", "Chrome", "App Paths", Some(r"C:\Program Files\Google\chrome.exe"));
+        let start_menu = app(
+            "app:chrome-lnk",
+            "Google Chrome",
+            "Start menu",
+            Some(r"C:\Program Files\Google\chrome.exe"),
+        );
+        let app_paths = app(
+            "app:c:\\program files\\google\\chrome.exe",
+            "Chrome",
+            "App Paths",
+            Some(r"C:\Program Files\Google\chrome.exe"),
+        );
         let store = app("app:store-app!app", "Store App", "Store app", None);
         let dup_store = app("app:store-app!app", "Store App Alias", "Store app", None);
         let out = dedupe(vec![start_menu, app_paths, store, dup_store]);
@@ -160,7 +187,12 @@ mod tests {
 
     #[test]
     fn same_source_shorter_title_replaces() {
-        let long = app("app:mpv-a", "mpv media player portable build", "D:\\tools", Some(r"D:\tools\mpv.exe"));
+        let long = app(
+            "app:mpv-a",
+            "mpv media player portable build",
+            "D:\\tools",
+            Some(r"D:\tools\mpv.exe"),
+        );
         let short = app("app:mpv-b", "mpv", "D:\\tools", Some(r"D:\tools\mpv.exe"));
         let out = dedupe(vec![long, short]);
         assert_eq!(out.len(), 1);

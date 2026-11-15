@@ -62,12 +62,21 @@ fn find_named(dir: &Path, name: &str, depth: u32, out: &mut Vec<PathBuf>) {
 
 /// Put a verified copy of `name` at `dest` from one of `dirs`. Returns true when `dest` now holds
 /// the pinned file (also when it already did). Never errors: on any problem the caller downloads.
-pub fn import_file(dirs: &[PathBuf], name: &str, size: Option<u64>, sha256: &str, dest: &Path) -> bool {
+pub fn import_file(
+    dirs: &[PathBuf],
+    name: &str,
+    size: Option<u64>,
+    sha256: &str,
+    dest: &Path,
+) -> bool {
     if dirs.is_empty() || crate::manifest::is_unpinned(sha256) {
         return false;
     }
     let ok_hash = |p: &Path| sha256_file(p).is_ok_and(|h| h.eq_ignore_ascii_case(sha256));
-    if dest.is_file() && size.is_none_or(|s| fs::metadata(dest).is_ok_and(|m| m.len() == s)) && ok_hash(dest) {
+    if dest.is_file()
+        && size.is_none_or(|s| fs::metadata(dest).is_ok_and(|m| m.len() == s))
+        && ok_hash(dest)
+    {
         return true;
     }
     let mut cands = Vec::new();
@@ -110,8 +119,12 @@ mod tests {
     use crate::fetch::sha256_hex;
 
     fn tmp(tag: &str) -> PathBuf {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("winseek-import-{tag}-{}-{t}", std::process::id()));
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d =
+            std::env::temp_dir().join(format!("winseek-import-{tag}-{}-{t}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         d
     }
@@ -119,10 +132,22 @@ mod tests {
     #[test]
     fn dirs_from_env_and_file() {
         let (a, b, root) = (tmp("a"), tmp("b"), tmp("root"));
-        fs::write(root.join(IMPORT_FILE), format!("# dev models\n{}\n\n\"{}\"\nC:\\does\\not\\exist\n", b.display(), a.display())).unwrap();
+        fs::write(
+            root.join(IMPORT_FILE),
+            format!(
+                "# dev models\n{}\n\n\"{}\"\nC:\\does\\not\\exist\n",
+                b.display(),
+                a.display()
+            ),
+        )
+        .unwrap();
         let env = format!("{};;{}", a.display(), "Z:\\nope");
         let d = import_dirs(Some(OsStr::new(&env)), Some(&root));
-        assert_eq!(d, [a.clone(), b.clone()], "existing dirs, env first, no duplicates");
+        assert_eq!(
+            d,
+            [a.clone(), b.clone()],
+            "existing dirs, env first, no duplicates"
+        );
         assert!(import_dirs(None, None).is_empty());
         assert_eq!(import_dirs(None, Some(&root)), [b, a]);
     }
@@ -139,7 +164,13 @@ mod tests {
         fs::write(src.join("repo").join("M.GGUF"), &body).unwrap();
         let dest = tmp("dest").join("models").join("m.gguf");
         let dirs = vec![src.clone()];
-        assert!(import_file(&dirs, "m.gguf", Some(body.len() as u64), &sha, &dest));
+        assert!(import_file(
+            &dirs,
+            "m.gguf",
+            Some(body.len() as u64),
+            &sha,
+            &dest
+        ));
         assert_eq!(fs::read(&dest).unwrap(), body);
         // already in place -> true without touching anything
         assert!(import_file(&dirs, "m.gguf", None, &sha, &dest));
@@ -159,6 +190,12 @@ mod tests {
         fs::create_dir_all(&deep).unwrap();
         fs::write(deep.join("m.gguf"), b"x").unwrap();
         let dest = tmp("dd").join("m.gguf");
-        assert!(!import_file(&[src], "m.gguf", None, &sha256_hex(b"x"), &dest));
+        assert!(!import_file(
+            &[src],
+            "m.gguf",
+            None,
+            &sha256_hex(b"x"),
+            &dest
+        ));
     }
 }

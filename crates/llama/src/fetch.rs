@@ -51,7 +51,10 @@ fn verify(path: &Path, expected: &str) -> Result<()> {
     if actual.eq_ignore_ascii_case(expected) {
         Ok(())
     } else {
-        Err(Error::Sha256Mismatch { expected: expected.to_ascii_lowercase(), actual })
+        Err(Error::Sha256Mismatch {
+            expected: expected.to_ascii_lowercase(),
+            actual,
+        })
     }
 }
 
@@ -91,7 +94,9 @@ impl FetchOptions {
     }
 
     pub fn is_cancelled(&self) -> bool {
-        self.cancel.as_ref().is_some_and(|c| c.load(Ordering::Relaxed))
+        self.cancel
+            .as_ref()
+            .is_some_and(|c| c.load(Ordering::Relaxed))
     }
 
     /// Sleep `d`, waking early (in 100 ms steps) when cancelled.
@@ -129,7 +134,13 @@ pub fn fetch(
 ) -> Result<()> {
     let ep = std::env::var("WINSEEK_HF_ENDPOINT").ok();
     let urls = [rewrite_hf(url, ep.as_deref())];
-    fetch_with(&urls, dest, expected_sha256, &FetchOptions::default(), progress_cb)
+    fetch_with(
+        &urls,
+        dest,
+        expected_sha256,
+        &FetchOptions::default(),
+        progress_cb,
+    )
 }
 
 /// Download to `dest` (resuming `dest.part` via Range), verify SHA-256, then
@@ -146,7 +157,9 @@ pub fn fetch_with(
     opts: &FetchOptions,
     progress_cb: &mut dyn FnMut(Progress),
 ) -> Result<()> {
-    let first = urls.first().ok_or_else(|| Error::NotFound("no download urls".into()))?;
+    let first = urls
+        .first()
+        .ok_or_else(|| Error::NotFound("no download urls".into()))?;
     if is_unpinned(expected_sha256) {
         return Err(Error::UnpinnedHash(first.clone()));
     }
@@ -169,16 +182,18 @@ pub fn fetch_with(
         let url = &urls[attempt as usize % urls.len()];
         match download_into(url, &part, opts, progress_cb) {
             // 416: `.part` is already complete (or stale); verify it below.
-            Ok(Outcome::Done) | Ok(Outcome::RangeNotSatisfiable) => match verify(&part, expected_sha256) {
-                Ok(()) => {
-                    fs::rename(&part, dest)?; // MoveFileEx(REPLACE_EXISTING) on Windows
-                    return Ok(());
+            Ok(Outcome::Done) | Ok(Outcome::RangeNotSatisfiable) => {
+                match verify(&part, expected_sha256) {
+                    Ok(()) => {
+                        fs::rename(&part, dest)?; // MoveFileEx(REPLACE_EXISTING) on Windows
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        let _ = fs::remove_file(&part);
+                        last_err = e;
+                    }
                 }
-                Err(e) => {
-                    let _ = fs::remove_file(&part);
-                    last_err = e;
-                }
-            },
+            }
             Err(Error::Cancelled) => return Err(Error::Cancelled),
             Err(e) => last_err = e,
         }
@@ -199,7 +214,10 @@ fn download_into(
 ) -> Result<Outcome> {
     let existing = fs::metadata(part).map(|m| m.len()).unwrap_or(0);
     // A read that blocks for a whole stall window is a stall by definition.
-    let read_timeout = opts.stall_window.min(Duration::from_secs(30)).max(Duration::from_millis(1));
+    let read_timeout = opts
+        .stall_window
+        .min(Duration::from_secs(30))
+        .max(Duration::from_millis(1));
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(15))
         .timeout_read(read_timeout)
@@ -221,7 +239,9 @@ fn download_into(
         (existing, total)
     } else {
         // 200: server ignored Range (or fresh download); restart from scratch.
-        let total = resp.header("Content-Length").and_then(|v| v.trim().parse::<u64>().ok());
+        let total = resp
+            .header("Content-Length")
+            .and_then(|v| v.trim().parse::<u64>().ok());
         (0, total)
     };
     let mut file = if offset > 0 {
@@ -231,7 +251,10 @@ fn download_into(
     };
     let mut reader = resp.into_reader();
     let mut buf = vec![0u8; 256 * 1024];
-    progress_cb(Progress { downloaded: offset, total });
+    progress_cb(Progress {
+        downloaded: offset,
+        total,
+    });
     let min_in_window = (opts.min_bytes_per_sec as f64 * opts.stall_window.as_secs_f64()) as u64;
     let mut win_start = Instant::now();
     let mut win_bytes = 0u64;
@@ -240,7 +263,10 @@ fn download_into(
             Ok(n) => n,
             Err(e) if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {
                 file.flush()?;
-                return Err(Error::Stalled(format!("no data for {:?} at {offset} bytes", opts.stall_window)));
+                return Err(Error::Stalled(format!(
+                    "no data for {:?} at {offset} bytes",
+                    opts.stall_window
+                )));
             }
             Err(e) => {
                 file.flush()?;
@@ -257,7 +283,10 @@ fn download_into(
         }
         offset += n as u64;
         win_bytes += n as u64;
-        progress_cb(Progress { downloaded: offset, total });
+        progress_cb(Progress {
+            downloaded: offset,
+            total,
+        });
         if win_start.elapsed() >= opts.stall_window {
             if win_bytes < min_in_window {
                 file.flush()?;
@@ -274,7 +303,9 @@ fn download_into(
     if let Some(t) = total {
         if offset < t {
             // Connection dropped; leave `.part` for the next resume attempt.
-            return Err(Error::Http(format!("truncated download: {offset} of {t} bytes")));
+            return Err(Error::Http(format!(
+                "truncated download: {offset} of {t} bytes"
+            )));
         }
     }
     Ok(Outcome::Done)
@@ -288,14 +319,22 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     pub fn temp_dir(tag: &str) -> PathBuf {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let d = std::env::temp_dir().join(format!("winseek-llama-{tag}-{}-{t}", std::process::id()));
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let d =
+            std::env::temp_dir().join(format!("winseek-llama-{tag}-{}-{t}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         d
     }
 
     /// Serves `body` for `conns` connections, honouring `Range: bytes=N-`. Records Range headers.
-    fn serve(body: Vec<u8>, conns: usize, honour_range: bool) -> (String, Arc<Mutex<Vec<Option<String>>>>) {
+    fn serve(
+        body: Vec<u8>,
+        conns: usize,
+        honour_range: bool,
+    ) -> (String, Arc<Mutex<Vec<Option<String>>>>) {
         let l = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}/file.bin", l.local_addr().unwrap());
         let seen = Arc::new(Mutex::new(Vec::new()));
@@ -329,7 +368,9 @@ mod tests {
                         )
                     }
                 } else {
-                    format!("HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n")
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Length: {total}\r\nConnection: close\r\n\r\n"
+                    )
                 };
                 s.write_all(head.as_bytes()).unwrap();
                 if head.starts_with("HTTP/1.1 206") {
@@ -414,7 +455,10 @@ mod tests {
         let (url, seen) = serve_script(b.clone(), vec![Beh::Full]);
         let d = temp_dir("bad");
         let dest = d.join("f.bin");
-        let opts = FetchOptions { max_attempts: 2, ..fast_opts() };
+        let opts = FetchOptions {
+            max_attempts: 2,
+            ..fast_opts()
+        };
         let err = fetch_with(&[url], &dest, &sha256_hex(b"other"), &opts, &mut |_| {}).unwrap_err();
         assert!(matches!(err, Error::Sha256Mismatch { .. }), "{err}");
         assert!(!dest.exists() && !part_path(&dest).exists());
@@ -429,20 +473,38 @@ mod tests {
         let d = temp_dir("cancel");
         let dest = d.join("f.bin");
         let flag = Arc::new(AtomicBool::new(false));
-        let opts = FetchOptions { cancel: Some(flag.clone()), ..fast_opts() };
+        let opts = FetchOptions {
+            cancel: Some(flag.clone()),
+            ..fast_opts()
+        };
         let f2 = flag.clone();
-        let err = fetch_with(std::slice::from_ref(&url), &dest, &sha256_hex(&b), &opts, &mut |p| {
-            if p.downloaded > 0 {
-                f2.store(true, Ordering::Relaxed);
-            }
-        })
+        let err = fetch_with(
+            std::slice::from_ref(&url),
+            &dest,
+            &sha256_hex(&b),
+            &opts,
+            &mut |p| {
+                if p.downloaded > 0 {
+                    f2.store(true, Ordering::Relaxed);
+                }
+            },
+        )
         .unwrap_err();
         assert!(matches!(err, Error::Cancelled), "{err}");
         assert!(!dest.exists());
         let kept = fs::metadata(part_path(&dest)).unwrap().len();
         assert!(kept > 0 && kept <= b.len() as u64);
         // a cancelled flag stops before any request
-        assert!(matches!(fetch_with(std::slice::from_ref(&url), &dest, &sha256_hex(&b), &opts, &mut |_| {}), Err(Error::Cancelled)));
+        assert!(matches!(
+            fetch_with(
+                std::slice::from_ref(&url),
+                &dest,
+                &sha256_hex(&b),
+                &opts,
+                &mut |_| {}
+            ),
+            Err(Error::Cancelled)
+        ));
         flag.store(false, Ordering::Relaxed);
         fetch_with(&[url], &dest, &sha256_hex(&b), &opts, &mut |_| {}).unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b);
@@ -451,7 +513,13 @@ mod tests {
     #[test]
     fn unpinned_hash_refused_without_network() {
         let d = temp_dir("todo");
-        let err = fetch("http://127.0.0.1:1/x", &d.join("f"), "TODO-pin-in-CI", &mut |_| {}).unwrap_err();
+        let err = fetch(
+            "http://127.0.0.1:1/x",
+            &d.join("f"),
+            "TODO-pin-in-CI",
+            &mut |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::UnpinnedHash(_)));
     }
 
@@ -572,8 +640,19 @@ mod tests {
         let b = body();
         let (url, _) = serve_script(b.clone(), vec![Beh::Hang(100)]);
         let d = temp_dir("stall-exhaust");
-        let opts = FetchOptions { stall_window: Duration::from_millis(100), max_attempts: 2, ..fast_opts() };
-        let err = fetch_with(&[url], &d.join("f.bin"), &sha256_hex(&b), &opts, &mut |_| {}).unwrap_err();
+        let opts = FetchOptions {
+            stall_window: Duration::from_millis(100),
+            max_attempts: 2,
+            ..fast_opts()
+        };
+        let err = fetch_with(
+            &[url],
+            &d.join("f.bin"),
+            &sha256_hex(&b),
+            &opts,
+            &mut |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Stalled(_)), "{err}");
     }
 
@@ -584,7 +663,14 @@ mod tests {
         let (good, _) = serve_script(b.clone(), vec![Beh::Full]);
         let d = temp_dir("mirror");
         let dest = d.join("f.bin");
-        fetch_with(&[bad, good], &dest, &sha256_hex(&b), &fast_opts(), &mut |_| {}).unwrap();
+        fetch_with(
+            &[bad, good],
+            &dest,
+            &sha256_hex(&b),
+            &fast_opts(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b);
         assert_eq!(bad_seen.lock().unwrap().len(), 1);
     }
@@ -609,7 +695,14 @@ mod tests {
         let (good, _) = serve_script(b.clone(), vec![Beh::Full]);
         let d = temp_dir("badmirror");
         let dest = d.join("f.bin");
-        fetch_with(&[bad, good], &dest, &sha256_hex(&b), &fast_opts(), &mut |_| {}).unwrap();
+        fetch_with(
+            &[bad, good],
+            &dest,
+            &sha256_hex(&b),
+            &fast_opts(),
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(fs::read(&dest).unwrap(), b);
         assert!(!part_path(&dest).exists());
     }
@@ -619,8 +712,18 @@ mod tests {
         let b = body();
         let (url, seen) = serve_script(b.clone(), vec![Beh::Status500]);
         let d = temp_dir("giveup");
-        let opts = FetchOptions { max_attempts: 3, ..fast_opts() };
-        let err = fetch_with(&[url], &d.join("f.bin"), &sha256_hex(&b), &opts, &mut |_| {}).unwrap_err();
+        let opts = FetchOptions {
+            max_attempts: 3,
+            ..fast_opts()
+        };
+        let err = fetch_with(
+            &[url],
+            &d.join("f.bin"),
+            &sha256_hex(&b),
+            &opts,
+            &mut |_| {},
+        )
+        .unwrap_err();
         assert!(matches!(err, Error::Http(_)), "{err}");
         assert_eq!(seen.lock().unwrap().len(), 3);
     }

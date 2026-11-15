@@ -14,7 +14,10 @@ static USER_POS: Mutex<Option<(i32, i32)>> = Mutex::new(None);
 static DRAG_AT_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// A reposition/resize we do ourselves (view switch) must not be remembered as a user drag.
@@ -30,13 +33,17 @@ pub fn window(app: &AppHandle) -> Option<WebviewWindow> {
 const SETTLE_MS: u64 = 500;
 
 pub(crate) fn place_on_cursor_monitor(w: &WebviewWindow) {
-    let Ok(cursor) = w.cursor_position() else { return };
+    let Ok(cursor) = w.cursor_position() else {
+        return;
+    };
     let mon = w
         .monitor_from_point(cursor.x, cursor.y)
         .ok()
         .flatten()
         .or_else(|| w.primary_monitor().ok().flatten());
-    let (Some(mon), Ok(size)) = (mon, w.outer_size()) else { return };
+    let (Some(mon), Ok(size)) = (mon, w.outer_size()) else {
+        return;
+    };
     let (mp, ms) = (mon.position(), mon.size());
     let (mw, mh) = (ms.width as i32, ms.height as i32);
     let (ww, wh) = (size.width as i32, size.height as i32);
@@ -68,13 +75,17 @@ pub(crate) fn place_on_cursor_monitor(w: &WebviewWindow) {
 /// (the full-mode window, the library window), no matter which screen or taskbar. The compact
 /// popup keeps its Spotlight upper third; a tall workspace anchored there would sit high.
 pub(crate) fn place_centered_on_cursor_monitor(w: &WebviewWindow) {
-    let Ok(cursor) = w.cursor_position() else { return };
+    let Ok(cursor) = w.cursor_position() else {
+        return;
+    };
     let mon = w
         .monitor_from_point(cursor.x, cursor.y)
         .ok()
         .flatten()
         .or_else(|| w.primary_monitor().ok().flatten());
-    let (Some(mon), Ok(size)) = (mon, w.outer_size()) else { return };
+    let (Some(mon), Ok(size)) = (mon, w.outer_size()) else {
+        return;
+    };
     let area = mon.work_area();
     let (aw, ah) = (area.size.width as i32, area.size.height as i32);
     let (ww, wh) = (size.width as i32, size.height as i32);
@@ -103,7 +114,9 @@ pub fn on_moved(w: &tauri::Window, pos: PhysicalPosition<i32>) {
     if w.label() != LABEL {
         return; // the saved popup position belongs to the popup only (the library window moves too)
     }
-    if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS || crate::view::is_full() {
+    if now_ms().saturating_sub(SHOWN_AT_MS.load(Ordering::Relaxed)) <= SETTLE_MS
+        || crate::view::is_full()
+    {
         return;
     }
     if w.is_visible().unwrap_or(false) {

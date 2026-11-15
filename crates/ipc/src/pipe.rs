@@ -63,7 +63,13 @@ extern "system" {
     ) -> Handle;
     fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> Bool;
     fn ReadFile(h: Handle, buf: *mut u8, n: u32, read: *mut u32, overlapped: *mut c_void) -> Bool;
-    fn WriteFile(h: Handle, buf: *const u8, n: u32, written: *mut u32, overlapped: *mut c_void) -> Bool;
+    fn WriteFile(
+        h: Handle,
+        buf: *const u8,
+        n: u32,
+        written: *mut u32,
+        overlapped: *mut c_void,
+    ) -> Bool;
     fn FlushFileBuffers(h: Handle) -> Bool;
     fn CloseHandle(h: Handle) -> Bool;
     fn LocalFree(p: *mut c_void) -> *mut c_void;
@@ -80,7 +86,10 @@ extern "system" {
 }
 
 fn wide(s: &str) -> Vec<u16> {
-    std::ffi::OsStr::new(s).encode_wide().chain(Some(0)).collect()
+    std::ffi::OsStr::new(s)
+        .encode_wide()
+        .chain(Some(0))
+        .collect()
 }
 
 /// A connected pipe end (server or client). Closed on drop.
@@ -160,12 +169,21 @@ impl PipeServer {
         let w = wide(sddl);
         // SAFETY: out-pointer valid; result freed in Drop.
         let ok = unsafe {
-            ConvertStringSecurityDescriptorToSecurityDescriptorW(w.as_ptr(), SDDL_REVISION_1, &mut sd, null_mut())
+            ConvertStringSecurityDescriptorToSecurityDescriptorW(
+                w.as_ptr(),
+                SDDL_REVISION_1,
+                &mut sd,
+                null_mut(),
+            )
         };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
-        let mut s = PipeServer { name: wide(name), sd, next: INVALID_HANDLE_VALUE };
+        let mut s = PipeServer {
+            name: wide(name),
+            sd,
+            next: INVALID_HANDLE_VALUE,
+        };
         s.next = s.create_instance(true)?; // Drop frees sd on error
         Ok(s)
     }
@@ -261,7 +279,10 @@ pub fn connect(name: &str, timeout: Duration) -> io::Result<PipeConn> {
                 std::thread::sleep(left.min(Duration::from_millis(50)));
             }
             _ if left.is_zero() => {
-                return Err(io::Error::new(io::ErrorKind::TimedOut, format!("pipe connect timed out: {e}")));
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    format!("pipe connect timed out: {e}"),
+                ));
             }
             _ => return Err(e),
         }
@@ -274,7 +295,10 @@ mod tests {
     use crate::{read_message, write_message, Hit, Request, Response, Sort};
 
     fn unique() -> String {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         format!(r"\\.\pipe\winseek-test-{}-{t}", std::process::id())
     }
 
@@ -290,21 +314,38 @@ mod tests {
                     Request::Search { id, query, .. } => Response::SearchResult {
                         id,
                         total: 1,
-                        hits: vec![Hit { name: query, path: r"C:\x".into(), is_dir: false, size: Some(3), mtime: None }],
+                        hits: vec![Hit {
+                            name: query,
+                            path: r"C:\x".into(),
+                            is_dir: false,
+                            size: Some(3),
+                            mtime: None,
+                        }],
                         elapsed_us: 7,
                     },
-                    other => Response::Error { id: other.id(), message: "unsupported".into() },
+                    other => Response::Error {
+                        id: other.id(),
+                        message: "unsupported".into(),
+                    },
                 };
                 write_message(&mut c, &resp).unwrap();
             }
         });
         for i in 0..2u64 {
             let mut c = connect(&name, Duration::from_secs(5)).unwrap();
-            let q = Request::Search { id: i, query: "a.txt".into(), offset: 0, limit: 10, sort: Sort::NameAsc };
+            let q = Request::Search {
+                id: i,
+                query: "a.txt".into(),
+                offset: 0,
+                limit: 10,
+                sort: Sort::NameAsc,
+            };
             write_message(&mut c, &q).unwrap();
             let r: Response = read_message(&mut c).unwrap();
             match r {
-                Response::SearchResult { id, total, hits, .. } => {
+                Response::SearchResult {
+                    id, total, hits, ..
+                } => {
                     assert_eq!((id, total), (i, 1));
                     assert_eq!(hits[0].name, "a.txt");
                 }
@@ -316,7 +357,9 @@ mod tests {
 
     #[test]
     fn connect_times_out_when_absent() {
-        let e = connect(&unique(), Duration::from_millis(150)).err().unwrap();
+        let e = connect(&unique(), Duration::from_millis(150))
+            .err()
+            .unwrap();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
     }
 

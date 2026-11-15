@@ -16,10 +16,13 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager, State};
 use winseek_llama::import::{configured_dirs, import_file};
-use winseek_llama::install::{install_ffmpeg_with, install_llama_with, install_pdfium_with, resolve_exe};
+use winseek_llama::install::{
+    install_ffmpeg_with, install_llama_with, install_pdfium_with, resolve_exe,
+};
 use winseek_llama::manifest::ModelFile;
 use winseek_llama::{
-    detect_backend, fetch_with, Backend, Detected, Error as LlamaError, FetchOptions, Manifest, ModelProfile, ModelRole, Progress,
+    detect_backend, fetch_with, Backend, Detected, Error as LlamaError, FetchOptions, Manifest,
+    ModelProfile, ModelRole, Progress,
 };
 
 use crate::tier1::{self, embedder, parser, pdf};
@@ -84,10 +87,14 @@ pub struct DoneEvent {
 /// One downloadable thing and how to fetch it.
 enum Source {
     /// A zip of the llama.cpp build; `file` is the zip's file name (what install reports progress under).
-    Llama { file: String },
+    Llama {
+        file: String,
+    },
     Model(ModelFile),
     /// The pinned pdfium `.tgz` (name = the tgz's file name).
-    Pdfium { file: String },
+    Pdfium {
+        file: String,
+    },
 }
 
 struct Job {
@@ -114,11 +121,27 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
         let present = resolve_exe(root, manifest, backend).is_some();
         let mut push = |name: String, url: &str, bytes: Option<u64>| {
             out.push(Job {
-                item: PlanItem { name, bytes, present, optional: false, group: Group::Llama },
-                source: Source::Llama { file: zip_name(url) },
+                item: PlanItem {
+                    name,
+                    bytes,
+                    present,
+                    optional: false,
+                    group: Group::Llama,
+                },
+                source: Source::Llama {
+                    file: zip_name(url),
+                },
             });
         };
-        push(format!("llama.cpp {} ({})", manifest.llama.build, backend_label(backend)), &asset.url, asset.size);
+        push(
+            format!(
+                "llama.cpp {} ({})",
+                manifest.llama.build,
+                backend_label(backend)
+            ),
+            &asset.url,
+            asset.size,
+        );
         for e in &asset.extra {
             push("CUDA runtime libraries".into(), &e.url, e.size);
         }
@@ -147,11 +170,18 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
         item: PlanItem {
             name: format!("PDF engine (pdfium {})", pd.build),
             bytes: Some(pd.size),
-            present: pdf::locate_dll_in(std::env::var_os(pdf::ENV_PDFIUM).as_deref(), Some(root), manifest).is_some(),
+            present: pdf::locate_dll_in(
+                std::env::var_os(pdf::ENV_PDFIUM).as_deref(),
+                Some(root),
+                manifest,
+            )
+            .is_some(),
             optional: false,
             group: Group::Pdfium,
         },
-        source: Source::Pdfium { file: zip_name(&pd.url) },
+        source: Source::Pdfium {
+            file: zip_name(&pd.url),
+        },
     });
     if let Some(entry) = manifest.model(parser::MODEL_ID, ModelProfile::Default) {
         let dir = embedder::models_dir(root);
@@ -176,7 +206,10 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
 }
 
 pub fn build_plan(root: &Path, manifest: &Manifest, det: &Detected, downloading: bool) -> Plan {
-    let items: Vec<PlanItem> = jobs(root, manifest, det.backend).into_iter().map(|j| j.item).collect();
+    let items: Vec<PlanItem> = jobs(root, manifest, det.backend)
+        .into_iter()
+        .map(|j| j.item)
+        .collect();
     let missing = items.iter().filter(|i| !i.present && !i.optional);
     Plan {
         backend: det.backend,
@@ -196,7 +229,13 @@ struct Tracker {
 
 impl Tracker {
     fn new(items: &[PlanItem]) -> Tracker {
-        Tracker { items: items.iter().filter(|i| !i.present).map(|i| (i.name.clone(), i.bytes.unwrap_or(0), 0)).collect() }
+        Tracker {
+            items: items
+                .iter()
+                .filter(|i| !i.present)
+                .map(|i| (i.name.clone(), i.bytes.unwrap_or(0), 0))
+                .collect(),
+        }
     }
 
     fn update(&mut self, name: &str, p: Progress) -> ProgressEvent {
@@ -267,10 +306,16 @@ pub fn run_download(
     emit_every: Duration,
     emit: &mut dyn FnMut(ProgressEvent),
 ) -> Result<(), String> {
-    let jobs: Vec<Job> = jobs(root, manifest, backend).into_iter().filter(|j| groups.contains(&j.item.group)).collect();
+    let jobs: Vec<Job> = jobs(root, manifest, backend)
+        .into_iter()
+        .filter(|j| groups.contains(&j.item.group))
+        .collect();
     let plan_items: Vec<PlanItem> = jobs.iter().map(|j| j.item.clone()).collect();
     let tracker = Mutex::new(Tracker::new(&plan_items));
-    let throttle = Mutex::new(Throttle { every: emit_every, last: None });
+    let throttle = Mutex::new(Throttle {
+        every: emit_every,
+        last: None,
+    });
     let emit = Mutex::new(emit);
     let err = |e: LlamaError| e.to_string();
     // `force` bypasses the throttle (item boundaries must always be seen).
@@ -280,7 +325,10 @@ pub fn run_download(
         }
     };
 
-    let llama: Vec<&Job> = jobs.iter().filter(|j| matches!(j.source, Source::Llama { .. }) && !j.item.present).collect();
+    let llama: Vec<&Job> = jobs
+        .iter()
+        .filter(|j| matches!(j.source, Source::Llama { .. }) && !j.item.present)
+        .collect();
     if !llama.is_empty() {
         if let Some(asset) = manifest.asset(backend) {
             let zips = std::iter::once((&asset.url, &asset.sha256, asset.size))
@@ -288,7 +336,13 @@ pub fn run_download(
             for (url, sha, size) in zips {
                 let name = zip_name(url);
                 // install_llama finds it in downloads\ and only re-verifies it
-                import_file(import, &name, size, sha, &root.join("downloads").join(&name));
+                import_file(
+                    import,
+                    &name,
+                    size,
+                    sha,
+                    &root.join("downloads").join(&name),
+                );
             }
         }
         let name_of = |file: &str| {
@@ -311,32 +365,50 @@ pub fn run_download(
     }
     let dir = embedder::models_dir(root);
     for j in &jobs {
-        let Source::Model(f) = &j.source else { continue };
+        let Source::Model(f) = &j.source else {
+            continue;
+        };
         if j.item.present {
             continue;
         }
         let name = j.item.name.clone();
-        if import_file(import, f.file_name(), Some(f.size), &f.sha256, &dir.join(f.file_name())) {
+        if import_file(
+            import,
+            f.file_name(),
+            Some(f.size),
+            &f.sha256,
+            &dir.join(f.file_name()),
+        ) {
             let ev = locked(&tracker).finish(&name);
             send(ev, true);
             continue;
         }
-        fetch_with(&f.urls(), &dir.join(f.file_name()), &f.sha256, opts, &mut |p| {
-            let ev = locked(&tracker).update(&name, p);
-            send(ev, false);
-        })
+        fetch_with(
+            &f.urls(),
+            &dir.join(f.file_name()),
+            &f.sha256,
+            opts,
+            &mut |p| {
+                let ev = locked(&tracker).update(&name, p);
+                send(ev, false);
+            },
+        )
         .map_err(err)?;
         let ev = locked(&tracker).finish(&name);
         send(ev, true);
     }
     for j in &jobs {
-        let Source::Pdfium { file } = &j.source else { continue };
+        let Source::Pdfium { file } = &j.source else {
+            continue;
+        };
         if j.item.present {
             continue;
         }
         let name = j.item.name.clone();
         let pd = &manifest.pdfium;
-        let tgz = root.join("downloads").join(format!("pdfium-{}-{file}", pd.build));
+        let tgz = root
+            .join("downloads")
+            .join(format!("pdfium-{}-{file}", pd.build));
         import_file(import, file, Some(pd.size), &pd.sha256, &tgz);
         install_pdfium_with(root, manifest, opts, &mut |f, p| {
             if f == file {
@@ -368,15 +440,23 @@ pub fn request_pdfium(done: impl FnOnce(bool) + Send + 'static) {
     if PDFIUM_RUNNING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let spawned = std::thread::Builder::new().name("pdfium-download".into()).spawn(move || {
-        let ok = match tier1::data_root() {
-            Some(root) => install_pdfium_with(&root, &Manifest::embedded(), &FetchOptions::default(), &mut |_, _| {}).is_ok(),
-            None => false,
-        };
-        *locked(&PDFIUM_FAILED_AT) = (!ok).then(Instant::now);
-        PDFIUM_RUNNING.store(false, Ordering::SeqCst);
-        done(ok);
-    });
+    let spawned = std::thread::Builder::new()
+        .name("pdfium-download".into())
+        .spawn(move || {
+            let ok = match tier1::data_root() {
+                Some(root) => install_pdfium_with(
+                    &root,
+                    &Manifest::embedded(),
+                    &FetchOptions::default(),
+                    &mut |_, _| {},
+                )
+                .is_ok(),
+                None => false,
+            };
+            *locked(&PDFIUM_FAILED_AT) = (!ok).then(Instant::now);
+            PDFIUM_RUNNING.store(false, Ordering::SeqCst);
+            done(ok);
+        });
     if spawned.is_err() {
         PDFIUM_RUNNING.store(false, Ordering::SeqCst);
     }
@@ -406,11 +486,26 @@ pub struct FfmpegFetch {
 pub fn ffmpeg_fetch_state() -> FfmpegFetch {
     let (downloaded, total) = *locked(&FFMPEG_PROGRESS);
     if FFMPEG_RUNNING.load(Ordering::SeqCst) {
-        return FfmpegFetch { state: "downloading", downloaded, total, error: None };
+        return FfmpegFetch {
+            state: "downloading",
+            downloaded,
+            total,
+            error: None,
+        };
     }
     match locked(&FFMPEG_FAILED).as_ref() {
-        Some((_, e)) => FfmpegFetch { state: "failed", downloaded: 0, total: 0, error: Some(e.clone()) },
-        None => FfmpegFetch { state: "idle", downloaded: 0, total: 0, error: None },
+        Some((_, e)) => FfmpegFetch {
+            state: "failed",
+            downloaded: 0,
+            total: 0,
+            error: Some(e.clone()),
+        },
+        None => FfmpegFetch {
+            state: "idle",
+            downloaded: 0,
+            total: 0,
+            error: None,
+        },
     }
 }
 
@@ -418,7 +513,10 @@ pub fn ffmpeg_fetch_state() -> FfmpegFetch {
 /// usable ffmpeg is on the machine). At most one download runs at a time; a failure is retried after
 /// [`FFMPEG_RETRY`]. `done(ok)` runs on the download thread.
 pub fn request_ffmpeg(done: impl FnOnce(bool) + Send + 'static) {
-    if locked(&FFMPEG_FAILED).as_ref().is_some_and(|(t, _)| t.elapsed() < FFMPEG_RETRY) {
+    if locked(&FFMPEG_FAILED)
+        .as_ref()
+        .is_some_and(|(t, _)| t.elapsed() < FFMPEG_RETRY)
+    {
         return;
     }
     start_ffmpeg(done);
@@ -435,24 +533,31 @@ fn start_ffmpeg(done: impl FnOnce(bool) + Send + 'static) {
         return;
     }
     *locked(&FFMPEG_PROGRESS) = (0, Manifest::embedded().ffmpeg.map_or(0, |f| f.size));
-    let spawned = std::thread::Builder::new().name("ffmpeg-download".into()).spawn(move || {
-        let r = match tier1::data_root() {
-            Some(root) => install_ffmpeg_with(&root, &Manifest::embedded(), &FetchOptions::default(), &mut |_, p| {
-                let mut g = locked(&FFMPEG_PROGRESS);
-                g.0 = p.downloaded;
-                if let Some(t) = p.total {
-                    g.1 = t;
-                }
-            })
-            .map(|_| ())
-            .map_err(|e| e.to_string()),
-            None => Err("LOCALAPPDATA is not set".to_string()),
-        };
-        *locked(&FFMPEG_FAILED) = r.as_ref().err().map(|e| (Instant::now(), e.clone()));
-        tier1::media::forget_ffmpeg_lookup();
-        FFMPEG_RUNNING.store(false, Ordering::SeqCst);
-        done(r.is_ok());
-    });
+    let spawned = std::thread::Builder::new()
+        .name("ffmpeg-download".into())
+        .spawn(move || {
+            let r = match tier1::data_root() {
+                Some(root) => install_ffmpeg_with(
+                    &root,
+                    &Manifest::embedded(),
+                    &FetchOptions::default(),
+                    &mut |_, p| {
+                        let mut g = locked(&FFMPEG_PROGRESS);
+                        g.0 = p.downloaded;
+                        if let Some(t) = p.total {
+                            g.1 = t;
+                        }
+                    },
+                )
+                .map(|_| ())
+                .map_err(|e| e.to_string()),
+                None => Err("LOCALAPPDATA is not set".to_string()),
+            };
+            *locked(&FFMPEG_FAILED) = r.as_ref().err().map(|e| (Instant::now(), e.clone()));
+            tier1::media::forget_ffmpeg_lookup();
+            FFMPEG_RUNNING.store(false, Ordering::SeqCst);
+            done(r.is_ok());
+        });
     if spawned.is_err() {
         FFMPEG_RUNNING.store(false, Ordering::SeqCst);
     }
@@ -503,7 +608,12 @@ pub async fn models_plan(m: State<'_, Models>) -> Result<Plan, String> {
     let (slot, running) = (m.detected.clone(), m.running.clone());
     tauri::async_runtime::spawn_blocking(move || {
         let root = tier1::data_root().ok_or("LOCALAPPDATA is not set")?;
-        Ok(build_plan(&root, &Manifest::embedded(), &detect_cached(&slot), running.load(Ordering::SeqCst)))
+        Ok(build_plan(
+            &root,
+            &Manifest::embedded(),
+            &detect_cached(&slot),
+            running.load(Ordering::SeqCst),
+        ))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -524,31 +634,55 @@ pub fn start_download(app: &AppHandle, groups: Vec<Group>) -> Result<(), String>
     let (cancel, slot) = (m.cancel.clone(), m.detected.clone());
     let worker = app.state::<tier1::Handle>().get().ok();
     let app = app.clone();
-    let spawned = std::thread::Builder::new().name("models-download".into()).spawn(move || {
-        let backend = detect_cached(&slot).backend;
-        let opts = FetchOptions { cancel: Some(cancel), ..FetchOptions::default() };
-        let import = configured_dirs(&root);
-        let r = run_download(&root, &Manifest::embedded(), backend, &groups, &import, &opts, EMIT_EVERY, &mut |ev| {
-            let _ = app.emit("models-progress", ev);
+    let spawned = std::thread::Builder::new()
+        .name("models-download".into())
+        .spawn(move || {
+            let backend = detect_cached(&slot).backend;
+            let opts = FetchOptions {
+                cancel: Some(cancel),
+                ..FetchOptions::default()
+            };
+            let import = configured_dirs(&root);
+            let r = run_download(
+                &root,
+                &Manifest::embedded(),
+                backend,
+                &groups,
+                &import,
+                &opts,
+                EMIT_EVERY,
+                &mut |ev| {
+                    let _ = app.emit("models-progress", ev);
+                },
+            );
+            if r.is_ok() {
+                if groups.contains(&Group::Pdfium) {
+                    *locked(&PDFIUM_FAILED_AT) = None;
+                }
+                if let Some(t) = &worker {
+                    t.kick(); // leave models_missing now instead of at the next 30 s poll
+                }
+            }
+            drop(guard);
+            let _ = app.emit(
+                "models-done",
+                DoneEvent {
+                    ok: r.is_ok(),
+                    error: r.err(),
+                },
+            );
         });
-        if r.is_ok() {
-            if groups.contains(&Group::Pdfium) {
-                *locked(&PDFIUM_FAILED_AT) = None;
-            }
-            if let Some(t) = &worker {
-                t.kick(); // leave models_missing now instead of at the next 30 s poll
-            }
-        }
-        drop(guard);
-        let _ = app.emit("models-done", DoneEvent { ok: r.is_ok(), error: r.err() });
-    });
     spawned.map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// `groups`: only these components (a Settings row); otherwise the default set, plus the parser with
 /// `include_parser` (the Setup panel).
 #[tauri::command]
-pub fn models_download(app: AppHandle, include_parser: Option<bool>, groups: Option<Vec<Group>>) -> Result<(), String> {
+pub fn models_download(
+    app: AppHandle,
+    include_parser: Option<bool>,
+    groups: Option<Vec<Group>>,
+) -> Result<(), String> {
     start_download(&app, pick_groups(include_parser.unwrap_or(false), groups))
 }
 
@@ -567,17 +701,21 @@ fn pick_groups(include_parser: bool, groups: Option<Vec<Group>>) -> Vec<Group> {
 /// document parser is left to the Setup panel. Runs once per app start (off the main thread: GPU
 /// detection shells out to nvidia-smi).
 pub fn auto_download(app: AppHandle) {
-    let _ = std::thread::Builder::new().name("models-auto".into()).spawn(move || {
-        let Some(root) = tier1::data_root() else { return };
-        let det = app.state::<Models>().detected();
-        let plan = build_plan(&root, &Manifest::embedded(), &det, false);
-        if !needs_download(&plan) {
-            return;
-        }
-        if let Err(e) = start_download(&app, DEFAULT_GROUPS.to_vec()) {
-            eprintln!("winseek: automatic model download not started: {e}");
-        }
-    });
+    let _ = std::thread::Builder::new()
+        .name("models-auto".into())
+        .spawn(move || {
+            let Some(root) = tier1::data_root() else {
+                return;
+            };
+            let det = app.state::<Models>().detected();
+            let plan = build_plan(&root, &Manifest::embedded(), &det, false);
+            if !needs_download(&plan) {
+                return;
+            }
+            if let Err(e) = start_download(&app, DEFAULT_GROUPS.to_vec()) {
+                eprintln!("winseek: automatic model download not started: {e}");
+            }
+        });
 }
 
 /// True when a non-optional item is missing.
@@ -600,7 +738,11 @@ mod tests {
     use winseek_llama::sha256_hex;
 
     fn det(b: Backend) -> Detected {
-        Detected { backend: b, gpu_name: Some("GPU".into()), driver_version: None }
+        Detected {
+            backend: b,
+            gpu_name: Some("GPU".into()),
+            driver_version: None,
+        }
     }
 
     #[test]
@@ -622,12 +764,33 @@ mod tests {
             ]
         );
         assert!(p.items.iter().all(|i| !i.present));
-        let optional: Vec<_> = p.items.iter().filter(|i| i.optional).map(|i| i.name.as_str()).collect();
-        assert_eq!(optional, ["Document parser model", "Document parser vision projector"], "only the parser is optional");
-        let parser_bytes: u64 = p.items.iter().filter(|i| i.optional).filter_map(|i| i.bytes).sum();
+        let optional: Vec<_> = p
+            .items
+            .iter()
+            .filter(|i| i.optional)
+            .map(|i| i.name.as_str())
+            .collect();
+        assert_eq!(
+            optional,
+            ["Document parser model", "Document parser vision projector"],
+            "only the parser is optional"
+        );
+        let parser_bytes: u64 = p
+            .items
+            .iter()
+            .filter(|i| i.optional)
+            .filter_map(|i| i.bytes)
+            .sum();
         let entry = man.model(parser::MODEL_ID, ModelProfile::Default).unwrap();
-        assert_eq!(parser_bytes, entry.files.iter().map(|f| f.size).sum::<u64>(), "sizes come from the manifest");
-        assert!(parser_bytes > 1_500_000_000 && parser_bytes < 1_800_000_000, "about 1.6 GB: {parser_bytes}");
+        assert_eq!(
+            parser_bytes,
+            entry.files.iter().map(|f| f.size).sum::<u64>(),
+            "sizes come from the manifest"
+        );
+        assert!(
+            parser_bytes > 1_500_000_000 && parser_bytes < 1_800_000_000,
+            "about 1.6 GB: {parser_bytes}"
+        );
         assert_eq!(
             p.total_bytes_missing,
             265_217_350 + 391_443_627 + 309_855_456 + 554_821_024 + 3_733_154,
@@ -663,24 +826,73 @@ mod tests {
     #[test]
     fn tracker_overall_counts_only_missing_items() {
         let items = vec![
-            PlanItem { name: "zip".into(), bytes: None, present: false, optional: false, group: Group::Llama },
-            PlanItem { name: "have".into(), bytes: Some(500), present: true, optional: false, group: Group::Embedder },
-            PlanItem { name: "model".into(), bytes: Some(1000), present: false, optional: false, group: Group::Embedder },
+            PlanItem {
+                name: "zip".into(),
+                bytes: None,
+                present: false,
+                optional: false,
+                group: Group::Llama,
+            },
+            PlanItem {
+                name: "have".into(),
+                bytes: Some(500),
+                present: true,
+                optional: false,
+                group: Group::Embedder,
+            },
+            PlanItem {
+                name: "model".into(),
+                bytes: Some(1000),
+                present: false,
+                optional: false,
+                group: Group::Embedder,
+            },
         ];
         let mut t = Tracker::new(&items);
-        let e = t.update("zip", Progress { downloaded: 50, total: Some(200) });
-        assert_eq!((e.downloaded, e.overall_downloaded, e.overall_total), (50, 50, 1200)); // learned zip size
+        let e = t.update(
+            "zip",
+            Progress {
+                downloaded: 50,
+                total: Some(200),
+            },
+        );
+        assert_eq!(
+            (e.downloaded, e.overall_downloaded, e.overall_total),
+            (50, 50, 1200)
+        ); // learned zip size
         let e = t.finish("zip");
         assert_eq!((e.downloaded, e.overall_downloaded), (200, 200));
-        let e = t.update("model", Progress { downloaded: 300, total: Some(1000) });
-        assert_eq!((e.overall_downloaded, e.overall_total, e.total), (500, 1200, Some(1000)));
+        let e = t.update(
+            "model",
+            Progress {
+                downloaded: 300,
+                total: Some(1000),
+            },
+        );
+        assert_eq!(
+            (e.overall_downloaded, e.overall_total, e.total),
+            (500, 1200, Some(1000))
+        );
         // unknown names are harmless
-        assert_eq!(t.update("nope", Progress { downloaded: 1, total: None }).overall_downloaded, 500);
+        assert_eq!(
+            t.update(
+                "nope",
+                Progress {
+                    downloaded: 1,
+                    total: None
+                }
+            )
+            .overall_downloaded,
+            500
+        );
     }
 
     #[test]
     fn throttle_limits_rate() {
-        let mut th = Throttle { every: Duration::from_millis(100), last: None };
+        let mut th = Throttle {
+            every: Duration::from_millis(100),
+            last: None,
+        };
         let t0 = Instant::now();
         assert!(th.allow(t0));
         assert!(!th.allow(t0 + Duration::from_millis(50)));
@@ -708,7 +920,11 @@ mod tests {
                 let path = first.split_whitespace().nth(1).unwrap_or("/").to_string();
                 match files.iter().find(|(p, _)| *p == path) {
                     Some((_, b)) => {
-                        let _ = write!(s, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", b.len());
+                        let _ = write!(
+                            s,
+                            "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            b.len()
+                        );
                         let _ = s.write_all(b);
                     }
                     None => {
@@ -722,8 +938,14 @@ mod tests {
 
     /// A tiny pdfium-binaries style archive: the DLL under `bin/`, plus a neighbour that must be ignored.
     fn pdfium_tgz() -> Vec<u8> {
-        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::fast()));
-        for (n, c) in [("LICENSE", &b"lic"[..]), ("bin/pdfium.dll", &b"fake-dll"[..])] {
+        let mut b = tar::Builder::new(flate2::write::GzEncoder::new(
+            Vec::new(),
+            flate2::Compression::fast(),
+        ));
+        for (n, c) in [
+            ("LICENSE", &b"lic"[..]),
+            ("bin/pdfium.dll", &b"fake-dll"[..]),
+        ] {
             let mut h = tar::Header::new_gnu();
             h.set_size(c.len() as u64);
             h.set_mode(0o644);
@@ -743,7 +965,10 @@ mod tests {
         };
         let tgz = pdfium_tgz();
         Manifest {
-            llama: LlamaManifest { build: "b1".into(), assets: Vec::<Asset>::new() },
+            llama: LlamaManifest {
+                build: "b1".into(),
+                assets: Vec::<Asset>::new(),
+            },
             pdfium: PdfiumManifest {
                 build: "7881".into(),
                 url: format!("{base}/pdfium.tgz"),
@@ -755,54 +980,121 @@ mod tests {
             models: vec![ModelEntry {
                 id: embedder::MODEL_ID.into(),
                 profile: ModelProfile::Default,
-                files: vec![file(ModelRole::Model, "m.gguf", a), file(ModelRole::Mmproj, "p.gguf", b)],
+                files: vec![
+                    file(ModelRole::Model, "m.gguf", a),
+                    file(ModelRole::Mmproj, "p.gguf", b),
+                ],
             }],
         }
     }
 
     fn quick(cancel: Option<Arc<AtomicBool>>) -> FetchOptions {
-        FetchOptions { backoff_base: Duration::from_millis(1), max_attempts: 1, cancel, ..FetchOptions::default() }
+        FetchOptions {
+            backoff_base: Duration::from_millis(1),
+            max_attempts: 1,
+            cancel,
+            ..FetchOptions::default()
+        }
     }
 
     #[test]
     fn downloads_models_from_loopback_with_progress() {
         let (a, b) = (vec![7u8; 600_000], vec![9u8; 300_000]);
-        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz())], 3);
+        let base = serve(
+            vec![
+                ("/m.gguf", a.clone()),
+                ("/p.gguf", b.clone()),
+                ("/pdfium.tgz", pdfium_tgz()),
+            ],
+            3,
+        );
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |e| evs.push(e),
+        )
+        .unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
         let last = evs.last().unwrap();
         let tgz_len = pdfium_tgz().len() as u64;
-        assert_eq!((last.overall_downloaded, last.overall_total), (900_000 + tgz_len, 900_000 + tgz_len));
+        assert_eq!(
+            (last.overall_downloaded, last.overall_total),
+            (900_000 + tgz_len, 900_000 + tgz_len)
+        );
         // the DLL was unpacked to the versioned location, without its archive neighbours
-        assert_eq!(std::fs::read(winseek_llama::install::pdfium_path(d.path(), &man.pdfium)).unwrap(), b"fake-dll");
-        assert!(!d.path().join("pdfium").join("7881").join("LICENSE").exists());
+        assert_eq!(
+            std::fs::read(winseek_llama::install::pdfium_path(d.path(), &man.pdfium)).unwrap(),
+            b"fake-dll"
+        );
+        assert!(!d
+            .path()
+            .join("pdfium")
+            .join("7881")
+            .join("LICENSE")
+            .exists());
         assert!(evs.iter().any(|e| e.item == "PDF engine (pdfium 7881)"));
-        assert!(evs.windows(2).all(|w| w[0].overall_downloaded <= w[1].overall_downloaded));
-        assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model") && evs.iter().any(|e| e.item.ends_with("projector")));
+        assert!(evs
+            .windows(2)
+            .all(|w| w[0].overall_downloaded <= w[1].overall_downloaded));
+        assert!(
+            evs.iter().any(|e| e.item == "EmbeddingGemma-2 model")
+                && evs.iter().any(|e| e.item.ends_with("projector"))
+        );
         // already present -> nothing to do (no server left to answer)
         let mut n = 0;
-        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| n += 1).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |_| n += 1,
+        )
+        .unwrap();
         assert_eq!(n, 0);
     }
 
     #[test]
     fn cancel_keeps_part_and_resumes() {
         let (a, b) = (vec![7u8; 900_000], vec![9u8; 10]);
-        let base = serve(vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz())], 4);
+        let base = serve(
+            vec![
+                ("/m.gguf", a.clone()),
+                ("/p.gguf", b.clone()),
+                ("/pdfium.tgz", pdfium_tgz()),
+            ],
+            4,
+        );
         let man = test_manifest(&base, &a, &b);
         let d = tempfile::tempdir().unwrap();
         let flag = Arc::new(AtomicBool::new(false));
         let f2 = flag.clone();
-        let r = run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(Some(flag.clone())), Duration::ZERO, &mut |e| {
-            if e.downloaded > 0 {
-                f2.store(true, Ordering::SeqCst);
-            }
-        });
+        let r = run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(Some(flag.clone())),
+            Duration::ZERO,
+            &mut |e| {
+                if e.downloaded > 0 {
+                    f2.store(true, Ordering::SeqCst);
+                }
+            },
+        );
         assert_eq!(r, Err("cancelled".to_string()));
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert!(!m.exists() && !p.exists());
@@ -811,7 +1103,17 @@ mod tests {
         assert!(Path::new(&part).is_file());
         // resume: this server ignores Range and restarts, which fetch handles
         flag.store(false, Ordering::SeqCst);
-        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(Some(flag)), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(Some(flag)),
+            Duration::ZERO,
+            &mut |_| {},
+        )
+        .unwrap();
         assert_eq!(std::fs::read(m).unwrap(), a);
         assert_eq!(std::fs::read(p).unwrap(), b);
     }
@@ -829,10 +1131,25 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         let mut evs = Vec::new();
         let import = vec![src.path().to_path_buf()];
-        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &import, &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &import,
+            &quick(None),
+            Duration::ZERO,
+            &mut |e| evs.push(e),
+        )
+        .unwrap();
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
-        assert_eq!((std::fs::read(m).unwrap(), std::fs::read(p).unwrap()), (a, b));
-        assert!(evs.iter().any(|e| e.item == "EmbeddingGemma-2 model" && e.downloaded == 4000));
+        assert_eq!(
+            (std::fs::read(m).unwrap(), std::fs::read(p).unwrap()),
+            (a, b)
+        );
+        assert!(evs
+            .iter()
+            .any(|e| e.item == "EmbeddingGemma-2 model" && e.downloaded == 4000));
         let last = evs.last().unwrap();
         assert_eq!(last.overall_downloaded, last.overall_total);
     }
@@ -845,7 +1162,10 @@ mod tests {
         for i in p.items.iter_mut().filter(|i| !i.optional) {
             i.present = true;
         }
-        assert!(!needs_download(&p), "the parser alone never triggers the automatic download");
+        assert!(
+            !needs_download(&p),
+            "the parser alone never triggers the automatic download"
+        );
     }
 
     #[test]
@@ -853,27 +1173,57 @@ mod tests {
         let base = serve(vec![], 1);
         let man = test_manifest(&base, b"a", b"b");
         let d = tempfile::tempdir().unwrap();
-        let r = run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| {});
+        let r = run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |_| {},
+        );
         assert!(r.unwrap_err().contains("404"));
     }
 
     #[test]
     fn plan_items_carry_their_group() {
         let d = tempfile::tempdir().unwrap();
-        let p = build_plan(d.path(), &Manifest::embedded(), &det(Backend::Cuda12), false);
+        let p = build_plan(
+            d.path(),
+            &Manifest::embedded(),
+            &det(Backend::Cuda12),
+            false,
+        );
         let groups: Vec<_> = p.items.iter().map(|i| i.group).collect();
         use Group::*;
-        assert_eq!(groups, [Llama, Llama, Embedder, Embedder, Pdfium, Parser, Parser]);
+        assert_eq!(
+            groups,
+            [Llama, Llama, Embedder, Embedder, Pdfium, Parser, Parser]
+        );
         assert!(p.items.iter().all(|i| i.optional == (i.group == Parser)));
-        assert_eq!(serde_json::to_value(&p.items[4]).unwrap()["group"], "pdfium");
-        assert_eq!(serde_json::from_str::<Vec<Group>>(r#"["embedder","parser"]"#).unwrap(), [Embedder, Parser]);
+        assert_eq!(
+            serde_json::to_value(&p.items[4]).unwrap()["group"],
+            "pdfium"
+        );
+        assert_eq!(
+            serde_json::from_str::<Vec<Group>>(r#"["embedder","parser"]"#).unwrap(),
+            [Embedder, Parser]
+        );
     }
 
     #[test]
     fn pick_groups_defaults_to_first_run_set() {
         assert_eq!(pick_groups(false, None), DEFAULT_GROUPS);
-        assert_eq!(pick_groups(true, None), [Group::Llama, Group::Embedder, Group::Pdfium, Group::Parser]);
-        assert_eq!(pick_groups(true, Some(vec![Group::Pdfium])), [Group::Pdfium], "a Settings row fetches only its own part");
+        assert_eq!(
+            pick_groups(true, None),
+            [Group::Llama, Group::Embedder, Group::Pdfium, Group::Parser]
+        );
+        assert_eq!(
+            pick_groups(true, Some(vec![Group::Pdfium])),
+            [Group::Pdfium],
+            "a Settings row fetches only its own part"
+        );
     }
 
     #[test]
@@ -882,27 +1232,67 @@ mod tests {
         let d = tempfile::tempdir().unwrap();
         // first attempt: the server has nothing -> error, nothing installed
         let down = serve(vec![], 1);
-        let r = run_download(d.path(), &test_manifest(&down, &a, &b), Backend::Cpu, &[Group::Pdfium], &[], &quick(None), Duration::ZERO, &mut |_| {});
+        let r = run_download(
+            d.path(),
+            &test_manifest(&down, &a, &b),
+            Backend::Cpu,
+            &[Group::Pdfium],
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |_| {},
+        );
         assert!(r.unwrap_err().contains("404"));
         // retry (same root, the server is back): only pdfium is fetched, the models stay missing
         let up = serve(vec![("/pdfium.tgz", pdfium_tgz())], 1);
         let man = test_manifest(&up, &a, &b);
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, &[Group::Pdfium], &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &[Group::Pdfium],
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |e| evs.push(e),
+        )
+        .unwrap();
         assert!(winseek_llama::install::pdfium_path(d.path(), &man.pdfium).is_file());
-        assert!(evs.iter().all(|e| e.item == "PDF engine (pdfium 7881)"), "progress names only the requested part");
+        assert!(
+            evs.iter().all(|e| e.item == "PDF engine (pdfium 7881)"),
+            "progress names only the requested part"
+        );
         let (m, p) = embedder::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert!(!m.exists() && !p.exists());
         let plan = build_plan(d.path(), &man, &det(Backend::Cpu), false);
         let present: Vec<_> = plan.items.iter().map(|i| (i.group, i.present)).collect();
-        assert_eq!(present, [(Group::Embedder, false), (Group::Embedder, false), (Group::Pdfium, true)]);
+        assert_eq!(
+            present,
+            [
+                (Group::Embedder, false),
+                (Group::Embedder, false),
+                (Group::Pdfium, true)
+            ]
+        );
     }
 
     #[test]
     fn parser_files_are_only_downloaded_on_request() {
-        let (a, b, pm, pp) = (vec![7u8; 1000], vec![9u8; 500], vec![3u8; 800], vec![4u8; 400]);
+        let (a, b, pm, pp) = (
+            vec![7u8; 1000],
+            vec![9u8; 500],
+            vec![3u8; 800],
+            vec![4u8; 400],
+        );
         let base = serve(
-            vec![("/m.gguf", a.clone()), ("/p.gguf", b.clone()), ("/pdfium.tgz", pdfium_tgz()), ("/pm.gguf", pm.clone()), ("/pp.gguf", pp.clone())],
+            vec![
+                ("/m.gguf", a.clone()),
+                ("/p.gguf", b.clone()),
+                ("/pdfium.tgz", pdfium_tgz()),
+                ("/pm.gguf", pm.clone()),
+                ("/pp.gguf", pp.clone()),
+            ],
             5,
         );
         let mut man = test_manifest(&base, &a, &b);
@@ -916,18 +1306,45 @@ mod tests {
         man.models.push(ModelEntry {
             id: parser::MODEL_ID.into(),
             profile: ModelProfile::Default,
-            files: vec![file(ModelRole::Model, "pm.gguf", &pm), file(ModelRole::Mmproj, "pp.gguf", &pp)],
+            files: vec![
+                file(ModelRole::Model, "pm.gguf", &pm),
+                file(ModelRole::Mmproj, "pp.gguf", &pp),
+            ],
         });
         let d = tempfile::tempdir().unwrap();
-        run_download(d.path(), &man, Backend::Cpu, &DEFAULT_GROUPS, &[], &quick(None), Duration::ZERO, &mut |_| {}).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &DEFAULT_GROUPS,
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |_| {},
+        )
+        .unwrap();
         let (m, p) = parser::model_paths(&man, &embedder::models_dir(d.path())).unwrap();
         assert!(!m.exists() && !p.exists(), "the parser is off by default");
         let mut evs = Vec::new();
-        run_download(d.path(), &man, Backend::Cpu, &[Group::Parser], &[], &quick(None), Duration::ZERO, &mut |e| evs.push(e)).unwrap();
+        run_download(
+            d.path(),
+            &man,
+            Backend::Cpu,
+            &[Group::Parser],
+            &[],
+            &quick(None),
+            Duration::ZERO,
+            &mut |e| evs.push(e),
+        )
+        .unwrap();
         assert_eq!(std::fs::read(&m).unwrap(), pm);
         assert_eq!(std::fs::read(&p).unwrap(), pp);
         let last = evs.last().unwrap();
-        assert_eq!((last.overall_downloaded, last.overall_total), (1200, 1200), "progress covers only what was fetched");
+        assert_eq!(
+            (last.overall_downloaded, last.overall_total),
+            (1200, 1200),
+            "progress covers only what was fetched"
+        );
         assert!(evs.iter().any(|e| e.item == "Document parser model"));
         let plan = build_plan(d.path(), &man, &det(Backend::Cpu), false);
         assert!(plan.items.iter().filter(|i| i.optional).all(|i| i.present));

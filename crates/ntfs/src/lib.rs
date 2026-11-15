@@ -13,10 +13,10 @@ pub mod record;
 mod scan;
 
 pub use ffi::Handle;
+#[cfg(feature = "testutil")]
+#[doc(hidden)]
+pub use scan::bench_decode;
 pub use scan::{
     list_ntfs_volumes, open_volume_for_usn, scan_volume, scan_volume_with, MftEntry, ScanError,
     ScanOptions, ScanStats, VolumeInfo,
 };
-#[cfg(feature = "testutil")]
-#[doc(hidden)]
-pub use scan::bench_decode;

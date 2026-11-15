@@ -24,7 +24,11 @@ pub struct Bindings {
 
 impl Default for Bindings {
     fn default() -> Self {
-        Bindings { popup: Some("Alt+Space".into()), library: None, clipboard: None }
+        Bindings {
+            popup: Some("Alt+Space".into()),
+            library: None,
+            clipboard: None,
+        }
     }
 }
 
@@ -45,7 +49,9 @@ pub fn path(root: &std::path::Path) -> std::path::PathBuf {
 
 /// Missing file -> defaults. Corrupt -> defaults too: a broken file must not silence the popup.
 pub fn load() -> Bindings {
-    tier1::data_root().map(|root| load_from(&root)).unwrap_or_default()
+    tier1::data_root()
+        .map(|root| load_from(&root))
+        .unwrap_or_default()
 }
 
 pub fn load_from(root: &std::path::Path) -> Bindings {
@@ -63,7 +69,9 @@ pub fn load_from(root: &std::path::Path) -> Bindings {
 }
 
 pub fn save(b: &Bindings) -> Result<(), String> {
-    let Some(root) = tier1::data_root() else { return Err("no data dir".into()) };
+    let Some(root) = tier1::data_root() else {
+        return Err("no data dir".into());
+    };
     save_to(&root, b)
 }
 
@@ -103,7 +111,9 @@ pub fn parse(combo: &str) -> Option<Shortcut> {
 }
 
 fn is_function_key(key: &str) -> bool {
-    key.strip_prefix('F').and_then(|n| n.parse::<u8>().ok()).is_some_and(|n| (13..=24).contains(&n))
+    key.strip_prefix('F')
+        .and_then(|n| n.parse::<u8>().ok())
+        .is_some_and(|n| (13..=24).contains(&n))
 }
 
 /// Keymap name -> keyboard_types `Code` name ("Up" -> "ArrowUp", "A" -> "KeyA").
@@ -194,7 +204,9 @@ const WHICH: [&str; 3] = ["popup", "library", "clipboard"];
 pub fn init(app: &AppHandle) {
     let mut b = load();
     for which in WHICH {
-        let Some(combo_str) = field(&b, which).clone() else { continue };
+        let Some(combo_str) = field(&b, which).clone() else {
+            continue;
+        };
         let sc = match parse(&combo_str) {
             Some(sc) => sc,
             None => {
@@ -211,7 +223,9 @@ pub fn init(app: &AppHandle) {
                         eprintln!("winseek: fell back to the default popup hotkey ({default})");
                         b.popup = Some(default);
                     }
-                    _ => eprintln!("winseek: the default popup hotkey failed too; Alt+Space may be taken"),
+                    _ => eprintln!(
+                        "winseek: the default popup hotkey failed too; Alt+Space may be taken"
+                    ),
                 }
             }
         }
@@ -263,7 +277,9 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
         })?),
     };
     if which == "popup" && new_sc.is_none() {
-        return Err("winseek needs a popup hotkey; pick another combination instead of clearing it".into());
+        return Err(
+            "winseek needs a popup hotkey; pick another combination instead of clearing it".into(),
+        );
     }
     if let Some(old_str) = &old {
         if let Some(sc) = parse(old_str) {
@@ -278,7 +294,9 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
                     let _ = app.global_shortcut().register(sc);
                 }
             }
-            return Err(format!("That shortcut is taken by another app ({e}). The previous shortcut still works."));
+            return Err(format!(
+                "That shortcut is taken by another app ({e}). The previous shortcut still works."
+            ));
         }
     }
     set_field(&mut b, which, combo_str);
@@ -292,10 +310,16 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
 /// The clipboard hotkey (P1): show the popup with the clipboard text as the query. A read
 /// failure still shows the popup — only the pre-filled query is lost.
 pub fn show_with_clipboard(app: &AppHandle) {
-    let text = crate::shell::popup_hwnd(app).ok().and_then(|(h, _)| crate::shell::clipboard_text(h));
+    let text = crate::shell::popup_hwnd(app)
+        .ok()
+        .and_then(|(h, _)| crate::shell::clipboard_text(h));
     crate::popup::show(app);
     if let Some(t) = text.filter(|t| !t.trim().is_empty()) {
-        let _ = app.emit_to(crate::popup::LABEL, "set-query", serde_json::json!({ "query": t }));
+        let _ = app.emit_to(
+            crate::popup::LABEL,
+            "set-query",
+            serde_json::json!({ "query": t }),
+        );
     }
 }
 
@@ -305,7 +329,11 @@ pub async fn hotkeys_get(app: AppHandle) -> Result<Bindings, String> {
 }
 
 #[tauri::command]
-pub async fn hotkeys_set(app: AppHandle, which: String, combo: Option<String>) -> Result<Bindings, String> {
+pub async fn hotkeys_set(
+    app: AppHandle,
+    which: String,
+    combo: Option<String>,
+) -> Result<Bindings, String> {
     tauri::async_runtime::spawn_blocking(move || set(&app, &which, combo))
         .await
         .map_err(|e| e.to_string())?
@@ -343,7 +371,13 @@ mod tests {
 
     #[test]
     fn roundtrip_through_combo() {
-        for c in ["Alt+Space", "Ctrl+Alt+P", "Ctrl+Shift+F24", "Win+Space", "Ctrl+,"] {
+        for c in [
+            "Alt+Space",
+            "Ctrl+Alt+P",
+            "Ctrl+Shift+F24",
+            "Win+Space",
+            "Ctrl+,",
+        ] {
             assert_eq!(combo(&parse(c).unwrap()), c);
         }
     }
@@ -355,7 +389,11 @@ mod tests {
         let b = load_from(tmp.path());
         assert_eq!(b.popup.as_deref(), Some("Alt+Space"));
         assert_eq!(b.library, None);
-        let b = Bindings { popup: Some("Ctrl+Alt+Space".into()), library: Some("Ctrl+Shift+L".into()), clipboard: None };
+        let b = Bindings {
+            popup: Some("Ctrl+Alt+Space".into()),
+            library: Some("Ctrl+Shift+L".into()),
+            clipboard: None,
+        };
         save_to(tmp.path(), &b).unwrap();
         assert_eq!(load_from(tmp.path()), b);
         // A corrupt file falls back to the defaults instead of silencing the app.

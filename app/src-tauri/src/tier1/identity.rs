@@ -13,8 +13,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, GetFileInformationByHandle, GetVolumeNameForVolumeMountPointW, GetVolumePathNameW,
-    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE,
-    FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+    BY_HANDLE_FILE_INFORMATION, FILE_FLAG_BACKUP_SEMANTICS, FILE_READ_ATTRIBUTES,
+    FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
 };
 use winseek_store::FileKey;
 
@@ -43,10 +43,18 @@ fn filetime_to_unix_ms(low: u32, high: u32) -> i64 {
 /// NUL-terminated UTF-16; absolute drive paths of ~MAX_PATH or longer get the `\\?\` prefix.
 fn wide_path(p: &Path) -> Vec<u16> {
     let mut v: Vec<u16> = p.as_os_str().encode_wide().collect();
-    let is_drive_abs = v.len() >= 3 && v[1] == u16::from(b':') && (v[2] == u16::from(b'\\') || v[2] == u16::from(b'/'));
+    let is_drive_abs = v.len() >= 3
+        && v[1] == u16::from(b':')
+        && (v[2] == u16::from(b'\\') || v[2] == u16::from(b'/'));
     if v.len() >= 240 && is_drive_abs {
         let mut pre: Vec<u16> = r"\\?\".encode_utf16().collect();
-        pre.extend(v.iter().map(|&c| if c == u16::from(b'/') { u16::from(b'\\') } else { c }));
+        pre.extend(v.iter().map(|&c| {
+            if c == u16::from(b'/') {
+                u16::from(b'\\')
+            } else {
+                c
+            }
+        }));
         v = pre;
     }
     v.push(0);
@@ -81,14 +89,22 @@ fn volume_guid(wide: &[u16]) -> io::Result<String> {
     unsafe { GetVolumePathNameW(PCWSTR(wide.as_ptr()), &mut root) }.map_err(io::Error::from)?;
     let root_s = from_wide(&root);
     let cache_key = root_s.to_lowercase();
-    if let Some(g) = volume_cache().lock().unwrap_or_else(|e| e.into_inner()).get(&cache_key) {
+    if let Some(g) = volume_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&cache_key)
+    {
         return Ok(g.clone());
     }
     let mut name = [0u16; 64];
     // SAFETY: `root` is NUL-terminated (zero-initialised buffer).
-    unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(root.as_ptr()), &mut name) }.map_err(io::Error::from)?;
+    unsafe { GetVolumeNameForVolumeMountPointW(PCWSTR(root.as_ptr()), &mut name) }
+        .map_err(io::Error::from)?;
     let guid = from_wide(&name);
-    volume_cache().lock().unwrap_or_else(|e| e.into_inner()).insert(cache_key, guid.clone());
+    volume_cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(cache_key, guid.clone());
     Ok(guid)
 }
 
@@ -114,9 +130,15 @@ pub fn file_info(path: &Path) -> io::Result<FileInfo> {
     unsafe { GetFileInformationByHandle(h.0, &mut info) }.map_err(io::Error::from)?;
     let vol_guid = volume_guid(&w)?;
     Ok(FileInfo {
-        key: FileKey { vol_guid, frn: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow) },
+        key: FileKey {
+            vol_guid,
+            frn: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        },
         size: (u64::from(info.nFileSizeHigh) << 32) | u64::from(info.nFileSizeLow),
-        mtime_ms: filetime_to_unix_ms(info.ftLastWriteTime.dwLowDateTime, info.ftLastWriteTime.dwHighDateTime),
+        mtime_ms: filetime_to_unix_ms(
+            info.ftLastWriteTime.dwLowDateTime,
+            info.ftLastWriteTime.dwHighDateTime,
+        ),
         attrs: info.dwFileAttributes,
     })
 }
@@ -158,8 +180,15 @@ mod tests {
         let i = file_info(&f).unwrap();
         assert_eq!(i.size, 5);
         assert_eq!(i.attrs & ATTR_DIRECTORY, 0);
-        let now_ms = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64;
-        assert!((now_ms - i.mtime_ms).abs() < 120_000, "mtime {} vs now {now_ms}", i.mtime_ms);
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as i64;
+        assert!(
+            (now_ms - i.mtime_ms).abs() < 120_000,
+            "mtime {} vs now {now_ms}",
+            i.mtime_ms
+        );
         assert_ne!(file_info(dir.path()).unwrap().attrs & ATTR_DIRECTORY, 0);
     }
 

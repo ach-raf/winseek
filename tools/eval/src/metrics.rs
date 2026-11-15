@@ -59,7 +59,10 @@ pub fn glob_match(pattern: &str, name: &str) -> bool {
 
 /// 1-based rank of the first ranked name matching any glob.
 pub fn rank_of(ranked: &[String], expect: &[String]) -> Option<usize> {
-    ranked.iter().position(|n| expect.iter().any(|g| glob_match(g, n))).map(|i| i + 1)
+    ranked
+        .iter()
+        .position(|n| expect.iter().any(|g| glob_match(g, n)))
+        .map(|i| i + 1)
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -82,11 +85,31 @@ pub struct Summary {
 pub fn summarize(results: &[CaseResult]) -> Summary {
     let n = results.len();
     if n == 0 {
-        return Summary { n: 0, recall1: 0.0, recall5: 0.0, mrr: 0.0 };
+        return Summary {
+            n: 0,
+            recall1: 0.0,
+            recall5: 0.0,
+            mrr: 0.0,
+        };
     }
-    let at = |k: usize| results.iter().filter(|r| r.rank.is_some_and(|x| x <= k)).count() as f64 / n as f64;
-    let mrr = results.iter().map(|r| r.rank.map_or(0.0, |x| 1.0 / x as f64)).sum::<f64>() / n as f64;
-    Summary { n, recall1: at(1), recall5: at(5), mrr }
+    let at = |k: usize| {
+        results
+            .iter()
+            .filter(|r| r.rank.is_some_and(|x| x <= k))
+            .count() as f64
+            / n as f64
+    };
+    let mrr = results
+        .iter()
+        .map(|r| r.rank.map_or(0.0, |x| 1.0 / x as f64))
+        .sum::<f64>()
+        / n as f64;
+    Summary {
+        n,
+        recall1: at(1),
+        recall5: at(5),
+        mrr,
+    }
 }
 
 pub fn summarize_by_tag(results: &[CaseResult]) -> BTreeMap<String, Summary> {
@@ -94,7 +117,10 @@ pub fn summarize_by_tag(results: &[CaseResult]) -> BTreeMap<String, Summary> {
     for r in results {
         groups.entry(r.tag.clone()).or_default().push(r.clone());
     }
-    groups.into_iter().map(|(t, v)| (t, summarize(&v))).collect()
+    groups
+        .into_iter()
+        .map(|(t, v)| (t, summarize(&v)))
+        .collect()
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -107,14 +133,25 @@ pub struct Report {
 
 impl Report {
     pub fn new(meta: serde_json::Value, cases: Vec<CaseResult>) -> Report {
-        Report { meta, overall: summarize(&cases), by_tag: summarize_by_tag(&cases), cases }
+        Report {
+            meta,
+            overall: summarize(&cases),
+            by_tag: summarize_by_tag(&cases),
+            cases,
+        }
     }
 }
 
 pub fn format_summary_table(r: &Report) -> String {
-    let mut out = format!("{:<12} {:>4} {:>9} {:>9} {:>7}\n", "tag", "n", "recall@1", "recall@5", "MRR");
+    let mut out = format!(
+        "{:<12} {:>4} {:>9} {:>9} {:>7}\n",
+        "tag", "n", "recall@1", "recall@5", "MRR"
+    );
     let row = |name: &str, s: &Summary| {
-        format!("{:<12} {:>4} {:>9.3} {:>9.3} {:>7.3}\n", name, s.n, s.recall1, s.recall5, s.mrr)
+        format!(
+            "{:<12} {:>4} {:>9.3} {:>9.3} {:>7.3}\n",
+            name, s.n, s.recall1, s.recall5, s.mrr
+        )
     };
     for (t, s) in &r.by_tag {
         out.push_str(&row(if t.is_empty() { "(none)" } else { t }, s));
@@ -152,7 +189,13 @@ pub fn diff(a: &Report, b: &Report) -> Diff {
             regressions.push(format!("[{}] \"{}\": missing from b", ca.tag, ca.q));
             continue;
         };
-        let line = format!("[{}] \"{}\": rank {} -> {}", ca.tag, ca.q, rank_str(ca.rank), rank_str(cb.rank));
+        let line = format!(
+            "[{}] \"{}\": rank {} -> {}",
+            ca.tag,
+            ca.q,
+            rank_str(ca.rank),
+            rank_str(cb.rank)
+        );
         match rank_key(cb.rank).cmp(&rank_key(ca.rank)) {
             std::cmp::Ordering::Greater => regressions.push(line),
             std::cmp::Ordering::Less => improvements.push(line),
@@ -180,7 +223,13 @@ mod tests {
     }
 
     fn res(q: &str, tag: &str, rank: Option<usize>) -> CaseResult {
-        CaseResult { q: q.into(), tag: tag.into(), expect: names(&["x"]), rank, top: vec![] }
+        CaseResult {
+            q: q.into(),
+            tag: tag.into(),
+            expect: names(&["x"]),
+            rank,
+            top: vec![],
+        }
     }
 
     #[test]
@@ -208,7 +257,12 @@ mod tests {
 
     #[test]
     fn metric_math() {
-        let r = [res("a", "t", Some(1)), res("b", "t", Some(2)), res("c", "u", Some(6)), res("d", "u", None)];
+        let r = [
+            res("a", "t", Some(1)),
+            res("b", "t", Some(2)),
+            res("c", "u", Some(6)),
+            res("d", "u", None),
+        ];
         let s = summarize(&r);
         assert_eq!(s.n, 4);
         assert!((s.recall1 - 0.25).abs() < 1e-12);
@@ -222,7 +276,9 @@ mod tests {
 
     #[test]
     fn cases_parse_and_validate() {
-        let c = parse_cases(r#"[{"q":"red","expect":["a*"],"tag":"color"},{"q":"b","expect":["x"]}]"#).unwrap();
+        let c =
+            parse_cases(r#"[{"q":"red","expect":["a*"],"tag":"color"},{"q":"b","expect":["x"]}]"#)
+                .unwrap();
         assert_eq!(c[0].tag, "color");
         assert_eq!(c[1].tag, "");
         assert!(parse_cases(r#"[{"q":"red","expect":[]}]"#).is_err());
@@ -236,8 +292,16 @@ mod tests {
 
     #[test]
     fn diff_flags_regressions_and_gate() {
-        let a = report(vec![res("a", "t", Some(1)), res("b", "t", Some(2)), res("c", "t", None)]);
-        let b = report(vec![res("a", "t", Some(3)), res("b", "t", Some(2)), res("c", "t", Some(1))]);
+        let a = report(vec![
+            res("a", "t", Some(1)),
+            res("b", "t", Some(2)),
+            res("c", "t", None),
+        ]);
+        let b = report(vec![
+            res("a", "t", Some(3)),
+            res("b", "t", Some(2)),
+            res("c", "t", Some(1)),
+        ]);
         let d = diff(&a, &b);
         assert_eq!(d.regressions.len(), 1);
         assert!(d.regressions[0].contains("\"a\"") && d.regressions[0].contains("1 -> 3"));
@@ -245,7 +309,11 @@ mod tests {
         assert!(!d.failed); // recall@5 went up
         assert!(d.recall5_delta > 0.0);
 
-        let worse = report(vec![res("a", "t", None), res("b", "t", Some(2)), res("c", "t", None)]);
+        let worse = report(vec![
+            res("a", "t", None),
+            res("b", "t", Some(2)),
+            res("c", "t", None),
+        ]);
         let d = diff(&a, &worse);
         assert!(d.failed); // 2/3 -> 1/3
         assert_eq!(diff(&a, &a).regressions.len(), 0);
@@ -253,8 +321,17 @@ mod tests {
 
     #[test]
     fn gate_is_two_points() {
-        let mk = |hits: usize| report((0..100).map(|i| res(&format!("q{i}"), "t", (i < hits).then_some(1))).collect());
-        assert!(!diff(&mk(100), &mk(98)).failed, "exactly 2 points is allowed");
+        let mk = |hits: usize| {
+            report(
+                (0..100)
+                    .map(|i| res(&format!("q{i}"), "t", (i < hits).then_some(1)))
+                    .collect(),
+            )
+        };
+        assert!(
+            !diff(&mk(100), &mk(98)).failed,
+            "exactly 2 points is allowed"
+        );
         assert!(diff(&mk(100), &mk(97)).failed);
     }
 

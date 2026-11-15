@@ -10,8 +10,8 @@ use std::path::Path;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
 use windows::Win32::System::Registry::{
-    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_SET_VALUE,
-    REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
+    RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY,
+    HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
 };
 
 use crate::tier1;
@@ -34,7 +34,15 @@ fn read_value() -> Option<String> {
     let mut buf = [0u16; 1024];
     let mut len = (buf.len() * 2) as u32;
     let r = unsafe {
-        RegGetValueW(HKEY_CURRENT_USER, RUN_KEY, VALUE, RRF_RT_REG_SZ, None, Some(buf.as_mut_ptr().cast()), Some(&mut len))
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            Some(buf.as_mut_ptr().cast()),
+            Some(&mut len),
+        )
     };
     if r.0 != 0 {
         return None;
@@ -46,7 +54,17 @@ fn read_value() -> Option<String> {
 fn write_value(on: bool) -> Result<(), String> {
     let mut key = HKEY::default();
     unsafe {
-        let r = RegCreateKeyExW(HKEY_CURRENT_USER, RUN_KEY, None, None, REG_OPTION_NON_VOLATILE, KEY_SET_VALUE, None, &mut key, None);
+        let r = RegCreateKeyExW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            None,
+            None,
+            REG_OPTION_NON_VOLATILE,
+            KEY_SET_VALUE,
+            None,
+            &mut key,
+            None,
+        );
         if r.0 != 0 {
             return Err(format!("open Run key: error {}", r.0));
         }
@@ -71,7 +89,9 @@ fn write_value(on: bool) -> Result<(), String> {
 
 /// True when the Run value points at this exe.
 fn enabled() -> bool {
-    let Ok(exe) = std::env::current_exe() else { return false };
+    let Ok(exe) = std::env::current_exe() else {
+        return false;
+    };
     read_value().is_some_and(|v| v.eq_ignore_ascii_case(&command_line(&exe)))
 }
 
@@ -80,7 +100,9 @@ pub fn init_default() {
     if cfg!(debug_assertions) {
         return;
     }
-    let Some(root) = tier1::data_root() else { return };
+    let Some(root) = tier1::data_root() else {
+        return;
+    };
     let marker = root.join(MARKER);
     match std::fs::read(&marker) {
         // the user turned it off in Settings

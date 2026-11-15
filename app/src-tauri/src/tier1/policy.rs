@@ -10,15 +10,16 @@ use std::time::Duration;
 
 use windows::core::w;
 use windows::Win32::System::Performance::{
-    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW, PdhOpenQueryW,
-    PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY, PDH_MORE_DATA,
+    PdhAddEnglishCounterW, PdhCloseQuery, PdhCollectQueryData, PdhGetFormattedCounterArrayW,
+    PdhOpenQueryW, PDH_FMT_COUNTERVALUE_ITEM_W, PDH_FMT_DOUBLE, PDH_HCOUNTER, PDH_HQUERY,
+    PDH_MORE_DATA,
 };
 use windows::Win32::System::Power::{GetSystemPowerStatus, SYSTEM_POWER_STATUS};
-use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 use windows::Win32::UI::Shell::{
     SHQueryUserNotificationState, QUERY_USER_NOTIFICATION_STATE, QUNS_BUSY, QUNS_PRESENTATION_MODE,
     QUNS_RUNNING_D3D_FULL_SCREEN,
 };
+use windows::Win32::UI::WindowsAndMessaging::{GetForegroundWindow, GetWindowThreadProcessId};
 
 use super::Tier1;
 
@@ -147,12 +148,22 @@ impl GpuCounters {
             if PdhOpenQueryW(None, 0, &mut query) != 0 {
                 return None;
             }
-            if PdhAddEnglishCounterW(query, w!(r"\GPU Engine(*)\Utilization Percentage"), 0, &mut counter) != 0 {
+            if PdhAddEnglishCounterW(
+                query,
+                w!(r"\GPU Engine(*)\Utilization Percentage"),
+                0,
+                &mut counter,
+            ) != 0
+            {
                 PdhCloseQuery(query);
                 return None;
             }
         }
-        Some(GpuCounters { query, counter, primed: false })
+        Some(GpuCounters {
+            query,
+            counter,
+            primed: false,
+        })
     }
 
     /// Use of `pid` since the last call; `None` on the first call of a spell or when PDH fails.
@@ -169,18 +180,36 @@ impl GpuCounters {
         // SAFETY: size query without a buffer, then a buffer of at least `bytes` bytes, 8-aligned;
         // the item names point into that buffer and are read before it is dropped.
         unsafe {
-            if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_DOUBLE, &mut bytes, &mut count, None) != PDH_MORE_DATA {
+            if PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                None,
+            ) != PDH_MORE_DATA
+            {
                 return None;
             }
             let mut buf = vec![0u64; (bytes as usize).div_ceil(8)];
             let items = buf.as_mut_ptr().cast::<PDH_FMT_COUNTERVALUE_ITEM_W>();
-            if PdhGetFormattedCounterArrayW(self.counter, PDH_FMT_DOUBLE, &mut bytes, &mut count, Some(items)) != 0 {
+            if PdhGetFormattedCounterArrayW(
+                self.counter,
+                PDH_FMT_DOUBLE,
+                &mut bytes,
+                &mut count,
+                Some(items),
+            ) != 0
+            {
                 return None;
             }
             let mut out = GpuUse::default();
             for item in std::slice::from_raw_parts(items, count as usize) {
-                let Ok(name) = item.szName.to_string() else { continue };
-                let Some((p, ty)) = parse_engine_instance(&name) else { continue };
+                let Ok(name) = item.szName.to_string() else {
+                    continue;
+                };
+                let Some((p, ty)) = parse_engine_instance(&name) else {
+                    continue;
+                };
                 if p != pid || item.FmtValue.CStatus != 0 {
                     continue;
                 }
@@ -224,43 +253,67 @@ pub fn sample(gpu: &mut Option<GpuCounters>) -> Sample {
         Ok(()) => (p.ACLineStatus, p.BatteryFlag),
         Err(_) => (255, 0),
     };
-    let notification = unsafe { SHQueryUserNotificationState() }.ok().map(|s: QUERY_USER_NOTIFICATION_STATE| s.0);
+    let notification = unsafe { SHQueryUserNotificationState() }
+        .ok()
+        .map(|s: QUERY_USER_NOTIFICATION_STATE| s.0);
     let fg_gpu = if notification == Some(QUNS_BUSY.0) {
         if gpu.is_none() {
             *gpu = GpuCounters::open();
         }
-        gpu.as_mut().zip(foreground_pid()).and_then(|(g, pid)| g.read(pid))
+        gpu.as_mut()
+            .zip(foreground_pid())
+            .and_then(|(g, pid)| g.read(pid))
     } else {
         if let Some(g) = gpu.as_mut() {
             g.primed = false; // the next busy spell measures a fresh interval
         }
         None
     };
-    Sample { ac_line_status: ac, battery_flag: flag, notification, fg_gpu }
+    Sample {
+        ac_line_status: ac,
+        battery_flag: flag,
+        notification,
+        fg_gpu,
+    }
 }
 
 /// Poll every [`POLL`] and apply the automatic reason to the worker. Runs forever.
 pub fn spawn(t: Arc<Tier1>) {
-    let _ = std::thread::Builder::new().name("tier1-policy".into()).spawn(move || {
-        let mut gpu = None;
-        loop {
-            t.set_auto_pause(auto_reason(&sample(&mut gpu)));
-            std::thread::sleep(POLL);
-        }
-    });
+    let _ = std::thread::Builder::new()
+        .name("tier1-policy".into())
+        .spawn(move || {
+            let mut gpu = None;
+            loop {
+                t.set_auto_pause(auto_reason(&sample(&mut gpu)));
+                std::thread::sleep(POLL);
+            }
+        });
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use windows::Win32::UI::Shell::{QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_NOT_PRESENT, QUNS_QUIET_TIME};
+    use windows::Win32::UI::Shell::{
+        QUNS_ACCEPTS_NOTIFICATIONS, QUNS_APP, QUNS_NOT_PRESENT, QUNS_QUIET_TIME,
+    };
 
     fn s(ac: u8, flag: u8, n: Option<i32>) -> Sample {
-        Sample { ac_line_status: ac, battery_flag: flag, notification: n, fg_gpu: None }
+        Sample {
+            ac_line_status: ac,
+            battery_flag: flag,
+            notification: n,
+            fg_gpu: None,
+        }
     }
 
     fn busy_with(three_d: f64, video_decode: f64) -> Sample {
-        Sample { fg_gpu: Some(GpuUse { three_d, video_decode }), ..s(1, 0, Some(QUNS_BUSY.0)) }
+        Sample {
+            fg_gpu: Some(GpuUse {
+                three_d,
+                video_decode,
+            }),
+            ..s(1, 0, Some(QUNS_BUSY.0))
+        }
     }
 
     #[test]
@@ -277,7 +330,13 @@ mod tests {
             assert!(fullscreen_busy(&s(1, 0, Some(st.0))), "{}", st.0);
         }
         // borderless full screen with unknown GPU use: keep indexing
-        for st in [QUNS_BUSY, QUNS_ACCEPTS_NOTIFICATIONS, QUNS_NOT_PRESENT, QUNS_QUIET_TIME, QUNS_APP] {
+        for st in [
+            QUNS_BUSY,
+            QUNS_ACCEPTS_NOTIFICATIONS,
+            QUNS_NOT_PRESENT,
+            QUNS_QUIET_TIME,
+            QUNS_APP,
+        ] {
             assert!(!fullscreen_busy(&s(1, 0, Some(st.0))), "{}", st.0);
         }
         assert!(!fullscreen_busy(&s(1, 0, None)));
@@ -285,8 +344,14 @@ mod tests {
 
     #[test]
     fn borderless_fullscreen_pauses_only_for_game_like_gpu_use() {
-        assert!(!fullscreen_busy(&busy_with(39.0, 12.0)), "mpv playing a video full screen");
-        assert!(!fullscreen_busy(&busy_with(80.0, 5.0)), "heavy shaders, still a video");
+        assert!(
+            !fullscreen_busy(&busy_with(39.0, 12.0)),
+            "mpv playing a video full screen"
+        );
+        assert!(
+            !fullscreen_busy(&busy_with(80.0, 5.0)),
+            "heavy shaders, still a video"
+        );
         assert!(!fullscreen_busy(&busy_with(3.0, 0.0)), "browser in F11");
         assert!(fullscreen_busy(&busy_with(97.0, 0.0)), "borderless game");
         assert!(fullscreen_busy(&busy_with(GAME_3D_MIN, 0.0)));
@@ -294,8 +359,14 @@ mod tests {
 
     #[test]
     fn engine_instance_names() {
-        assert_eq!(parse_engine_instance("pid_16084_luid_0x00000000_0x000139FB_phys_0_eng_0_engtype_3D"), Some((16084, "3D")));
-        assert_eq!(parse_engine_instance("pid_7_luid_0x0_0x1_phys_0_eng_3_engtype_VideoDecode"), Some((7, "VideoDecode")));
+        assert_eq!(
+            parse_engine_instance("pid_16084_luid_0x00000000_0x000139FB_phys_0_eng_0_engtype_3D"),
+            Some((16084, "3D"))
+        );
+        assert_eq!(
+            parse_engine_instance("pid_7_luid_0x0_0x1_phys_0_eng_3_engtype_VideoDecode"),
+            Some((7, "VideoDecode"))
+        );
         assert_eq!(parse_engine_instance("_Total"), None);
         assert_eq!(parse_engine_instance("pid_x_engtype_3D"), None);
     }
@@ -316,14 +387,23 @@ mod tests {
         let busy = Some(QUNS_RUNNING_D3D_FULL_SCREEN.0);
         assert_eq!(auto_reason(&s(0, 1, busy)), Some(PauseReason::Battery));
         assert_eq!(auto_reason(&s(1, 1, busy)), Some(PauseReason::Fullscreen));
-        assert_eq!(auto_reason(&s(1, 1, Some(QUNS_ACCEPTS_NOTIFICATIONS.0))), None);
+        assert_eq!(
+            auto_reason(&s(1, 1, Some(QUNS_ACCEPTS_NOTIFICATIONS.0))),
+            None
+        );
     }
 
     #[test]
     fn user_pause_wins() {
-        assert_eq!(combine(true, Some(PauseReason::Battery)), Some(PauseReason::User));
+        assert_eq!(
+            combine(true, Some(PauseReason::Battery)),
+            Some(PauseReason::User)
+        );
         assert_eq!(combine(true, None), Some(PauseReason::User));
-        assert_eq!(combine(false, Some(PauseReason::Fullscreen)), Some(PauseReason::Fullscreen));
+        assert_eq!(
+            combine(false, Some(PauseReason::Fullscreen)),
+            Some(PauseReason::Fullscreen)
+        );
         assert_eq!(combine(false, None), None);
     }
 

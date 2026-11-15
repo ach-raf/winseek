@@ -40,7 +40,13 @@ enum Follow {
 
 /// Scan `root` (a volume root, or any directory in tests) into a fresh single-volume index of
 /// kind `Folder`: root id 5, folders get synthetic ids, files 0.
-pub fn scan_tree(root: &str, vol: u8, serial: u64, stop: &AtomicBool, progress: &mut dyn FnMut(u64)) -> io::Result<Index> {
+pub fn scan_tree(
+    root: &str,
+    vol: u8,
+    serial: u64,
+    stop: &AtomicBool,
+    progress: &mut dyn FnMut(u64),
+) -> io::Result<Index> {
     let mut b = IndexBuilder::new(true);
     b.add_volume(vol, 5);
     let mut next_id = FIRST_SYNTHETIC_ID;
@@ -73,20 +79,38 @@ pub fn event_ops(root: &str, ev: PathEvent, out: &mut Vec<PathOp>) -> Result<(),
     match ev {
         PathEvent::Added(rel) | PathEvent::Modified(rel) if rel.is_empty() => {}
         PathEvent::Added(rel) => {
-            let Some(st) = stat(&join(root, &rel)) else { return Ok(()) };
-            out.push(PathOp::Upsert { rel: rel.clone(), is_dir: st.is_dir, size: st.size, mtime: st.mtime });
+            let Some(st) = stat(&join(root, &rel)) else {
+                return Ok(());
+            };
+            out.push(PathOp::Upsert {
+                rel: rel.clone(),
+                is_dir: st.is_dir,
+                size: st.size,
+                mtime: st.mtime,
+            });
             if st.is_dir && !st.is_reparse {
                 add_subtree(root, &rel, out)?;
             }
         }
         PathEvent::Modified(rel) => {
             if let Some(st) = stat(&join(root, &rel)).filter(|s| !s.is_dir) {
-                out.push(PathOp::Upsert { rel, is_dir: false, size: st.size, mtime: st.mtime });
+                out.push(PathOp::Upsert {
+                    rel,
+                    is_dir: false,
+                    size: st.size,
+                    mtime: st.mtime,
+                });
             }
         }
         PathEvent::Removed(rel) => out.push(PathOp::Remove { rel }),
         PathEvent::Renamed { old, new } => match stat(&join(root, &new)) {
-            Some(st) => out.push(PathOp::Rename { old, new, is_dir: st.is_dir, size: st.size, mtime: st.mtime }),
+            Some(st) => out.push(PathOp::Rename {
+                old,
+                new,
+                is_dir: st.is_dir,
+                size: st.size,
+                mtime: st.mtime,
+            }),
             None => out.push(PathOp::Remove { rel: old }),
         },
     }
@@ -107,12 +131,19 @@ fn add_subtree(root: &str, rel: &str, out: &mut Vec<PathOp>) -> Result<(), ()> {
             stop.store(true, Ordering::Relaxed);
             return;
         }
-        let Some(parent) = paths.get(&e.parent_id) else { return };
+        let Some(parent) = paths.get(&e.parent_id) else {
+            return;
+        };
         let child = format!("{parent}\\{}", e.name);
         if e.is_dir {
             paths.insert(e.id, child.clone());
         }
-        out.push(PathOp::Upsert { rel: child, is_dir: e.is_dir, size: e.size, mtime: e.mtime });
+        out.push(PathOp::Upsert {
+            rel: child,
+            is_dir: e.is_dir,
+            size: e.size,
+            mtime: e.mtime,
+        });
     });
     match r {
         _ if n > MAX_ADDED_SUBTREE => Err(()),
@@ -125,12 +156,21 @@ fn add_subtree(root: &str, rel: &str, out: &mut Vec<PathOp>) -> Result<(), ()> {
 }
 
 /// Follow `watch`, sending stat'ed batches to the writer at most every [`BATCH`].
-fn follow(watch: &mut DirWatch, root: &str, vol: u8, tx: &Sender<Msg>, stop: &AtomicBool) -> Follow {
+fn follow(
+    watch: &mut DirWatch,
+    root: &str,
+    vol: u8,
+    tx: &Sender<Msg>,
+    stop: &AtomicBool,
+) -> Follow {
     let mut pending: Vec<PathOp> = Vec::new();
     let mut last_flush = Instant::now();
     let flush = |pending: &mut Vec<PathOp>| {
         if !pending.is_empty() {
-            let _ = tx.send(Msg::Paths { vol, ops: std::mem::take(pending) });
+            let _ = tx.send(Msg::Paths {
+                vol,
+                ops: std::mem::take(pending),
+            });
         }
     };
     loop {
@@ -182,15 +222,30 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                     let _ = tx.send(Msg::Drop { vol: v });
                     return;
                 }
-                error!("{l}: cannot watch {root}: {e}; retrying in {}s", ERROR_RETRY.as_secs());
-                sh.set_state(l, VolumeState::Error { msg: format!("cannot watch the volume: {e}") });
+                error!(
+                    "{l}: cannot watch {root}: {e}; retrying in {}s",
+                    ERROR_RETRY.as_secs()
+                );
+                sh.set_state(
+                    l,
+                    VolumeState::Error {
+                        msg: format!("cannot watch the volume: {e}"),
+                    },
+                );
                 sleep_stoppable(&sh, ERROR_RETRY);
                 continue;
             }
         };
         let reg = guard_removal(watch.raw_handle(), ctl.clone(), Some(watch.canceller()), l);
         let has_index = sh.index.read().unwrap().root_of(v).is_some();
-        sh.set_state(l, if has_index { VolumeState::Rescanning } else { VolumeState::Scanning { done: 0, total: 0 } });
+        sh.set_state(
+            l,
+            if has_index {
+                VolumeState::Rescanning
+            } else {
+                VolumeState::Scanning { done: 0, total: 0 }
+            },
+        );
         let t = Instant::now();
         let scanned = scan_tree(&root, v, vol.serial, &ctl.stop, &mut |n| {
             if !has_index {
@@ -200,8 +255,15 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
         let started = Instant::now();
         let exit = match scanned {
             Ok(fresh) => {
-                info!("{l}: {} scan: {} entries in {:.1?}", vol.fs, fresh.live_count(), t.elapsed());
-                let _ = tx.send(Msg::Replace { fresh: Box::new(fresh) });
+                info!(
+                    "{l}: {} scan: {} entries in {:.1?}",
+                    vol.fs,
+                    fresh.live_count(),
+                    t.elapsed()
+                );
+                let _ = tx.send(Msg::Replace {
+                    fresh: Box::new(fresh),
+                });
                 info!("{l}: watching {root} (ReadDirectoryChangesW)");
                 follow(&mut watch, &root, v, &tx, &ctl.stop)
             }
@@ -225,9 +287,17 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                 // otherwise shutdown (loop ends) or a spurious stop (rescan: no cursor here)
             }
             Follow::Overflow => {
-                overflows = if started.elapsed() > Duration::from_secs(600) { 1 } else { overflows + 1 };
-                let wait = (Duration::from_secs(5) * 2u32.pow(overflows.min(6) - 1)).min(OVERFLOW_BACKOFF_MAX);
-                warn!("{l}: change buffer overflowed; need to rescan (in {}s)", wait.as_secs());
+                overflows = if started.elapsed() > Duration::from_secs(600) {
+                    1
+                } else {
+                    overflows + 1
+                };
+                let wait = (Duration::from_secs(5) * 2u32.pow(overflows.min(6) - 1))
+                    .min(OVERFLOW_BACKOFF_MAX);
+                warn!(
+                    "{l}: change buffer overflowed; need to rescan (in {}s)",
+                    wait.as_secs()
+                );
                 sh.set_state(l, VolumeState::Rescanning);
                 sleep_stoppable(&sh, wait);
             }
@@ -237,7 +307,10 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                     let _ = tx.send(Msg::Drop { vol: v });
                     return;
                 }
-                error!("{l}: folder watch failed: {e}; rescanning in {}s", ERROR_RETRY.as_secs());
+                error!(
+                    "{l}: folder watch failed: {e}; rescanning in {}s",
+                    ERROR_RETRY.as_secs()
+                );
                 sh.set_state(l, VolumeState::Error { msg: e.to_string() });
                 sleep_stoppable(&sh, ERROR_RETRY);
             }
@@ -254,7 +327,8 @@ mod tests {
     struct Tmp(std::path::PathBuf);
     impl Tmp {
         fn new(name: &str) -> Tmp {
-            let p = std::env::temp_dir().join(format!("winseek-searchd-{name}-{}", std::process::id()));
+            let p =
+                std::env::temp_dir().join(format!("winseek-searchd-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Tmp(p)
@@ -270,7 +344,12 @@ mod tests {
     }
 
     fn paths(ix: &Index, q: &str) -> Vec<String> {
-        let mut v: Vec<String> = ix.search_str(q, &SearchOptions::default()).items.iter().map(|&i| ix.full_path(i)).collect();
+        let mut v: Vec<String> = ix
+            .search_str(q, &SearchOptions::default())
+            .items
+            .iter()
+            .map(|&i| ix.full_path(i))
+            .collect();
         v.sort();
         v
     }
@@ -300,7 +379,11 @@ mod tests {
         std::fs::create_dir_all(outside.0.join("Pack").join("Inner")).unwrap();
         std::fs::write(outside.0.join("Pack").join("Inner").join("p.txt"), b"p").unwrap();
         std::fs::rename(outside.0.join("Pack"), t.0.join("Pack")).ok(); // same volume: a rename event
-        std::fs::rename(t.0.join("Docs").join("a.txt"), t.0.join("Docs").join("b.txt")).unwrap();
+        std::fs::rename(
+            t.0.join("Docs").join("a.txt"),
+            t.0.join("Docs").join("b.txt"),
+        )
+        .unwrap();
         std::fs::remove_file(t.0.join("Docs").join("Sub").join("deep.bin")).unwrap();
 
         let mut ops = Vec::new();
@@ -325,7 +408,11 @@ mod tests {
         assert_eq!(paths(&ix, "b.txt"), vec![r"Q:\Docs\b.txt"]);
         assert!(paths(&ix, "a.txt").is_empty());
         assert!(paths(&ix, "deep").is_empty());
-        assert_eq!(paths(&ix, "p.txt"), vec![r"Q:\Pack\Inner\p.txt"], "moved-in folder content: {ops:?}");
+        assert_eq!(
+            paths(&ix, "p.txt"),
+            vec![r"Q:\Pack\Inner\p.txt"],
+            "moved-in folder content: {ops:?}"
+        );
     }
 
     #[test]
@@ -347,7 +434,15 @@ mod tests {
         event_ops(t.s(), PathEvent::Added("gone.txt".into()), &mut ops).unwrap();
         event_ops(t.s(), PathEvent::Modified("New".into()), &mut ops).unwrap(); // folder mtime: ignored
         assert!(ops.is_empty());
-        event_ops(t.s(), PathEvent::Renamed { old: "x".into(), new: "missing".into() }, &mut ops).unwrap();
+        event_ops(
+            t.s(),
+            PathEvent::Renamed {
+                old: "x".into(),
+                new: "missing".into(),
+            },
+            &mut ops,
+        )
+        .unwrap();
         assert_eq!(ops, vec![PathOp::Remove { rel: "x".into() }]);
     }
 }

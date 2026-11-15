@@ -74,14 +74,21 @@ fn rd_u128(b: &[u8], o: usize) -> u128 {
 
 /// Decode the UTF-16 name of a record whose fixed part is `header` bytes long, with
 /// FileNameLength / FileNameOffset at `len_at` / `len_at + 2`.
-fn record_name(rec: &[u8], header: usize, len_at: usize, offset: usize) -> Result<String, UsnError> {
+fn record_name(
+    rec: &[u8],
+    header: usize,
+    len_at: usize,
+    offset: usize,
+) -> Result<String, UsnError> {
     let name_len = rd_u16(rec, len_at) as usize;
     let name_off = rd_u16(rec, len_at + 2) as usize;
     if name_off < header || !name_len.is_multiple_of(2) || name_off + name_len > rec.len() {
         return Err(UsnError::BadName { offset });
     }
     let units: Vec<u16> = rec[name_off..name_off + name_len]
-        .as_chunks::<2>().0.iter()
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|c| u16::from_le_bytes([c[0], c[1]]))
         .collect();
     Ok(String::from_utf16_lossy(&units))
@@ -255,13 +262,30 @@ pub(crate) mod tests {
             900,
             &[
                 v2(10, 5, 100, USN_REASON_FILE_CREATE, 0x20, "a.txt"),
-                v2(11 | (3 << 48), 5, 200, USN_REASON_FILE_DELETE | USN_REASON_CLOSE, 0x10, "日本語"),
+                v2(
+                    11 | (3 << 48),
+                    5,
+                    200,
+                    USN_REASON_FILE_DELETE | USN_REASON_CLOSE,
+                    0x10,
+                    "日本語",
+                ),
             ],
         );
         let (n, r) = parse_usn_buffer(&b).unwrap();
         assert_eq!(n, 900);
         assert_eq!(r.len(), 2);
-        assert_eq!(r[0], UsnRecord { frn: 10, parent_frn: 5, usn: 100, reason: 0x100, attrs: 0x20, name: "a.txt".into() });
+        assert_eq!(
+            r[0],
+            UsnRecord {
+                frn: 10,
+                parent_frn: 5,
+                usn: 100,
+                reason: 0x100,
+                attrs: 0x20,
+                name: "a.txt".into()
+            }
+        );
         assert_eq!(r[1].frn, 11 | (3 << 48));
         assert_eq!(r[1].name, "日本語");
         assert_eq!(r[1].attrs, 0x10);
@@ -285,19 +309,46 @@ pub(crate) mod tests {
         let b = buffer(
             77,
             &[
-                v3(frn, parent, 4096, USN_REASON_FILE_CREATE | USN_REASON_CLOSE, 0x10, "Ordner"),
+                v3(
+                    frn,
+                    parent,
+                    4096,
+                    USN_REASON_FILE_CREATE | USN_REASON_CLOSE,
+                    0x10,
+                    "Ordner",
+                ),
                 v2(9, 5, 4100, USN_REASON_FILE_DELETE, 0x20, "mixed.txt"),
-                v3(1, parent, 4200, USN_REASON_RENAME_NEW_NAME, 0x20, "日本.txt"),
+                v3(
+                    1,
+                    parent,
+                    4200,
+                    USN_REASON_RENAME_NEW_NAME,
+                    0x20,
+                    "日本.txt",
+                ),
             ],
         );
         let (n, r) = parse_usn_buffer(&b).unwrap();
         assert_eq!(n, 77);
         assert_eq!(
             r[0],
-            UsnRecord { frn, parent_frn: parent, usn: 4096, reason: 0x8000_0100, attrs: 0x10, name: "Ordner".into() }
+            UsnRecord {
+                frn,
+                parent_frn: parent,
+                usn: 4096,
+                reason: 0x8000_0100,
+                attrs: 0x10,
+                name: "Ordner".into()
+            }
         );
-        assert_eq!((r[1].frn, r[1].parent_frn, r[1].name.as_str()), (9, 5, "mixed.txt"));
-        assert_eq!((r[2].frn, r[2].usn, r[2].name.as_str()), (1, 4200, "日本.txt"));
+        assert_eq!(
+            (r[1].frn, r[1].parent_frn, r[1].name.as_str()),
+            (9, 5, "mixed.txt")
+        );
+        assert_eq!(
+            (r[2].frn, r[2].usn, r[2].name.as_str()),
+            (1, 4200, "日本.txt")
+        );
         assert_eq!(classify(r[2].reason), Op::RenameNew);
     }
 
@@ -307,20 +358,38 @@ pub(crate) mod tests {
         let mut r = vec![0u8; 0x48];
         r[0..4].copy_from_slice(&0x48u32.to_le_bytes());
         r[4..6].copy_from_slice(&3u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadRecordLength { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadRecordLength { .. })
+        ));
         // name offset inside the fixed part
         let mut r = v3(1, 2, 3, 0, 0, "name");
         r[0x4a..0x4c].copy_from_slice(&0x40u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
         // name past the record
         let mut r = v3(1, 2, 3, 0, 0, "name");
         r[0x48..0x4a].copy_from_slice(&200u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
         // odd name length
         let mut r = v3(1, 2, 3, 0, 0, "name");
         r[0x48..0x4a].copy_from_slice(&5u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
-        let b = buffer(7, &[v3(1, 2, 3, 0x100, 0, "hello"), v3(4, 5, 6, 0x200, 0x10, "world")]);
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
+        let b = buffer(
+            7,
+            &[
+                v3(1, 2, 3, 0x100, 0, "hello"),
+                v3(4, 5, 6, 0x200, 0x10, "world"),
+            ],
+        );
         for cut in 0..b.len() {
             let _ = parse_usn_buffer(&b[..cut]);
         }
@@ -335,7 +404,10 @@ pub(crate) mod tests {
 
     #[test]
     fn rejects_short_buffer() {
-        assert_eq!(parse_usn_buffer(&[1, 2, 3]), Err(UsnError::Truncated { offset: 0 }));
+        assert_eq!(
+            parse_usn_buffer(&[1, 2, 3]),
+            Err(UsnError::Truncated { offset: 0 })
+        );
     }
 
     #[test]
@@ -351,7 +423,10 @@ pub(crate) mod tests {
             let mut r = v2(1, 2, 3, 0, 0, "n");
             r[0..4].copy_from_slice(&bad.to_le_bytes());
             let b = buffer(1, &[r]);
-            assert!(matches!(parse_usn_buffer(&b), Err(UsnError::BadRecordLength { .. })), "len {bad}");
+            assert!(
+                matches!(parse_usn_buffer(&b), Err(UsnError::BadRecordLength { .. })),
+                "len {bad}"
+            );
         }
     }
 
@@ -360,7 +435,10 @@ pub(crate) mod tests {
         let mut r = vec![0u8; 16];
         r[0..4].copy_from_slice(&16u32.to_le_bytes());
         r[4..6].copy_from_slice(&2u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadRecordLength { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadRecordLength { .. })
+        ));
     }
 
     #[test]
@@ -368,25 +446,43 @@ pub(crate) mod tests {
         // offset below header
         let mut r = v2(1, 2, 3, 0, 0, "name");
         r[58..60].copy_from_slice(&8u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
         // length past record end
         let mut r = v2(1, 2, 3, 0, 0, "name");
         r[56..58].copy_from_slice(&500u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
         // odd length
         let mut r = v2(1, 2, 3, 0, 0, "name");
         r[56..58].copy_from_slice(&3u16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
         // offset+length overflow of u16 arithmetic must not wrap
         let mut r = v2(1, 2, 3, 0, 0, "name");
         r[56..58].copy_from_slice(&0xFFFEu16.to_le_bytes());
         r[58..60].copy_from_slice(&0xFFFEu16.to_le_bytes());
-        assert!(matches!(parse_usn_buffer(&buffer(1, &[r])), Err(UsnError::BadName { .. })));
+        assert!(matches!(
+            parse_usn_buffer(&buffer(1, &[r])),
+            Err(UsnError::BadName { .. })
+        ));
     }
 
     #[test]
     fn fuzz_prefixes_never_panic() {
-        let b = buffer(7, &[v2(1, 2, 3, 0x100, 0, "hello"), v2(4, 5, 6, 0x200, 0, "world")]);
+        let b = buffer(
+            7,
+            &[
+                v2(1, 2, 3, 0x100, 0, "hello"),
+                v2(4, 5, 6, 0x200, 0, "world"),
+            ],
+        );
         for cut in 0..b.len() {
             let _ = parse_usn_buffer(&b[..cut]);
         }
@@ -402,13 +498,31 @@ pub(crate) mod tests {
     #[test]
     fn classify_precedence() {
         use super::USN_REASON_CLOSE as CL;
-        assert_eq!(classify(USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE), Op::Delete);
-        assert_eq!(classify(USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME), Op::Delete);
-        assert_eq!(classify(USN_REASON_RENAME_OLD_NAME | USN_REASON_FILE_CREATE), Op::RenameOld);
-        assert_eq!(classify(USN_REASON_RENAME_NEW_NAME | USN_REASON_FILE_CREATE), Op::RenameNew);
+        assert_eq!(
+            classify(USN_REASON_FILE_CREATE | USN_REASON_FILE_DELETE),
+            Op::Delete
+        );
+        assert_eq!(
+            classify(USN_REASON_FILE_DELETE | USN_REASON_RENAME_OLD_NAME),
+            Op::Delete
+        );
+        assert_eq!(
+            classify(USN_REASON_RENAME_OLD_NAME | USN_REASON_FILE_CREATE),
+            Op::RenameOld
+        );
+        assert_eq!(
+            classify(USN_REASON_RENAME_NEW_NAME | USN_REASON_FILE_CREATE),
+            Op::RenameNew
+        );
         // accumulated bits on the new-name record
-        assert_eq!(classify(USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME), Op::RenameNew);
-        assert_eq!(classify(USN_REASON_FILE_CREATE | USN_REASON_DATA_EXTEND | CL), Op::Create);
+        assert_eq!(
+            classify(USN_REASON_RENAME_OLD_NAME | USN_REASON_RENAME_NEW_NAME),
+            Op::RenameNew
+        );
+        assert_eq!(
+            classify(USN_REASON_FILE_CREATE | USN_REASON_DATA_EXTEND | CL),
+            Op::Create
+        );
         assert_eq!(classify(USN_REASON_DATA_EXTEND), Op::Modify);
         assert_eq!(classify(USN_REASON_DATA_OVERWRITE | CL), Op::Modify);
         assert_eq!(classify(USN_REASON_BASIC_INFO_CHANGE), Op::Modify);

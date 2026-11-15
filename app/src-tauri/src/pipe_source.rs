@@ -7,7 +7,9 @@ use std::sync::Mutex;
 use std::time::Duration;
 
 use winseek_ipc::pipe::{connect, PipeConn};
-use winseek_ipc::{read_message, write_message, Monitor, Request, Response, Sort, VolumeState, PIPE_NAME};
+use winseek_ipc::{
+    read_message, write_message, Monitor, Request, Response, Sort, VolumeState, PIPE_NAME,
+};
 
 use crate::source::{Hit, NameSource, SearchResult, Tier0Detail, VolumeDetail, VolumeStatus};
 
@@ -22,7 +24,10 @@ impl PipeSource {
     /// Connect once (used at startup to decide between searchd and demo data).
     pub fn connect(timeout: Duration) -> io::Result<Self> {
         let c = connect(PIPE_NAME, timeout)?;
-        Ok(PipeSource { conn: Mutex::new(Some(c)), next_id: AtomicU64::new(1) })
+        Ok(PipeSource {
+            conn: Mutex::new(Some(c)),
+            next_id: AtomicU64::new(1),
+        })
     }
 
     fn id(&self) -> u64 {
@@ -79,7 +84,13 @@ fn sort_of(sort: &str) -> Sort {
 }
 
 fn hit(h: winseek_ipc::Hit) -> Hit {
-    Hit { name: h.name, path: h.path, is_dir: h.is_dir, size: h.size, mtime: h.mtime }
+    Hit {
+        name: h.name,
+        path: h.path,
+        is_dir: h.is_dir,
+        size: h.size,
+        mtime: h.mtime,
+    }
 }
 
 fn volume_detail(v: winseek_ipc::VolumeStatus) -> VolumeDetail {
@@ -109,12 +120,28 @@ fn volume_detail(v: winseek_ipc::VolumeStatus) -> VolumeDetail {
 }
 
 fn offline() -> Vec<VolumeStatus> {
-    vec![VolumeStatus { letter: "-".into(), files: 0, folders: 0, state: "offline".into(), done: None, total: None }]
+    vec![VolumeStatus {
+        letter: "-".into(),
+        files: 0,
+        folders: 0,
+        state: "offline".into(),
+        done: None,
+        total: None,
+    }]
 }
 
 impl NameSource for PipeSource {
-    fn search(&self, query: &str, filter: &str, offset: usize, limit: usize, sort: &str) -> SearchResult {
-        let q = format!("{query} {}", filter_clause(filter)).trim().to_string();
+    fn search(
+        &self,
+        query: &str,
+        filter: &str,
+        offset: usize,
+        limit: usize,
+        sort: &str,
+    ) -> SearchResult {
+        let q = format!("{query} {}", filter_clause(filter))
+            .trim()
+            .to_string();
         let req = Request::Search {
             id: self.id(),
             query: q,
@@ -123,10 +150,21 @@ impl NameSource for PipeSource {
             sort: sort_of(sort),
         };
         match self.call(&req) {
-            Ok(Response::SearchResult { total, hits, elapsed_us, .. }) => {
-                SearchResult { total, hits: hits.into_iter().map(hit).collect(), elapsed_us }
-            }
-            _ => SearchResult { total: 0, hits: vec![], elapsed_us: 0 },
+            Ok(Response::SearchResult {
+                total,
+                hits,
+                elapsed_us,
+                ..
+            }) => SearchResult {
+                total,
+                hits: hits.into_iter().map(hit).collect(),
+                elapsed_us,
+            },
+            _ => SearchResult {
+                total: 0,
+                hits: vec![],
+                elapsed_us: 0,
+            },
         }
     }
 
@@ -160,17 +198,28 @@ impl NameSource for PipeSource {
 
     fn detail(&self) -> Tier0Detail {
         match self.call(&Request::Status { id: self.id() }) {
-            Ok(Response::StatusResult { volumes, uptime_s, .. }) => {
-                Tier0Detail { kind: "searchd", uptime_s: Some(uptime_s), volumes: volumes.into_iter().map(volume_detail).collect() }
-            }
-            _ => Tier0Detail { kind: "unavailable", uptime_s: None, volumes: vec![] },
+            Ok(Response::StatusResult {
+                volumes, uptime_s, ..
+            }) => Tier0Detail {
+                kind: "searchd",
+                uptime_s: Some(uptime_s),
+                volumes: volumes.into_iter().map(volume_detail).collect(),
+            },
+            _ => Tier0Detail {
+                kind: "unavailable",
+                uptime_s: None,
+                volumes: vec![],
+            },
         }
     }
 
     /// The pipe's DACL gives the interactive user read/write and searchd does not check elevation,
     /// so a normal (non-admin) app may ask for a rescan.
     fn rescan(&self, volume: char) -> Result<(), String> {
-        match self.call(&Request::Rescan { id: self.id(), volume }) {
+        match self.call(&Request::Rescan {
+            id: self.id(),
+            volume,
+        }) {
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Ok(()),
             Err(e) => Err(format!("The name service did not answer: {e}")),
@@ -178,7 +227,11 @@ impl NameSource for PipeSource {
     }
 
     fn usage_detail(&self, path: &str, top_files: u32) -> Result<winseek_ipc::UsageDetail, String> {
-        match self.call(&Request::UsageDetail { id: self.id(), path: path.into(), top_files }) {
+        match self.call(&Request::UsageDetail {
+            id: self.id(),
+            path: path.into(),
+            top_files,
+        }) {
             Ok(Response::UsageDetailResult { detail, .. }) => Ok(detail),
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Err("Unexpected answer from the name service.".into()),
@@ -187,7 +240,11 @@ impl NameSource for PipeSource {
     }
 
     fn usage(&self, path: &str, limit: u32) -> Result<winseek_ipc::UsageTree, String> {
-        match self.call(&Request::Usage { id: self.id(), path: path.into(), limit }) {
+        match self.call(&Request::Usage {
+            id: self.id(),
+            path: path.into(),
+            limit,
+        }) {
             Ok(Response::UsageResult { usage, .. }) => Ok(usage),
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Err("Unexpected answer from the name service.".into()),
@@ -196,7 +253,10 @@ impl NameSource for PipeSource {
     }
 
     fn recent(&self, limit: usize) -> Vec<Hit> {
-        match self.call(&Request::Recent { id: self.id(), limit: limit.min(u32::MAX as usize) as u32 }) {
+        match self.call(&Request::Recent {
+            id: self.id(),
+            limit: limit.min(u32::MAX as usize) as u32,
+        }) {
             Ok(Response::RecentResult { hits, .. }) => hits.into_iter().map(hit).collect(),
             _ => vec![],
         }
@@ -209,14 +269,35 @@ mod tests {
 
     #[test]
     fn volume_detail_keeps_state_progress_and_error_text() {
-        let v = |state| winseek_ipc::VolumeStatus { letter: 'C', files: 7, folders: 2, state, fs: "NTFS".into(), monitor: Monitor::Usn };
+        let v = |state| winseek_ipc::VolumeStatus {
+            letter: 'C',
+            files: 7,
+            folders: 2,
+            state,
+            fs: "NTFS".into(),
+            monitor: Monitor::Usn,
+        };
         let d = volume_detail(v(VolumeState::Scanning { done: 3, total: 9 }));
-        assert_eq!((d.state.as_str(), d.done, d.total, d.letter.as_str()), ("scanning", Some(3), Some(9), "C"));
-        let d = volume_detail(v(VolumeState::Error { msg: "journal gone".into() }));
-        assert_eq!((d.state.as_str(), d.error.as_deref()), ("error", Some("journal gone")));
-        assert_eq!(volume_detail(v(VolumeState::Rescanning)).state, "rescanning");
+        assert_eq!(
+            (d.state.as_str(), d.done, d.total, d.letter.as_str()),
+            ("scanning", Some(3), Some(9), "C")
+        );
+        let d = volume_detail(v(VolumeState::Error {
+            msg: "journal gone".into(),
+        }));
+        assert_eq!(
+            (d.state.as_str(), d.error.as_deref()),
+            ("error", Some("journal gone"))
+        );
+        assert_eq!(
+            volume_detail(v(VolumeState::Rescanning)).state,
+            "rescanning"
+        );
         let d = volume_detail(v(VolumeState::Live));
-        assert_eq!((d.state.as_str(), d.files, d.folders, d.error), ("live", 7, 2, None));
+        assert_eq!(
+            (d.state.as_str(), d.files, d.folders, d.error),
+            ("live", 7, 2, None)
+        );
         assert_eq!((d.fs.as_str(), d.monitor.as_str()), ("NTFS", "usn"));
         let e = volume_detail(winseek_ipc::VolumeStatus {
             letter: 'E',
@@ -226,8 +307,21 @@ mod tests {
             fs: "exFAT".into(),
             monitor: Monitor::FolderWatch,
         });
-        assert_eq!((e.fs.as_str(), e.monitor.as_str()), ("exFAT", "folder_watch"));
-        let old = volume_detail(winseek_ipc::VolumeStatus { fs: String::new(), ..winseek_ipc::VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Live, fs: String::new(), monitor: Monitor::Usn } });
+        assert_eq!(
+            (e.fs.as_str(), e.monitor.as_str()),
+            ("exFAT", "folder_watch")
+        );
+        let old = volume_detail(winseek_ipc::VolumeStatus {
+            fs: String::new(),
+            ..winseek_ipc::VolumeStatus {
+                letter: 'D',
+                files: 0,
+                folders: 0,
+                state: VolumeState::Live,
+                fs: String::new(),
+                monitor: Monitor::Usn,
+            }
+        });
         assert_eq!((old.fs.as_str(), old.monitor.as_str()), ("", ""));
     }
 

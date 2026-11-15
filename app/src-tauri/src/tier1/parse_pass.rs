@@ -17,7 +17,10 @@ use std::time::{Duration, Instant};
 use pdfium_render::prelude::Pdfium;
 use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::Parsed;
-use winseek_store::{ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS, SETTING_PARSE_GATE_REEVAL, SETTING_PARSE_ROUTE_CURSOR};
+use winseek_store::{
+    ParseChunk, ParseJob, ParseResult, Store, MAX_PARSE_ATTEMPTS, SETTING_PARSE_GATE_REEVAL,
+    SETTING_PARSE_ROUTE_CURSOR,
+};
 
 use super::chunk;
 use super::embedder::Embedder;
@@ -115,7 +118,14 @@ impl Default for ParsePass {
 
 impl ParsePass {
     pub fn with_ocr(ocr: Box<dyn Ocr>) -> Self {
-        ParsePass { ocr, protos: None, proto_retry_at: None, pdf_runtime: pdf::runtime, output_retry: OUTPUT_RETRY, live: None }
+        ParsePass {
+            ocr,
+            protos: None,
+            proto_retry_at: None,
+            pdf_runtime: pdf::runtime,
+            output_retry: OUTPUT_RETRY,
+            live: None,
+        }
     }
 
     /// Publish each batch to `slot` (cleared when nothing is in flight) for the status page.
@@ -166,7 +176,11 @@ impl ParsePass {
     /// text. Guarded by a store setting so it runs once per store; every step is an idempotent
     /// update, so an aborted run simply repeats on the next pass.
     fn reeval_stale(&mut self, store: &Mutex<Store>) -> Result<(), String> {
-        if lock(store).get_setting(SETTING_PARSE_GATE_REEVAL).map_err(db)?.is_some() {
+        if lock(store)
+            .get_setting(SETTING_PARSE_GATE_REEVAL)
+            .map_err(db)?
+            .is_some()
+        {
             return Ok(());
         }
         let jobs = lock(store).queued_all().map_err(db)?;
@@ -178,7 +192,9 @@ impl ParsePass {
                 dropped += 1;
             }
         }
-        lock(store).set_setting(SETTING_PARSE_GATE_REEVAL, Some("1")).map_err(db)?;
+        lock(store)
+            .set_setting(SETTING_PARSE_GATE_REEVAL, Some("1"))
+            .map_err(db)?;
         if !jobs.is_empty() {
             eprintln!(
                 "winseek: tier 1: re-checked {} queued item(s) against the current OCR gate; {dropped} already have readable text and left the queue",
@@ -191,9 +207,20 @@ impl ParsePass {
     // ------------------------------------------------------------ routing
 
     /// Look at the next batch of image vectors; returns how many were queued for the parser.
-    fn route_pass(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, paused: &AtomicBool) -> Result<usize, String> {
-        let cursor: i64 = lock(store).get_setting(SETTING_PARSE_ROUTE_CURSOR).map_err(db)?.and_then(|s| s.parse().ok()).unwrap_or(0);
-        let batch = lock(store).image_vectors_after(cursor, ROUTE_BATCH).map_err(db)?;
+    fn route_pass(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: &Mutex<Box<dyn Embedder + Send>>,
+        paused: &AtomicBool,
+    ) -> Result<usize, String> {
+        let cursor: i64 = lock(store)
+            .get_setting(SETTING_PARSE_ROUTE_CURSOR)
+            .map_err(db)?
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(0);
+        let batch = lock(store)
+            .image_vectors_after(cursor, ROUTE_BATCH)
+            .map_err(db)?;
         if batch.is_empty() {
             return Ok(0);
         }
@@ -210,7 +237,9 @@ impl ParsePass {
                 }
             }
         }
-        let Some(protos) = self.protos.clone() else { return Ok(0) };
+        let Some(protos) = self.protos.clone() else {
+            return Ok(0);
+        };
         let (mut last, mut queued) = (cursor, 0usize);
         for img in &batch {
             if paused.load(Ordering::Relaxed) {
@@ -223,7 +252,9 @@ impl ParsePass {
             last = img.rowid;
         }
         if last != cursor {
-            lock(store).set_setting(SETTING_PARSE_ROUTE_CURSOR, Some(&last.to_string())).map_err(db)?;
+            lock(store)
+                .set_setting(SETTING_PARSE_ROUTE_CURSOR, Some(&last.to_string()))
+                .map_err(db)?;
         }
         Ok(queued)
     }
@@ -234,8 +265,19 @@ impl ParsePass {
     /// item out of the queue; sparse or junky text, or none, leaves it queued. An image without
     /// stored text gets Windows OCR first (cheap): if that reads the page well, the text is stored
     /// and the item is skipped (`ocr_ok`), so it is text-searchable without spending the GPU.
-    fn route_doc(&mut self, store: &Mutex<Store>, embedder: &Mutex<Box<dyn Embedder + Send>>, hash: &str) -> Result<(), String> {
-        let have: String = lock(store).texts_of(hash).map_err(db)?.into_iter().map(|(_, t)| t).collect::<Vec<_>>().join("\n");
+    fn route_doc(
+        &mut self,
+        store: &Mutex<Store>,
+        embedder: &Mutex<Box<dyn Embedder + Send>>,
+        hash: &str,
+    ) -> Result<(), String> {
+        let have: String = lock(store)
+            .texts_of(hash)
+            .map_err(db)?
+            .into_iter()
+            .map(|(_, t)| t)
+            .collect::<Vec<_>>()
+            .join("\n");
         lock(store).queue_parse(hash, 0, "doc_image").map_err(db)?;
         if !have.trim().is_empty() {
             if !ocr_looks_poor(&have) {
@@ -243,14 +285,28 @@ impl ParsePass {
             }
             return Ok(());
         }
-        let Some(path) = lock(store).live_path(hash).map_err(db)? else { return Ok(()) };
-        let Some(ocr) = guard::read_guarded(Path::new(&path)).ok().and_then(|b| self.ocr.recognize(&b).ok()) else { return Ok(()) };
+        let Some(path) = lock(store).live_path(hash).map_err(db)? else {
+            return Ok(());
+        };
+        let Some(ocr) = guard::read_guarded(Path::new(&path))
+            .ok()
+            .and_then(|b| self.ocr.recognize(&b).ok())
+        else {
+            return Ok(());
+        };
         if ocr.is_empty() || ocr_looks_poor(&ocr.text) {
             return Ok(()); // nothing readable: the parser reads the page itself
         }
         let locator = ocr.locator_json();
-        let result = text_result(embedder, chunk_texts(&ocr.text, 0), &super::file_title(&path), &locator);
-        lock(store).skip_parse_replacing(hash, 0, "ocr_ok", &result).map_err(db)
+        let result = text_result(
+            embedder,
+            chunk_texts(&ocr.text, 0),
+            &super::file_title(&path),
+            &locator,
+        );
+        lock(store)
+            .skip_parse_replacing(hash, 0, "ocr_ok", &result)
+            .map_err(db)
     }
 
     // ------------------------------------------------------------ parsing
@@ -276,11 +332,15 @@ impl ParsePass {
             match self.job_input(job) {
                 Input::Jpeg(j) => pages.push((job, j)),
                 Input::Fail(msg) => {
-                    lock(store).fail_parse(&job.hash, job.page, &msg).map_err(db)?;
+                    lock(store)
+                        .fail_parse(&job.hash, job.page, &msg)
+                        .map_err(db)?;
                     n += 1;
                 }
                 Input::Skip(reason) => {
-                    lock(store).skip_parse(&job.hash, job.page, reason).map_err(db)?;
+                    lock(store)
+                        .skip_parse(&job.hash, job.page, reason)
+                        .map_err(db)?;
                     n += 1;
                 }
                 Input::Defer => break, // this job and the rest stay queued for when pdfium works
@@ -291,9 +351,19 @@ impl ParsePass {
             return Ok(n);
         };
         if let Some(slot) = &self.live {
-            *lock(slot) = Some(ParseLive { path: first.path.clone(), pages: pages.len(), at: Instant::now() });
+            *lock(slot) = Some(ParseLive {
+                path: first.path.clone(),
+                pages: pages.len(),
+                at: Instant::now(),
+            });
         }
-        let r = parse_retry_output(parser, first_jpeg, parse_phased(parser, embedder, first_jpeg), paused, self.output_retry);
+        let r = parse_retry_output(
+            parser,
+            first_jpeg,
+            parse_phased(parser, embedder, first_jpeg),
+            paused,
+            self.output_retry,
+        );
         match r {
             Ok(parsed) => {
                 finish_job(store, embedder, first, parsed)?;
@@ -335,7 +405,8 @@ impl ParsePass {
     }
 
     /// The page image of a job: the standalone image re-read from disk, or the PDF page rendered.
-    fn job_input(&self, job: &ParseJob) -> Input {        let bytes = match guard::read_guarded(Path::new(&job.path)) {
+    fn job_input(&self, job: &ParseJob) -> Input {
+        let bytes = match guard::read_guarded(Path::new(&job.path)) {
             Ok(b) => b,
             Err(e) => return Input::Fail(format!("read: {e}")),
         };
@@ -343,13 +414,17 @@ impl ParsePass {
             return Input::Skip("changed");
         }
         if job.page == 0 {
-            let Some(bytes) = super::heic::normalize(&job.path, bytes) else { return Input::Skip("no_heic_codec") };
+            let Some(bytes) = super::heic::normalize(&job.path, bytes) else {
+                return Input::Skip("no_heic_codec");
+            };
             return match prepare_jpeg_long(&bytes, PARSE_LONG_SIDE) {
                 Ok(j) => Input::Jpeg(j),
                 Err(m) => Input::Fail(m),
             };
         }
-        let Ok(rt) = (self.pdf_runtime)() else { return Input::Defer };
+        let Ok(rt) = (self.pdf_runtime)() else {
+            return Input::Defer;
+        };
         match pdf::render_pages(rt, &bytes, &[job.page]) {
             Ok(mut pages) if !pages.is_empty() => Input::Jpeg(pages.remove(0).1),
             Ok(_) => Input::Fail(format!("page {} could not be rendered", job.page)),
@@ -369,21 +444,39 @@ fn finish_job(
 ) -> Result<(), String> {
     let text = parsed.plain_text();
     if text.trim().is_empty() {
-        lock(store).skip_parse(&job.hash, job.page, "empty").map_err(db)?; // the OCR text stays
+        lock(store)
+            .skip_parse(&job.hash, job.page, "empty")
+            .map_err(db)?; // the OCR text stays
         return Ok(());
     }
     let locator = parsed.locator_json((job.page > 0).then_some(job.page));
-        let result = text_result(embedder, chunk_texts(&text, job.page), &super::file_title(&job.path), &locator);
-    lock(store).finish_parse(&job.hash, job.page, &result).map_err(db)
+    let result = text_result(
+        embedder,
+        chunk_texts(&text, job.page),
+        &super::file_title(&job.path),
+        &locator,
+    );
+    lock(store)
+        .finish_parse(&job.hash, job.page, &result)
+        .map_err(db)
 }
 
 /// Count a failed parse attempt; the third strikes the item out. `true` = the attempt is
 /// recoverable: the server was dropped so the next pass starts fresh (a wedged server must not
 /// eat the retries).
-fn bump_attempt(store: &Mutex<Store>, parser: &Mutex<Box<dyn Parser + Send>>, job: &ParseJob, msg: &str) -> Result<bool, String> {
-    let attempts = lock(store).bump_parse(&job.hash, job.page, msg).map_err(db)?;
+fn bump_attempt(
+    store: &Mutex<Store>,
+    parser: &Mutex<Box<dyn Parser + Send>>,
+    job: &ParseJob,
+    msg: &str,
+) -> Result<bool, String> {
+    let attempts = lock(store)
+        .bump_parse(&job.hash, job.page, msg)
+        .map_err(db)?;
     if attempts >= MAX_PARSE_ATTEMPTS {
-        lock(store).fail_parse(&job.hash, job.page, msg).map_err(db)?;
+        lock(store)
+            .fail_parse(&job.hash, job.page, msg)
+            .map_err(db)?;
         Ok(false)
     } else {
         lock(parser).unload();
@@ -393,20 +486,37 @@ fn bump_attempt(store: &Mutex<Store>, parser: &Mutex<Box<dyn Parser + Send>>, jo
 
 /// The text of one item as chunks (blank ones dropped).
 fn chunk_texts(text: &str, page: u32) -> Vec<String> {
-    chunk::chunk_page(text, page, PARSE_CHUNKS).into_iter().map(|c| c.text).filter(|t| !t.is_empty()).collect()
+    chunk::chunk_page(text, page, PARSE_CHUNKS)
+        .into_iter()
+        .map(|c| c.text)
+        .filter(|t| !t.is_empty())
+        .collect()
 }
 
 /// Text chunks with their vectors (`embed_documents` on the CPU query server, titled with the
 /// file name; on any error the vectors are left owed and the upgrade pass computes them later)
 /// as a [`ParseResult`]; the same locator goes on the chunks and on the item's image / page vector.
-fn text_result(embedder: &Mutex<Box<dyn Embedder + Send>>, texts: Vec<String>, title: &str, locator: &str) -> ParseResult {
+fn text_result(
+    embedder: &Mutex<Box<dyn Embedder + Send>>,
+    texts: Vec<String>,
+    title: &str,
+    locator: &str,
+) -> ParseResult {
     let pairs: Vec<(&str, &str)> = texts.iter().map(|t| (title, t.as_str())).collect();
     let vecs: Vec<Option<Vec<f32>>> = match lock(embedder).embed_documents(&pairs) {
         Ok(v) if v.len() == texts.len() => v.into_iter().map(Some).collect(),
         _ => vec![None; texts.len()],
     };
     ParseResult {
-        chunks: texts.into_iter().zip(vecs).map(|(text, vec)| ParseChunk { text, locator: locator.to_string(), vec }).collect(),
+        chunks: texts
+            .into_iter()
+            .zip(vecs)
+            .map(|(text, vec)| ParseChunk {
+                text,
+                locator: locator.to_string(),
+                vec,
+            })
+            .collect(),
         locator: locator.to_string(),
     }
 }
@@ -447,7 +557,10 @@ mod tests {
         fn embed_query(&mut self, q: &str) -> super::super::embedder::Result<Vec<f32>> {
             Ok(unit(if DOC_PROMPTS.contains(&q) { 0 } else { 1 }))
         }
-        fn embed_documents(&mut self, docs: &[(&str, &str)]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+        fn embed_documents(
+            &mut self,
+            docs: &[(&str, &str)],
+        ) -> super::super::embedder::Result<Vec<Vec<f32>>> {
             self.doc_calls.fetch_add(1, Ordering::SeqCst);
             if self.fail_docs {
                 return Err(EmbedError::Other("server down".into()));
@@ -491,7 +604,11 @@ mod tests {
     fn invoice() -> Parsed {
         Parsed {
             elements: vec![
-                Element { bbox: Some([100.0, 50.0, 900.0, 120.0]), category: "title".into(), text: "# Quarterly Invoice 4471".into() },
+                Element {
+                    bbox: Some([100.0, 50.0, 900.0, 120.0]),
+                    category: "title".into(),
+                    text: "# Quarterly Invoice 4471".into(),
+                },
                 Element {
                     bbox: Some([100.0, 200.0, 900.0, 400.0]),
                     category: "table".into(),
@@ -517,12 +634,20 @@ mod tests {
     fn env(present: bool, fail_docs: bool) -> Env {
         let script: Script = Arc::default();
         let (calls, unloads) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
-        let emb = Emb { fail_docs, ..Default::default() };
+        let emb = Emb {
+            fail_docs,
+            ..Default::default()
+        };
         let (doc_calls, released) = (emb.doc_calls.clone(), emb.released.clone());
         Env {
             store: Mutex::new(Store::open_in_memory(&index_meta("test")).unwrap()),
             embedder: Mutex::new(Box::new(emb)),
-            parser: Mutex::new(Box::new(Fake { present, script: script.clone(), calls: calls.clone(), unloads: unloads.clone() })),
+            parser: Mutex::new(Box::new(Fake {
+                present,
+                script: script.clone(),
+                calls: calls.clone(),
+                unloads: unloads.clone(),
+            })),
             dir: tempfile::tempdir().unwrap(),
             script,
             calls,
@@ -533,9 +658,13 @@ mod tests {
     }
 
     fn png(w: u32, h: u32, seed: u8) -> Vec<u8> {
-        let img = image::RgbImage::from_fn(w, h, |x, y| image::Rgb([seed, (x % 251) as u8, (y % 251) as u8]));
+        let img = image::RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([seed, (x % 251) as u8, (y % 251) as u8])
+        });
         let mut out = Vec::new();
-        image::DynamicImage::ImageRgb8(img).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
         out
     }
 
@@ -547,12 +676,33 @@ mod tests {
             std::fs::write(&path, &bytes).unwrap();
             let hash = sha256_hex(&bytes);
             let mut s = self.store.lock().unwrap();
-            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: u64::from(seed) }, &path.to_string_lossy(), bytes.len() as u64, 1, "image").unwrap();
+            let id = s
+                .upsert_file(
+                    &FileKey {
+                        vol_guid: "{v}".into(),
+                        frn: u64::from(seed),
+                    },
+                    &path.to_string_lossy(),
+                    bytes.len() as u64,
+                    1,
+                    "image",
+                )
+                .unwrap();
             let loc = r#"{"ocr":{"w":40,"h":30,"lines":[{"t":"old","r":[1,2,3,4]}]}}"#;
-            let mut vecs = vec![ChunkVec { chunk: 0, kind: VecKind::Image, locator: ocr_text.map(|_| loc.to_string()), vec }];
+            let mut vecs = vec![ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: ocr_text.map(|_| loc.to_string()),
+                vec,
+            }];
             let mut texts = vec![];
             if let Some(t) = ocr_text {
-                vecs.push(ChunkVec { chunk: 1, kind: VecKind::Text, locator: Some(loc.into()), vec: unit(3) });
+                vecs.push(ChunkVec {
+                    chunk: 1,
+                    kind: VecKind::Text,
+                    locator: Some(loc.into()),
+                    vec: unit(3),
+                });
                 texts.push((1, t.to_string()));
             }
             s.complete(id, &hash, &vecs, &texts).unwrap();
@@ -560,7 +710,14 @@ mod tests {
         }
 
         fn pass(&self, p: &mut ParsePass) -> bool {
-            p.run(&self.store, &self.embedder, &self.parser, &AtomicBool::new(false)).unwrap() > 0
+            p.run(
+                &self.store,
+                &self.embedder,
+                &self.parser,
+                &AtomicBool::new(false),
+            )
+            .unwrap()
+                > 0
         }
 
         fn counts(&self) -> ParseCounts {
@@ -568,12 +725,23 @@ mod tests {
         }
 
         fn cursor(&self) -> Option<String> {
-            self.store.lock().unwrap().get_setting(SETTING_PARSE_ROUTE_CURSOR).unwrap()
+            self.store
+                .lock()
+                .unwrap()
+                .get_setting(SETTING_PARSE_ROUTE_CURSOR)
+                .unwrap()
         }
 
         /// Hashes of the items still waiting for the parser.
         fn queued(&self) -> Vec<String> {
-            self.store.lock().unwrap().next_parse(100).unwrap().into_iter().map(|j| j.hash).collect()
+            self.store
+                .lock()
+                .unwrap()
+                .next_parse(100)
+                .unwrap()
+                .into_iter()
+                .map(|j| j.hash)
+                .collect()
         }
     }
 
@@ -581,7 +749,15 @@ mod tests {
     impl Ocr for FakeOcr {
         fn recognize(&mut self, _: &[u8]) -> Result<OcrText, OcrError> {
             match &self.0 {
-                Some(t) => Ok(OcrText { text: t.clone(), lines: vec![OcrLine { text: t.clone(), rect: [1, 2, 3, 4] }], width: 40, height: 30 }),
+                Some(t) => Ok(OcrText {
+                    text: t.clone(),
+                    lines: vec![OcrLine {
+                        text: t.clone(),
+                        rect: [1, 2, 3, 4],
+                    }],
+                    width: 40,
+                    height: 30,
+                }),
                 None => Err(OcrError::Unavailable),
             }
         }
@@ -600,7 +776,15 @@ mod tests {
         let mut p = pass_with(None);
         // routing found something to do; the queued item is not parsed in the same step
         assert!(e.pass(&mut p));
-        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 });
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 1,
+                done: 0,
+                failed: 0,
+                skipped: 0
+            }
+        );
         assert_eq!(e.queued(), vec![doc]);
         assert!(!e.queued().contains(&photo));
         assert!(e.cursor().is_some());
@@ -608,7 +792,15 @@ mod tests {
         // second step: nothing new to route, the queued job is parsed
         assert!(e.pass(&mut p));
         assert_eq!(e.calls.load(Ordering::SeqCst), 1);
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 0,
+                done: 1,
+                failed: 0,
+                skipped: 0
+            }
+        );
         // nothing left
         assert!(!e.pass(&mut p));
         assert_eq!(e.calls.load(Ordering::SeqCst), 1);
@@ -620,7 +812,11 @@ mod tests {
         e.add_image("scan.png", 1, unit(0), Some("Invoice"));
         let mut p = pass_with(None);
         assert!(!e.pass(&mut p));
-        assert_eq!((e.cursor(), e.counts()), (None, ParseCounts::default()), "no parser: nothing routed, the cursor waits");
+        assert_eq!(
+            (e.cursor(), e.counts()),
+            (None, ParseCounts::default()),
+            "no parser: nothing routed, the cursor waits"
+        );
         let e = env(true, false);
         e.add_image("scan.png", 1, unit(0), Some("Invoice"));
         let paused = AtomicBool::new(true);
@@ -632,7 +828,10 @@ mod tests {
     fn route_waits_when_the_prototypes_cannot_be_embedded() {
         struct Down;
         impl Embedder for Down {
-            fn embed_images(&mut self, _: &[Vec<u8>]) -> super::super::embedder::Result<Vec<Vec<f32>>> {
+            fn embed_images(
+                &mut self,
+                _: &[Vec<u8>],
+            ) -> super::super::embedder::Result<Vec<Vec<f32>>> {
                 Err(EmbedError::ModelsMissing)
             }
             fn embed_query(&mut self, _: &str) -> super::super::embedder::Result<Vec<f32>> {
@@ -647,7 +846,11 @@ mod tests {
         e.add_image("scan.png", 1, unit(0), Some("Invoice"));
         let mut p = pass_with(None);
         assert!(!e.pass(&mut p));
-        assert_eq!(e.cursor(), None, "the images are looked at once the embedder works");
+        assert_eq!(
+            e.cursor(),
+            None,
+            "the images are looked at once the embedder works"
+        );
         assert!(p.proto_retry_at.is_some(), "and not retried every second");
     }
 
@@ -663,9 +866,31 @@ mod tests {
         let hp = sha256_hex(&bytes);
         {
             let mut s = e.store.lock().unwrap();
-            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 9 }, &path.to_string_lossy(), bytes.len() as u64, 1, "pdf").unwrap();
-            let v = |chunk, page: u32| ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!(r#"{{"page":{page}}}"#)), vec: unit(3) };
-            s.complete(id, &hp, &[v(1, 1), v(3, 2)], &[(1, "junk".into()), (3, ARABIC_SENTENCE.repeat(2))]).unwrap();
+            let id = s
+                .upsert_file(
+                    &FileKey {
+                        vol_guid: "{v}".into(),
+                        frn: 9,
+                    },
+                    &path.to_string_lossy(),
+                    bytes.len() as u64,
+                    1,
+                    "pdf",
+                )
+                .unwrap();
+            let v = |chunk, page: u32| ChunkVec {
+                chunk,
+                kind: VecKind::Text,
+                locator: Some(format!(r#"{{"page":{page}}}"#)),
+                vec: unit(3),
+            };
+            s.complete(
+                id,
+                &hp,
+                &[v(1, 1), v(3, 2)],
+                &[(1, "junk".into()), (3, ARABIC_SENTENCE.repeat(2))],
+            )
+            .unwrap();
             s.queue_parse(&readable, 0, "doc_image").unwrap();
             s.queue_parse(&junk, 0, "doc_image").unwrap();
             s.queue_parse(&hp, 2, "scanned_pdf").unwrap();
@@ -673,15 +898,41 @@ mod tests {
         }
         let mut p = pass_with(None);
         p.reeval_stale(&e.store).unwrap();
-        assert_eq!(e.counts(), ParseCounts { queued: 2, done: 0, failed: 0, skipped: 2 }, "the readable image and the readable PDF page left");
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 2,
+                done: 0,
+                failed: 0,
+                skipped: 2
+            },
+            "the readable image and the readable PDF page left"
+        );
         {
             let s = e.store.lock().unwrap();
-            assert!(s.next_parse(10).unwrap().iter().all(|j| j.hash == junk || (j.hash == hp && j.page == 1)), "junk text still waits");
-            assert_eq!(s.texts_of(&readable).unwrap()[0].1, ARABIC_SENTENCE.repeat(2), "the kept item's text is untouched");
-            assert!(s.get_setting(SETTING_PARSE_GATE_REEVAL).unwrap().is_some(), "the re-check is marked done");
+            assert!(
+                s.next_parse(10)
+                    .unwrap()
+                    .iter()
+                    .all(|j| j.hash == junk || (j.hash == hp && j.page == 1)),
+                "junk text still waits"
+            );
+            assert_eq!(
+                s.texts_of(&readable).unwrap()[0].1,
+                ARABIC_SENTENCE.repeat(2),
+                "the kept item's text is untouched"
+            );
+            assert!(
+                s.get_setting(SETTING_PARSE_GATE_REEVAL).unwrap().is_some(),
+                "the re-check is marked done"
+            );
         }
         // the next pass does not repeat the walk (the setting short-circuits it)
-        e.store.lock().unwrap().skip_parse(&junk, 0, "empty").unwrap();
+        e.store
+            .lock()
+            .unwrap()
+            .skip_parse(&junk, 0, "empty")
+            .unwrap();
         e.store.lock().unwrap().skip_parse(&hp, 1, "empty").unwrap();
         assert_eq!(e.queued().len(), 0);
         assert_eq!(p.reeval_stale(&e.store).unwrap(), ());
@@ -699,13 +950,25 @@ mod tests {
         let mut p = pass_with(None);
         assert!(e.pass(&mut p));
         let s = e.store.lock().unwrap();
-        let queued: Vec<String> = s.next_parse(10).unwrap().into_iter().map(|j| j.hash).collect();
-        assert_eq!(queued.len(), 2, "the readable page stays out, junk and sparse text wait");
+        let queued: Vec<String> = s
+            .next_parse(10)
+            .unwrap()
+            .into_iter()
+            .map(|j| j.hash)
+            .collect();
+        assert_eq!(
+            queued.len(),
+            2,
+            "the readable page stays out, junk and sparse text wait"
+        );
         assert!(queued.contains(&junky) && queued.contains(&short) && !queued.contains(&readable));
         assert_eq!(s.parse_counts().unwrap().queued, 2);
         drop(s);
         // the readable page's OCR text is untouched
-        assert_eq!(e.store.lock().unwrap().texts_of(&readable).unwrap().len(), 1);
+        assert_eq!(
+            e.store.lock().unwrap().texts_of(&readable).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -716,10 +979,24 @@ mod tests {
         let mut p = pass_with(Some(russian.clone()));
         assert!(e.pass(&mut p));
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap().queued, 0, "stored as ocr_ok, not queued");
+        assert_eq!(
+            s.parse_counts().unwrap().queued,
+            0,
+            "stored as ocr_ok, not queued"
+        );
         assert!(s.next_parse(10).unwrap().is_empty());
-        assert_eq!(s.texts_of(&hash).unwrap(), vec![(1, russian.trim_end().to_string())], "chunking trims the text");
-        assert_eq!(s.search_text(&winseek_store::fts_escape("напечатанного"), 5).unwrap().len(), 1, "text-searchable now");
+        assert_eq!(
+            s.texts_of(&hash).unwrap(),
+            vec![(1, russian.trim_end().to_string())],
+            "chunking trims the text"
+        );
+        assert_eq!(
+            s.search_text(&winseek_store::fts_escape("напечатанного"), 5)
+                .unwrap()
+                .len(),
+            1,
+            "text-searchable now"
+        );
         let hits = s.search_vectors(&unit(2), 3, Some(VecKind::Text)).unwrap();
         assert_eq!(hits.len(), 1, "with a text vector");
         assert!(hits[0].locator.as_deref().unwrap().contains("\"ocr\""));
@@ -735,7 +1012,10 @@ mod tests {
         let mut p = pass_with(Some("Latin text here".to_string()));
         assert!(e.pass(&mut p));
         assert_eq!(e.counts().queued, 2);
-        assert!(e.store.lock().unwrap().texts_of(&a).unwrap().is_empty(), "Latin: the parser will provide the text");
+        assert!(
+            e.store.lock().unwrap().texts_of(&a).unwrap().is_empty(),
+            "Latin: the parser will provide the text"
+        );
         // OCR unavailable: still queued
         let e2 = env(true, false);
         e2.add_image("c.png", 3, unit(0), None);
@@ -752,15 +1032,38 @@ mod tests {
         e.pass(&mut p); // route
         e.pass(&mut p); // parse
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
+        assert_eq!(
+            s.parse_counts().unwrap(),
+            ParseCounts {
+                queued: 0,
+                done: 1,
+                failed: 0,
+                skipped: 0
+            }
+        );
         let texts = s.texts_of(&hash).unwrap();
         assert_eq!(texts.len(), 1);
-        assert!(texts[0].1.contains("Quarterly Invoice 4471") && texts[0].1.contains("Total due\t1,869.00"), "{:?}", texts);
-        assert_eq!(s.search_text(&winseek_store::fts_escape("garbled"), 5).unwrap().len(), 0, "the OCR text is gone");
+        assert!(
+            texts[0].1.contains("Quarterly Invoice 4471")
+                && texts[0].1.contains("Total due\t1,869.00"),
+            "{:?}",
+            texts
+        );
+        assert_eq!(
+            s.search_text(&winseek_store::fts_escape("garbled"), 5)
+                .unwrap()
+                .len(),
+            0,
+            "the OCR text is gone"
+        );
         let hit = s.search_vectors(&unit(2), 3, Some(VecKind::Text)).unwrap();
-        assert!(hit[0].locator.as_deref().unwrap().contains("\"parser\""), "text vector carries the boxes");
+        assert!(
+            hit[0].locator.as_deref().unwrap().contains("\"parser\""),
+            "text vector carries the boxes"
+        );
         let img = s.search_vectors(&unit(0), 3, Some(VecKind::Image)).unwrap();
-        let loc: serde_json::Value = serde_json::from_str(img[0].locator.as_deref().unwrap()).unwrap();
+        let loc: serde_json::Value =
+            serde_json::from_str(img[0].locator.as_deref().unwrap()).unwrap();
         assert_eq!(loc["parser"]["v"], "doc2json-v1");
         assert_eq!(loc["parser"]["boxes"].as_array().unwrap().len(), 2);
         assert!(loc.get("page").is_none(), "standalone image: no page");
@@ -772,15 +1075,31 @@ mod tests {
         let e = env(true, false);
         let hash = e.add_image("scan.png", 1, unit(0), Some("Invoice kept text"));
         e.script.lock().unwrap().push(Ok(Parsed {
-            elements: vec![Element { bbox: None, category: "figure".into(), text: String::new() }],
+            elements: vec![Element {
+                bbox: None,
+                category: "figure".into(),
+                text: String::new(),
+            }],
             prompt_version: "v".into(),
         }));
         let mut p = pass_with(None);
         e.pass(&mut p);
         e.pass(&mut p);
         let s = e.store.lock().unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 0, failed: 0, skipped: 1 }, "skipped('empty'): not queued, done or failed");
-        assert_eq!(s.texts_of(&hash).unwrap(), vec![(1, "Invoice kept text".to_string())]);
+        assert_eq!(
+            s.parse_counts().unwrap(),
+            ParseCounts {
+                queued: 0,
+                done: 0,
+                failed: 0,
+                skipped: 1
+            },
+            "skipped('empty'): not queued, done or failed"
+        );
+        assert_eq!(
+            s.texts_of(&hash).unwrap(),
+            vec![(1, "Invoice kept text".to_string())]
+        );
     }
 
     #[test]
@@ -792,9 +1111,19 @@ mod tests {
         e.pass(&mut p);
         let s = e.store.lock().unwrap();
         assert_eq!(s.parse_counts().unwrap().done, 1);
-        assert_eq!(s.search_text(&winseek_store::fts_escape("Quarterly"), 5).unwrap().len(), 1, "FTS has it");
+        assert_eq!(
+            s.search_text(&winseek_store::fts_escape("Quarterly"), 5)
+                .unwrap()
+                .len(),
+            1,
+            "FTS has it"
+        );
         let pend = s.pending_vecs(&hash).unwrap();
-        assert_eq!(pend.len(), 1, "the vector is owed, the upgrade pass computes it");
+        assert_eq!(
+            pend.len(),
+            1,
+            "the vector is owed, the upgrade pass computes it"
+        );
         assert_eq!(s.stats().unwrap().text_only, 1);
         drop(s);
         assert!(e.doc_calls.load(Ordering::SeqCst) >= 1);
@@ -806,12 +1135,26 @@ mod tests {
         e.add_image("scan.png", 1, unit(0), Some("old"));
         let mut p = pass_with(None).retry_output_after(Duration::ZERO);
         e.pass(&mut p); // route
-        // first answer is prose the salvage cannot use, the retry succeeds — no server reload
-        e.script.lock().unwrap().extend([Err(ParseError::Output("output is not JSON and no complete element could be salvaged".into()))]);
+                        // first answer is prose the salvage cannot use, the retry succeeds — no server reload
+        e.script.lock().unwrap().extend([Err(ParseError::Output(
+            "output is not JSON and no complete element could be salvaged".into(),
+        ))]);
         assert!(e.pass(&mut p));
-        assert_eq!(e.calls.load(Ordering::SeqCst), 2, "initial attempt plus the in-place retry");
+        assert_eq!(
+            e.calls.load(Ordering::SeqCst),
+            2,
+            "initial attempt plus the in-place retry"
+        );
         assert_eq!(e.unloads.load(Ordering::SeqCst), 0, "the server stays up");
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 1, failed: 0, skipped: 0 });
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 0,
+                done: 1,
+                failed: 0,
+                skipped: 0
+            }
+        );
     }
 
     #[test]
@@ -820,17 +1163,31 @@ mod tests {
         e.add_image("scan.png", 1, unit(0), Some("old"));
         let mut p = pass_with(None).retry_output_after(Duration::ZERO);
         e.pass(&mut p); // route
-        // every pass: one unusable answer, an equally unusable retry, then the attempt is counted
+                        // every pass: one unusable answer, an equally unusable retry, then the attempt is counted
         for _ in 0..3 {
-            let errs: Vec<_> = (0..2).map(|_| Err(ParseError::Output("no usable elements".into()))).collect();
+            let errs: Vec<_> = (0..2)
+                .map(|_| Err(ParseError::Output("no usable elements".into())))
+                .collect();
             e.script.lock().unwrap().extend(errs);
         }
         for i in 1..=3 {
             assert!(e.pass(&mut p), "attempt {i} counts as progress");
         }
         assert_eq!(e.calls.load(Ordering::SeqCst), 6, "two tries per pass");
-        assert_eq!(e.unloads.load(Ordering::SeqCst), 2, "the first two attempts drop the server, the last one is final");
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 0, failed: 1, skipped: 0 });
+        assert_eq!(
+            e.unloads.load(Ordering::SeqCst),
+            2,
+            "the first two attempts drop the server, the last one is final"
+        );
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 0,
+                done: 0,
+                failed: 1,
+                skipped: 0
+            }
+        );
         assert!(!e.pass(&mut p));
     }
 
@@ -841,14 +1198,35 @@ mod tests {
         let mut p = pass_with(None);
         e.pass(&mut p); // route
         for _ in 0..3 {
-            e.script.lock().unwrap().push(Err(ParseError::Other("boom".into())));
+            e.script
+                .lock()
+                .unwrap()
+                .push(Err(ParseError::Other("boom".into())));
         }
         for i in 1..=3 {
             assert!(e.pass(&mut p), "attempt {i} counts as progress");
-            let expect = if i < 3 { ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 } } else { ParseCounts { queued: 0, done: 0, failed: 1, skipped: 0 } };
+            let expect = if i < 3 {
+                ParseCounts {
+                    queued: 1,
+                    done: 0,
+                    failed: 0,
+                    skipped: 0,
+                }
+            } else {
+                ParseCounts {
+                    queued: 0,
+                    done: 0,
+                    failed: 1,
+                    skipped: 0,
+                }
+            };
             assert_eq!(e.counts(), expect, "after attempt {i}");
         }
-        assert_eq!(e.unloads.load(Ordering::SeqCst), 2, "a failed attempt drops the server, the final one does not need to");
+        assert_eq!(
+            e.unloads.load(Ordering::SeqCst),
+            2,
+            "a failed attempt drops the server, the final one does not need to"
+        );
         assert!(!e.pass(&mut p));
     }
 
@@ -858,14 +1236,29 @@ mod tests {
         e.add_image("scan.png", 1, unit(0), Some("old"));
         let mut p = pass_with(None);
         e.pass(&mut p);
-        e.script.lock().unwrap().push(Err(ParseError::ModelsMissing));
+        e.script
+            .lock()
+            .unwrap()
+            .push(Err(ParseError::ModelsMissing));
         assert!(!e.pass(&mut p));
         assert_eq!(e.counts().queued, 1);
         // GpuBusy: the index server is told to let go, the page is retried once, then it is left for later
-        e.script.lock().unwrap().extend([Err(ParseError::GpuBusy), Err(ParseError::GpuBusy)]);
+        e.script
+            .lock()
+            .unwrap()
+            .extend([Err(ParseError::GpuBusy), Err(ParseError::GpuBusy)]);
         assert!(!e.pass(&mut p));
         assert!(e.released.load(Ordering::SeqCst), "release_gpu was called");
-        assert_eq!(e.counts(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 }, "no attempt was counted");
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 1,
+                done: 0,
+                failed: 0,
+                skipped: 0
+            },
+            "no attempt was counted"
+        );
         // busy once, free after the release: parsed
         e.script.lock().unwrap().push(Err(ParseError::GpuBusy));
         assert!(e.pass(&mut p));
@@ -882,7 +1275,16 @@ mod tests {
         std::fs::remove_file(e.dir.path().join("gone.png")).unwrap();
         std::fs::write(e.dir.path().join("changed.png"), png(9, 9, 77)).unwrap();
         e.pass(&mut p);
-        assert_eq!(e.counts(), ParseCounts { queued: 0, done: 0, failed: 1, skipped: 1 }, "gone: failed; changed: skipped");
+        assert_eq!(
+            e.counts(),
+            ParseCounts {
+                queued: 0,
+                done: 0,
+                failed: 1,
+                skipped: 1
+            },
+            "gone: failed; changed: skipped"
+        );
         assert_eq!(e.calls.load(Ordering::SeqCst), 0);
         let s = e.store.lock().unwrap();
         assert_eq!(s.texts_of(&gone).unwrap().len(), 1);
@@ -910,18 +1312,27 @@ mod tests {
         assert!(e.pass(&mut p), "route");
         assert!(slot.lock().unwrap().is_none(), "routing publishes nothing");
         assert!(e.pass(&mut p), "parse");
-        let live = slot.lock().unwrap().clone().expect("the batch is published while it runs");
+        let live = slot
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("the batch is published while it runs");
         assert!(live.path.ends_with("scan.png"), "{}", live.path);
         assert_eq!(live.pages, 1);
         assert!(!e.pass(&mut p), "nothing left");
-        assert!(slot.lock().unwrap().is_none(), "an idle pass clears the entry");
+        assert!(
+            slot.lock().unwrap().is_none(),
+            "an idle pass clears the entry"
+        );
     }
 
     #[test]
     fn pdf_page_job_renders_and_replaces_only_that_pages_text() {
         use crate::tier1::pdf::testutil::{make_pdf, pdfium};
         fn rt() -> Result<&'static Pdfium, PdfError> {
-            pdfium().ok_or_else(|| PdfError::Unavailable("pdfium not available in this environment".into()))
+            pdfium().ok_or_else(|| {
+                PdfError::Unavailable("pdfium not available in this environment".into())
+            })
         }
         let Some(pd) = pdfium() else { return };
         let e = env(true, false);
@@ -931,15 +1342,37 @@ mod tests {
         let hash = sha256_hex(&bytes);
         {
             let mut s = e.store.lock().unwrap();
-            let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: 1 }, &path.to_string_lossy(), bytes.len() as u64, 1, "pdf").unwrap();
-            let v = |chunk, kind, page: u32, vec| ChunkVec { chunk, kind, locator: Some(format!("{{\"page\":{page}}}")), vec };
+            let id = s
+                .upsert_file(
+                    &FileKey {
+                        vol_guid: "{v}".into(),
+                        frn: 1,
+                    },
+                    &path.to_string_lossy(),
+                    bytes.len() as u64,
+                    1,
+                    "pdf",
+                )
+                .unwrap();
+            let v = |chunk, kind, page: u32, vec| ChunkVec {
+                chunk,
+                kind,
+                locator: Some(format!("{{\"page\":{page}}}")),
+                vec,
+            };
             let vecs = [
                 v(0, VecKind::Image, 1, unit(0)),
                 v(1, VecKind::Text, 1, unit(3)),
                 v(2, VecKind::Image, 2, unit(0)),
                 v(3, VecKind::Text, 2, unit(3)),
             ];
-            s.complete(id, &hash, &vecs, &[(1, "page one ocr".into()), (3, "page two ocr".into())]).unwrap();
+            s.complete(
+                id,
+                &hash,
+                &vecs,
+                &[(1, "page one ocr".into()), (3, "page two ocr".into())],
+            )
+            .unwrap();
             s.queue_parse(&hash, 2, "scanned_pdf").unwrap();
         }
         let mut p = pass_with(None);
@@ -948,10 +1381,17 @@ mod tests {
         let s = e.store.lock().unwrap();
         let t = s.texts_of(&hash).unwrap();
         assert_eq!(t[0], (1, "page one ocr".to_string()), "page 1 untouched");
-        assert!(t.len() == 2 && t[1].1.contains("Quarterly Invoice"), "{t:?}");
+        assert!(
+            t.len() == 2 && t[1].1.contains("Quarterly Invoice"),
+            "{t:?}"
+        );
         let hit = s.search_vectors(&unit(2), 3, Some(VecKind::Text)).unwrap();
-        let loc: serde_json::Value = serde_json::from_str(hit[0].locator.as_deref().unwrap()).unwrap();
-        assert_eq!((loc["page"].as_u64(), loc["parser"]["v"].as_str()), (Some(2), Some("doc2json-v1")));
+        let loc: serde_json::Value =
+            serde_json::from_str(hit[0].locator.as_deref().unwrap()).unwrap();
+        assert_eq!(
+            (loc["page"].as_u64(), loc["parser"]["v"].as_str()),
+            (Some(2), Some("doc2json-v1"))
+        );
         assert_eq!(s.parse_counts().unwrap().done, 1);
     }
 }

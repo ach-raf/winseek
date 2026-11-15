@@ -24,17 +24,42 @@ pub enum Sort {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Request {
-    Search { id: u64, query: String, offset: u32, limit: u32, sort: Sort },
-    Status { id: u64 },
+    Search {
+        id: u64,
+        query: String,
+        offset: u32,
+        limit: u32,
+        sort: Sort,
+    },
+    Status {
+        id: u64,
+    },
     /// Files changed recently (from the USN journal).
-    Recent { id: u64, limit: u32 },
+    Recent {
+        id: u64,
+        limit: u32,
+    },
     /// Stream `Response::Change` for paths under these folders (Tier 1 worker).
-    Subscribe { id: u64, roots: Vec<String> },
-    Rescan { id: u64, volume: char },
+    Subscribe {
+        id: u64,
+        roots: Vec<String>,
+    },
+    Rescan {
+        id: u64,
+        volume: char,
+    },
     /// What each child of a folder holds (WizTree-style). Empty `path` = every indexed volume.
-    Usage { id: u64, path: String, limit: u32 },
+    Usage {
+        id: u64,
+        path: String,
+        limit: u32,
+    },
     /// File types and biggest files under a folder (walks the subtree, so asked for separately).
-    UsageDetail { id: u64, path: String, top_files: u32 },
+    UsageDetail {
+        id: u64,
+        path: String,
+        top_files: u32,
+    },
 }
 
 impl Request {
@@ -156,13 +181,39 @@ pub enum ChangeKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
-    SearchResult { id: u64, total: u64, hits: Vec<Hit>, elapsed_us: u64 },
-    StatusResult { id: u64, volumes: Vec<VolumeStatus>, uptime_s: u64 },
-    RecentResult { id: u64, hits: Vec<Hit> },
-    UsageResult { id: u64, usage: UsageTree },
-    UsageDetailResult { id: u64, detail: UsageDetail },
-    Change { kind: ChangeKind, path: String, old_path: Option<String>, is_dir: bool },
-    Error { id: u64, message: String },
+    SearchResult {
+        id: u64,
+        total: u64,
+        hits: Vec<Hit>,
+        elapsed_us: u64,
+    },
+    StatusResult {
+        id: u64,
+        volumes: Vec<VolumeStatus>,
+        uptime_s: u64,
+    },
+    RecentResult {
+        id: u64,
+        hits: Vec<Hit>,
+    },
+    UsageResult {
+        id: u64,
+        usage: UsageTree,
+    },
+    UsageDetailResult {
+        id: u64,
+        detail: UsageDetail,
+    },
+    Change {
+        kind: ChangeKind,
+        path: String,
+        old_path: Option<String>,
+        is_dir: bool,
+    },
+    Error {
+        id: u64,
+        message: String,
+    },
 }
 
 #[cfg(test)]
@@ -171,7 +222,13 @@ mod tests {
 
     #[test]
     fn request_json_shape() {
-        let r = Request::Search { id: 1, query: "foo".into(), offset: 0, limit: 10, sort: Sort::MtimeDesc };
+        let r = Request::Search {
+            id: 1,
+            query: "foo".into(),
+            offset: 0,
+            limit: 10,
+            sort: Sort::MtimeDesc,
+        };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains(r#""type":"search""#), "{s}");
         assert!(s.contains(r#""sort":"mtime_desc""#), "{s}");
@@ -183,17 +240,46 @@ mod tests {
         let r = Response::StatusResult {
             id: 2,
             volumes: vec![
-                VolumeStatus { letter: 'C', files: 1, folders: 2, state: VolumeState::Scanning { done: 1, total: 9 }, fs: "NTFS".into(), monitor: Monitor::Usn },
-                VolumeStatus { letter: 'D', files: 0, folders: 0, state: VolumeState::Error { msg: "x".into() }, fs: "ReFS".into(), monitor: Monitor::Usn },
-                VolumeStatus { letter: 'E', files: 0, folders: 0, state: VolumeState::Live, fs: "exFAT".into(), monitor: Monitor::FolderWatch },
+                VolumeStatus {
+                    letter: 'C',
+                    files: 1,
+                    folders: 2,
+                    state: VolumeState::Scanning { done: 1, total: 9 },
+                    fs: "NTFS".into(),
+                    monitor: Monitor::Usn,
+                },
+                VolumeStatus {
+                    letter: 'D',
+                    files: 0,
+                    folders: 0,
+                    state: VolumeState::Error { msg: "x".into() },
+                    fs: "ReFS".into(),
+                    monitor: Monitor::Usn,
+                },
+                VolumeStatus {
+                    letter: 'E',
+                    files: 0,
+                    folders: 0,
+                    state: VolumeState::Live,
+                    fs: "exFAT".into(),
+                    monitor: Monitor::FolderWatch,
+                },
             ],
             uptime_s: 5,
         };
         let s = serde_json::to_string(&r).unwrap();
         assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), r);
-        let c = Response::Change { kind: ChangeKind::Renamed, path: "a".into(), old_path: Some("b".into()), is_dir: false };
+        let c = Response::Change {
+            kind: ChangeKind::Renamed,
+            path: "a".into(),
+            old_path: Some("b".into()),
+            is_dir: false,
+        };
         let s = serde_json::to_string(&c).unwrap();
-        assert!(s.contains(r#""type":"change""#) && s.contains(r#""kind":"renamed""#), "{s}");
+        assert!(
+            s.contains(r#""type":"change""#) && s.contains(r#""kind":"renamed""#),
+            "{s}"
+        );
         assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), c);
     }
 
@@ -202,13 +288,25 @@ mod tests {
         let old = r#"{"letter":"C","files":1,"folders":2,"state":{"kind":"live"}}"#;
         let v: VolumeStatus = serde_json::from_str(old).unwrap();
         assert_eq!((v.fs.as_str(), v.monitor), ("", Monitor::Usn));
-        let s = serde_json::to_string(&VolumeStatus { monitor: Monitor::FolderWatch, ..v }).unwrap();
+        let s = serde_json::to_string(&VolumeStatus {
+            monitor: Monitor::FolderWatch,
+            ..v
+        })
+        .unwrap();
         assert!(s.contains(r#""monitor":"folder_watch""#), "{s}");
     }
 
     #[test]
     fn request_ids() {
         assert_eq!(Request::Rescan { id: 7, volume: 'C' }.id(), 7);
-        assert_eq!(Request::Usage { id: 8, path: String::new(), limit: 0 }.id(), 8);
+        assert_eq!(
+            Request::Usage {
+                id: 8,
+                path: String::new(),
+                limit: 0
+            }
+            .id(),
+            8
+        );
     }
 }

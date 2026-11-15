@@ -23,7 +23,10 @@ pub struct AgentConfig {
 impl Default for AgentConfig {
     fn default() -> Self {
         // Off by default (PRD A4): an agent pipe must never exist until the user asks for it.
-        AgentConfig { enabled: false, content: ContentScope::Indexed }
+        AgentConfig {
+            enabled: false,
+            content: ContentScope::Indexed,
+        }
     }
 }
 
@@ -66,7 +69,10 @@ mod tests {
         let tmp = test_tmp();
         let root = tmp.path().join("cfg");
         assert_eq!(load(&root), AgentConfig::default(), "missing file -> off");
-        let cfg = AgentConfig { enabled: true, content: ContentScope::Any };
+        let cfg = AgentConfig {
+            enabled: true,
+            content: ContentScope::Any,
+        };
         save(&root, &cfg).unwrap();
         assert_eq!(load(&root), cfg);
     }

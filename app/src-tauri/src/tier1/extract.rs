@@ -77,7 +77,12 @@ struct Out {
 
 impl Out {
     fn new() -> Out {
-        Out { text: String::new(), chars: 0, marks: Vec::new(), full: false }
+        Out {
+            text: String::new(),
+            chars: 0,
+            marks: Vec::new(),
+            full: false,
+        }
     }
 
     fn full(&self) -> bool {
@@ -119,7 +124,10 @@ impl Out {
         if !self.text.is_empty() && !self.text.ends_with("\n\n") {
             self.push("\n");
         }
-        self.marks.push(Mark { at: self.chars, loc });
+        self.marks.push(Mark {
+            at: self.chars,
+            loc,
+        });
         self.push(title);
         self.push("\n");
     }
@@ -129,15 +137,21 @@ impl Out {
     }
 
     fn finish(self) -> Extracted {
-        Extracted { text: self.text, marks: self.marks, truncated: self.full }
+        Extracted {
+            text: self.text,
+            marks: self.marks,
+            truncated: self.full,
+        }
     }
 }
 
 /// Extensions whose text [`extract_file`] reads as structured documents (the OOXML / ODF / RTF
 /// branches, not the plain-text fallback). The Space preview offers the same files a document
 /// text view, so the two stay in step through [`is_document_ext`].
-pub const DOCUMENT_EXTS: &[&str] =
-    &["docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx", "potx", "odt", "ott", "ods", "ots", "odp", "otp", "rtf"];
+pub const DOCUMENT_EXTS: &[&str] = &[
+    "docx", "docm", "dotx", "dotm", "xlsx", "xlsm", "xltx", "xltm", "pptx", "pptm", "ppsx", "potx",
+    "odt", "ott", "ods", "ots", "odp", "otp", "rtf",
+];
 
 /// Whether `ext` (lowercase) is a structured-document format the extractor reads.
 pub fn is_document_ext(ext: &str) -> bool {
@@ -160,7 +174,9 @@ pub fn extract_file(path: &str, bytes: &[u8]) -> Res<Extracted> {
     }
     let ext = ext_of(path);
     let doc = match ext.as_str() {
-        "doc" | "dot" | "xls" | "xlt" | "ppt" | "pps" | "pot" => return Err(ExtractError::Skip("legacy_office")),
+        "doc" | "dot" | "xls" | "xlt" | "ppt" | "pps" | "pot" => {
+            return Err(ExtractError::Skip("legacy_office"))
+        }
         "docx" | "docm" | "dotx" | "dotm" => ooxml(bytes, Ooxml::Word)?,
         "xlsx" | "xlsm" | "xltx" | "xltm" => ooxml(bytes, Ooxml::Sheet)?,
         "pptx" | "pptm" | "ppsx" | "potx" => ooxml(bytes, Ooxml::Slides)?,
@@ -170,7 +186,8 @@ pub fn extract_file(path: &str, bytes: &[u8]) -> Res<Extracted> {
         "rtf" => plain(bytes, true)?,
         // Notebooks: cell sources only, never the outputs (huge, and they leak data).
         "ipynb" => {
-            let text = super::guard::notebook_text(bytes).ok_or(ExtractError::Skip("not_notebook"))?;
+            let text =
+                super::guard::notebook_text(bytes).ok_or(ExtractError::Skip("not_notebook"))?;
             plain(text.as_bytes(), false)?
         }
         _ => plain(bytes, false)?,
@@ -190,22 +207,49 @@ fn plain(bytes: &[u8], rtf: bool) -> Res<Extracted> {
     let text = if rtf { strip_rtf(&text) } else { text };
     let mut out = Out::new();
     // Normalise line endings; NULs (UTF-16 leftovers) and form feeds carry no text.
-    let norm = text.replace("\r\n", "\n").replace('\r', "\n").replace(['\0', '\x0c'], " ");
+    let norm = text
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace(['\0', '\x0c'], " ");
     out.push(&norm);
     Ok(out.finish())
 }
 
 /// Windows-1252 0x80..=0x9F, the printable ones that matter in RTF `\'hh` escapes.
 const CP1252_HIGH: [char; 32] = [
-    '€', ' ', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', ' ', 'Ž', ' ', ' ', '‘', '’', '“', '”', '•', '–', '—', '˜', '™', 'š', '›',
-    'œ', ' ', 'ž', 'Ÿ',
+    '€', ' ', '‚', 'ƒ', '„', '…', '†', '‡', 'ˆ', '‰', 'Š', '‹', 'Œ', ' ', 'Ž', ' ', ' ', '‘', '’',
+    '“', '”', '•', '–', '—', '˜', '™', 'š', '›', 'œ', ' ', 'ž', 'Ÿ',
 ];
 
 /// Destination groups whose content is not document text.
 const RTF_SKIP: &[&str] = &[
-    "fonttbl", "colortbl", "stylesheet", "info", "pict", "object", "header", "footer", "headerl", "headerr", "footerl", "footerr", "themedata",
-    "datastore", "latentstyles", "listtable", "listoverridetable", "rsidtbl", "generator", "xmlnstbl", "filetbl", "revtbl", "colorschememapping",
-    "fldinst", "bkmkstart", "bkmkend", "private",
+    "fonttbl",
+    "colortbl",
+    "stylesheet",
+    "info",
+    "pict",
+    "object",
+    "header",
+    "footer",
+    "headerl",
+    "headerr",
+    "footerl",
+    "footerr",
+    "themedata",
+    "datastore",
+    "latentstyles",
+    "listtable",
+    "listoverridetable",
+    "rsidtbl",
+    "generator",
+    "xmlnstbl",
+    "filetbl",
+    "revtbl",
+    "colorschememapping",
+    "fldinst",
+    "bkmkstart",
+    "bkmkend",
+    "private",
 ];
 
 /// Strip RTF control words and destination groups, keep the text (`\par` -> newline, `\tab`, `\'hh`, `\uN`).
@@ -286,7 +330,8 @@ pub fn strip_rtf(src: &str) -> String {
                 while i < chars.len() && chars[i].is_ascii_digit() {
                     i += 1;
                 }
-                let param: Option<i32> = chars[num_start..i].iter().collect::<String>().parse().ok();
+                let param: Option<i32> =
+                    chars[num_start..i].iter().collect::<String>().parse().ok();
                 if i < chars.len() && chars[i] == ' ' {
                     i += 1; // the delimiter space belongs to the control word
                 }
@@ -349,11 +394,16 @@ impl<'a> Zip<'a> {
             // OLE compound file: legacy Office, or an encrypted OOXML package.
             return Err(ExtractError::Skip("legacy_office"));
         }
-        let ar = ZipArchive::new(Cursor::new(bytes)).map_err(|e| ExtractError::Failed(format!("zip: {e}")))?;
+        let ar = ZipArchive::new(Cursor::new(bytes))
+            .map_err(|e| ExtractError::Failed(format!("zip: {e}")))?;
         if ar.len() > MAX_ENTRIES {
             return Err(ExtractError::Skip("zip_bomb"));
         }
-        Ok(Zip { ar, budget: MAX_INFLATED, bomb: false })
+        Ok(Zip {
+            ar,
+            budget: MAX_INFLATED,
+            bomb: false,
+        })
     }
 
     fn has(&mut self, name: &str) -> bool {
@@ -391,7 +441,11 @@ impl<'a> Zip<'a> {
     }
 
     fn names_matching(&self, prefix: &str, suffix: &str) -> Vec<String> {
-        self.ar.file_names().filter(|n| n.starts_with(prefix) && n.ends_with(suffix)).map(str::to_owned).collect()
+        self.ar
+            .file_names()
+            .filter(|n| n.starts_with(prefix) && n.ends_with(suffix))
+            .map(str::to_owned)
+            .collect()
     }
 }
 
@@ -404,7 +458,10 @@ fn reader(r: &mut dyn BufRead) -> Reader<&mut dyn BufRead> {
 fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
     for a in e.attributes().flatten() {
         if a.key.local_name().as_ref() == local {
-            return a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned());
+            return a
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|v| v.into_owned());
         }
     }
     None
@@ -414,7 +471,10 @@ fn attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
 fn prefixed_attr(e: &BytesStart<'_>, local: &str) -> Option<String> {
     for a in e.attributes().flatten() {
         if a.key.local_name().as_ref() == local && a.key.as_ref().contains(':') {
-            return a.normalized_value(quick_xml::XmlVersion::Implicit1_0).ok().map(|v| v.into_owned());
+            return a
+                .normalized_value(quick_xml::XmlVersion::Implicit1_0)
+                .ok()
+                .map(|v| v.into_owned());
         }
     }
     None
@@ -503,7 +563,9 @@ fn ooxml(bytes: &[u8], kind: Ooxml) -> Res<Extracted> {
     match kind {
         Ooxml::Word => {
             if !z.has("word/document.xml") {
-                return Err(ExtractError::Failed("not a docx (no word/document.xml)".into()));
+                return Err(ExtractError::Failed(
+                    "not a docx (no word/document.xml)".into(),
+                ));
             }
             z.with_part("word/document.xml", |r| docx_text(r, &mut out));
         }
@@ -626,14 +688,27 @@ fn xlsx_text(z: &mut Zip<'_>, out: &mut Out) -> Res<()> {
     // Sheets in workbook order, via relationships; numbered files as the fallback.
     let rels = read_rels(z, "xl/_rels/workbook.xml.rels");
     let mut sheets: Vec<(String, String)> = Vec::new(); // (display name, part)
-    for (i, (name, rid)) in list_refs(z, "xl/workbook.xml", "sheet").into_iter().enumerate() {
+    for (i, (name, rid)) in list_refs(z, "xl/workbook.xml", "sheet")
+        .into_iter()
+        .enumerate()
+    {
         if let Some(t) = rels.get(&rid) {
-            sheets.push((name.unwrap_or_else(|| format!("Sheet{}", i + 1)), resolve_target("xl", t)));
+            sheets.push((
+                name.unwrap_or_else(|| format!("Sheet{}", i + 1)),
+                resolve_target("xl", t),
+            ));
         }
     }
     if sheets.is_empty() {
-        let found = numbered(z.names_matching("xl/worksheets/sheet", ".xml"), "xl/worksheets/sheet");
-        sheets = found.into_iter().enumerate().map(|(i, p)| (format!("Sheet{}", i + 1), p)).collect();
+        let found = numbered(
+            z.names_matching("xl/worksheets/sheet", ".xml"),
+            "xl/worksheets/sheet",
+        );
+        sheets = found
+            .into_iter()
+            .enumerate()
+            .map(|(i, p)| (format!("Sheet{}", i + 1), p))
+            .collect();
     }
     if sheets.is_empty() {
         return Err(ExtractError::Failed("not an xlsx (no worksheets)".into()));
@@ -669,9 +744,18 @@ fn sheet_cells(r: &mut dyn BufRead, strings: &[String], out: &mut Out) {
                 "t" => in_t = false,
                 "c" => {
                     let cell: Option<String> = match ty.as_str() {
-                        "s" => val.trim().parse::<usize>().ok().and_then(|i| strings.get(i)).cloned(),
+                        "s" => val
+                            .trim()
+                            .parse::<usize>()
+                            .ok()
+                            .and_then(|i| strings.get(i))
+                            .cloned(),
                         "e" => None,
-                        "b" => Some(if val.trim() == "1" { "TRUE".into() } else { "FALSE".into() }),
+                        "b" => Some(if val.trim() == "1" {
+                            "TRUE".into()
+                        } else {
+                            "FALSE".into()
+                        }),
                         _ => Some(std::mem::take(&mut val)),
                     };
                     if let Some(c) = cell.filter(|c| !c.trim().is_empty()) {
@@ -713,7 +797,10 @@ fn pptx_text(z: &mut Zip<'_>, out: &mut Out) -> Res<()> {
         .filter_map(|(_, rid)| rels.get(&rid).map(|t| resolve_target("ppt", t)))
         .collect();
     if slides.is_empty() {
-        slides = numbered(z.names_matching("ppt/slides/slide", ".xml"), "ppt/slides/slide");
+        slides = numbered(
+            z.names_matching("ppt/slides/slide", ".xml"),
+            "ppt/slides/slide",
+        );
     }
     if slides.is_empty() {
         return Err(ExtractError::Failed("not a pptx (no slides)".into()));
@@ -771,7 +858,9 @@ enum OdfKind {
 fn odf(bytes: &[u8], kind: OdfKind) -> Res<Extracted> {
     let mut z = Zip::open(bytes)?;
     if !z.has("content.xml") {
-        return Err(ExtractError::Failed("not an OpenDocument file (no content.xml)".into()));
+        return Err(ExtractError::Failed(
+            "not an OpenDocument file (no content.xml)".into(),
+        ));
     }
     let mut out = Out::new();
     z.with_part("content.xml", |r| odf_text(r, kind, &mut out));
@@ -797,7 +886,10 @@ fn odf_text(r: &mut dyn BufRead, kind: OdfKind, out: &mut Out) {
                 "tab" => out.push_char('\t'),
                 "line-break" => out.push_char('\n'),
                 "s" => {
-                    let n = attr(&e, "c").and_then(|c| c.parse::<usize>().ok()).unwrap_or(1).min(64);
+                    let n = attr(&e, "c")
+                        .and_then(|c| c.parse::<usize>().ok())
+                        .unwrap_or(1)
+                        .min(64);
                     out.push(&" ".repeat(n));
                 }
                 "table" if kind == OdfKind::Sheet && !empty => {
@@ -905,16 +997,28 @@ pub(crate) mod tests {
                 r#"<worksheet><sheetData><row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1"><v>1200</v></c></row>
                 <row r="2"><c r="A2" t="s"><v>1</v></c><c r="B2" t="inlineStr"><is><t>inline</t></is></c><c r="C2" t="e"><v>#DIV/0!</v></c></row></sheetData></worksheet>"#,
             ),
-            ("xl/worksheets/sheet2.xml", r#"<worksheet><sheetData><row><c t="s"><v>2</v></c></row></sheetData></worksheet>"#),
+            (
+                "xl/worksheets/sheet2.xml",
+                r#"<worksheet><sheetData><row><c t="s"><v>2</v></c></row></sheetData></worksheet>"#,
+            ),
         ])
     }
 
     #[test]
     fn xlsx_shared_strings_cells_and_sheet_names() {
         let d = extract_file("b.xlsx", &xlsx()).unwrap();
-        assert_eq!(d.text, "Sheet: Budget\nRent\t1200\nElectricity\tinline\n\nSheet: Notes\nTodo <soon>\n");
+        assert_eq!(
+            d.text,
+            "Sheet: Budget\nRent\t1200\nElectricity\tinline\n\nSheet: Notes\nTodo <soon>\n"
+        );
         assert_eq!(d.marks.len(), 2);
-        assert_eq!(d.marks[0], Mark { at: 0, loc: Loc::Sheet("Budget".into()) });
+        assert_eq!(
+            d.marks[0],
+            Mark {
+                at: 0,
+                loc: Loc::Sheet("Budget".into())
+            }
+        );
         assert_eq!(d.marks[1].loc, Loc::Sheet("Notes".into()));
         let at: String = d.text.chars().skip(d.marks[1].at).take(5).collect();
         assert_eq!(at, "Sheet");
@@ -930,7 +1034,10 @@ pub(crate) mod tests {
                 "ppt/_rels/presentation.xml.rels",
                 r#"<Relationships><Relationship Id="rId4" Target="slides/slide1.xml"/><Relationship Id="rId5" Target="slides/slide2.xml"/></Relationships>"#,
             ),
-            ("ppt/slides/slide1.xml", r#"<p:sld><a:p><a:r><a:t>Second in order</a:t></a:r></a:p></p:sld>"#),
+            (
+                "ppt/slides/slide1.xml",
+                r#"<p:sld><a:p><a:r><a:t>Second in order</a:t></a:r></a:p></p:sld>"#,
+            ),
             (
                 "ppt/slides/slide2.xml",
                 r#"<p:sld><a:p><a:r><a:t>Welcome</a:t></a:r></a:p><a:p><a:r><a:t>Agenda</a:t></a:r><a:br/><a:r><a:t>Q&amp;A</a:t></a:r></a:p></p:sld>"#,
@@ -941,8 +1048,14 @@ pub(crate) mod tests {
     #[test]
     fn pptx_slides_in_presentation_order_with_markers() {
         let d = extract_file("c.pptx", &pptx()).unwrap();
-        assert_eq!(d.text, "Slide 1\nWelcome\nAgenda\nQ&A\n\nSlide 2\nSecond in order\n");
-        assert_eq!(d.marks.iter().map(|m| m.loc.clone()).collect::<Vec<_>>(), [Loc::Slide(1), Loc::Slide(2)]);
+        assert_eq!(
+            d.text,
+            "Slide 1\nWelcome\nAgenda\nQ&A\n\nSlide 2\nSecond in order\n"
+        );
+        assert_eq!(
+            d.marks.iter().map(|m| m.loc.clone()).collect::<Vec<_>>(),
+            [Loc::Slide(1), Loc::Slide(2)]
+        );
     }
 
     #[test]
@@ -961,7 +1074,10 @@ pub(crate) mod tests {
             "content.xml",
             r#"<office:document-content xmlns:text="t"><office:body><office:text><text:h>Title</text:h><text:p>Hello<text:s text:c="2"/>world<text:tab/>x<text:line-break/>y &amp; z</text:p></office:text></office:body></office:document-content>"#,
         )]);
-        assert_eq!(extract_file("a.odt", &odt).unwrap().text, "Title\nHello  world\tx\ny & z\n");
+        assert_eq!(
+            extract_file("a.odt", &odt).unwrap().text,
+            "Title\nHello  world\tx\ny & z\n"
+        );
 
         let ods = make_zip(&[(
             "content.xml",
@@ -975,16 +1091,26 @@ pub(crate) mod tests {
             "content.xml",
             r#"<c><draw:page draw:name="p1"><text:p>one</text:p></draw:page><draw:page><text:p>two</text:p></draw:page></c>"#,
         )]);
-        assert_eq!(extract_file("a.odp", &odp).unwrap().text, "Slide 1\none\n\nSlide 2\ntwo\n");
+        assert_eq!(
+            extract_file("a.odp", &odp).unwrap().text,
+            "Slide 1\none\n\nSlide 2\ntwo\n"
+        );
     }
 
     #[test]
     fn legacy_office_and_ole_are_skipped() {
         for n in ["a.doc", "a.XLS", "a.ppt"] {
-            assert_eq!(extract_file(n, b"whatever"), Err(ExtractError::Skip("legacy_office")), "{n}");
+            assert_eq!(
+                extract_file(n, b"whatever"),
+                Err(ExtractError::Skip("legacy_office")),
+                "{n}"
+            );
         }
         let ole = [0xD0, 0xCF, 0x11, 0xE0, 0xA1, 0xB1, 0x1A, 0xE1];
-        assert_eq!(extract_file("enc.docx", &ole), Err(ExtractError::Skip("legacy_office")));
+        assert_eq!(
+            extract_file("enc.docx", &ole),
+            Err(ExtractError::Skip("legacy_office"))
+        );
     }
 
     /// The preview's document list must name exactly the extensions that run a structured reader:
@@ -993,33 +1119,67 @@ pub(crate) mod tests {
     fn document_exts_are_the_structured_readers() {
         for ext in DOCUMENT_EXTS {
             if *ext == "rtf" {
-                assert_eq!(extract_file(&format!("f.{ext}"), b"{\\rtf1 hi}").unwrap().text, "hi", "{ext}");
+                assert_eq!(
+                    extract_file(&format!("f.{ext}"), b"{\\rtf1 hi}")
+                        .unwrap()
+                        .text,
+                    "hi",
+                    "{ext}"
+                );
                 continue;
             }
-            assert!(matches!(extract_file(&format!("f.{ext}"), b"garbage bytes"), Err(ExtractError::Failed(_))), "{ext}");
+            assert!(
+                matches!(
+                    extract_file(&format!("f.{ext}"), b"garbage bytes"),
+                    Err(ExtractError::Failed(_))
+                ),
+                "{ext}"
+            );
         }
         assert!(is_document_ext("pptx"));
         assert!(!is_document_ext("PPTX"), "the caller lower-cases first");
-        assert!(!is_document_ext("doc"), "legacy Office is not previewable as text");
+        assert!(
+            !is_document_ext("doc"),
+            "legacy Office is not previewable as text"
+        );
         assert!(!is_document_ext("txt"));
     }
 
     #[test]
     fn corrupt_and_wrong_zips() {
-        assert!(matches!(extract_file("a.docx", b"not a zip at all"), Err(ExtractError::Failed(_))));
+        assert!(matches!(
+            extract_file("a.docx", b"not a zip at all"),
+            Err(ExtractError::Failed(_))
+        ));
         let z = make_zip(&[("readme.txt", "hi")]);
-        assert!(matches!(extract_file("a.docx", &z), Err(ExtractError::Failed(_))));
-        assert!(matches!(extract_file("a.xlsx", &z), Err(ExtractError::Failed(_))));
-        assert!(matches!(extract_file("a.odt", &z), Err(ExtractError::Failed(_))));
+        assert!(matches!(
+            extract_file("a.docx", &z),
+            Err(ExtractError::Failed(_))
+        ));
+        assert!(matches!(
+            extract_file("a.xlsx", &z),
+            Err(ExtractError::Failed(_))
+        ));
+        assert!(matches!(
+            extract_file("a.odt", &z),
+            Err(ExtractError::Failed(_))
+        ));
         // empty document
         let empty = make_zip(&[("word/document.xml", "<w:document><w:body/></w:document>")]);
-        assert_eq!(extract_file("e.docx", &empty), Err(ExtractError::Skip("no_text")));
+        assert_eq!(
+            extract_file("e.docx", &empty),
+            Err(ExtractError::Skip("no_text"))
+        );
     }
 
     #[test]
     fn text_cap_applies_to_office_text() {
-        let para = "<w:p><w:r><w:t>0123456789abcdef0123456789abcdef</w:t></w:r></w:p>".repeat(20_000);
-        let z = make_zip(&[("word/document.xml", &format!("<w:document><w:body>{para}</w:body></w:document>"))]);
+        let para =
+            "<w:p><w:r><w:t>0123456789abcdef0123456789abcdef</w:t></w:r></w:p>".repeat(20_000);
+        let z = make_zip(&[(
+            "word/document.xml",
+            &format!("<w:document><w:body>{para}</w:body></w:document>"),
+        )]);
         let d = extract_file("big.docx", &z).unwrap();
         assert!(d.truncated);
         assert_eq!(d.text.len(), MAX_TEXT_BYTES);
@@ -1036,22 +1196,45 @@ pub(crate) mod tests {
         for _ in 0..(MAX_PART / (1024 * 1024) + 40) {
             w.write_all(&block).unwrap();
         }
-        w.write_all(b"<w:p><w:t>late text</w:t></w:p></w:body></w:document>").unwrap();
+        w.write_all(b"<w:p><w:t>late text</w:t></w:p></w:body></w:document>")
+            .unwrap();
         let bytes = w.finish().unwrap().into_inner();
-        assert!(bytes.len() < 1024 * 1024, "the bomb itself is small: {}", bytes.len());
-        assert_eq!(extract_file("bomb.docx", &bytes), Err(ExtractError::Skip("zip_bomb")));
+        assert!(
+            bytes.len() < 1024 * 1024,
+            "the bomb itself is small: {}",
+            bytes.len()
+        );
+        assert_eq!(
+            extract_file("bomb.docx", &bytes),
+            Err(ExtractError::Skip("zip_bomb"))
+        );
     }
 
     #[test]
     fn plain_text_encodings_and_binary() {
-        assert_eq!(extract_file("a.md", b"# Title\r\nbody\r\n").unwrap().text, "# Title\nbody\n");
+        assert_eq!(
+            extract_file("a.md", b"# Title\r\nbody\r\n").unwrap().text,
+            "# Title\nbody\n"
+        );
         assert_eq!(extract_file("a.txt", b"\xFF\xFEh\0i\0").unwrap().text, "hi");
-        assert_eq!(extract_file("a.csv", b"caf\xE9,1").unwrap().text, "caf\u{e9},1");
-        assert_eq!(extract_file("a.log", b"\x00\x01\x02binary"), Err(ExtractError::Skip("binary")));
-        assert_eq!(extract_file("a.txt", b"  \n \n"), Err(ExtractError::Skip("no_text")));
+        assert_eq!(
+            extract_file("a.csv", b"caf\xE9,1").unwrap().text,
+            "caf\u{e9},1"
+        );
+        assert_eq!(
+            extract_file("a.log", b"\x00\x01\x02binary"),
+            Err(ExtractError::Skip("binary"))
+        );
+        assert_eq!(
+            extract_file("a.txt", b"  \n \n"),
+            Err(ExtractError::Skip("no_text"))
+        );
         // only a prefix of a huge file is decoded
         let big = vec![b'a'; TEXT_READ_CAP + 1000];
-        assert_eq!(extract_file("big.txt", &big).unwrap().text.len(), MAX_TEXT_BYTES);
+        assert_eq!(
+            extract_file("big.txt", &big).unwrap().text.len(),
+            MAX_TEXT_BYTES
+        );
     }
 
     #[test]
@@ -1061,7 +1244,11 @@ pub(crate) mod tests {
         assert_eq!(t, "Hello bold world\nCaf\u{e9} \u{20ac}x\ty\n{braces}\n");
         let d = extract_file("a.rtf", rtf.as_bytes()).unwrap();
         assert!(d.text.starts_with("Hello bold world"));
-        assert!(!d.text.contains("Arial") && !d.text.contains("Hidden") && !d.text.contains("generator"));
+        assert!(
+            !d.text.contains("Arial")
+                && !d.text.contains("Hidden")
+                && !d.text.contains("generator")
+        );
         assert_eq!(strip_rtf(r"{\rtf1 \u-4000?z}"), "\u{f060}z");
     }
 }

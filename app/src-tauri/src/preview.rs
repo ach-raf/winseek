@@ -42,21 +42,83 @@ pub enum Kind {
     Other,
 }
 
-const WEB_IMAGES: &[&str] = &["jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "svg", "ico", "avif"];
+const WEB_IMAGES: &[&str] = &[
+    "jpg", "jpeg", "jfif", "png", "gif", "webp", "bmp", "svg", "ico", "avif",
+];
 /// Images WebView2 cannot decode; shown through the Windows shell thumbnail.
-const SHELL_IMAGES: &[&str] =
-    &["heic", "heif", "tif", "tiff", "jxl", "psd", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2", "raf"];
+const SHELL_IMAGES: &[&str] = &[
+    "heic", "heif", "tif", "tiff", "jxl", "psd", "dng", "cr2", "cr3", "nef", "arw", "orf", "rw2",
+    "raf",
+];
 const VIDEO: &[&str] = &["mp4", "m4v", "webm", "mkv", "mov", "ogv", "avi", "wmv"];
-const AUDIO: &[&str] = &["mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "wma"];
+const AUDIO: &[&str] = &[
+    "mp3", "wav", "flac", "ogg", "oga", "m4a", "aac", "opus", "wma",
+];
 const TEXT: &[&str] = &[
-    "txt", "md", "markdown", "log", "json", "jsonc", "toml", "yaml", "yml", "xml", "csv", "tsv", "ini", "cfg", "conf",
-    "env", "properties", "rs", "py", "ts", "tsx", "js", "jsx", "mjs", "cjs", "css", "scss", "html", "htm", "vue",
-    "svelte", "c", "h", "cpp", "hpp", "cc", "cs", "java", "kt", "go", "rb", "php", "swift", "lua", "sh", "bash",
-    "bat", "cmd", "ps1", "sql", "gitignore", "lock", "tex", "srt", "vtt", "diff", "patch",
+    "txt",
+    "md",
+    "markdown",
+    "log",
+    "json",
+    "jsonc",
+    "toml",
+    "yaml",
+    "yml",
+    "xml",
+    "csv",
+    "tsv",
+    "ini",
+    "cfg",
+    "conf",
+    "env",
+    "properties",
+    "rs",
+    "py",
+    "ts",
+    "tsx",
+    "js",
+    "jsx",
+    "mjs",
+    "cjs",
+    "css",
+    "scss",
+    "html",
+    "htm",
+    "vue",
+    "svelte",
+    "c",
+    "h",
+    "cpp",
+    "hpp",
+    "cc",
+    "cs",
+    "java",
+    "kt",
+    "go",
+    "rb",
+    "php",
+    "swift",
+    "lua",
+    "sh",
+    "bash",
+    "bat",
+    "cmd",
+    "ps1",
+    "sql",
+    "gitignore",
+    "lock",
+    "tex",
+    "srt",
+    "vtt",
+    "diff",
+    "patch",
 ];
 
 pub fn ext_of(path: &str) -> String {
-    Path::new(path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 pub fn classify(ext: &str) -> Kind {
@@ -165,10 +227,18 @@ fn unix_ms(t: std::io::Result<std::time::SystemTime>) -> Option<i64> {
 
 fn read_text(path: &Path, size: u64) -> Option<TextInfo> {
     let mut buf = Vec::with_capacity(TEXT_CAP.min(size as usize) + 4);
-    File::open(path).ok()?.take(TEXT_CAP as u64).read_to_end(&mut buf).ok()?;
+    File::open(path)
+        .ok()?
+        .take(TEXT_CAP as u64)
+        .read_to_end(&mut buf)
+        .ok()?;
     let truncated = size > TEXT_CAP as u64;
     let (content, encoding) = decode_text(&buf, truncated)?;
-    Some(TextInfo { content, truncated, encoding })
+    Some(TextInfo {
+        content,
+        truncated,
+        encoding,
+    })
 }
 
 /// The extractor's text for a structured document (docx / xlsx / pptx / ODF / RTF).
@@ -176,14 +246,24 @@ fn read_text(path: &Path, size: u64) -> Option<TextInfo> {
 fn read_document(path: &Path) -> Option<TextInfo> {
     let md = std::fs::metadata(path).ok()?;
     if md.len() > crate::tier1::extract::MAX_FILE_BYTES {
-        eprintln!("winseek: preview: {} is too large for a document text view", path.display());
+        eprintln!(
+            "winseek: preview: {} is too large for a document text view",
+            path.display()
+        );
         return None;
     }
     let bytes = std::fs::read(path).ok()?;
     match crate::tier1::extract::extract_file(&path.to_string_lossy(), &bytes) {
-        Ok(doc) => Some(TextInfo { content: doc.text, truncated: doc.truncated, encoding: "UTF-8" }),
+        Ok(doc) => Some(TextInfo {
+            content: doc.text,
+            truncated: doc.truncated,
+            encoding: "UTF-8",
+        }),
         Err(e) => {
-            eprintln!("winseek: preview: no document text for {}: {e:?}", path.display());
+            eprintln!(
+                "winseek: preview: no document text for {}: {e:?}",
+                path.display()
+            );
             None
         }
     }
@@ -194,7 +274,9 @@ fn read_document(path: &Path) -> Option<TextInfo> {
 fn ascii(e: &exif::Exif, tag: exif::Tag) -> Option<String> {
     match &e.get_field(tag, exif::In::PRIMARY)?.value {
         exif::Value::Ascii(v) => {
-            let s = String::from_utf8_lossy(v.first()?).trim_matches(|c: char| c == '\0' || c.is_whitespace()).to_owned();
+            let s = String::from_utf8_lossy(v.first()?)
+                .trim_matches(|c: char| c == '\0' || c.is_whitespace())
+                .to_owned();
             (!s.is_empty()).then_some(s)
         }
         _ => None,
@@ -202,14 +284,20 @@ fn ascii(e: &exif::Exif, tag: exif::Tag) -> Option<String> {
 }
 
 pub fn exif_info(e: &exif::Exif) -> ExifInfo {
-    let date = [exif::Tag::DateTimeOriginal, exif::Tag::DateTimeDigitized, exif::Tag::DateTime]
-        .into_iter()
-        .find_map(|t| ascii(e, t))
-        .map(|d| {
-            // "2024:05:03 14:22:10" -> "2024-05-03 14:22:10"
-            let (day, time) = d.split_once(' ').unwrap_or((&d, ""));
-            format!("{} {}", day.replace(':', "-"), time).trim().to_owned()
-        });
+    let date = [
+        exif::Tag::DateTimeOriginal,
+        exif::Tag::DateTimeDigitized,
+        exif::Tag::DateTime,
+    ]
+    .into_iter()
+    .find_map(|t| ascii(e, t))
+    .map(|d| {
+        // "2024:05:03 14:22:10" -> "2024-05-03 14:22:10"
+        let (day, time) = d.split_once(' ').unwrap_or((&d, ""));
+        format!("{} {}", day.replace(':', "-"), time)
+            .trim()
+            .to_owned()
+    });
     let make = ascii(e, exif::Tag::Make);
     let model = ascii(e, exif::Tag::Model);
     let camera = match (make, model) {
@@ -217,8 +305,11 @@ pub fn exif_info(e: &exif::Exif) -> ExifInfo {
         (Some(a), Some(b)) => Some(format!("{a} {b}")),
         (a, b) => a.or(b),
     };
-    let gps = e.get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY).is_some()
-        && e.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY).is_some();
+    let gps = e
+        .get_field(exif::Tag::GPSLatitude, exif::In::PRIMARY)
+        .is_some()
+        && e.get_field(exif::Tag::GPSLongitude, exif::In::PRIMARY)
+            .is_some();
     ExifInfo { date, camera, gps }
 }
 
@@ -227,10 +318,17 @@ fn image_info(path: &Path, ext: &str, size: u64) -> ImageInfo {
         .and_then(|r| r.with_guessed_format())
         .ok()
         .and_then(|r| r.into_dimensions().ok());
-    let exif = if matches!(ext, "jpg" | "jpeg" | "jfif" | "tif" | "tiff" | "heic" | "heif" | "png" | "webp" | "avif") {
+    let exif = if matches!(
+        ext,
+        "jpg" | "jpeg" | "jfif" | "tif" | "tiff" | "heic" | "heif" | "png" | "webp" | "avif"
+    ) {
         File::open(path)
             .ok()
-            .and_then(|f| exif::Reader::new().read_from_container(&mut BufReader::new(f)).ok())
+            .and_then(|f| {
+                exif::Reader::new()
+                    .read_from_container(&mut BufReader::new(f))
+                    .ok()
+            })
             .map(|e| exif_info(&e))
     } else {
         None
@@ -252,8 +350,15 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
         _ => format!("Cannot read file: {e}"),
     })?;
     let ext = ext_of(path);
-    let name = p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| path.to_owned());
-    let mut kind = if md.is_dir() { Kind::Folder } else { classify(&ext) };
+    let name = p
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_owned());
+    let mut kind = if md.is_dir() {
+        Kind::Folder
+    } else {
+        classify(&ext)
+    };
     let size = (!md.is_dir()).then_some(md.len());
     let (mut image, mut text, mut pdf_info) = (None, None, None);
     // Credential files are never previewed; a cloud placeholder gets the plain card (reading it
@@ -267,7 +372,10 @@ pub fn read_info(path: &str) -> Result<PreviewInfo, String> {
     match kind {
         Kind::Pdf => {
             pdf_info = Some(match pdf::runtime() {
-                Ok(rt) => PdfPreview { pages: pdf::page_count(rt, p), engine: true },
+                Ok(rt) => PdfPreview {
+                    pages: pdf::page_count(rt, p),
+                    engine: true,
+                },
                 Err(_) => PdfPreview::default(),
             })
         }
@@ -326,7 +434,10 @@ struct PageCache {
 
 impl PageCache {
     const fn new() -> Self {
-        PageCache { items: std::collections::VecDeque::new(), bytes: 0 }
+        PageCache {
+            items: std::collections::VecDeque::new(),
+            bytes: 0,
+        }
     }
 
     fn get(&mut self, k: &PageKey) -> Option<std::sync::Arc<Vec<u8>>> {
@@ -340,7 +451,9 @@ impl PageCache {
     fn put(&mut self, k: PageKey, v: std::sync::Arc<Vec<u8>>) {
         self.bytes += v.len();
         self.items.push_front((k, v));
-        while self.items.len() > PAGE_CACHE_ENTRIES || (self.bytes > PAGE_CACHE_BYTES && self.items.len() > 1) {
+        while self.items.len() > PAGE_CACHE_ENTRIES
+            || (self.bytes > PAGE_CACHE_BYTES && self.items.len() > 1)
+        {
             if let Some((_, old)) = self.items.pop_back() {
                 self.bytes -= old.len();
             }
@@ -352,7 +465,9 @@ static PAGE_CACHE: std::sync::Mutex<PageCache> = std::sync::Mutex::new(PageCache
 
 /// `path` page `page` (1-based) as a PNG about `width` px wide, cached.
 pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<Vec<u8>>, String> {
-    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| "This file cannot be read (credential file or cloud-only placeholder).".to_string())?;
+    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| {
+        "This file cannot be read (credential file or cloud-only placeholder).".to_string()
+    })?;
     pdf_page_png_with(&PAGE_CACHE, path, page, width, |p, n, w| {
         let rt = pdf::runtime().map_err(|e| e.to_string())?;
         pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
@@ -374,26 +489,43 @@ fn pdf_page_png_with(
         _ => format!("Cannot read file: {e}"),
     })?;
     let width = width.clamp(PDF_WIDTH_MIN, PDF_WIDTH_MAX);
-    let key = PageKey { path: path.to_lowercase(), size: md.len(), mtime: unix_ms(md.modified()), page, width };
+    let key = PageKey {
+        path: path.to_lowercase(),
+        size: md.len(),
+        mtime: unix_ms(md.modified()),
+        page,
+        width,
+    };
     if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Ok(hit);
     }
     let png = std::sync::Arc::new(render(path, page, width)?);
-    cache.lock().unwrap_or_else(|e| e.into_inner()).put(key, png.clone());
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .put(key, png.clone());
     Ok(png)
 }
 
 /// One PDF page as PNG bytes (raw `ArrayBuffer` on the JS side). Runs on a worker thread.
 #[tauri::command]
-pub async fn preview_pdf_page(path: String, page: u32, width: u32) -> Result<tauri::ipc::Response, String> {
-    let png = tauri::async_runtime::spawn_blocking(move || pdf_page_png(&path, page, width)).await.map_err(|e| e.to_string())??;
+pub async fn preview_pdf_page(
+    path: String,
+    page: u32,
+    width: u32,
+) -> Result<tauri::ipc::Response, String> {
+    let png = tauri::async_runtime::spawn_blocking(move || pdf_page_png(&path, page, width))
+        .await
+        .map_err(|e| e.to_string())??;
     Ok(tauri::ipc::Response::new(png.as_ref().clone()))
 }
 
 /// Runs on a worker thread (never the main thread, so a slow disk or a huge file cannot freeze the popup).
 #[tauri::command]
 pub async fn preview_info(path: String) -> Result<PreviewInfo, String> {
-    tauri::async_runtime::spawn_blocking(move || read_info(&path)).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || read_info(&path))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Boxes (fractions 0-1, top-left origin) of the query words' occurrences on one PDF page's text
@@ -401,8 +533,14 @@ pub async fn preview_info(path: String) -> Result<PreviewInfo, String> {
 /// (unlike OCR text and parser output), so the pane asks for them live when a hit has none.
 /// Runs on a worker thread like [`preview_info`].
 #[tauri::command]
-pub async fn preview_pdf_boxes(path: String, page: u32, query: String) -> Result<Vec<HitBox>, String> {
-    tauri::async_runtime::spawn_blocking(move || pdf_boxes(&path, page, &query)).await.map_err(|e| e.to_string())?
+pub async fn preview_pdf_boxes(
+    path: String,
+    page: u32,
+    query: String,
+) -> Result<Vec<HitBox>, String> {
+    tauri::async_runtime::spawn_blocking(move || pdf_boxes(&path, page, &query))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 fn pdf_boxes(path: &str, page: u32, query: &str) -> Result<Vec<HitBox>, String> {
@@ -413,7 +551,9 @@ fn pdf_boxes(path: &str, page: u32, query: &str) -> Result<Vec<HitBox>, String> 
     if ext_of(path) != "pdf" {
         return Err("Not a PDF file".into());
     }
-    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| "This file cannot be read (credential file or cloud-only placeholder).".to_string())?;
+    crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| {
+        "This file cannot be read (credential file or cloud-only placeholder).".to_string()
+    })?;
     let md = std::fs::metadata(path).map_err(|e| format!("Cannot read file: {e}"))?;
     if md.len() > pdf::MAX_FILE_BYTES {
         return Err("The file is too large to read.".into());
@@ -440,7 +580,11 @@ pub fn parse_range(h: &str, len: u64) -> Option<(u64, u64)> {
         (len.saturating_sub(n), len - 1)
     } else {
         let start: u64 = a.parse().ok()?;
-        let end = if b.is_empty() { len - 1 } else { b.parse::<u64>().ok()?.min(len - 1) };
+        let end = if b.is_empty() {
+            len - 1
+        } else {
+            b.parse::<u64>().ok()?.min(len - 1)
+        };
         (start, end)
     };
     if start > end || start >= len {
@@ -471,7 +615,9 @@ fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>>
         return status_only(403);
     }
     let p = Path::new(path);
-    let Ok(md) = std::fs::metadata(p) else { return status_only(404) };
+    let Ok(md) = std::fs::metadata(p) else {
+        return status_only(404);
+    };
     if !md.is_file() {
         return status_only(404);
     }
@@ -500,10 +646,13 @@ fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>>
         None => (0, total.saturating_sub(1), false),
     };
     let len = if total == 0 { 0 } else { end - start + 1 };
-    let Ok(body) = read_range(p, start, len) else { return status_only(404) };
+    let Ok(body) = read_range(p, start, len) else {
+        return status_only(404);
+    };
     let b = b.header("Content-Length", body.len().to_string());
     let r = if partial {
-        b.status(206).header("Content-Range", format!("bytes {start}-{end}/{total}"))
+        b.status(206)
+            .header("Content-Range", format!("bytes {start}-{end}/{total}"))
     } else {
         b.status(200)
     };
@@ -512,12 +661,20 @@ fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>>
 
 pub fn serve(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
     let path = query_param(req.uri().query().unwrap_or(""), "p").filter(|p| !p.is_empty());
-    let range = req.headers().get("range").and_then(|v| v.to_str().ok()).map(str::to_owned);
-    let Some(path) = path else { return responder.respond(status_only(404)) };
+    let range = req
+        .headers()
+        .get("range")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let Some(path) = path else {
+        return responder.respond(status_only(404));
+    };
     // A thread per request: the webview aborts superseded loads, and disk reads must not block the runtime.
-    let _ = std::thread::Builder::new().name("wsfile".into()).spawn(move || {
-        responder.respond(respond_file(&path, range.as_deref()));
-    });
+    let _ = std::thread::Builder::new()
+        .name("wsfile".into())
+        .spawn(move || {
+            responder.respond(respond_file(&path, range.as_deref()));
+        });
 }
 
 #[cfg(test)]
@@ -535,7 +692,11 @@ mod tests {
         assert_eq!(classify("docx"), Kind::Document);
         assert_eq!(classify("odp"), Kind::Document);
         assert_eq!(classify("pdf"), Kind::Pdf);
-        assert_eq!(classify("doc"), Kind::Other, "legacy Office has no text view");
+        assert_eq!(
+            classify("doc"),
+            Kind::Other,
+            "legacy Office has no text view"
+        );
         assert_eq!(classify(""), Kind::Other);
         assert_eq!(ext_of(r"C:\a\B.JPG"), "jpg");
     }
@@ -577,11 +738,31 @@ mod tests {
     fn jpeg_with_exif() -> Vec<u8> {
         use exif::{Field, In, Rational, Tag, Value};
         let fields = [
-            Field { tag: Tag::Make, ifd_num: In::PRIMARY, value: Value::Ascii(vec![b"Canon".to_vec()]) },
-            Field { tag: Tag::Model, ifd_num: In::PRIMARY, value: Value::Ascii(vec![b"Canon EOS R5".to_vec()]) },
-            Field { tag: Tag::DateTimeOriginal, ifd_num: In::PRIMARY, value: Value::Ascii(vec![b"2024:05:03 14:22:10".to_vec()]) },
-            Field { tag: Tag::GPSLatitude, ifd_num: In::PRIMARY, value: Value::Rational(vec![Rational { num: 48, denom: 1 }; 3]) },
-            Field { tag: Tag::GPSLongitude, ifd_num: In::PRIMARY, value: Value::Rational(vec![Rational { num: 2, denom: 1 }; 3]) },
+            Field {
+                tag: Tag::Make,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"Canon".to_vec()]),
+            },
+            Field {
+                tag: Tag::Model,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"Canon EOS R5".to_vec()]),
+            },
+            Field {
+                tag: Tag::DateTimeOriginal,
+                ifd_num: In::PRIMARY,
+                value: Value::Ascii(vec![b"2024:05:03 14:22:10".to_vec()]),
+            },
+            Field {
+                tag: Tag::GPSLatitude,
+                ifd_num: In::PRIMARY,
+                value: Value::Rational(vec![Rational { num: 48, denom: 1 }; 3]),
+            },
+            Field {
+                tag: Tag::GPSLongitude,
+                ifd_num: In::PRIMARY,
+                value: Value::Rational(vec![Rational { num: 2, denom: 1 }; 3]),
+            },
         ];
         let mut w = exif::experimental::Writer::new();
         for f in &fields {
@@ -593,7 +774,11 @@ mod tests {
 
         let mut jpg = Vec::new();
         let img = image::RgbImage::from_pixel(7, 5, image::Rgb([200, 30, 30]));
-        img.write_to(&mut std::io::Cursor::new(&mut jpg), image::ImageFormat::Jpeg).expect("encode");
+        img.write_to(
+            &mut std::io::Cursor::new(&mut jpg),
+            image::ImageFormat::Jpeg,
+        )
+        .expect("encode");
         let mut app1 = b"Exif\0\0".to_vec();
         app1.extend_from_slice(&tiff);
         let mut out = vec![0xFF, 0xD8, 0xFF, 0xE1];
@@ -640,7 +825,10 @@ mod tests {
         assert_eq!(t.content.len(), TEXT_CAP);
 
         let bin = dir.path().join("fake.txt");
-        std::fs::File::create(&bin).unwrap().write_all(b"MZ\x90\0\x03\0\0\0").unwrap();
+        std::fs::File::create(&bin)
+            .unwrap()
+            .write_all(b"MZ\x90\0\x03\0\0\0")
+            .unwrap();
         let i = read_info(bin.to_str().unwrap()).unwrap();
         assert_eq!(i.kind, Kind::Other);
         assert!(i.text.is_none());
@@ -649,7 +837,10 @@ mod tests {
     #[test]
     fn missing_file_and_folder() {
         let dir = tempfile::tempdir().unwrap();
-        assert_eq!(read_info(dir.path().join("nope.txt").to_str().unwrap()).unwrap_err(), "File not found");
+        assert_eq!(
+            read_info(dir.path().join("nope.txt").to_str().unwrap()).unwrap_err(),
+            "File not found"
+        );
         let d = read_info(dir.path().to_str().unwrap()).unwrap();
         assert_eq!(d.kind, Kind::Folder);
         assert_eq!(d.size, None);
@@ -679,7 +870,10 @@ mod tests {
         pdf_page_png_with(&cache, p, 3, 600, render).unwrap();
         pdf_page_png_with(&cache, p, 3, 5, render).unwrap();
         pdf_page_png_with(&cache, p, 3, 99_999, render).unwrap();
-        assert_eq!(*seen.lock().unwrap(), [(2, 600), (3, 600), (3, PDF_WIDTH_MIN), (3, PDF_WIDTH_MAX)]);
+        assert_eq!(
+            *seen.lock().unwrap(),
+            [(2, 600), (3, 600), (3, PDF_WIDTH_MIN), (3, PDF_WIDTH_MAX)]
+        );
         // a changed file is a different cache entry
         std::fs::write(&f, b"%PDF-fake-but-longer").unwrap();
         pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
@@ -690,15 +884,27 @@ mod tests {
         // validation: only PDFs, only files that exist
         let txt = dir.path().join("a.txt");
         std::fs::write(&txt, b"x").unwrap();
-        assert_eq!(pdf_page_png_with(&cache, txt.to_str().unwrap(), 1, 600, render).unwrap_err(), "Not a PDF file");
+        assert_eq!(
+            pdf_page_png_with(&cache, txt.to_str().unwrap(), 1, 600, render).unwrap_err(),
+            "Not a PDF file"
+        );
         let missing = dir.path().join("none.pdf");
-        assert_eq!(pdf_page_png_with(&cache, missing.to_str().unwrap(), 1, 600, render).unwrap_err(), "File not found");
+        assert_eq!(
+            pdf_page_png_with(&cache, missing.to_str().unwrap(), 1, 600, render).unwrap_err(),
+            "File not found"
+        );
     }
 
     #[test]
     fn page_cache_evicts_oldest_beyond_its_limits() {
         let mut c = PageCache::new();
-        let key = |n: u32| PageKey { path: "a".into(), size: 1, mtime: None, page: n, width: 600 };
+        let key = |n: u32| PageKey {
+            path: "a".into(),
+            size: 1,
+            mtime: None,
+            page: n,
+            width: 600,
+        };
         for n in 0..(PAGE_CACHE_ENTRIES as u32 + 3) {
             c.put(key(n), std::sync::Arc::new(vec![0u8; 10]));
         }
@@ -738,7 +944,13 @@ mod tests {
         // preview_info: kind pdf + page count via the process-wide runtime
         let info = read_info(f.to_str().unwrap()).unwrap();
         assert_eq!(info.kind, Kind::Pdf);
-        assert_eq!(info.pdf, Some(PdfPreview { pages: Some(2), engine: true }));
+        assert_eq!(
+            info.pdf,
+            Some(PdfPreview {
+                pages: Some(2),
+                engine: true
+            })
+        );
     }
 
     #[test]
@@ -752,11 +964,17 @@ mod tests {
         assert_eq!(r.body().as_ref(), &(10..=19u8).collect::<Vec<_>>()[..]);
         let full = respond_file(v.to_str().unwrap(), None);
         assert_eq!((full.status().as_u16(), full.body().len()), (200, 256));
-        assert_eq!(respond_file(v.to_str().unwrap(), Some("bytes=999-")).status(), 416);
+        assert_eq!(
+            respond_file(v.to_str().unwrap(), Some("bytes=999-")).status(),
+            416
+        );
 
         let secret = dir.path().join("passwords.kdbx");
         std::fs::write(&secret, b"x").unwrap();
         assert_eq!(respond_file(secret.to_str().unwrap(), None).status(), 403);
-        assert_eq!(respond_file(dir.path().join("none.mp4").to_str().unwrap(), None).status(), 404);
+        assert_eq!(
+            respond_file(dir.path().join("none.mp4").to_str().unwrap(), None).status(),
+            404
+        );
     }
 }

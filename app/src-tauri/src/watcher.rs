@@ -30,7 +30,10 @@ pub fn pause_label(r: Option<PauseReason>) -> &'static str {
 /// Re-sync the tray item text with the real Tier 1 state. Call after every pause change
 /// (tray, panel, automatic policy); cheap and idempotent.
 pub fn refresh_pause_item(app: &AppHandle) {
-    let (Some(item), Ok(t)) = (app.try_state::<PauseItem>(), app.state::<crate::tier1::Handle>().get()) else {
+    let (Some(item), Ok(t)) = (
+        app.try_state::<PauseItem>(),
+        app.state::<crate::tier1::Handle>().get(),
+    ) else {
         return;
     };
     let _ = item.0.set_text(pause_label(t.paused_reason()));
@@ -52,7 +55,9 @@ fn thousands(n: u64) -> String {
 pub fn tooltip_text(vols: &[VolumeStatus]) -> String {
     if let Some(v) = vols.iter().find(|v| v.state == "scanning") {
         return match (v.done, v.total) {
-            (Some(d), Some(t)) if t > 0 => format!("winseek · indexing {}: {}%", v.letter, (d.min(t) * 100 / t)),
+            (Some(d), Some(t)) if t > 0 => {
+                format!("winseek · indexing {}: {}%", v.letter, (d.min(t) * 100 / t))
+            }
             _ => format!("winseek · indexing {}:", v.letter),
         };
     }
@@ -70,7 +75,11 @@ pub fn eta_text(secs: u64) -> String {
         60..=3599 => format!("about {} min", secs.div_ceil(60)),
         _ => {
             let m = (secs / 60) % 60;
-            if m == 0 { format!("about {} h", secs / 3600) } else { format!("about {} h {m} min", secs / 3600) }
+            if m == 0 {
+                format!("about {} h", secs / 3600)
+            } else {
+                format!("about {} h {m} min", secs / 3600)
+            }
         }
     }
 }
@@ -80,10 +89,15 @@ pub fn eta_text(secs: u64) -> String {
 pub fn tier1_line(state: &str, done: u64, pending: u64, rate: Option<f64>) -> Option<String> {
     let total = done + pending;
     match state {
-        "paused" if pending > 0 => Some(format!("meaning index paused · {} left", thousands(pending))),
+        "paused" if pending > 0 => Some(format!(
+            "meaning index paused · {} left",
+            thousands(pending)
+        )),
         "indexing" if total > 0 && pending > 0 => {
             let pct = done * 100 / total;
-            let eta = crate::tier1::progress::eta_secs(pending, rate).map(|s| format!(" · {}", eta_text(s))).unwrap_or_default();
+            let eta = crate::tier1::progress::eta_secs(pending, rate)
+                .map(|s| format!(" · {}", eta_text(s)))
+                .unwrap_or_default();
             Some(format!("meaning index {pct}%{eta}"))
         }
         _ => None,
@@ -106,10 +120,17 @@ pub struct ProgressItem(pub tauri::menu::MenuItem<tauri::Wry>);
 const REMEMBER_EVERY: Duration = Duration::from_secs(60);
 
 /// Read the worker once: `(tooltip fragment, menu text)`. Also remembers its speed now and then.
-fn tier1_progress(app: &AppHandle, last_remember: &mut std::time::Instant) -> (Option<String>, Option<String>) {
-    let Ok(t) = app.state::<crate::tier1::Handle>().get() else { return (None, None) };
+fn tier1_progress(
+    app: &AppHandle,
+    last_remember: &mut std::time::Instant,
+) -> (Option<String>, Option<String>) {
+    let Ok(t) = app.state::<crate::tier1::Handle>().get() else {
+        return (None, None);
+    };
     let st = t.status();
-    let Some(s) = st.stats else { return (None, None) };
+    let Some(s) = st.stats else {
+        return (None, None);
+    };
     let rate = t.rate();
     if rate.is_some() && last_remember.elapsed() >= REMEMBER_EVERY {
         *last_remember = std::time::Instant::now();
@@ -118,7 +139,9 @@ fn tier1_progress(app: &AppHandle, last_remember: &mut std::time::Instant) -> (O
     let line = tier1_line(&st.state, s.done, s.pending, rate);
     let menu = line.as_ref().map(|l| {
         let mut c = l.chars();
-        c.next().map(|f| f.to_uppercase().collect::<String>() + c.as_str()).unwrap_or_default()
+        c.next()
+            .map(|f| f.to_uppercase().collect::<String>() + c.as_str())
+            .unwrap_or_default()
     });
     (line, menu)
 }
@@ -144,7 +167,9 @@ pub fn spawn(app: AppHandle) {
                 let (t1_line, t1_menu) = tier1_progress(&app, &mut last_remember);
                 let tip = tray_tip(&app.state::<AppState>().source().status(), t1_line);
                 if let Some(item) = app.try_state::<ProgressItem>() {
-                    let _ = item.0.set_text(t1_menu.as_deref().unwrap_or("Meaning index: up to date"));
+                    let _ = item
+                        .0
+                        .set_text(t1_menu.as_deref().unwrap_or("Meaning index: up to date"));
                 }
                 if tip != last_tip {
                     if let Some(tray) = app.tray_by_id(TRAY_ID) {
@@ -153,7 +178,11 @@ pub fn spawn(app: AppHandle) {
                     last_tip = tip;
                 }
             }
-            let nap = if !real && !service::fast_polling() { 2000 } else { 250 };
+            let nap = if !real && !service::fast_polling() {
+                2000
+            } else {
+                250
+            };
             // While demo and not fast-polling, sleep in short slices so a kick is honoured quickly.
             let mut slept = 0;
             while slept < nap {
@@ -171,8 +200,22 @@ pub fn spawn(app: AppHandle) {
 mod tests {
     use super::*;
 
-    fn v(letter: &str, files: u64, folders: u64, state: &str, done: Option<u64>, total: Option<u64>) -> VolumeStatus {
-        VolumeStatus { letter: letter.into(), files, folders, state: state.into(), done, total }
+    fn v(
+        letter: &str,
+        files: u64,
+        folders: u64,
+        state: &str,
+        done: Option<u64>,
+        total: Option<u64>,
+    ) -> VolumeStatus {
+        VolumeStatus {
+            letter: letter.into(),
+            files,
+            folders,
+            state: state.into(),
+            done,
+            total,
+        }
     }
 
     #[test]
@@ -194,27 +237,48 @@ mod tests {
 
     #[test]
     fn tier1_tray_lines() {
-        assert_eq!(tier1_line("indexing", 450, 550, Some(5.0)).unwrap(), "meaning index 45% · about 2 min");
-        assert_eq!(tier1_line("indexing", 450, 550, None).unwrap(), "meaning index 45%");
-        assert_eq!(tier1_line("paused", 1, 1234, None).unwrap(), "meaning index paused · 1,234 left");
+        assert_eq!(
+            tier1_line("indexing", 450, 550, Some(5.0)).unwrap(),
+            "meaning index 45% · about 2 min"
+        );
+        assert_eq!(
+            tier1_line("indexing", 450, 550, None).unwrap(),
+            "meaning index 45%"
+        );
+        assert_eq!(
+            tier1_line("paused", 1, 1234, None).unwrap(),
+            "meaning index paused · 1,234 left"
+        );
         assert_eq!(tier1_line("idle", 10, 0, None), None);
         assert_eq!(tier1_line("models_missing", 0, 100, None), None);
-        let tip = tray_tip(&[v("C", 5, 5, "live", None, None)], Some("meaning index 45%".into()));
+        let tip = tray_tip(
+            &[v("C", 5, 5, "live", None, None)],
+            Some("meaning index 45%".into()),
+        );
         assert_eq!(tip, "winseek · 10 files · meaning index 45%");
-        assert!(tip.len() < 128, "tray tooltips are limited to 127 characters");
+        assert!(
+            tip.len() < 128,
+            "tray tooltips are limited to 127 characters"
+        );
     }
 
     #[test]
     fn tooltip_variants() {
         assert_eq!(
-            tooltip_text(&[v("C", 0, 0, "scanning", Some(42), Some(100)), v("D", 1, 1, "live", None, None)]),
+            tooltip_text(&[
+                v("C", 0, 0, "scanning", Some(42), Some(100)),
+                v("D", 1, 1, "live", None, None)
+            ]),
             "winseek · indexing C: 42%"
         );
         assert_eq!(
             tooltip_text(&[v("C", 5_000_000, 951_011, "live", None, None)]),
             "winseek · 5,951,011 files"
         );
-        assert_eq!(tooltip_text(&[v("C", 1, 1, "demo", None, None)]), "winseek · demo data");
+        assert_eq!(
+            tooltip_text(&[v("C", 1, 1, "demo", None, None)]),
+            "winseek · demo data"
+        );
         assert_eq!(thousands(999), "999");
         assert_eq!(thousands(1000), "1,000");
     }

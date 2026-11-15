@@ -52,8 +52,14 @@ impl OcrText {
             ocr: Ocr<'a>,
         }
         let n = self.lines.len().min(MAX_LINES);
-        serde_json::to_string(&Wrap { ocr: Ocr { w: self.width, h: self.height, lines: &self.lines[..n] } })
-            .unwrap_or_default()
+        serde_json::to_string(&Wrap {
+            ocr: Ocr {
+                w: self.width,
+                h: self.height,
+                lines: &self.lines[..n],
+            },
+        })
+        .unwrap_or_default()
     }
 }
 
@@ -126,15 +132,21 @@ const SCREENSHOT_PREFIXES: &[&str] = &[
 ];
 
 fn norm(s: &str) -> String {
-    s.to_lowercase().replace(['\u{2019}', '\u{2018}', '\u{02bc}', '`'], "'")
+    s.to_lowercase()
+        .replace(['\u{2019}', '\u{2018}', '\u{02bc}', '`'], "'")
 }
 
 fn is_png(path: &str) -> bool {
-    path.rsplit('.').next().is_some_and(|e| e.eq_ignore_ascii_case("png")) && path.contains('.')
+    path.rsplit('.')
+        .next()
+        .is_some_and(|e| e.eq_ignore_ascii_case("png"))
+        && path.contains('.')
 }
 
 fn is_common_resolution(w: u32, h: u32) -> bool {
-    COMMON_RESOLUTIONS.iter().any(|&(a, b)| (w, h) == (a, b) || (w, h) == (b, a))
+    COMMON_RESOLUTIONS
+        .iter()
+        .any(|&(a, b)| (w, h) == (a, b) || (w, h) == (b, a))
 }
 
 /// Does this image look like a screenshot? True when any of:
@@ -156,7 +168,10 @@ pub fn is_screenshot(path: &str, dims: Option<(u32, u32)>, screenshots_dir: Opti
     }
     let mut parts: Vec<&str> = p.split('\\').collect();
     let name = parts.pop().unwrap_or("");
-    if parts.iter().any(|c| SCREENSHOT_DIRS.contains(&norm(c).as_str())) {
+    if parts
+        .iter()
+        .any(|c| SCREENSHOT_DIRS.contains(&norm(c).as_str()))
+    {
         return true;
     }
     let n = norm(name);
@@ -173,13 +188,19 @@ pub fn fit_dimensions(w: u32, h: u32, max: u32) -> (u32, u32) {
     if long <= max || long == 0 || max == 0 {
         return (w, h);
     }
-    let scale = |v: u32| ((u64::from(v) * u64::from(max) + u64::from(long) / 2) / u64::from(long)).max(1) as u32;
+    let scale = |v: u32| {
+        ((u64::from(v) * u64::from(max) + u64::from(long) / 2) / u64::from(long)).max(1) as u32
+    };
     (scale(w), scale(h))
 }
 
 /// Pixel size without decoding the whole image.
 pub fn image_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
-    image::ImageReader::new(Cursor::new(bytes)).with_guessed_format().ok()?.into_dimensions().ok()
+    image::ImageReader::new(Cursor::new(bytes))
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 /// The known Screenshots folder, resolved once.
@@ -215,8 +236,8 @@ mod win {
     use super::*;
     use windows::Globalization::Language;
     use windows::Graphics::Imaging::{
-        BitmapAlphaMode, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat, BitmapTransform, ColorManagementMode,
-        ExifOrientationMode, SoftwareBitmap,
+        BitmapAlphaMode, BitmapDecoder, BitmapInterpolationMode, BitmapPixelFormat,
+        BitmapTransform, ColorManagementMode, ExifOrientationMode, SoftwareBitmap,
     };
     use windows::Media::Ocr::OcrEngine;
     use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
@@ -275,20 +296,33 @@ mod win {
         let stream = InMemoryRandomAccessStream::new().map_err(|e| err("stream", e))?;
         let writer = DataWriter::CreateDataWriter(&stream).map_err(|e| err("writer", e))?;
         writer.WriteBytes(bytes).map_err(|e| err("write", e))?;
-        writer.StoreAsync().map_err(|e| err("store", e))?.join().map_err(|e| err("store", e))?;
+        writer
+            .StoreAsync()
+            .map_err(|e| err("store", e))?
+            .join()
+            .map_err(|e| err("store", e))?;
         writer.DetachStream().map_err(|e| err("detach", e))?;
         stream.Seek(0).map_err(|e| err("seek", e))?;
         let decoder = BitmapDecoder::CreateAsync(&stream)
             .map_err(|e| err("decoder", e))?
             .join()
             .map_err(|e| err("decode", e))?;
-        let (w, h) = (decoder.PixelWidth().map_err(|e| err("size", e))?, decoder.PixelHeight().map_err(|e| err("size", e))?);
+        let (w, h) = (
+            decoder.PixelWidth().map_err(|e| err("size", e))?,
+            decoder.PixelHeight().map_err(|e| err("size", e))?,
+        );
         let (sw, sh) = fit_dimensions(w, h, max_dim);
         let transform = BitmapTransform::new().map_err(|e| err("transform", e))?;
         if (sw, sh) != (w, h) {
-            transform.SetScaledWidth(sw).map_err(|e| err("transform", e))?;
-            transform.SetScaledHeight(sh).map_err(|e| err("transform", e))?;
-            transform.SetInterpolationMode(BitmapInterpolationMode::Fant).map_err(|e| err("transform", e))?;
+            transform
+                .SetScaledWidth(sw)
+                .map_err(|e| err("transform", e))?;
+            transform
+                .SetScaledHeight(sh)
+                .map_err(|e| err("transform", e))?;
+            transform
+                .SetInterpolationMode(BitmapInterpolationMode::Fant)
+                .map_err(|e| err("transform", e))?;
         }
         let bmp = decoder
             .GetSoftwareBitmapTransformedAsync(
@@ -308,7 +342,8 @@ mod win {
     fn to_png(bytes: &[u8]) -> Option<Vec<u8>> {
         let img = image::load_from_memory(bytes).ok()?;
         let mut out = Vec::new();
-        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).ok()?;
+        img.write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .ok()?;
         Some(out)
     }
 
@@ -349,10 +384,20 @@ mod win {
                 }
                 lines.push(OcrLine {
                     text,
-                    rect: [(x0 * fx) as i32, (y0 * fy) as i32, ((x1 - x0) * fx).ceil() as i32, ((y1 - y0) * fy).ceil() as i32],
+                    rect: [
+                        (x0 * fx) as i32,
+                        (y0 * fy) as i32,
+                        ((x1 - x0) * fx).ceil() as i32,
+                        ((y1 - y0) * fy).ceil() as i32,
+                    ],
                 });
             }
-            Ok(OcrText { text: join_lines(&lines), lines, width: w, height: h })
+            Ok(OcrText {
+                text: join_lines(&lines),
+                lines,
+                width: w,
+                height: h,
+            })
         }
     }
 }
@@ -365,13 +410,37 @@ mod tests {
 
     #[test]
     fn detects_by_known_folder_and_localized_dirs() {
-        assert!(is_screenshot(r"C:\Users\me\Pictures\Screenshots\a.jpg", None, Some(SHOTS)));
-        assert!(is_screenshot(r"c:\users\me\pictures\screenshots\sub\a.jpg", None, Some(&format!("{SHOTS}\\"))));
-        assert!(!is_screenshot(r"C:\Users\me\Pictures\ScreenshotsOld\a.jpg", None, Some(SHOTS)));
-        assert!(is_screenshot(r"C:\Users\me\Images\Captures d’écran\x.jpg", None, None));
-        assert!(is_screenshot(r"C:\Users\me\Images\Captures d'écran\x.jpg", None, None));
+        assert!(is_screenshot(
+            r"C:\Users\me\Pictures\Screenshots\a.jpg",
+            None,
+            Some(SHOTS)
+        ));
+        assert!(is_screenshot(
+            r"c:\users\me\pictures\screenshots\sub\a.jpg",
+            None,
+            Some(&format!("{SHOTS}\\"))
+        ));
+        assert!(!is_screenshot(
+            r"C:\Users\me\Pictures\ScreenshotsOld\a.jpg",
+            None,
+            Some(SHOTS)
+        ));
+        assert!(is_screenshot(
+            r"C:\Users\me\Images\Captures d’écran\x.jpg",
+            None,
+            None
+        ));
+        assert!(is_screenshot(
+            r"C:\Users\me\Images\Captures d'écran\x.jpg",
+            None,
+            None
+        ));
         assert!(is_screenshot(r"D:\Capturas de pantalla\x.jpg", None, None));
-        assert!(!is_screenshot(r"C:\Users\me\Pictures\holiday\x.jpg", None, Some(SHOTS)));
+        assert!(!is_screenshot(
+            r"C:\Users\me\Pictures\holiday\x.jpg",
+            None,
+            Some(SHOTS)
+        ));
     }
 
     #[test]
@@ -388,28 +457,52 @@ mod tests {
         ] {
             assert!(is_screenshot(&format!(r"C:\x\{n}"), None, None), "{n}");
         }
-        assert!(!is_screenshot(r"C:\x\IMG_2041.jpg", Some((4032, 3024)), None));
-        assert!(!is_screenshot(r"C:\x\holiday capture.jpg", None, None), "prefix only");
+        assert!(!is_screenshot(
+            r"C:\x\IMG_2041.jpg",
+            Some((4032, 3024)),
+            None
+        ));
+        assert!(
+            !is_screenshot(r"C:\x\holiday capture.jpg", None, None),
+            "prefix only"
+        );
     }
 
     #[test]
     fn detects_png_with_display_resolution() {
         assert!(is_screenshot(r"C:\x\a.png", Some((1920, 1080)), None));
-        assert!(is_screenshot(r"C:\x\a.PNG", Some((1080, 1920)), None), "portrait");
+        assert!(
+            is_screenshot(r"C:\x\a.PNG", Some((1080, 1920)), None),
+            "portrait"
+        );
         assert!(is_screenshot(r"C:\x\a.png", Some((2560, 1440)), None));
         assert!(!is_screenshot(r"C:\x\a.png", Some((1921, 1080)), None));
-        assert!(!is_screenshot(r"C:\x\a.jpg", Some((1920, 1080)), None), "png only");
+        assert!(
+            !is_screenshot(r"C:\x\a.jpg", Some((1920, 1080)), None),
+            "png only"
+        );
         assert!(!is_screenshot(r"C:\x\a.png", None, None));
-        assert!(!is_screenshot(r"C:\x\png", Some((1920, 1080)), None), "no extension");
+        assert!(
+            !is_screenshot(r"C:\x\png", Some((1920, 1080)), None),
+            "no extension"
+        );
     }
 
     #[test]
     fn fit_dimensions_math() {
-        assert_eq!(fit_dimensions(1920, 1080, 10_000), (1920, 1080), "never upscales");
+        assert_eq!(
+            fit_dimensions(1920, 1080, 10_000),
+            (1920, 1080),
+            "never upscales"
+        );
         assert_eq!(fit_dimensions(10_000, 5_000, 10_000), (10_000, 5_000));
         assert_eq!(fit_dimensions(20_000, 10_000, 10_000), (10_000, 5_000));
         assert_eq!(fit_dimensions(10_000, 30_000, 10_000), (3_333, 10_000));
-        assert_eq!(fit_dimensions(100_000, 3, 10_000), (10_000, 1), "never zero");
+        assert_eq!(
+            fit_dimensions(100_000, 3, 10_000),
+            (10_000, 1),
+            "never zero"
+        );
         assert_eq!(fit_dimensions(0, 0, 100), (0, 0));
         assert_eq!(fit_dimensions(500, 400, 0), (500, 400));
     }
@@ -417,16 +510,33 @@ mod tests {
     #[test]
     fn locator_json_shape_and_text_join() {
         let lines = vec![
-            OcrLine { text: " Hello ".into(), rect: [1, 2, 30, 10] },
-            OcrLine { text: "  ".into(), rect: [0, 0, 1, 1] },
-            OcrLine { text: "World".into(), rect: [1, 14, 40, 10] },
+            OcrLine {
+                text: " Hello ".into(),
+                rect: [1, 2, 30, 10],
+            },
+            OcrLine {
+                text: "  ".into(),
+                rect: [0, 0, 1, 1],
+            },
+            OcrLine {
+                text: "World".into(),
+                rect: [1, 14, 40, 10],
+            },
         ];
-        let o = OcrText { text: join_lines(&lines), lines, width: 100, height: 50 };
+        let o = OcrText {
+            text: join_lines(&lines),
+            lines,
+            width: 100,
+            height: 50,
+        };
         assert_eq!(o.text, "Hello\nWorld");
         let v: serde_json::Value = serde_json::from_str(&o.locator_json()).unwrap();
         assert_eq!(v["ocr"]["w"], 100);
         assert_eq!(v["ocr"]["lines"][0]["t"], " Hello ");
-        assert_eq!(v["ocr"]["lines"][2]["r"], serde_json::json!([1, 14, 40, 10]));
+        assert_eq!(
+            v["ocr"]["lines"][2]["r"],
+            serde_json::json!([1, 14, 40, 10])
+        );
         assert!(!o.is_empty());
         assert!(OcrText::default().is_empty());
     }
@@ -436,17 +546,39 @@ mod tests {
     /// 5x7 glyphs (rows, MSB-left in the low 5 bits) for the letters the test draws.
     fn glyph(c: char) -> [u8; 7] {
         match c {
-            'H' => [0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001],
-            'E' => [0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111],
-            'L' => [0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111],
-            'O' => [0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110],
-            'W' => [0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001],
-            'R' => [0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001],
-            'D' => [0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110],
-            'I' => [0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110],
-            'N' => [0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001],
-            'V' => [0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100],
-            'C' => [0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110],
+            'H' => [
+                0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+            ],
+            'E' => [
+                0b11111, 0b10000, 0b10000, 0b11110, 0b10000, 0b10000, 0b11111,
+            ],
+            'L' => [
+                0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b10000, 0b11111,
+            ],
+            'O' => [
+                0b01110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01110,
+            ],
+            'W' => [
+                0b10001, 0b10001, 0b10001, 0b10101, 0b10101, 0b11011, 0b10001,
+            ],
+            'R' => [
+                0b11110, 0b10001, 0b10001, 0b11110, 0b10100, 0b10010, 0b10001,
+            ],
+            'D' => [
+                0b11110, 0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b11110,
+            ],
+            'I' => [
+                0b01110, 0b00100, 0b00100, 0b00100, 0b00100, 0b00100, 0b01110,
+            ],
+            'N' => [
+                0b10001, 0b11001, 0b10101, 0b10101, 0b10011, 0b10001, 0b10001,
+            ],
+            'V' => [
+                0b10001, 0b10001, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100,
+            ],
+            'C' => [
+                0b01110, 0b10001, 0b10000, 0b10000, 0b10000, 0b10001, 0b01110,
+            ],
             _ => [0; 7],
         }
     }
@@ -464,7 +596,11 @@ mod tests {
                         if row & (1 << (4 - cx)) != 0 {
                             for dy in 0..S {
                                 for dx in 0..S {
-                                    img.put_pixel(x0 + cx * S + dx, y0 + ry as u32 * S + dy, image::Rgb([0, 0, 0]));
+                                    img.put_pixel(
+                                        x0 + cx * S + dx,
+                                        y0 + ry as u32 * S + dy,
+                                        image::Rgb([0, 0, 0]),
+                                    );
                                 }
                             }
                         }
@@ -473,7 +609,9 @@ mod tests {
             }
         }
         let mut out = Vec::new();
-        image::DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        image::DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
         out
     }
 
@@ -496,7 +634,13 @@ mod tests {
                 eprintln!("OCR text: {:?} lines: {:?}", r.text, r.lines);
                 assert!(!r.is_empty(), "no text recognised");
                 let up = r.text.to_uppercase();
-                assert!(up.contains("HELLO") || up.contains("WORLD") || up.contains("VIDEO") || up.contains("CODEC"), "got {up:?}");
+                assert!(
+                    up.contains("HELLO")
+                        || up.contains("WORLD")
+                        || up.contains("VIDEO")
+                        || up.contains("CODEC"),
+                    "got {up:?}"
+                );
                 assert_eq!((r.width, r.height), (1920, 1080));
                 assert!(r.lines.iter().all(|l| l.rect[2] > 0 && l.rect[3] > 0));
             }

@@ -8,15 +8,35 @@ fn main() -> std::io::Result<()> {
     let query = std::env::args().nth(1).unwrap_or_else(|| "winseek".into());
     let mut c = pipe::connect(PIPE_NAME, Duration::from_secs(2))?;
     write_message(&mut c, &Request::Status { id: 1 })?;
-    if let Response::StatusResult { volumes, uptime_s, .. } = read_message::<_, Response>(&mut c)? {
+    if let Response::StatusResult {
+        volumes, uptime_s, ..
+    } = read_message::<_, Response>(&mut c)?
+    {
         println!("searchd up {uptime_s} s");
         for v in volumes {
-            println!("  {}: {} files, {} folders, {:?} ({} / {:?})", v.letter, v.files, v.folders, v.state, v.fs, v.monitor);
+            println!(
+                "  {}: {} files, {} folders, {:?} ({} / {:?})",
+                v.letter, v.files, v.folders, v.state, v.fs, v.monitor
+            );
         }
     }
-    write_message(&mut c, &Request::Search { id: 2, query: query.clone(), offset: 0, limit: 5, sort: Sort::NameAsc })?;
+    write_message(
+        &mut c,
+        &Request::Search {
+            id: 2,
+            query: query.clone(),
+            offset: 0,
+            limit: 5,
+            sort: Sort::NameAsc,
+        },
+    )?;
     match read_message::<_, Response>(&mut c)? {
-        Response::SearchResult { total, hits, elapsed_us, .. } => {
+        Response::SearchResult {
+            total,
+            hits,
+            elapsed_us,
+            ..
+        } => {
             println!("search {query:?}: {total} hits in {elapsed_us} us");
             for h in hits {
                 println!("  {h:?}");

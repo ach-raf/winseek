@@ -13,9 +13,9 @@ pub mod frame;
 pub mod pipe;
 pub mod proto;
 
-pub use agent::{AgentRequest, AgentResponse};
 #[cfg(windows)]
 pub use agent::{agent_pipe_name, agent_sddl, current_user_sid};
+pub use agent::{AgentRequest, AgentResponse};
 pub use frame::{read_frame, read_message, write_frame, write_message, MAX_FRAME};
 pub use proto::*;
 

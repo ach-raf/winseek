@@ -37,12 +37,54 @@ use crate::{FileId, VecKind};
 /// Generic queries whose mean embedding is the "hub" direction. Deliberately broad and mixed
 /// (kinds of images, documents, everyday subjects) so no single topic is penalised.
 pub const HUB_PROMPTS: [&str; 48] = [
-    "photo", "document", "screenshot", "a picture", "text", "notes", "a page", "an icon",
-    "a logo", "a chart", "a table", "people", "a person", "landscape", "a building", "food",
-    "an animal", "a car", "a phone", "a computer", "a website", "an app", "settings", "a menu",
-    "a letter", "a report", "code", "a list", "a map", "music", "a video game", "a movie",
-    "travel", "work", "family", "money", "a bill", "a book", "a drawing", "a diagram", "a form",
-    "a message", "a chat", "news", "sports", "a room", "nature", "the sky",
+    "photo",
+    "document",
+    "screenshot",
+    "a picture",
+    "text",
+    "notes",
+    "a page",
+    "an icon",
+    "a logo",
+    "a chart",
+    "a table",
+    "people",
+    "a person",
+    "landscape",
+    "a building",
+    "food",
+    "an animal",
+    "a car",
+    "a phone",
+    "a computer",
+    "a website",
+    "an app",
+    "settings",
+    "a menu",
+    "a letter",
+    "a report",
+    "code",
+    "a list",
+    "a map",
+    "music",
+    "a video game",
+    "a movie",
+    "travel",
+    "work",
+    "family",
+    "money",
+    "a bill",
+    "a book",
+    "a drawing",
+    "a diagram",
+    "a form",
+    "a message",
+    "a chat",
+    "news",
+    "sports",
+    "a room",
+    "nature",
+    "the sky",
 ];
 
 /// Minimum standing above the library for this query, in standard deviations of the centred row
@@ -60,7 +102,9 @@ const TINY_ADJ_MIN: f32 = 0.07;
 
 /// Mean of the (normalised) hub prompt embeddings.
 pub fn hub_vector(bank: &[Vec<f32>]) -> Vec<f32> {
-    let Some(first) = bank.first() else { return Vec::new() };
+    let Some(first) = bank.first() else {
+        return Vec::new();
+    };
     let mut m = vec![0.0f32; first.len()];
     for v in bank {
         for (a, b) in m.iter_mut().zip(v) {
@@ -175,19 +219,27 @@ impl RowStats {
         let all_mean = self.sum.iter().sum::<f64>() / nf;
         let mut centre = [all_mean; 3];
         let (mut sum_c, mut sumsq_c) = (0.0, 0.0);
-        for i in 0..3 {
+        for (i, c) in centre.iter_mut().enumerate() {
             if self.n[i] == 0 {
                 continue;
             }
             let own = self.sum[i] / self.n[i] as f64;
-            let u = if self.n[i] >= MIN_MODALITY_ROWS { own } else { all_mean };
-            centre[i] = u;
+            let u = if self.n[i] >= MIN_MODALITY_ROWS {
+                own
+            } else {
+                all_mean
+            };
+            *c = u;
             sum_c += self.sum[i] - self.n[i] as f64 * u;
             sumsq_c += self.sumsq[i] - 2.0 * u * self.sum[i] + self.n[i] as f64 * u * u;
         }
         let mu_c = sum_c / nf;
         let var = (sumsq_c / nf - mu_c * mu_c).max(0.0);
-        Some(Scale { centre, mu_c, sd: var.sqrt().max(SD_FLOOR) })
+        Some(Scale {
+            centre,
+            mu_c,
+            sd: var.sqrt().max(SD_FLOOR),
+        })
     }
 }
 
@@ -208,13 +260,49 @@ impl Scale {
 /// Words of the query that name a kind of file (DigUp `kindHints`): a soft boost for that
 /// modality, never a filter.
 pub fn kind_hints(q: &str) -> Vec<Modality> {
-    const AUDIO: [&str; 10] = ["audio", "song", "songs", "music", "track", "podcast", "voice", "sound", "recording", "recordings"];
-    const VISUAL: [&str; 8] = ["photo", "photos", "picture", "pictures", "image", "images", "screenshot", "screenshots"];
-    const TEXT: [&str; 8] = ["document", "documents", "note", "notes", "pdf", "pdfs", "paper", "papers"];
+    const AUDIO: [&str; 10] = [
+        "audio",
+        "song",
+        "songs",
+        "music",
+        "track",
+        "podcast",
+        "voice",
+        "sound",
+        "recording",
+        "recordings",
+    ];
+    const VISUAL: [&str; 8] = [
+        "photo",
+        "photos",
+        "picture",
+        "pictures",
+        "image",
+        "images",
+        "screenshot",
+        "screenshots",
+    ];
+    const TEXT: [&str; 8] = [
+        "document",
+        "documents",
+        "note",
+        "notes",
+        "pdf",
+        "pdfs",
+        "paper",
+        "papers",
+    ];
     let lower = q.to_lowercase();
     let mut out = Vec::new();
-    for w in lower.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()) {
-        for (m, words) in [(Modality::Audio, &AUDIO[..]), (Modality::Visual, &VISUAL[..]), (Modality::Text, &TEXT[..])] {
+    for w in lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|w| !w.is_empty())
+    {
+        for (m, words) in [
+            (Modality::Audio, &AUDIO[..]),
+            (Modality::Visual, &VISUAL[..]),
+            (Modality::Text, &TEXT[..]),
+        ] {
             if words.contains(&w) && !out.contains(&m) {
                 out.push(m);
             }
@@ -240,7 +328,11 @@ pub fn gate_at(cands: Vec<Candidate>, k: usize, z_min: f32) -> Vec<Candidate> {
         }
     }
     let mut out: Vec<Candidate> = best.into_values().collect();
-    out.sort_by(|a, b| b.rank().total_cmp(&a.rank()).then_with(|| a.file_id.0.cmp(&b.file_id.0)));
+    out.sort_by(|a, b| {
+        b.rank()
+            .total_cmp(&a.rank())
+            .then_with(|| a.file_id.0.cmp(&b.file_id.0))
+    });
     out.truncate(k);
     out
 }
@@ -250,13 +342,26 @@ mod tests {
     use super::*;
 
     fn cand(id: i64, m: Modality, adj: f32, z: Option<f32>) -> Candidate {
-        Candidate { file_id: FileId(id), path: format!("p{id}"), hash: format!("h{id}"), chunk: 0, locator: None, modality: m, score: 0.7, adj, z }
+        Candidate {
+            file_id: FileId(id),
+            path: format!("p{id}"),
+            hash: format!("h{id}"),
+            chunk: 0,
+            locator: None,
+            modality: m,
+            score: 0.7,
+            adj,
+            z,
+        }
     }
 
     #[test]
     fn thresholds_are_the_measured_ones() {
         // Changing these needs a new measurement (scratch gate sweep).
-        assert_eq!((Z_MIN, MIN_POPULATION, MIN_MODALITY_ROWS, SD_FLOOR), (2.0, 30, 20, 0.02));
+        assert_eq!(
+            (Z_MIN, MIN_POPULATION, MIN_MODALITY_ROWS, SD_FLOOR),
+            (2.0, 30, 20, 0.02)
+        );
         assert_eq!(HUB_PROMPTS.len(), 48);
     }
 
@@ -293,11 +398,29 @@ mod tests {
 
     #[test]
     fn gate_at_dials_strictness() {
-        let cands = vec![cand(1, Modality::Visual, 0.10, Some(2.2)), cand(2, Modality::Visual, 0.10, Some(1.8))];
-        assert_eq!(gate_at(cands.clone(), 10, 2.0).len(), 1, "default strictness: only the 2.2 passes");
-        assert_eq!(gate_at(cands.clone(), 10, 1.5).len(), 2, "looser: both pass");
-        assert!(gate_at(cands.clone(), 10, 3.0).is_empty(), "stricter: neither passes");
-        assert_eq!(gate(cands.clone(), 10).len(), gate_at(cands, 10, Z_MIN).len(), "gate == gate_at(Z_MIN)");
+        let cands = vec![
+            cand(1, Modality::Visual, 0.10, Some(2.2)),
+            cand(2, Modality::Visual, 0.10, Some(1.8)),
+        ];
+        assert_eq!(
+            gate_at(cands.clone(), 10, 2.0).len(),
+            1,
+            "default strictness: only the 2.2 passes"
+        );
+        assert_eq!(
+            gate_at(cands.clone(), 10, 1.5).len(),
+            2,
+            "looser: both pass"
+        );
+        assert!(
+            gate_at(cands.clone(), 10, 3.0).is_empty(),
+            "stricter: neither passes"
+        );
+        assert_eq!(
+            gate(cands.clone(), 10).len(),
+            gate_at(cands, 10, Z_MIN).len(),
+            "gate == gate_at(Z_MIN)"
+        );
     }
 
     #[test]
@@ -325,7 +448,9 @@ mod tests {
     fn scores(seed: &mut u64, n: usize, lo: f32, hi: f32) -> Vec<f32> {
         (0..n)
             .map(|_| {
-                *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                *seed = seed
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
                 lo + ((*seed >> 40) as f32 / (1u64 << 24) as f32) * (hi - lo)
             })
             .collect()
@@ -335,8 +460,16 @@ mod tests {
     fn brute_z(rows: &[(Modality, f32)], m: Modality, s: f32) -> f32 {
         let all: f64 = rows.iter().map(|r| r.1 as f64).sum::<f64>() / rows.len() as f64;
         let mean_of = |k: Modality| {
-            let xs: Vec<f64> = rows.iter().filter(|r| r.0 == k).map(|r| r.1 as f64).collect();
-            if xs.len() >= MIN_MODALITY_ROWS { xs.iter().sum::<f64>() / xs.len() as f64 } else { all }
+            let xs: Vec<f64> = rows
+                .iter()
+                .filter(|r| r.0 == k)
+                .map(|r| r.1 as f64)
+                .collect();
+            if xs.len() >= MIN_MODALITY_ROWS {
+                xs.iter().sum::<f64>() / xs.len() as f64
+            } else {
+                all
+            }
         };
         let centred: Vec<f64> = rows.iter().map(|r| r.1 as f64 - mean_of(r.0)).collect();
         let mu = centred.iter().sum::<f64>() / centred.len() as f64;
@@ -349,10 +482,28 @@ mod tests {
         let mut seed = 7u64;
         // big visual, mid text (wide), tiny audio (< MIN_MODALITY_ROWS: borrows the all-row mean)
         let mut rows = Vec::new();
-        rows.extend(scores(&mut seed, 200, 0.10, 0.20).into_iter().map(|s| (Modality::Visual, s)));
-        rows.extend(scores(&mut seed, 60, -0.20, 0.30).into_iter().map(|s| (Modality::Text, s)));
-        rows.extend(scores(&mut seed, 7, 0.20, 0.60).into_iter().map(|s| (Modality::Audio, s)));
-        for case in [rows.clone(), rows.iter().filter(|r| r.0 != Modality::Audio).cloned().collect::<Vec<_>>()] {
+        rows.extend(
+            scores(&mut seed, 200, 0.10, 0.20)
+                .into_iter()
+                .map(|s| (Modality::Visual, s)),
+        );
+        rows.extend(
+            scores(&mut seed, 60, -0.20, 0.30)
+                .into_iter()
+                .map(|s| (Modality::Text, s)),
+        );
+        rows.extend(
+            scores(&mut seed, 7, 0.20, 0.60)
+                .into_iter()
+                .map(|s| (Modality::Audio, s)),
+        );
+        for case in [
+            rows.clone(),
+            rows.iter()
+                .filter(|r| r.0 != Modality::Audio)
+                .cloned()
+                .collect::<Vec<_>>(),
+        ] {
             let mut st = RowStats::default();
             case.iter().for_each(|r| st.add(r.0, r.1));
             let sc = st.scale().unwrap();
@@ -386,15 +537,27 @@ mod tests {
         let typical = sc.z(Modality::Audio, 0.0);
         assert!(typical < Z_MIN, "an average song does not pass: {typical}");
         let best_visual = sc.z(Modality::Visual, 0.04);
-        assert!(best_visual < Z_MIN, "a narrow visual library has no outlier: {best_visual}");
+        assert!(
+            best_visual < Z_MIN,
+            "a narrow visual library has no outlier: {best_visual}"
+        );
     }
 
     #[test]
     fn kind_words_hint_their_modality() {
         assert_eq!(kind_hints("music about addiction"), vec![Modality::Audio]);
-        assert_eq!(kind_hints("Photos of my SONG-writing notes"), vec![Modality::Visual, Modality::Audio, Modality::Text]);
-        assert_eq!(kind_hints("a podcast, voice recordings"), vec![Modality::Audio]);
-        assert_eq!(kind_hints("screenshot of a paper"), vec![Modality::Visual, Modality::Text]);
+        assert_eq!(
+            kind_hints("Photos of my SONG-writing notes"),
+            vec![Modality::Visual, Modality::Audio, Modality::Text]
+        );
+        assert_eq!(
+            kind_hints("a podcast, voice recordings"),
+            vec![Modality::Audio]
+        );
+        assert_eq!(
+            kind_hints("screenshot of a paper"),
+            vec![Modality::Visual, Modality::Text]
+        );
         assert!(kind_hints("invoice").is_empty());
         assert!(kind_hints("musical").is_empty(), "whole words only");
     }

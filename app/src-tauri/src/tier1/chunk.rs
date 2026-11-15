@@ -32,13 +32,19 @@ fn break_at(chars: &[char], pos: usize, target: usize) -> usize {
     }
     let lo = pos + target / 2;
     // paragraph break: the chunk ends right after a blank line
-    if let Some(b) = (lo..=hard).rev().find(|&b| b >= 2 && chars[b - 1] == '\n' && chars[b - 2] == '\n') {
+    if let Some(b) = (lo..=hard)
+        .rev()
+        .find(|&b| b >= 2 && chars[b - 1] == '\n' && chars[b - 2] == '\n')
+    {
         return b;
     }
     if let Some(b) = (lo..=hard).rev().find(|&b| chars[b - 1] == '\n') {
         return b;
     }
-    if let Some(b) = (lo..=hard).rev().find(|&b| chars[b - 1].is_whitespace() || chars.get(b).is_some_and(|c| c.is_whitespace())) {
+    if let Some(b) = (lo..=hard)
+        .rev()
+        .find(|&b| chars[b - 1].is_whitespace() || chars.get(b).is_some_and(|c| c.is_whitespace()))
+    {
         return b;
     }
     hard
@@ -69,7 +75,12 @@ fn locator(marks: &[Mark], start: usize, end: usize) -> String {
 }
 
 /// Chunk `chars` with the given sizes; at most `max_chunks` chunks.
-pub fn chunk_chars(chars: &[char], target: usize, overlap: usize, max_chunks: usize) -> Vec<(usize, usize)> {
+pub fn chunk_chars(
+    chars: &[char],
+    target: usize,
+    overlap: usize,
+    max_chunks: usize,
+) -> Vec<(usize, usize)> {
     let n = chars.len();
     let mut out = Vec::new();
     let mut pos = 0;
@@ -135,7 +146,11 @@ mod tests {
     use super::*;
 
     fn doc(text: &str, marks: Vec<Mark>) -> Extracted {
-        Extracted { text: text.into(), marks, truncated: false }
+        Extracted {
+            text: text.into(),
+            marks,
+            truncated: false,
+        }
     }
 
     #[test]
@@ -143,7 +158,10 @@ mod tests {
         let c = chunk(&doc("hello world", vec![]));
         assert_eq!(c.len(), 1);
         assert_eq!(c[0].text, "hello world");
-        assert_eq!(serde_json::from_str::<Value>(&c[0].locator).unwrap(), json!({"chars": [0, 11]}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&c[0].locator).unwrap(),
+            json!({"chars": [0, 11]})
+        );
     }
 
     #[test]
@@ -153,9 +171,16 @@ mod tests {
         let text = para.repeat(6);
         let chars: Vec<char> = text.chars().collect();
         let spans = chunk_chars(&chars, 100, 0, 64);
-        assert_eq!(spans[0], (0, 80), "two paragraphs fit, the third crosses the target");
+        assert_eq!(
+            spans[0],
+            (0, 80),
+            "two paragraphs fit, the third crosses the target"
+        );
         for (s, e) in &spans {
-            assert!(chars[*e - 1] == '\n' && chars[*e - 2] == '\n', "ends on paragraph break: {s}..{e}");
+            assert!(
+                chars[*e - 1] == '\n' && chars[*e - 2] == '\n',
+                "ends on paragraph break: {s}..{e}"
+            );
         }
         // lines without blank lines
         let text = format!("{}\n", "l".repeat(29)).repeat(10);
@@ -171,7 +196,10 @@ mod tests {
         // no break opportunity at all: hard cut
         let text = "x".repeat(250);
         let chars: Vec<char> = text.chars().collect();
-        assert_eq!(chunk_chars(&chars, 100, 0, 64), [(0, 100), (100, 200), (200, 250)]);
+        assert_eq!(
+            chunk_chars(&chars, 100, 0, 64),
+            [(0, 100), (100, 200), (200, 250)]
+        );
     }
 
     #[test]
@@ -184,12 +212,19 @@ mod tests {
         assert_eq!(cs.last().unwrap().end, text.chars().count());
         for w in cs.windows(2) {
             assert!(w[1].start > w[0].start, "progress");
-            assert!(w[1].start < w[0].end, "overlap: {} < {}", w[1].start, w[0].end);
+            assert!(
+                w[1].start < w[0].end,
+                "overlap: {} < {}",
+                w[1].start,
+                w[0].end
+            );
             assert!(w[0].end - w[1].start <= 60, "overlap is small");
             let prev = text.chars().nth(w[1].start - 1).unwrap();
             assert!(prev.is_whitespace(), "next chunk starts at a word");
         }
-        assert!(cs.iter().all(|c| c.end - c.start <= 300 && !c.text.is_empty()));
+        assert!(cs
+            .iter()
+            .all(|c| c.end - c.start <= 300 && !c.text.is_empty()));
     }
 
     #[test]
@@ -212,15 +247,33 @@ mod tests {
     #[test]
     fn locators_carry_slide_and_sheet() {
         let marks = vec![
-            Mark { at: 0, loc: Loc::Slide(1) },
-            Mark { at: 10, loc: Loc::Slide(2) },
-            Mark { at: 30, loc: Loc::Slide(3) },
+            Mark {
+                at: 0,
+                loc: Loc::Slide(1),
+            },
+            Mark {
+                at: 10,
+                loc: Loc::Slide(2),
+            },
+            Mark {
+                at: 30,
+                loc: Loc::Slide(3),
+            },
         ];
         assert_eq!(lj(&marks, 0, 5), json!({"slide": 1, "chars": [0, 5]}));
         assert_eq!(lj(&marks, 12, 25), json!({"slide": 2, "chars": [12, 25]}));
-        assert_eq!(lj(&marks, 5, 40), json!({"slide": 1, "slide_end": 3, "chars": [5, 40]}));
-        let sheets = vec![Mark { at: 0, loc: Loc::Sheet("Budget".into()) }];
-        assert_eq!(lj(&sheets, 3, 9), json!({"sheet": "Budget", "chars": [3, 9]}));
+        assert_eq!(
+            lj(&marks, 5, 40),
+            json!({"slide": 1, "slide_end": 3, "chars": [5, 40]})
+        );
+        let sheets = vec![Mark {
+            at: 0,
+            loc: Loc::Sheet("Budget".into()),
+        }];
+        assert_eq!(
+            lj(&sheets, 3, 9),
+            json!({"sheet": "Budget", "chars": [3, 9]})
+        );
         assert_eq!(lj(&[], 3, 9), json!({"chars": [3, 9]}));
     }
 
@@ -231,7 +284,19 @@ mod tests {
         let at2 = text.chars().count();
         text.push_str("\n\nSlide 2\n");
         text.push_str(&"beta ".repeat(40));
-        let d = doc(&text, vec![Mark { at: 0, loc: Loc::Slide(1) }, Mark { at: at2 + 2, loc: Loc::Slide(2) }]);
+        let d = doc(
+            &text,
+            vec![
+                Mark {
+                    at: 0,
+                    loc: Loc::Slide(1),
+                },
+                Mark {
+                    at: at2 + 2,
+                    loc: Loc::Slide(2),
+                },
+            ],
+        );
         let cs = chunk_with(&d, 120, 20, 64);
         assert!(cs[0].locator.contains(r#""slide":1"#));
         assert!(cs.last().unwrap().locator.contains(r#""slide":2"#));
@@ -241,7 +306,10 @@ mod tests {
     fn page_chunks_carry_page_and_page_relative_offsets() {
         let short = chunk_page("hello page", 4, 8);
         assert_eq!(short.len(), 1);
-        assert_eq!(serde_json::from_str::<Value>(&short[0].locator).unwrap(), json!({"page": 4, "chars": [0, 10]}));
+        assert_eq!(
+            serde_json::from_str::<Value>(&short[0].locator).unwrap(),
+            json!({"page": 4, "chars": [0, 10]})
+        );
         let long = "word ".repeat(1000);
         let cs = chunk_page(&long, 12, 8);
         assert!(cs.len() > 2 && cs.len() <= 8);
@@ -250,8 +318,11 @@ mod tests {
             assert_eq!(v["page"], 12);
             assert_eq!(v["chars"], json!([c.start, c.end]));
         }
-        assert!(chunk_page("  
- ", 1, 8).is_empty());
+        assert!(chunk_page(
+            "  
+ ", 1, 8
+        )
+        .is_empty());
         assert_eq!(chunk_page(&long, 1, 3).len(), 3, "per-page cap");
     }
 }

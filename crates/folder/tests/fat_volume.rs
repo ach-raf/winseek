@@ -28,19 +28,34 @@ use winseek_folder::*;
 #[test]
 #[ignore]
 fn fat_volume_end_to_end() {
-    let root = std::env::var("WINSEEK_TEST_FAT_ROOT").expect("set WINSEEK_TEST_FAT_ROOT, e.g. R:\\");
+    let root =
+        std::env::var("WINSEEK_TEST_FAT_ROOT").expect("set WINSEEK_TEST_FAT_ROOT, e.g. R:\\");
     let letter = root.chars().next().unwrap().to_ascii_uppercase();
-    let vol = list_volumes().into_iter().find(|v| v.letter == letter).expect("volume not listed");
-    assert!(vol.fs == "FAT32" || vol.fs == "exFAT", "unexpected fs {}", vol.fs);
+    let vol = list_volumes()
+        .into_iter()
+        .find(|v| v.letter == letter)
+        .expect("volume not listed");
+    assert!(
+        vol.fs == "FAT32" || vol.fs == "exFAT",
+        "unexpected fs {}",
+        vol.fs
+    );
 
-    let base = format!("{}\\ws-test-{}", root.trim_end_matches('\\'), std::process::id());
+    let base = format!(
+        "{}\\ws-test-{}",
+        root.trim_end_matches('\\'),
+        std::process::id()
+    );
     std::fs::create_dir_all(format!("{base}\\pre")).unwrap();
     std::fs::write(format!("{base}\\pre\\seed.txt"), b"seed").unwrap();
 
     let stop = AtomicBool::new(false);
     let mut next = 16u64;
     let mut names = Vec::new();
-    let st = walk_names(&root, 5, &mut next, &stop, &mut |e| names.push((e.name.to_string(), e.is_dir))).unwrap();
+    let st = walk_names(&root, 5, &mut next, &stop, &mut |e| {
+        names.push((e.name.to_string(), e.is_dir))
+    })
+    .unwrap();
     assert!(st.folders >= 2 && st.files >= 1);
     assert!(names.iter().any(|(n, d)| n == "seed.txt" && !*d));
 
@@ -55,7 +70,10 @@ fn fat_volume_end_to_end() {
     let want = vec![
         PathEvent::Added(format!("{prefix}\\sub")),
         PathEvent::Added(format!("{prefix}\\sub\\a.txt")),
-        PathEvent::Renamed { old: format!("{prefix}\\sub\\a.txt"), new: format!("{prefix}\\sub\\b.txt") },
+        PathEvent::Renamed {
+            old: format!("{prefix}\\sub\\a.txt"),
+            new: format!("{prefix}\\sub\\b.txt"),
+        },
         PathEvent::Removed(format!("{prefix}\\sub\\c.txt")),
     ];
     let mut all = Vec::new();

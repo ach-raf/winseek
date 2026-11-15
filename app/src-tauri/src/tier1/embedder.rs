@@ -17,8 +17,8 @@ use std::time::Duration;
 use winseek_llama::install::resolve_exe;
 use winseek_llama::manifest::{ModelEntry, ModelRole};
 use winseek_llama::{
-    detect_backend, fallback_chain, fallback_order, Backend, EmbedClient, IdleReaper, LlamaServer, Manifest, ModelProfile, Profile,
-    Role, SpawnConfig,
+    detect_backend, fallback_chain, fallback_order, Backend, EmbedClient, IdleReaper, LlamaServer,
+    Manifest, ModelProfile, Profile, Role, SpawnConfig,
 };
 
 use super::gpu_phase::{Gpu, GpuPhase};
@@ -125,7 +125,13 @@ pub fn index_meta(llama_build: &str) -> IndexMeta {
 /// Model files of the default EmbeddingGemma-2 entry: `(model, mmproj)` paths under `models_dir`.
 pub fn model_paths(manifest: &Manifest, models_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let entry: &ModelEntry = manifest.model(MODEL_ID, ModelProfile::Default)?;
-    let file = |role: ModelRole| entry.files.iter().find(|f| f.role == role).map(|f| models_dir.join(f.file_name()));
+    let file = |role: ModelRole| {
+        entry
+            .files
+            .iter()
+            .find(|f| f.role == role)
+            .map(|f| models_dir.join(f.file_name()))
+    };
     Some((file(ModelRole::Model)?, file(ModelRole::Mmproj)?))
 }
 
@@ -161,21 +167,37 @@ impl TextVectors for EmbedClient {
 }
 
 /// Fixed strings for the parity check: plain English, numbers/dates, non-ASCII.
-pub const PARITY_STRINGS: [&str; 3] =
-    ["a photo of a cat sleeping on a sofa", "Invoice 2026-03-31: total due 1,284.50 EUR", "Zażółć gęślą jaźń, café naïve"];
+pub const PARITY_STRINGS: [&str; 3] = [
+    "a photo of a cat sleeping on a sofa",
+    "Invoice 2026-03-31: total due 1,284.50 EUR",
+    "Zażółć gęślą jaźń, café naïve",
+];
 /// Below this the CPU query server and the GPU index server no longer share one vector space.
 pub const PARITY_MIN: f32 = 0.999;
 
 /// Worst (lowest) cosine between the two servers' vectors over [`PARITY_STRINGS`].
-pub fn text_parity(query_srv: &dyn TextVectors, index_srv: &dyn TextVectors) -> winseek_llama::Result<f32> {
+pub fn text_parity(
+    query_srv: &dyn TextVectors,
+    index_srv: &dyn TextVectors,
+) -> winseek_llama::Result<f32> {
     let norm = |raw: Vec<Vec<f32>>| -> winseek_llama::Result<Vec<Vec<f32>>> {
-        raw.iter().map(|v| winseek_llama::embed::truncate_normalize(v, DIMS)).collect()
+        raw.iter()
+            .map(|v| winseek_llama::embed::truncate_normalize(v, DIMS))
+            .collect()
     };
-    let (q, i) = (norm(query_srv.text_vectors(&PARITY_STRINGS)?)?, norm(index_srv.text_vectors(&PARITY_STRINGS)?)?);
+    let (q, i) = (
+        norm(query_srv.text_vectors(&PARITY_STRINGS)?)?,
+        norm(index_srv.text_vectors(&PARITY_STRINGS)?)?,
+    );
     if q.len() != PARITY_STRINGS.len() || i.len() != PARITY_STRINGS.len() {
-        return Err(winseek_llama::Error::Embed("parity: wrong vector count".into()));
+        return Err(winseek_llama::Error::Embed(
+            "parity: wrong vector count".into(),
+        ));
     }
-    Ok(q.iter().zip(&i).map(|(a, b)| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>()).fold(f32::INFINITY, f32::min))
+    Ok(q.iter()
+        .zip(&i)
+        .map(|(a, b)| a.iter().zip(b).map(|(x, y)| x * y).sum::<f32>())
+        .fold(f32::INFINITY, f32::min))
 }
 
 /// Which server answers text (queries and documents).
@@ -288,14 +310,20 @@ impl LlamaEmbedder {
         if !self.files_present() || !self.any_exe() {
             return Err(EmbedError::ModelsMissing);
         }
-        let (model, mmproj) = model_paths(&self.manifest, &self.models_dir()).ok_or(EmbedError::ModelsMissing)?;
+        let (model, mmproj) =
+            model_paths(&self.manifest, &self.models_dir()).ok_or(EmbedError::ModelsMissing)?;
         let mmproj = (role == Role::EmbedIndex).then_some(mmproj);
         let start = *self.backend.get_or_insert_with(|| detect_backend().backend);
         let (root, manifest) = (&self.root, &self.manifest);
-        let cfg = SpawnConfig { role, profile: self.profile, ..Default::default() };
+        let cfg = SpawnConfig {
+            role,
+            profile: self.profile,
+            ..Default::default()
+        };
         let (_, server) = fallback_chain(&fallback_order(start), |b| {
-            let exe = resolve_exe(root, manifest, b)
-                .ok_or_else(|| winseek_llama::Error::NotFound(format!("llama-server for {}", b.dir_name())))?;
+            let exe = resolve_exe(root, manifest, b).ok_or_else(|| {
+                winseek_llama::Error::NotFound(format!("llama-server for {}", b.dir_name()))
+            })?;
             LlamaServer::spawn_with(&exe, &model, mmproj.as_deref(), &[], &cfg)
         })
         .map_err(|e| EmbedError::Other(e.to_string()))?;
@@ -304,11 +332,19 @@ impl LlamaEmbedder {
             // Without the mmproj the server would embed "images" as nothing useful: refuse.
             match client.vision_enabled() {
                 Ok(true) => {}
-                Ok(false) => return Err(EmbedError::Other("llama-server started without vision (mmproj not loaded)".into())),
+                Ok(false) => {
+                    return Err(EmbedError::Other(
+                        "llama-server started without vision (mmproj not loaded)".into(),
+                    ))
+                }
                 Err(e) => return Err(EmbedError::Other(format!("/props: {e}"))),
             }
         }
-        Ok(Running { client, server, audio: None })
+        Ok(Running {
+            client,
+            server,
+            audio: None,
+        })
     }
 
     fn start_query(&mut self) -> Result<()> {
@@ -331,7 +367,9 @@ impl LlamaEmbedder {
             lock(&self.gpu).end(Gpu::Index);
         }
         if let Some(other) = lock(&self.gpu).begin(Gpu::Index) {
-            return Err(EmbedError::Other(format!("{GPU_BUSY} with the {other:?} model; image work waits for it to unload")));
+            return Err(EmbedError::Other(format!(
+                "{GPU_BUSY} with the {other:?} model; image work waits for it to unload"
+            )));
         }
         match self.spawn_role(Role::EmbedIndex) {
             Ok(r) => {
@@ -357,7 +395,9 @@ impl LlamaEmbedder {
         if !self.parity.due(both) {
             return;
         }
-        let (Some(q), Some(i)) = (&self.query, &self.index) else { return };
+        let (Some(q), Some(i)) = (&self.query, &self.index) else {
+            return;
+        };
         if let Some(w) = self.parity.record(text_parity(&q.client, &i.client)) {
             eprintln!("winseek: {w}");
         }
@@ -409,13 +449,18 @@ fn other(e: winseek_llama::Error) -> EmbedError {
 }
 
 fn finish(raw: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>> {
-    raw.iter().map(|v| winseek_llama::embed::truncate_normalize(v, DIMS).map_err(other)).collect()
+    raw.iter()
+        .map(|v| winseek_llama::embed::truncate_normalize(v, DIMS).map_err(other))
+        .collect()
 }
 
 impl Embedder for LlamaEmbedder {
     fn embed_images(&mut self, jpegs: &[Vec<u8>]) -> Result<Vec<Vec<f32>>> {
         let refs: Vec<&[u8]> = jpegs.iter().map(Vec::as_slice).collect();
-        let raw = self.index_client()?.embed_images_jpeg(&refs).map_err(other)?;
+        let raw = self
+            .index_client()?
+            .embed_images_jpeg(&refs)
+            .map_err(other)?;
         finish(raw)
     }
 
@@ -439,7 +484,10 @@ impl Embedder for LlamaEmbedder {
 
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>> {
         let raw = self.text_client()?.embed_queries(&[q]).map_err(other)?;
-        finish(raw)?.into_iter().next().ok_or_else(|| EmbedError::Other("empty embedding response".into()))
+        finish(raw)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbedError::Other("empty embedding response".into()))
     }
 
     fn embed_documents(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>> {
@@ -447,10 +495,15 @@ impl Embedder for LlamaEmbedder {
             match self.index_client() {
                 Ok(c) => return finish(c.embed_documents_titled(docs).map_err(other)?),
                 Err(EmbedError::ModelsMissing) => return Err(EmbedError::ModelsMissing),
-                Err(e) => eprintln!("winseek: index server unavailable for documents ({e}); using the query server"),
+                Err(e) => eprintln!(
+                    "winseek: index server unavailable for documents ({e}); using the query server"
+                ),
             }
         }
-        let raw = self.text_client()?.embed_documents_titled(docs).map_err(other)?;
+        let raw = self
+            .text_client()?
+            .embed_documents_titled(docs)
+            .map_err(other)?;
         finish(raw)
     }
 
@@ -516,7 +569,10 @@ mod tests {
 
     #[test]
     fn meta_matches_spec() {
-        let e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        let e = LlamaEmbedder::new(
+            PathBuf::from(r"C:\nonexistent-winseek-root"),
+            Manifest::embedded(),
+        );
         let m = e.meta();
         assert_eq!(m.model_id, "embeddinggemma-2");
         assert_eq!(m.quant, "Q8_0");
@@ -526,10 +582,19 @@ mod tests {
 
     #[test]
     fn missing_files_report_models_missing_without_spawning() {
-        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        let mut e = LlamaEmbedder::new(
+            PathBuf::from(r"C:\nonexistent-winseek-root"),
+            Manifest::embedded(),
+        );
         assert!(!e.models_present());
-        assert!(matches!(e.embed_images(&[vec![1, 2, 3]]), Err(EmbedError::ModelsMissing)));
-        assert!(matches!(e.embed_query("cat"), Err(EmbedError::ModelsMissing)));
+        assert!(matches!(
+            e.embed_images(&[vec![1, 2, 3]]),
+            Err(EmbedError::ModelsMissing)
+        ));
+        assert!(matches!(
+            e.embed_query("cat"),
+            Err(EmbedError::ModelsMissing)
+        ));
     }
 
     #[test]
@@ -546,10 +611,18 @@ mod tests {
                 index_meta("t")
             }
         }
-        let Err(EmbedError::Other(m)) = NoAudio.embed_audio(&[vec![1]]) else { panic!("default must refuse") };
+        let Err(EmbedError::Other(m)) = NoAudio.embed_audio(&[vec![1]]) else {
+            panic!("default must refuse")
+        };
         assert!(is_no_audio(&m));
-        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
-        assert!(matches!(e.embed_audio(&[vec![1]]), Err(EmbedError::ModelsMissing)));
+        let mut e = LlamaEmbedder::new(
+            PathBuf::from(r"C:\nonexistent-winseek-root"),
+            Manifest::embedded(),
+        );
+        assert!(matches!(
+            e.embed_audio(&[vec![1]]),
+            Err(EmbedError::ModelsMissing)
+        ));
     }
 
     #[test]
@@ -649,10 +722,17 @@ mod tests {
 
     #[test]
     fn profile_switch_rebuilds_the_shared_gpu_phase() {
-        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        let mut e = LlamaEmbedder::new(
+            PathBuf::from(r"C:\nonexistent-winseek-root"),
+            Manifest::embedded(),
+        );
         let gpu = e.gpu_phase();
         assert_eq!(lock(&gpu).begin(Gpu::Index), None);
-        assert_eq!(lock(&gpu).begin(Gpu::Parser), Some(Gpu::Index), "balanced: one at a time");
+        assert_eq!(
+            lock(&gpu).begin(Gpu::Parser),
+            Some(Gpu::Index),
+            "balanced: one at a time"
+        );
         e.set_profile(Profile::Fast);
         assert_eq!(e.profile, Profile::Fast);
         // same Arc, new inner value: nothing is loaded any more and Fast lets both live together
@@ -660,13 +740,19 @@ mod tests {
         assert_eq!(lock(&gpu).begin(Gpu::Index), None);
         e.set_profile(Profile::Balanced);
         e.release_gpu(); // no server: harmless
-        assert_eq!(lock(&gpu).begin(Gpu::Index), None, "set_profile started from a clean phase");
+        assert_eq!(
+            lock(&gpu).begin(Gpu::Index),
+            None,
+            "set_profile started from a clean phase"
+        );
         assert_eq!(lock(&gpu).begin(Gpu::Parser), Some(Gpu::Index));
     }
 
     #[test]
     fn gpu_busy_errors_are_recognised() {
-        assert!(is_gpu_busy(&format!("{GPU_BUSY} with the Parser model; image work waits for it to unload")));
+        assert!(is_gpu_busy(&format!(
+            "{GPU_BUSY} with the Parser model; image work waits for it to unload"
+        )));
         assert!(!is_gpu_busy("boom"));
     }
 
@@ -676,17 +762,25 @@ mod tests {
     #[ignore]
     fn documents_go_to_the_index_server_live() {
         let mut e = LlamaEmbedder::new(crate::tier1::data_root().unwrap(), Manifest::embedded());
-        let v = e.embed_documents(&[("", "Invoice 4471: total due 1,869.00")]).unwrap();
+        let v = e
+            .embed_documents(&[("", "Invoice 4471: total due 1,869.00")])
+            .unwrap();
         assert_eq!(v[0].len(), DIMS);
         assert!(e.index.is_some(), "index (GPU) server should have answered");
-        assert!(e.query.is_none(), "the CPU query server must not be started for documents");
+        assert!(
+            e.query.is_none(),
+            "the CPU query server must not be started for documents"
+        );
         e.embed_query("invoice").unwrap();
         assert!(e.query.is_some(), "queries use the CPU server");
     }
 
     #[test]
     fn pause_and_reset_without_servers_are_harmless() {
-        let mut e = LlamaEmbedder::new(PathBuf::from(r"C:\nonexistent-winseek-root"), Manifest::embedded());
+        let mut e = LlamaEmbedder::new(
+            PathBuf::from(r"C:\nonexistent-winseek-root"),
+            Manifest::embedded(),
+        );
         e.on_pause();
         e.reset();
         e.tick_idle();

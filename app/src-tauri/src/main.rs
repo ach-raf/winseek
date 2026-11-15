@@ -10,8 +10,8 @@ mod models;
 mod pipe_source;
 mod popup;
 mod preview;
-mod shell;
 mod service;
+mod shell;
 mod source;
 mod status;
 mod textdec;
@@ -60,7 +60,9 @@ fn main() {
                     if ev.state() != ShortcutState::Pressed {
                         return;
                     }
-                    let Some(b) = app.try_state::<hotkeys::Hotkeys>() else { return };
+                    let Some(b) = app.try_state::<hotkeys::Hotkeys>() else {
+                        return;
+                    };
                     let combo = hotkeys::combo(sc);
                     let b = b.current();
                     if b.popup.as_deref() == Some(combo.as_str()) {
@@ -198,17 +200,32 @@ fn main() {
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));
-            let progress = MenuItemBuilder::with_id("progress", "Meaning index: up to date").enabled(false).build(app)?;
+            let progress = MenuItemBuilder::with_id("progress", "Meaning index: up to date")
+                .enabled(false)
+                .build(app)?;
             app.manage(watcher::ProgressItem(progress.clone()));
             let update = MenuItemBuilder::with_id("update", "Check for updates").build(app)?;
             app.manage(updates::TrayItem(update.clone()));
             let library = MenuItemBuilder::with_id("library", "Library").build(app)?;
             let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
-            let menu = MenuBuilder::new(app).items(&[&show, &library, &progress, &pause, &status, &update, &quit]).build()?;
-            let popup_combo = app.state::<hotkeys::Hotkeys>().current().popup.unwrap_or_default();
+            let menu = MenuBuilder::new(app)
+                .items(&[&show, &library, &progress, &pause, &status, &update, &quit])
+                .build()?;
+            let popup_combo = app
+                .state::<hotkeys::Hotkeys>()
+                .current()
+                .popup
+                .unwrap_or_default();
             let mut tray = TrayIconBuilder::with_id(watcher::TRAY_ID)
-                .tooltip(format!("winseek ({})", if popup_combo.is_empty() { "no hotkey".into() } else { popup_combo }))
+                .tooltip(format!(
+                    "winseek ({})",
+                    if popup_combo.is_empty() {
+                        "no hotkey".into()
+                    } else {
+                        popup_combo
+                    }
+                ))
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(move |app, ev| match ev.id().as_ref() {
@@ -227,7 +244,9 @@ fn main() {
                         let st = app.state::<AppState>();
                         // Toggle the user's pause (the panel may have changed it behind our back).
                         let now = match app.state::<tier1::Handle>().get() {
-                            Ok(t) => !matches!(t.paused_reason(), Some(tier1::policy::PauseReason::User)),
+                            Ok(t) => {
+                                !matches!(t.paused_reason(), Some(tier1::policy::PauseReason::User))
+                            }
                             Err(_) => !st.paused.load(Ordering::Relaxed),
                         };
                         st.paused.store(now, Ordering::Relaxed);

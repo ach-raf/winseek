@@ -6,7 +6,8 @@ use std::path::PathBuf;
 use windows::core::GUID;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{
-    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures, FOLDERID_Screenshots, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
+    FOLDERID_Desktop, FOLDERID_Documents, FOLDERID_Downloads, FOLDERID_Pictures,
+    FOLDERID_Screenshots, SHGetKnownFolderPath, KF_FLAG_DEFAULT,
 };
 use winseek_store::Scopes;
 
@@ -22,18 +23,28 @@ pub(crate) fn known_folder(id: &GUID) -> Option<PathBuf> {
 
 /// Existing known folders, in the order Pictures, Documents, Desktop, Downloads.
 pub fn default_include() -> Vec<String> {
-    [&FOLDERID_Pictures, &FOLDERID_Documents, &FOLDERID_Desktop, &FOLDERID_Downloads]
-        .into_iter()
-        .filter_map(known_folder)
-        .filter(|p| p.is_dir())
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect()
+    [
+        &FOLDERID_Pictures,
+        &FOLDERID_Documents,
+        &FOLDERID_Desktop,
+        &FOLDERID_Downloads,
+    ]
+    .into_iter()
+    .filter_map(known_folder)
+    .filter(|p| p.is_dir())
+    .map(|p| p.to_string_lossy().into_owned())
+    .collect()
 }
 
 /// A scope root as it is stored and compared: backslash separators, no trailing separator.
 /// Case is kept (paths are user-visible); comparisons fold it.
 pub fn normalize_root(path: &str) -> String {
-    path.trim().trim_matches('"').replace('/', "\\").trim_end_matches('\\').trim_end_matches('/').to_string()
+    path.trim()
+        .trim_matches('"')
+        .replace('/', "\\")
+        .trim_end_matches('\\')
+        .trim_end_matches('/')
+        .to_string()
 }
 
 /// Trim every root and drop empty or duplicate (case-insensitive) ones, keeping the first
@@ -55,7 +66,14 @@ pub fn normalize(mut s: Scopes) -> Scopes {
 /// A configured empty list — every folder removed — is respected as "nothing is in scope".
 pub fn effective(saved: Scopes) -> (Scopes, bool) {
     if saved.include.is_empty() && !saved.configured {
-        (Scopes { include: default_include(), exclude: saved.exclude, configured: false }, true)
+        (
+            Scopes {
+                include: default_include(),
+                exclude: saved.exclude,
+                configured: false,
+            },
+            true,
+        )
     } else {
         (saved, false)
     }
@@ -79,9 +97,17 @@ mod tests {
 
     #[test]
     fn saved_scopes_win() {
-        let s = Scopes { include: vec![r"D:\x".into()], exclude: vec![r"D:\x\y".into()], configured: true };
+        let s = Scopes {
+            include: vec![r"D:\x".into()],
+            exclude: vec![r"D:\x\y".into()],
+            configured: true,
+        };
         assert_eq!(effective(s.clone()), (s, false));
-        let (e, used_default) = effective(Scopes { include: vec![], exclude: vec![r"E:\z".into()], configured: false });
+        let (e, used_default) = effective(Scopes {
+            include: vec![],
+            exclude: vec![r"E:\z".into()],
+            configured: false,
+        });
         assert!(used_default);
         assert_eq!(e.exclude, vec![r"E:\z".to_string()]);
     }
@@ -90,14 +116,23 @@ mod tests {
     /// restart, because an empty list looked like "never configured".
     #[test]
     fn an_empty_list_that_was_configured_is_respected() {
-        let s = Scopes { include: vec![], exclude: vec![], configured: true };
+        let s = Scopes {
+            include: vec![],
+            exclude: vec![],
+            configured: true,
+        };
         assert_eq!(effective(s.clone()), (s, false));
     }
 
     #[test]
     fn roots_are_trimmed_and_deduplicated() {
         let s = normalize(Scopes {
-            include: vec![r#" "D:\Photos\ "#.into(), r"D:/photos".into(), r"E:\\".into(), String::new()],
+            include: vec![
+                r#" "D:\Photos\ "#.into(),
+                r"D:/photos".into(),
+                r"E:\\".into(),
+                String::new(),
+            ],
             exclude: vec![r"D:\Photos\raw/".into(), r"d:\photos\RAW".into()],
             ..Default::default()
         });

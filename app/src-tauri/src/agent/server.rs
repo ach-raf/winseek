@@ -4,7 +4,10 @@
 
 use tauri::{AppHandle, Manager};
 use winseek_ipc::pipe::PipeServer;
-use winseek_ipc::{agent_pipe_name, agent_sddl, current_user_sid, read_message, write_message, AgentRequest, AgentResponse};
+use winseek_ipc::{
+    agent_pipe_name, agent_sddl, current_user_sid, read_message, write_message, AgentRequest,
+    AgentResponse,
+};
 
 use serde_json::Value;
 
@@ -44,10 +47,15 @@ fn serve(app: AppHandle) {
                 std::thread::spawn(move || {
                     // One connection per shim; requests are sequential (PRD A3).
                     while let Ok(req) = read_message(&mut conn) {
-                        let enabled = app.state::<std::sync::Arc<super::AgentState>>().config().enabled;
-                        let resp = answer(req, super::tools::list_for(enabled), |client, tool, args| {
-                            super::dispatch::call(&app, client, tool, args)
-                        });
+                        let enabled = app
+                            .state::<std::sync::Arc<super::AgentState>>()
+                            .config()
+                            .enabled;
+                        let resp = answer(
+                            req,
+                            super::tools::list_for(enabled),
+                            |client, tool, args| super::dispatch::call(&app, client, tool, args),
+                        );
                         if write_message(&mut conn, &resp).is_err() {
                             break;
                         }
@@ -71,7 +79,12 @@ fn answer(
 ) -> AgentResponse {
     match req {
         AgentRequest::List { id } => AgentResponse::Tools { id, tools },
-        AgentRequest::Call { id, client, tool, args } => match dispatch(&client, &tool, args) {
+        AgentRequest::Call {
+            id,
+            client,
+            tool,
+            args,
+        } => match dispatch(&client, &tool, args) {
             Ok(value) => AgentResponse::Result { id, value },
             Err(message) => AgentResponse::Error { id, message },
         },
@@ -82,11 +95,14 @@ fn answer(
 mod tests {
     use super::*;
     use crate::agent::tools;
-    use winseek_ipc::pipe::connect;
     use std::time::Duration;
+    use winseek_ipc::pipe::connect;
 
     fn unique() -> String {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         format!(r"\\.\pipe\winseek-agent-server-test-{t}")
     }
 
@@ -110,13 +126,26 @@ mod tests {
         let mut c = connect(&name, Duration::from_secs(5)).unwrap();
         write_message(&mut c, &AgentRequest::List { id: 1 }).unwrap();
         let resp: AgentResponse = read_message(&mut c).unwrap();
-        let AgentResponse::Tools { id, tools } = resp else { panic!("tools expected") };
+        let AgentResponse::Tools { id, tools } = resp else {
+            panic!("tools expected")
+        };
         assert_eq!(id, 1);
         assert_eq!(tools.as_array().unwrap().len(), 11);
 
-        write_message(&mut c, &AgentRequest::Call { id: 2, client: "tester".into(), tool: "search_files".into(), args: serde_json::json!({}) }).unwrap();
+        write_message(
+            &mut c,
+            &AgentRequest::Call {
+                id: 2,
+                client: "tester".into(),
+                tool: "search_files".into(),
+                args: serde_json::json!({}),
+            },
+        )
+        .unwrap();
         let resp: AgentResponse = read_message(&mut c).unwrap();
-        let AgentResponse::Result { id, value } = resp else { panic!("result expected") };
+        let AgentResponse::Result { id, value } = resp else {
+            panic!("result expected")
+        };
         assert_eq!((id, value["tool"].as_str().unwrap()), (2, "search_files"));
         t.join().unwrap();
     }
@@ -124,11 +153,18 @@ mod tests {
     #[test]
     fn dispatch_error_becomes_an_error_response() {
         let resp = answer(
-            AgentRequest::Call { id: 9, client: "tester".into(), tool: "recycle".into(), args: serde_json::json!({}) },
+            AgentRequest::Call {
+                id: 9,
+                client: "tester".into(),
+                tool: "recycle".into(),
+                args: serde_json::json!({}),
+            },
             serde_json::json!([]),
             |_, tool, _| Err(format!("unknown tool {tool}")),
         );
-        let AgentResponse::Error { id, message } = resp else { panic!("error expected") };
+        let AgentResponse::Error { id, message } = resp else {
+            panic!("error expected")
+        };
         assert_eq!((id, message.as_str()), (9, "unknown tool recycle"));
     }
 }

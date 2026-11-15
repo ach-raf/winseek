@@ -194,7 +194,10 @@ fn hash_key(parent: u32, name: &[u8]) -> u64 {
 
 impl Index {
     pub fn new(with_meta: bool) -> Self {
-        Index { with_meta, ..Default::default() }
+        Index {
+            with_meta,
+            ..Default::default()
+        }
     }
 
     // ---------------------------------------------------------------- accessors
@@ -329,7 +332,11 @@ impl Index {
             + self.rank.capacity() * 4
             + self.folders.capacity() * 25
             + self.ids128.capacity() * 33
-            + (self.first.capacity() + self.next.capacity() + self.prev.capacity() + self.tbl.capacity()) * 4
+            + (self.first.capacity()
+                + self.next.capacity()
+                + self.prev.capacity()
+                + self.tbl.capacity())
+                * 4
     }
 
     // ---------------------------------------------------------------- paths
@@ -381,7 +388,11 @@ impl Index {
             self.vcount = vec![(0, 0); 256];
         }
         let e = &mut self.vcount[vol as usize];
-        let c = if flags & F_DIR != 0 { &mut e.1 } else { &mut e.0 };
+        let c = if flags & F_DIR != 0 {
+            &mut e.1
+        } else {
+            &mut e.0
+        };
         if add {
             *c += 1;
         } else {
@@ -401,7 +412,10 @@ impl Index {
     // ---------------------------------------------------------------- alloc
     fn push_name(&mut self, name: &str) -> (u32, u16) {
         let name = clamp_name(name);
-        assert!(self.arena.len() + name.len() <= u32::MAX as usize, "name arena overflow");
+        assert!(
+            self.arena.len() + name.len() <= u32::MAX as usize,
+            "name arena overflow"
+        );
         let off = self.arena.len() as u32;
         self.arena.extend_from_slice(name.as_bytes());
         (off, name.len() as u16)
@@ -425,7 +439,16 @@ impl Index {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn alloc(&mut self, vol: u8, frn: u64, parent: u32, name: &str, flags: u8, size: u64, mtime: i64) -> u32 {
+    pub(crate) fn alloc(
+        &mut self,
+        vol: u8,
+        frn: u64,
+        parent: u32,
+        name: &str,
+        flags: u8,
+        size: u64,
+        mtime: i64,
+    ) -> u32 {
         let (off, len) = self.push_name(name);
         self.live += 1;
         self.count_adj(vol, flags, true);
@@ -473,9 +496,21 @@ impl Index {
             return r;
         }
         let name = format!("{}:", letter as char);
-        let root = self.alloc(letter, norm_frn(root_frn), NONE, &name, F_DIR | F_ROOT, 0, 0);
+        let root = self.alloc(
+            letter,
+            norm_frn(root_frn),
+            NONE,
+            &name,
+            F_DIR | F_ROOT,
+            0,
+            0,
+        );
         self.folders.insert((letter, norm_frn(root_frn)), root);
-        self.vols.push(VolumeMeta { letter, root, ..Default::default() });
+        self.vols.push(VolumeMeta {
+            letter,
+            root,
+            ..Default::default()
+        });
         root
     }
 
@@ -667,10 +702,23 @@ impl Index {
     /// Insert (or idempotently update) a record. Unknown parent FRN -> lazy stub.
     /// A folder whose FRN is already known (e.g. a stub) is filled/moved in place.
     #[allow(clippy::too_many_arguments)]
-    pub fn insert(&mut self, vol: u8, frn: u64, parent_frn: u64, name: &str, is_dir: bool, size: u64, mtime: i64) -> u32 {
+    pub fn insert(
+        &mut self,
+        vol: u8,
+        frn: u64,
+        parent_frn: u64,
+        name: &str,
+        is_dir: bool,
+        size: u64,
+        mtime: i64,
+    ) -> u32 {
         let (frn, pf) = (norm_frn(frn), norm_frn(parent_frn));
         self.ensure_links();
-        let parent = if pf == frn { self.add_volume_raw(vol, 5) } else { self.ensure_folder(vol, pf) };
+        let parent = if pf == frn {
+            self.add_volume_raw(vol, 5)
+        } else {
+            self.ensure_folder(vol, pf)
+        };
         if is_dir {
             if let Some(&e) = self.folders.get(&(vol, frn)) {
                 if self.flags[e as usize] & F_ROOT != 0 {
@@ -865,7 +913,9 @@ impl Index {
 
     pub(crate) fn par_sort(&self, v: &mut Vec<u32>) {
         let n = v.len();
-        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
         let nt = hw.min(n / 32768).max(1);
         if nt <= 1 {
             v.sort_unstable_by(|&a, &b| self.cmp_idx(a, b));
@@ -901,7 +951,12 @@ impl Index {
     }
 
     fn merged(&self) -> Vec<u32> {
-        let add: Vec<u32> = self.pending.iter().copied().filter(|&r| self.flags[r as usize] & F_DELETED == 0).collect();
+        let add: Vec<u32> = self
+            .pending
+            .iter()
+            .copied()
+            .filter(|&r| self.flags[r as usize] & F_DELETED == 0)
+            .collect();
         let mut old: Vec<u32> = self
             .order
             .iter()
@@ -948,12 +1003,20 @@ impl Index {
         let mut gone: Vec<usize> = self
             .touched
             .iter()
-            .filter(|&&r| self.flags[r as usize] & F_INORDER != 0 && self.flags[r as usize] & (F_DELETED | F_STALE) != 0)
+            .filter(|&&r| {
+                self.flags[r as usize] & F_INORDER != 0
+                    && self.flags[r as usize] & (F_DELETED | F_STALE) != 0
+            })
             .map(|&r| self.rank[r as usize] as usize)
             .collect();
         gone.sort_unstable();
         gone.dedup();
-        let mut add: Vec<u32> = self.pending.iter().copied().filter(|&r| self.flags[r as usize] & F_DELETED == 0).collect();
+        let mut add: Vec<u32> = self
+            .pending
+            .iter()
+            .copied()
+            .filter(|&r| self.flags[r as usize] & F_DELETED == 0)
+            .collect();
         add.sort_unstable_by(|&a, &b| self.cmp_idx(a, b));
         let ins: Vec<usize> = add.iter().map(|&a| self.insert_pos(a)).collect();
 
@@ -978,7 +1041,12 @@ impl Index {
             }
         }
         new.extend_from_slice(&self.order[cur.min(n)..]);
-        let first = ins.first().copied().unwrap_or(usize::MAX).min(gone.first().copied().unwrap_or(usize::MAX)).min(new.len());
+        let first = ins
+            .first()
+            .copied()
+            .unwrap_or(usize::MAX)
+            .min(gone.first().copied().unwrap_or(usize::MAX))
+            .min(new.len());
 
         // Flags, ranks of leavers and the free list: only the records that changed.
         if self.rank.len() < self.parent.len() {
@@ -990,7 +1058,11 @@ impl Index {
             self.rank[r] = NONE; // a re-added (moved) record gets its new rank below
         }
         for i in 0..self.touched.len().max(self.pending.len()) {
-            for r in [self.touched.get(i), self.pending.get(i)].into_iter().flatten().map(|&r| r as usize) {
+            for r in [self.touched.get(i), self.pending.get(i)]
+                .into_iter()
+                .flatten()
+                .map(|&r| r as usize)
+            {
                 if self.flags[r] & F_DELETED != 0 && self.flags[r] & F_FREED == 0 {
                     self.flags[r] |= F_FREED;
                     self.free.push(r as u32);
@@ -1041,7 +1113,9 @@ impl Index {
     /// `rank[order[k]] = k` for `k >= from`, split over threads when the tail is large.
     fn write_ranks(rank: &mut [u32], order: &[u32], from: usize) {
         let tail = &order[from.min(order.len())..];
-        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
         let nt = hw.min(tail.len() / (1 << 18)).max(1);
         if nt == 1 {
             for (k, &r) in tail.iter().enumerate() {
@@ -1154,7 +1228,10 @@ pub struct IndexBuilder {
 
 impl IndexBuilder {
     pub fn new(with_meta: bool) -> Self {
-        IndexBuilder { idx: Index::new(with_meta), parent_frn: Vec::new() }
+        IndexBuilder {
+            idx: Index::new(with_meta),
+            parent_frn: Vec::new(),
+        }
     }
     pub fn with_capacity(with_meta: bool, records: usize) -> Self {
         let mut b = Self::new(with_meta);
@@ -1205,7 +1282,16 @@ impl IndexBuilder {
         self.idx.parent.is_empty()
     }
     #[allow(clippy::too_many_arguments)]
-    pub fn push(&mut self, vol: u8, frn: u64, parent_frn: u64, name: &str, is_dir: bool, size: u64, mtime: i64) {
+    pub fn push(
+        &mut self,
+        vol: u8,
+        frn: u64,
+        parent_frn: u64,
+        name: &str,
+        is_dir: bool,
+        size: u64,
+        mtime: i64,
+    ) {
         let frn = norm_frn(frn);
         if self.idx.root_of(vol).is_none() {
             self.add_volume(vol, 5);

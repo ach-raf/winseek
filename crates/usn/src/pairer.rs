@@ -35,7 +35,12 @@ impl RenamePairer {
     /// `stale_after`: an unmatched RenameOld is flushed as a Delete once more
     /// than this many records have been pushed after it.
     pub fn new(stale_after: u64) -> Self {
-        Self { stale_after, seen: 0, parked: HashMap::new(), order: VecDeque::new() }
+        Self {
+            stale_after,
+            seen: 0,
+            parked: HashMap::new(),
+            order: VecDeque::new(),
+        }
     }
 
     /// Number of currently parked RenameOld records.
@@ -117,18 +122,38 @@ mod tests {
     };
 
     fn rec(frn: u128, parent: u128, reason: u32, name: &str) -> UsnRecord {
-        UsnRecord { frn, parent_frn: parent, usn: 0, reason, attrs: 0, name: name.into() }
+        UsnRecord {
+            frn,
+            parent_frn: parent,
+            usn: 0,
+            reason,
+            attrs: 0,
+            name: name.into(),
+        }
     }
 
     #[test]
     fn pairs_old_and_new() {
         let mut p = RenamePairer::new(100);
-        assert!(p.push(rec(1, 5, USN_REASON_RENAME_OLD_NAME, "a")).is_empty());
+        assert!(p
+            .push(rec(1, 5, USN_REASON_RENAME_OLD_NAME, "a"))
+            .is_empty());
         assert_eq!(p.pending(), 1);
-        let out = p.push(rec(1, 9, USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE, "b"));
+        let out = p.push(rec(
+            1,
+            9,
+            USN_REASON_RENAME_NEW_NAME | USN_REASON_CLOSE,
+            "b",
+        ));
         assert_eq!(
             out,
-            vec![Change::Rename { frn: 1, old_parent: 5, old_name: "a".into(), new_parent: 9, new_name: "b".into() }]
+            vec![Change::Rename {
+                frn: 1,
+                old_parent: 5,
+                old_name: "a".into(),
+                new_parent: 9,
+                new_name: "b".into()
+            }]
         );
         assert_eq!(p.pending(), 0);
     }

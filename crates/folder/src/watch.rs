@@ -74,7 +74,13 @@ impl DirWatch {
         let mut w = DirWatch {
             dir: dir.0,
             event: ev,
-            ov: Box::new(OVERLAPPED { internal: 0, internal_high: 0, offset: 0, offset_high: 0, h_event: ev }),
+            ov: Box::new(OVERLAPPED {
+                internal: 0,
+                internal_high: 0,
+                offset: 0,
+                offset_high: 0,
+                h_event: ev,
+            }),
             buf: vec![0u64; MAX_BUF / 8],
             buf_size: MAX_BUF,
             pairer: NotifyPairer::new(),
@@ -187,7 +193,10 @@ impl DirWatch {
     }
 
     pub fn canceller(&self) -> WatchCanceller {
-        WatchCanceller { handle: self.dir, flag: self.cancelled.clone() }
+        WatchCanceller {
+            handle: self.dir,
+            flag: self.cancelled.clone(),
+        }
     }
 }
 
@@ -240,14 +249,20 @@ mod tests {
         std::fs::remove_file(t.path().join("gone.txt")).unwrap();
         {
             use std::io::Write;
-            let mut f = std::fs::OpenOptions::new().append(true).open(t.path().join("mod.txt")).unwrap();
+            let mut f = std::fs::OpenOptions::new()
+                .append(true)
+                .open(t.path().join("mod.txt"))
+                .unwrap();
             f.write_all(b"more").unwrap();
         }
         let want = vec![
             PathEvent::Added("new.txt".into()),
             PathEvent::Added("sub".into()),
             PathEvent::Added("sub\\inner.txt".into()),
-            PathEvent::Renamed { old: "new.txt".into(), new: "renamed.txt".into() },
+            PathEvent::Renamed {
+                old: "new.txt".into(),
+                new: "renamed.txt".into(),
+            },
             PathEvent::Removed("gone.txt".into()),
             PathEvent::Modified("mod.txt".into()),
         ];

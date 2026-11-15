@@ -37,9 +37,10 @@ impl Store {
         if next_page > total {
             return Ok(false);
         }
-        let n = self
-            .conn
-            .execute("INSERT OR IGNORE INTO pdf_tail(hash, next_page, total) VALUES (?1, ?2, ?3)", params![hash, next_page, total])?;
+        let n = self.conn.execute(
+            "INSERT OR IGNORE INTO pdf_tail(hash, next_page, total) VALUES (?1, ?2, ?3)",
+            params![hash, next_page, total],
+        )?;
         Ok(n > 0)
     }
 
@@ -53,7 +54,13 @@ impl Store {
              GROUP BY t.hash ORDER BY MAX(f.mtime) DESC, t.hash LIMIT ?1",
         )?;
         let rows = st.query_map([limit as i64], |r| {
-            Ok(TailJob { hash: r.get(0)?, next_page: r.get(1)?, total: r.get(2)?, attempts: r.get(3)?, path: r.get(4)? })
+            Ok(TailJob {
+                hash: r.get(0)?,
+                next_page: r.get(1)?,
+                total: r.get(2)?,
+                attempts: r.get(3)?,
+                path: r.get(4)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -72,10 +79,19 @@ impl Store {
 
     /// Add the chunks of one slice and move the cursor to `next_page`; the tail is done when that is
     /// past `total`. One transaction: a crash leaves the cursor and the chunks in step.
-    pub fn append_tail(&mut self, hash: &str, next_page: u32, vectors: &[ChunkVec], texts: &[(u32, String)]) -> Result<()> {
+    pub fn append_tail(
+        &mut self,
+        hash: &str,
+        next_page: u32,
+        vectors: &[ChunkVec],
+        texts: &[(u32, String)],
+    ) -> Result<()> {
         for v in vectors {
             if v.vec.len() != self.dims {
-                return Err(Error::BadVector { expected: self.dims, got: v.vec.len() });
+                return Err(Error::BadVector {
+                    expected: self.dims,
+                    got: v.vec.len(),
+                });
             }
         }
         let tx = self.conn.transaction()?;
@@ -86,7 +102,8 @@ impl Store {
                 let blob: Vec<u8> = v.vec.iter().flat_map(|x| x.to_le_bytes()).collect();
                 ins.execute(params![hash, v.chunk, v.kind.as_str(), v.locator, blob])?;
             }
-            let mut ins_t = tx.prepare_cached("INSERT INTO texts(hash, chunk, body) VALUES (?1,?2,?3)")?;
+            let mut ins_t =
+                tx.prepare_cached("INSERT INTO texts(hash, chunk, body) VALUES (?1,?2,?3)")?;
             for (chunk, body) in texts {
                 ins_t.execute(params![hash, chunk, body])?;
             }
@@ -102,14 +119,26 @@ impl Store {
 
     /// Count a failed slice; returns the attempts so far.
     pub fn bump_tail(&mut self, hash: &str, error: &str) -> Result<u32> {
-        self.conn
-            .execute("UPDATE pdf_tail SET attempts = attempts + 1, error = ?2 WHERE hash = ?1", params![hash, error])?;
-        Ok(self.conn.query_row("SELECT attempts FROM pdf_tail WHERE hash = ?1", [hash], |r| r.get(0)).unwrap_or(0))
+        self.conn.execute(
+            "UPDATE pdf_tail SET attempts = attempts + 1, error = ?2 WHERE hash = ?1",
+            params![hash, error],
+        )?;
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT attempts FROM pdf_tail WHERE hash = ?1",
+                [hash],
+                |r| r.get(0),
+            )
+            .unwrap_or(0))
     }
 
     /// Give up on the rest of this document; what the head and earlier slices stored stays.
     pub fn fail_tail(&mut self, hash: &str, error: &str) -> Result<()> {
-        self.conn.execute("UPDATE pdf_tail SET state = ?2, error = ?3 WHERE hash = ?1", params![hash, STATE_FAILED, error])?;
+        self.conn.execute(
+            "UPDATE pdf_tail SET state = ?2, error = ?3 WHERE hash = ?1",
+            params![hash, STATE_FAILED, error],
+        )?;
         Ok(())
     }
 
@@ -119,7 +148,10 @@ impl Store {
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        Ok(TailCounts { queued: queued as u64, pages_left: pages_left as u64 })
+        Ok(TailCounts {
+            queued: queued as u64,
+            pages_left: pages_left as u64,
+        })
     }
 }
 
@@ -129,46 +161,124 @@ mod tests {
     use crate::{FileKey, IndexMeta, VecKind};
 
     fn store() -> Store {
-        let meta = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
         Store::open_in_memory(&meta).unwrap()
     }
 
     fn cv(chunk: u32, v: [f32; 4]) -> ChunkVec {
-        ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!("{{\"page\":{}}}", chunk + 1)), vec: v.to_vec() }
+        ChunkVec {
+            chunk,
+            kind: VecKind::Text,
+            locator: Some(format!("{{\"page\":{}}}", chunk + 1)),
+            vec: v.to_vec(),
+        }
     }
 
     #[test]
     fn head_is_searchable_then_the_tail_appends_without_touching_it() {
         let mut s = store();
-        let id = s.upsert_file(&FileKey { vol_guid: "v".into(), frn: 1 }, r"C:\p\long.pdf", 10, 1, "pdf").unwrap();
-        s.complete(id, "h", &[cv(0, [1., 0., 0., 0.]), cv(1, [0., 1., 0., 0.])], &[(0, "alpha head".into()), (1, "bravo head".into())]).unwrap();
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "v".into(),
+                    frn: 1,
+                },
+                r"C:\p\long.pdf",
+                10,
+                1,
+                "pdf",
+            )
+            .unwrap();
+        s.complete(
+            id,
+            "h",
+            &[cv(0, [1., 0., 0., 0.]), cv(1, [0., 1., 0., 0.])],
+            &[(0, "alpha head".into()), (1, "bravo head".into())],
+        )
+        .unwrap();
         assert!(s.queue_tail("h", 3, 5).unwrap());
         assert!(!s.queue_tail("h", 3, 5).unwrap(), "queued once");
-        assert!(!s.queue_tail("h2", 6, 5).unwrap(), "nothing to do past the last page");
-        assert_eq!(s.search_text("alpha", 5).unwrap().len(), 1, "head searchable before any tail work");
+        assert!(
+            !s.queue_tail("h2", 6, 5).unwrap(),
+            "nothing to do past the last page"
+        );
+        assert_eq!(
+            s.search_text("alpha", 5).unwrap().len(),
+            1,
+            "head searchable before any tail work"
+        );
         assert_eq!(s.search_text("omega", 5).unwrap().len(), 0);
-        assert_eq!(s.tail_counts().unwrap(), TailCounts { queued: 1, pages_left: 3 });
+        assert_eq!(
+            s.tail_counts().unwrap(),
+            TailCounts {
+                queued: 1,
+                pages_left: 3
+            }
+        );
 
         let job = s.next_tail(4).unwrap().remove(0);
-        assert_eq!((job.next_page, job.total, job.path.as_str()), (3, 5, r"C:\p\long.pdf"));
+        assert_eq!(
+            (job.next_page, job.total, job.path.as_str()),
+            (3, 5, r"C:\p\long.pdf")
+        );
         assert_eq!(s.next_chunk("h").unwrap(), 2);
-        s.append_tail("h", 5, &[cv(2, [0., 0., 1., 0.])], &[(2, "charlie omega".into())]).unwrap();
-        assert_eq!(s.search_text("omega", 5).unwrap().len(), 1, "tail text is searchable once its slice lands");
-        assert_eq!(s.search_text("alpha", 5).unwrap().len(), 1, "head untouched");
+        s.append_tail(
+            "h",
+            5,
+            &[cv(2, [0., 0., 1., 0.])],
+            &[(2, "charlie omega".into())],
+        )
+        .unwrap();
+        assert_eq!(
+            s.search_text("omega", 5).unwrap().len(),
+            1,
+            "tail text is searchable once its slice lands"
+        );
+        assert_eq!(
+            s.search_text("alpha", 5).unwrap().len(),
+            1,
+            "head untouched"
+        );
         assert_eq!(s.next_chunk("h").unwrap(), 3);
-        assert_eq!(s.search_vectors(&[0., 0., 1., 0.], 3, None).unwrap()[0].locator.as_deref(), Some("{\"page\":3}"));
+        assert_eq!(
+            s.search_vectors(&[0., 0., 1., 0.], 3, None).unwrap()[0]
+                .locator
+                .as_deref(),
+            Some("{\"page\":3}")
+        );
         assert_eq!(s.next_tail(4).unwrap()[0].next_page, 5, "cursor moved");
 
         s.append_tail("h", 6, &[], &[(3, "delta".into())]).unwrap();
-        assert!(s.next_tail(4).unwrap().is_empty(), "past the last page: done");
+        assert!(
+            s.next_tail(4).unwrap().is_empty(),
+            "past the last page: done"
+        );
         assert_eq!(s.tail_counts().unwrap(), TailCounts::default());
     }
 
     #[test]
     fn failures_count_and_give_up_keeps_what_was_stored() {
         let mut s = store();
-        let id = s.upsert_file(&FileKey { vol_guid: "v".into(), frn: 1 }, r"C:\p\a.pdf", 10, 1, "pdf").unwrap();
-        s.complete(id, "h", &[], &[(0, "kept text".into())]).unwrap();
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "v".into(),
+                    frn: 1,
+                },
+                r"C:\p\a.pdf",
+                10,
+                1,
+                "pdf",
+            )
+            .unwrap();
+        s.complete(id, "h", &[], &[(0, "kept text".into())])
+            .unwrap();
         s.queue_tail("h", 2, 9).unwrap();
         assert_eq!(s.bump_tail("h", "boom").unwrap(), 1);
         assert_eq!(s.bump_tail("h", "boom").unwrap(), 2);
@@ -180,14 +290,46 @@ mod tests {
     #[test]
     fn a_tail_waits_while_the_head_still_owes_vectors_and_dies_with_its_file() {
         let mut s = store();
-        let id = s.upsert_file(&FileKey { vol_guid: "v".into(), frn: 1 }, r"C:\p\a.pdf", 10, 1, "pdf").unwrap();
-        s.complete_text_only(id, "h", &[crate::PendingVec { chunk: 0, kind: VecKind::Text, locator: None }], &[(0, "words".into())]).unwrap();
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "v".into(),
+                    frn: 1,
+                },
+                r"C:\p\a.pdf",
+                10,
+                1,
+                "pdf",
+            )
+            .unwrap();
+        s.complete_text_only(
+            id,
+            "h",
+            &[crate::PendingVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: None,
+            }],
+            &[(0, "words".into())],
+        )
+        .unwrap();
         s.queue_tail("h", 2, 9).unwrap();
-        assert!(s.next_tail(4).unwrap().is_empty(), "head not done (text-only)");
+        assert!(
+            s.next_tail(4).unwrap().is_empty(),
+            "head not done (text-only)"
+        );
         s.finish_vectors("h", &[cv(0, [1., 0., 0., 0.])]).unwrap();
         assert_eq!(s.next_tail(4).unwrap().len(), 1);
-        s.remove(&FileKey { vol_guid: "v".into(), frn: 1 }).unwrap();
+        s.remove(&FileKey {
+            vol_guid: "v".into(),
+            frn: 1,
+        })
+        .unwrap();
         s.gc().unwrap();
-        assert_eq!(s.tail_counts().unwrap(), TailCounts::default(), "gc drops the tail of gone content");
+        assert_eq!(
+            s.tail_counts().unwrap(),
+            TailCounts::default(),
+            "gc drops the tail of gone content"
+        );
     }
 }

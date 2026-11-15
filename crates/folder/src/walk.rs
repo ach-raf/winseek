@@ -74,7 +74,11 @@ pub fn walk_names(
             if name != "." && name != ".." && !name.is_empty() {
                 let attrs = fd.dwFileAttributes;
                 let is_dir = attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
-                let size = if is_dir { 0 } else { ((fd.nFileSizeHigh as u64) << 32) | fd.nFileSizeLow as u64 };
+                let size = if is_dir {
+                    0
+                } else {
+                    ((fd.nFileSizeHigh as u64) << 32) | fd.nFileSizeLow as u64
+                };
                 let mtime = fd.ftLastWriteTime.ticks();
                 let id = if is_dir {
                     let id = *next_id;
@@ -88,7 +92,14 @@ pub fn walk_names(
                     stats.files += 1;
                     0
                 };
-                sink(&WalkEntry { id, parent_id: dir_id, name: &name, is_dir, size, mtime });
+                sink(&WalkEntry {
+                    id,
+                    parent_id: dir_id,
+                    name: &name,
+                    is_dir,
+                    size,
+                    mtime,
+                });
             }
             // SAFETY: `h` is a live find handle and `fd` the matching buffer.
             let ok = unsafe { FindNextFileW(h, &mut fd as *mut _ as *mut _) };
@@ -117,10 +128,24 @@ mod tests {
         let mut got: Vec<(u64, u64, String, bool, u64, i64)> = Vec::new();
         let stop = AtomicBool::new(false);
         let st = walk_names(t.s(), 5, &mut next, &stop, &mut |e| {
-            got.push((e.id, e.parent_id, e.name.to_string(), e.is_dir, e.size, e.mtime));
+            got.push((
+                e.id,
+                e.parent_id,
+                e.name.to_string(),
+                e.is_dir,
+                e.size,
+                e.mtime,
+            ));
         })
         .unwrap();
-        assert_eq!(st, WalkStats { folders: 3, files: 3, errors: 0 });
+        assert_eq!(
+            st,
+            WalkStats {
+                folders: 3,
+                files: 3,
+                errors: 0
+            }
+        );
         assert_eq!(next, 19);
         let by_name: HashMap<&str, _> = got.iter().map(|g| (g.2.as_str(), g)).collect();
         let a = by_name["a"];

@@ -15,7 +15,7 @@ use winseek_store::{cluster_near, ImageRow, Store};
 
 use super::embedder::EmbedError;
 use super::imgclass::{self, ImgClass};
-use super::{lock, locator_page, stat, Handle, SemanticHit, SemanticResult, Tier1};
+use super::{locator_page, lock, stat, Handle, SemanticHit, SemanticResult, Tier1};
 use crate::commands::AppState;
 use crate::source::Hit;
 
@@ -118,7 +118,10 @@ pub fn facets(query: &str) -> Vec<String> {
     if parts.len() > 1 {
         for part in parts {
             let part = part.trim().trim_start_matches("or ").trim();
-            if part.split_whitespace().count() >= 2 && !out.iter().any(|o| o.eq_ignore_ascii_case(part)) && out.len() < MAX_FACETS {
+            if part.split_whitespace().count() >= 2
+                && !out.iter().any(|o| o.eq_ignore_ascii_case(part))
+                && out.len() < MAX_FACETS
+            {
                 out.push(part.to_string());
             }
         }
@@ -185,21 +188,31 @@ pub fn default_collections() -> Vec<Collection> {
         rule: rule.map(Into::into),
         ..Collection::default()
     };
-    vec![
+    // One row per collection, hand-formatted: the eval sync-test
+    // (route::tests::prompts_match_the_app) matches these `c("name", "query"` substrings.
+    #[rustfmt::skip]
+    let collections = vec![
         c("Receipts", "a photo of a paper receipt or invoice", 0.64, None),
         c("Whiteboards", "a whiteboard with handwritten notes and diagrams", 0.61, None),
         c("Memes", "a meme: an image with a funny caption", 0.63, None),
         c("Documents to sign", "a contract or form with a signature line to sign", 0.63, None),
         c("Screenshots", "", 0.0, Some("screenshots")),
-    ]
+    ];
+    collections
 }
 
 /// A saved list from before the thresholds were measured: defaults the user never changed (same
 /// name, query and the legacy threshold) get the measured threshold. Anything edited stays.
 pub fn upgrade_legacy_thresholds(mut list: Vec<Collection>) -> Vec<Collection> {
     let defaults = default_collections();
-    for c in list.iter_mut().filter(|c| c.threshold == LEGACY_DEFAULT_THRESHOLD) {
-        if let Some(d) = defaults.iter().find(|d| d.name == c.name && d.query == c.query) {
+    for c in list
+        .iter_mut()
+        .filter(|c| c.threshold == LEGACY_DEFAULT_THRESHOLD)
+    {
+        if let Some(d) = defaults
+            .iter()
+            .find(|d| d.name == c.name && d.query == c.query)
+        {
             c.threshold = d.threshold;
         }
     }
@@ -224,11 +237,19 @@ pub fn sanitize_collections(list: Vec<Collection>) -> Result<Vec<Collection>, St
             return Err(format!("\"{}\" needs a search phrase", c.name));
         }
         if !seen.insert(c.name.to_lowercase()) {
-            return Err(format!("There is already a collection named \"{}\"", c.name));
+            return Err(format!(
+                "There is already a collection named \"{}\"",
+                c.name
+            ));
         }
-        c.threshold = if c.threshold.is_finite() { c.threshold.clamp(-1.0, 1.0) } else { 0.0 };
+        c.threshold = if c.threshold.is_finite() {
+            c.threshold.clamp(-1.0, 1.0)
+        } else {
+            0.0
+        };
         let mut kept = HashSet::new();
-        c.exclude.retain(|p| !p.trim().is_empty() && kept.insert(p.to_lowercase()));
+        c.exclude
+            .retain(|p| !p.trim().is_empty() && kept.insert(p.to_lowercase()));
         if c.exclude.len() > MAX_EXCLUDED {
             let drop = c.exclude.len() - MAX_EXCLUDED;
             c.exclude.drain(..drop); // the oldest removals go first
@@ -244,17 +265,23 @@ pub fn sanitize_collections(list: Vec<Collection>) -> Result<Vec<Collection>, St
 impl Tier1 {
     /// The saved collections, or the defaults while none were ever saved.
     pub fn get_collections(&self) -> Result<Vec<Collection>, String> {
-        let raw = lock(&self.store).get_setting(COLLECTIONS_KEY).map_err(|e| e.to_string())?;
+        let raw = lock(&self.store)
+            .get_setting(COLLECTIONS_KEY)
+            .map_err(|e| e.to_string())?;
         match raw {
             None => Ok(default_collections()),
-            Some(s) => Ok(serde_json::from_str(&s).map(upgrade_legacy_thresholds).unwrap_or_else(|_| default_collections())),
+            Some(s) => Ok(serde_json::from_str(&s)
+                .map(upgrade_legacy_thresholds)
+                .unwrap_or_else(|_| default_collections())),
         }
     }
 
     pub fn set_collections(&self, list: Vec<Collection>) -> Result<Vec<Collection>, String> {
         let list = sanitize_collections(list)?;
         let json = serde_json::to_string(&list).map_err(|e| e.to_string())?;
-        lock(&self.store).set_setting(COLLECTIONS_KEY, Some(&json)).map_err(|e| e.to_string())?;
+        lock(&self.store)
+            .set_setting(COLLECTIONS_KEY, Some(&json))
+            .map_err(|e| e.to_string())?;
         Ok(list)
     }
 
@@ -265,7 +292,14 @@ impl Tier1 {
             .into_iter()
             .map(|c| {
                 let (w, h) = c.dims.unwrap_or((0, 0));
-                LibImage { path: c.row.path, size: c.row.size, mtime: c.row.mtime, w, h, class: c.class.as_str() }
+                LibImage {
+                    path: c.row.path,
+                    size: c.row.size,
+                    mtime: c.row.mtime,
+                    w,
+                    h,
+                    class: c.class.as_str(),
+                }
             })
             .collect())
     }
@@ -277,7 +311,10 @@ impl Tier1 {
         let snap = self.snapshot();
         let (mut rows, mut dims) = {
             let store = lock(&self.store);
-            (store.list_images().map_err(|e| e.to_string())?, store.image_dims().map_err(|e| e.to_string())?)
+            (
+                store.list_images().map_err(|e| e.to_string())?,
+                store.image_dims().map_err(|e| e.to_string())?,
+            )
         };
         rows.retain(|r| snap.in_scope(&r.path));
 
@@ -303,7 +340,10 @@ impl Tier1 {
                         })
                     })
                     .collect();
-                handles.into_iter().flat_map(|h| h.join().unwrap_or_default()).collect()
+                handles
+                    .into_iter()
+                    .flat_map(|h| h.join().unwrap_or_default())
+                    .collect()
             });
             for (hash, w, h) in &measured {
                 dims.insert(hash.clone(), (*w, *h));
@@ -312,15 +352,29 @@ impl Tier1 {
             let _ = lock(&self.store).set_image_dims(&measured);
         }
 
-        let items: Vec<(&str, Option<(u32, u32)>)> = rows.iter().map(|r| (r.path.as_str(), dims.get(&r.content_hash).copied())).collect();
-        let classes = imgclass::classify(&items, &snap.scopes.include, super::ocr::screenshots_dir());
+        let items: Vec<(&str, Option<(u32, u32)>)> = rows
+            .iter()
+            .map(|r| (r.path.as_str(), dims.get(&r.content_hash).copied()))
+            .collect();
+        let classes =
+            imgclass::classify(&items, &snap.scopes.include, super::ocr::screenshots_dir());
         let sized: Vec<Option<(u32, u32)>> = items.iter().map(|i| i.1).collect();
-        Ok(rows.into_iter().zip(sized).zip(classes).map(|((row, dims), class)| ClassedImage { row, dims, class }).collect())
+        Ok(rows
+            .into_iter()
+            .zip(sized)
+            .zip(classes)
+            .map(|((row, dims), class)| ClassedImage { row, dims, class })
+            .collect())
     }
 
     /// Paths of the in-scope images that are app / game / web graphics.
     fn graphic_paths(&self) -> Result<HashSet<String>, String> {
-        Ok(self.classed_images()?.into_iter().filter(|c| c.class == ImgClass::Graphic).map(|c| c.row.path).collect())
+        Ok(self
+            .classed_images()?
+            .into_iter()
+            .filter(|c| c.class == ImgClass::Graphic)
+            .map(|c| c.row.path)
+            .collect())
     }
 
     /// The stored slider (0.4..0.9, historically a raw cosine floor) as a calibrated-gate
@@ -341,7 +395,13 @@ impl Tier1 {
     /// (see [`Self::threshold_z_min`]). App graphics do not take part unless `opts.graphics`
     /// (neither as hits nor as the crowd a hit must stand out from), and what the user removed by
     /// hand (`opts.exclude`) stays out together with its copies.
-    pub fn collection_hits(&self, query: &str, threshold: f32, cap: usize, opts: CollectionOpts<'_>) -> Result<SemanticResult, String> {
+    pub fn collection_hits(
+        &self,
+        query: &str,
+        threshold: f32,
+        cap: usize,
+        opts: CollectionOpts<'_>,
+    ) -> Result<SemanticResult, String> {
         let cap = cap.clamp(1, COLLECTION_CAP);
         let q = query.trim();
         if q.is_empty() {
@@ -353,7 +413,10 @@ impl Tier1 {
             if !e.models_present() {
                 return missing();
             }
-            let embedded = facets(q).iter().map(|f| e.embed_query(f)).collect::<Result<Vec<_>, _>>();
+            let embedded = facets(q)
+                .iter()
+                .map(|f| e.embed_query(f))
+                .collect::<Result<Vec<_>, _>>();
             match embedded.and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
                 Ok(v) => v,
                 Err(EmbedError::ModelsMissing) => return missing(),
@@ -364,20 +427,32 @@ impl Tier1 {
         let skip: HashSet<String> = if opts.graphics {
             HashSet::new()
         } else {
-            self.classed_images()?.into_iter().filter(|c| c.class == ImgClass::Graphic).map(|c| c.row.content_hash).collect()
+            self.classed_images()?
+                .into_iter()
+                .filter(|c| c.class == ImgClass::Graphic)
+                .map(|c| c.row.content_hash)
+                .collect()
         };
         let cands = {
             let store = lock(&self.store);
             let queries: Vec<&[f32]> = vecs.iter().map(Vec::as_slice).collect();
             // Over-fetch: rows outside the current scopes (scopes shrank since indexing), removed
             // files and copies are dropped below.
-            store.search_calibrated_multi(&queries, &hub, (cap * 4).max(40), &skip).map_err(|e| e.to_string())?
+            store
+                .search_calibrated_multi(&queries, &hub, (cap * 4).max(40), &skip)
+                .map_err(|e| e.to_string())?
         };
         let removed: HashSet<String> = opts.exclude.iter().map(|p| p.to_lowercase()).collect();
-        let removed_hashes: HashSet<String> =
-            cands.iter().filter(|c| removed.contains(&c.path.to_lowercase())).map(|c| c.hash.clone()).collect();
+        let removed_hashes: HashSet<String> = cands
+            .iter()
+            .filter(|c| removed.contains(&c.path.to_lowercase()))
+            .map(|c| c.hash.clone())
+            .collect();
         let gated = relevance::gate_at(
-            cands.into_iter().filter(|c| snap.in_scope(&c.path) && !removed_hashes.contains(&c.hash)).collect(),
+            cands
+                .into_iter()
+                .filter(|c| snap.in_scope(&c.path) && !removed_hashes.contains(&c.hash))
+                .collect(),
             COLLECTION_CAP * 4,
             Self::threshold_z_min(threshold),
         );
@@ -416,8 +491,17 @@ impl Tier1 {
             let members: Vec<DupMember> = g
                 .files
                 .iter()
-                .filter(|f| snap.in_scope(&f.path) && !graphic.contains(&f.path) && Path::new(&f.path).is_file())
-                .map(|f| DupMember { path: f.path.clone(), size: f.size, mtime: f.mtime, sim: None })
+                .filter(|f| {
+                    snap.in_scope(&f.path)
+                        && !graphic.contains(&f.path)
+                        && Path::new(&f.path).is_file()
+                })
+                .map(|f| DupMember {
+                    path: f.path.clone(),
+                    size: f.size,
+                    mtime: f.mtime,
+                    sim: None,
+                })
                 .collect();
             if members.len() < 2 {
                 continue;
@@ -428,7 +512,11 @@ impl Tier1 {
                 break;
             }
         }
-        out.sort_by(|a, b| b.reclaimable.cmp(&a.reclaimable).then_with(|| a.id.cmp(&b.id)));
+        out.sort_by(|a, b| {
+            b.reclaimable
+                .cmp(&a.reclaimable)
+                .then_with(|| a.id.cmp(&b.id))
+        });
         Ok(out)
     }
 }
@@ -436,7 +524,11 @@ impl Tier1 {
 fn group_dto(id: String, members: Vec<DupMember>) -> DupGroupDto {
     let total: u64 = members.iter().map(|m| m.size).sum();
     let largest = members.iter().map(|m| m.size).max().unwrap_or(0);
-    DupGroupDto { id, members, reclaimable: total.saturating_sub(largest) }
+    DupGroupDto {
+        id,
+        members,
+        reclaimable: total.saturating_sub(largest),
+    }
 }
 
 // ---------------------------------------------------------------- near-duplicates
@@ -477,10 +569,14 @@ pub fn near_groups(
         if cancelled() {
             return Err("cancelled".into());
         }
-        let rows = lock(store).images_with_vectors(key * BUCKET_MS, (key + 1) * BUCKET_MS).map_err(|e| e.to_string())?;
+        let rows = lock(store)
+            .images_with_vectors(key * BUCKET_MS, (key + 1) * BUCKET_MS)
+            .map_err(|e| e.to_string())?;
         let mut seen = HashSet::new();
-        let nodes: Vec<(ImageRow, Vec<f32>)> =
-            rows.into_iter().filter(|(r, _)| in_scope(&r.path) && seen.insert(r.content_hash.clone())).collect();
+        let nodes: Vec<(ImageRow, Vec<f32>)> = rows
+            .into_iter()
+            .filter(|(r, _)| in_scope(&r.path) && seen.insert(r.content_hash.clone()))
+            .collect();
         for run in nodes.chunks(BUCKET_CHUNK) {
             if cancelled() {
                 return Err("cancelled".into());
@@ -508,7 +604,10 @@ pub fn near_groups(
     }
     // Biggest groups first, then newest.
     out.sort_by(|a, b| {
-        b.members.len().cmp(&a.members.len()).then_with(|| b.members[0].mtime.cmp(&a.members[0].mtime))
+        b.members
+            .len()
+            .cmp(&a.members.len())
+            .then_with(|| b.members[0].mtime.cmp(&a.members[0].mtime))
     });
     Ok(out)
 }
@@ -521,40 +620,49 @@ impl LibState {
     /// Start (or restart) the background scan.
     pub fn start(&self, t: Arc<Tier1>, threshold: f32) {
         let my = self.0.gen.fetch_add(1, Ordering::SeqCst) + 1;
-        *lock(&self.0.near) = NearState { state: "running", ..NearState::default() };
+        *lock(&self.0.near) = NearState {
+            state: "running",
+            ..NearState::default()
+        };
         let inner = self.0.clone();
-        let spawned = std::thread::Builder::new().name("library-near".into()).spawn(move || {
-            super::lower_thread_priority();
-            let snap = t.snapshot();
-            // App graphics are left alone (thousands of look-alike icons are not "similar photos").
-            let graphic = t.graphic_paths().unwrap_or_default();
-            let in_scope = |p: &str| snap.in_scope(p) && !graphic.contains(p);
-            let cancelled = || inner.gen.load(Ordering::SeqCst) != my;
-            let progress = |done: usize, total: usize| {
-                if !cancelled() {
-                    let mut s = lock(&inner.near);
-                    s.done = done;
-                    s.total = total;
+        let spawned = std::thread::Builder::new()
+            .name("library-near".into())
+            .spawn(move || {
+                super::lower_thread_priority();
+                let snap = t.snapshot();
+                // App graphics are left alone (thousands of look-alike icons are not "similar photos").
+                let graphic = t.graphic_paths().unwrap_or_default();
+                let in_scope = |p: &str| snap.in_scope(p) && !graphic.contains(p);
+                let cancelled = || inner.gen.load(Ordering::SeqCst) != my;
+                let progress = |done: usize, total: usize| {
+                    if !cancelled() {
+                        let mut s = lock(&inner.near);
+                        s.done = done;
+                        s.total = total;
+                    }
+                };
+                let res = near_groups(&t.store, &in_scope, threshold, &cancelled, &progress);
+                if cancelled() {
+                    return; // superseded: the newer scan owns the state
                 }
-            };
-            let res = near_groups(&t.store, &in_scope, threshold, &cancelled, &progress);
-            if cancelled() {
-                return; // superseded: the newer scan owns the state
-            }
-            let mut s = lock(&inner.near);
-            match res {
-                Ok(groups) => {
-                    s.state = "done";
-                    s.groups = groups;
+                let mut s = lock(&inner.near);
+                match res {
+                    Ok(groups) => {
+                        s.state = "done";
+                        s.groups = groups;
+                    }
+                    Err(e) => {
+                        s.state = "error";
+                        s.error = Some(e);
+                    }
                 }
-                Err(e) => {
-                    s.state = "error";
-                    s.error = Some(e);
-                }
-            }
-        });
+            });
         if let Err(e) = spawned {
-            *lock(&self.0.near) = NearState { state: "error", error: Some(e.to_string()), ..NearState::default() };
+            *lock(&self.0.near) = NearState {
+                state: "error",
+                error: Some(e.to_string()),
+                ..NearState::default()
+            };
         }
     }
 }
@@ -563,14 +671,22 @@ impl LibState {
 
 /// Tier 0 query for the files under a profile folder, excluding `AppData`.
 pub fn big_files_query(profile: &str) -> String {
-    format!("file: \"{}\\\" !\"\\AppData\\\"", profile.trim_end_matches('\\'))
+    format!(
+        "file: \"{}\\\" !\"\\AppData\\\"",
+        profile.trim_end_matches('\\')
+    )
 }
 
 // ---------------------------------------------------------------- image size
 
 /// Pixel size from the file header (no full decode).
 pub fn image_size(path: &str) -> Option<(u32, u32)> {
-    image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.into_dimensions().ok()
+    image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .into_dimensions()
+        .ok()
 }
 
 // ---------------------------------------------------------------- Tauri commands
@@ -579,8 +695,12 @@ fn tier1(h: &tauri::State<'_, Handle>) -> Result<Arc<Tier1>, String> {
     h.get()
 }
 
-async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
-    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> Result<T, String> + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 #[tauri::command]
@@ -596,7 +716,10 @@ pub async fn library_collections(h: tauri::State<'_, Handle>) -> Result<Vec<Coll
 }
 
 #[tauri::command]
-pub async fn library_set_collections(h: tauri::State<'_, Handle>, list: Vec<Collection>) -> Result<Vec<Collection>, String> {
+pub async fn library_set_collections(
+    h: tauri::State<'_, Handle>,
+    list: Vec<Collection>,
+) -> Result<Vec<Collection>, String> {
     let t = tier1(&h)?;
     blocking(move || t.set_collections(list)).await
 }
@@ -613,7 +736,10 @@ pub async fn library_collection(
     let t = tier1(&h)?;
     blocking(move || {
         let exclude = exclude.unwrap_or_default();
-        let opts = CollectionOpts { exclude: &exclude, graphics: graphics.unwrap_or(false) };
+        let opts = CollectionOpts {
+            exclude: &exclude,
+            graphics: graphics.unwrap_or(false),
+        };
         t.collection_hits(&query, threshold, cap.unwrap_or(COLLECTION_CAP), opts)
     })
     .await
@@ -626,7 +752,11 @@ pub async fn library_dup_groups(h: tauri::State<'_, Handle>) -> Result<Vec<DupGr
 }
 
 #[tauri::command]
-pub async fn library_near_start(h: tauri::State<'_, Handle>, ls: tauri::State<'_, LibState>, threshold: f32) -> Result<(), String> {
+pub async fn library_near_start(
+    h: tauri::State<'_, Handle>,
+    ls: tauri::State<'_, LibState>,
+    threshold: f32,
+) -> Result<(), String> {
     let t = tier1(&h)?;
     ls.start(t, threshold.clamp(0.5, 1.0));
     Ok(())
@@ -639,7 +769,10 @@ pub fn library_near_poll(ls: tauri::State<'_, LibState>) -> NearState {
 
 /// The largest files under the user's profile (Tier 0, sorted by size).
 #[tauri::command]
-pub async fn library_big_files(state: tauri::State<'_, AppState>, limit: usize) -> Result<Vec<Hit>, String> {
+pub async fn library_big_files(
+    state: tauri::State<'_, AppState>,
+    limit: usize,
+) -> Result<Vec<Hit>, String> {
     let profile = std::env::var("USERPROFILE").map_err(|_| "USERPROFILE is not set".to_string())?;
     let src = state.source();
     let q = big_files_query(&profile);
@@ -687,36 +820,103 @@ mod tests {
 
     fn tier(include: &[&str]) -> Arc<Tier1> {
         let store = Store::open_in_memory(&index_meta("test")).unwrap();
-        Tier1::new(store, Box::new(Q), Box::new(crate::tier1::parser::NoParser), Scopes { include: include.iter().map(|s| s.to_string()).collect(), exclude: vec![], ..Default::default() })
+        Tier1::new(
+            store,
+            Box::new(Q),
+            Box::new(crate::tier1::parser::NoParser),
+            Scopes {
+                include: include.iter().map(|s| s.to_string()).collect(),
+                exclude: vec![],
+                ..Default::default()
+            },
+        )
     }
 
     fn add(t: &Tier1, n: u64, path: &str, size: u64, mtime: i64, hash: &str, vec: Vec<f32>) {
         let mut s = lock(&t.store);
-        let id = s.upsert_file(&FileKey { vol_guid: "{v}".into(), frn: n }, path, size, mtime, "image").unwrap();
-        s.complete(id, hash, &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec }], &[]).unwrap();
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "{v}".into(),
+                    frn: n,
+                },
+                path,
+                size,
+                mtime,
+                "image",
+            )
+            .unwrap();
+        s.complete(
+            id,
+            hash,
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: None,
+                vec,
+            }],
+            &[],
+        )
+        .unwrap();
     }
 
     #[test]
     fn collections_default_roundtrip_and_validation() {
         let t = tier(&[r"C:\Pics"]);
         let d = t.get_collections().unwrap();
-        assert_eq!(d.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(), ["Receipts", "Whiteboards", "Memes", "Documents to sign", "Screenshots"]);
+        assert_eq!(
+            d.iter().map(|c| c.name.as_str()).collect::<Vec<_>>(),
+            [
+                "Receipts",
+                "Whiteboards",
+                "Memes",
+                "Documents to sign",
+                "Screenshots"
+            ]
+        );
         assert_eq!(d[4].rule.as_deref(), Some("screenshots"));
 
         let saved = t
-            .set_collections(vec![Collection { name: "  Cats ".into(), query: " cat ".into(), threshold: 7.0, rule: Some("bogus".into()), ..Default::default() }])
+            .set_collections(vec![Collection {
+                name: "  Cats ".into(),
+                query: " cat ".into(),
+                threshold: 7.0,
+                rule: Some("bogus".into()),
+                ..Default::default()
+            }])
             .unwrap();
-        assert_eq!(saved, vec![Collection { name: "Cats".into(), query: "cat".into(), threshold: 1.0, rule: None, ..Default::default() }]);
+        assert_eq!(
+            saved,
+            vec![Collection {
+                name: "Cats".into(),
+                query: "cat".into(),
+                threshold: 1.0,
+                rule: None,
+                ..Default::default()
+            }]
+        );
         assert_eq!(t.get_collections().unwrap(), saved);
         t.set_collections(vec![]).unwrap();
-        assert!(t.get_collections().unwrap().is_empty(), "an empty list is a valid choice");
+        assert!(
+            t.get_collections().unwrap().is_empty(),
+            "an empty list is a valid choice"
+        );
 
         let bad = |c: Vec<Collection>| t.set_collections(c).unwrap_err();
-        let c = |n: &str, q: &str| Collection { name: n.into(), query: q.into(), threshold: 0.2, rule: None, ..Default::default() };
+        let c = |n: &str, q: &str| Collection {
+            name: n.into(),
+            query: q.into(),
+            threshold: 0.2,
+            rule: None,
+            ..Default::default()
+        };
         assert!(bad(vec![c("", "x")]).contains("name"));
         assert!(bad(vec![c("A", "  ")]).contains("search phrase"));
         assert!(bad(vec![c("A", "x"), c("a", "y")]).contains("already"));
-        assert!(t.get_collections().unwrap().is_empty(), "a rejected save changes nothing");
+        assert!(
+            t.get_collections().unwrap().is_empty(),
+            "a rejected save changes nothing"
+        );
     }
 
     /// Guard: measured values (see `default_collections`); re-run `winseek-eval route` before changing.
@@ -724,10 +924,22 @@ mod tests {
     fn default_thresholds_are_the_measured_ones() {
         let d = default_collections();
         let t: Vec<(&str, f32)> = d.iter().map(|c| (c.name.as_str(), c.threshold)).collect();
-        assert_eq!(t, [("Receipts", 0.64), ("Whiteboards", 0.61), ("Memes", 0.63), ("Documents to sign", 0.63), ("Screenshots", 0.0)]);
+        assert_eq!(
+            t,
+            [
+                ("Receipts", 0.64),
+                ("Whiteboards", 0.61),
+                ("Memes", 0.63),
+                ("Documents to sign", 0.63),
+                ("Screenshots", 0.0)
+            ]
+        );
         // kept for dial continuity: the numbers are strictness dials now (see `threshold_z_min`),
         // and every query collection maps to about search's own gate strictness (z ~ 2)
-        assert!(d.iter().filter(|c| c.rule.is_none()).all(|c| (0.6..0.7).contains(&c.threshold)));
+        assert!(d
+            .iter()
+            .filter(|c| c.rule.is_none())
+            .all(|c| (0.6..0.7).contains(&c.threshold)));
     }
 
     #[test]
@@ -738,7 +950,13 @@ mod tests {
             c.threshold = LEGACY_DEFAULT_THRESHOLD;
         }
         old[1].query = "my own whiteboard query".into(); // edited: keeps 0.2
-        old.push(Collection { name: "Cats".into(), query: "cat".into(), threshold: 0.2, rule: None, ..Default::default() });
+        old.push(Collection {
+            name: "Cats".into(),
+            query: "cat".into(),
+            threshold: 0.2,
+            rule: None,
+            ..Default::default()
+        });
         t.set_collections(old).unwrap();
         let got = t.get_collections().unwrap();
         let thr: Vec<f32> = got.iter().map(|c| c.threshold).collect();
@@ -755,12 +973,40 @@ mod tests {
         add(&t, 4, r"C:\Pics\c.jpg", 1, 1, "h3", mix(1, 2, 1.4)); // far: dropped
         add(&t, 5, r"C:\Pics\e.jpg", 1, 1, "h5", unit(5)); // orthogonal to both: adj 0, dropped
         add(&t, 6, r"C:\Old\d.jpg", 1, 1, "h4", unit(1)); // out of scope
-        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts::default()).unwrap();
-        let names: Vec<_> = r.hits.iter().map(|h| h.path.rsplit('\\').next().unwrap()).collect();
-        assert_eq!(names, ["f.jpg", "a.jpg"], "calibrated best-first: hub junk and ordinary files stay out");
-        assert_eq!(t.collection_hits("cat", 0.5, 1, CollectionOpts::default()).unwrap().hits.len(), 1, "cap");
-        assert_eq!(t.collection_hits("cat", 0.0, 100_000, CollectionOpts::default()).unwrap().hits.len(), 2, "cap is clamped, gate still applies");
-        assert!(t.collection_hits("  ", 0.0, 5, CollectionOpts::default()).unwrap().hits.is_empty());
+        let r = t
+            .collection_hits("cat", 0.5, 10, CollectionOpts::default())
+            .unwrap();
+        let names: Vec<_> = r
+            .hits
+            .iter()
+            .map(|h| h.path.rsplit('\\').next().unwrap())
+            .collect();
+        assert_eq!(
+            names,
+            ["f.jpg", "a.jpg"],
+            "calibrated best-first: hub junk and ordinary files stay out"
+        );
+        assert_eq!(
+            t.collection_hits("cat", 0.5, 1, CollectionOpts::default())
+                .unwrap()
+                .hits
+                .len(),
+            1,
+            "cap"
+        );
+        assert_eq!(
+            t.collection_hits("cat", 0.0, 100_000, CollectionOpts::default())
+                .unwrap()
+                .hits
+                .len(),
+            2,
+            "cap is clamped, gate still applies"
+        );
+        assert!(t
+            .collection_hits("  ", 0.0, 5, CollectionOpts::default())
+            .unwrap()
+            .hits
+            .is_empty());
     }
 
     #[test]
@@ -768,11 +1014,22 @@ mod tests {
         assert_eq!(facets("dog photos"), ["dog photos"]);
         assert_eq!(
             facets("a medical related document or doctor's note or image"),
-            ["a medical related document or doctor's note or image", "a medical related document", "doctor's note"],
+            [
+                "a medical related document or doctor's note or image",
+                "a medical related document",
+                "doctor's note"
+            ],
             "one-word parts are not searched alone"
         );
-        assert_eq!(facets("paper receipts, restaurant bills; OR parking tickets").len(), 4);
-        assert_eq!(facets("a floor plan or a floor plan"), ["a floor plan or a floor plan", "a floor plan"], "no repeats");
+        assert_eq!(
+            facets("paper receipts, restaurant bills; OR parking tickets").len(),
+            4
+        );
+        assert_eq!(
+            facets("a floor plan or a floor plan"),
+            ["a floor plan or a floor plan", "a floor plan"],
+            "no repeats"
+        );
         assert!(facets("a b, c d, e f, g h, i j, k l, m n").len() <= MAX_FACETS);
         assert_eq!(facets("a meme: an image with a funny caption").len(), 1);
     }
@@ -781,7 +1038,11 @@ mod tests {
     fn collections_leave_graphics_out_and_respect_removals() {
         let dir = crate::tier1::test_tmp();
         let p = |n: &str| dir.path().join(n).to_string_lossy().into_owned();
-        let save = |n: &str, w: u32, h: u32| image::RgbImage::from_pixel(w, h, image::Rgb([1, 2, 3])).save(dir.path().join(n)).unwrap();
+        let save = |n: &str, w: u32, h: u32| {
+            image::RgbImage::from_pixel(w, h, image::Rgb([1, 2, 3]))
+                .save(dir.path().join(n))
+                .unwrap()
+        };
         save("photo.png", 800, 600);
         save("icon.png", 48, 48);
         save("copy.png", 800, 600);
@@ -789,22 +1050,69 @@ mod tests {
         add(&t, 1, &p("photo.png"), 1, 1, "h1", mix(1, 3, 0.2));
         add(&t, 2, &p("icon.png"), 1, 1, "h2", mix(1, 3, 0.1)); // the closest match, but an icon
         add(&t, 3, &p("copy.png"), 1, 2, "h1", mix(1, 3, 0.2)); // same content as photo.png
-        let names = |r: SemanticResult| r.hits.iter().map(|h| h.path.rsplit('\\').next().unwrap().to_string()).collect::<Vec<_>>();
+        let names = |r: SemanticResult| {
+            r.hits
+                .iter()
+                .map(|h| h.path.rsplit('\\').next().unwrap().to_string())
+                .collect::<Vec<_>>()
+        };
 
-        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts::default()).unwrap();
-        assert_eq!(names(r).len(), 1, "the icon is out and the two copies are one tile");
-        let with = t.collection_hits("cat", 0.5, 10, CollectionOpts { graphics: true, ..Default::default() }).unwrap();
-        assert_eq!(names(with)[0], "icon.png", "graphics come back when asked for");
+        let r = t
+            .collection_hits("cat", 0.5, 10, CollectionOpts::default())
+            .unwrap();
+        assert_eq!(
+            names(r).len(),
+            1,
+            "the icon is out and the two copies are one tile"
+        );
+        let with = t
+            .collection_hits(
+                "cat",
+                0.5,
+                10,
+                CollectionOpts {
+                    graphics: true,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            names(with)[0],
+            "icon.png",
+            "graphics come back when asked for"
+        );
 
         let gone = [p("copy.png").to_uppercase()];
-        let r = t.collection_hits("cat", 0.5, 10, CollectionOpts { exclude: &gone, graphics: false }).unwrap();
-        assert!(r.hits.is_empty(), "removing one copy removes the content, whatever the path's case");
+        let r = t
+            .collection_hits(
+                "cat",
+                0.5,
+                10,
+                CollectionOpts {
+                    exclude: &gone,
+                    graphics: false,
+                },
+            )
+            .unwrap();
+        assert!(
+            r.hits.is_empty(),
+            "removing one copy removes the content, whatever the path's case"
+        );
 
         let imgs = t.library_images().unwrap();
-        let class = |n: &str| imgs.iter().find(|i| i.path.ends_with(n)).map(|i| (i.w, i.h, i.class)).unwrap();
+        let class = |n: &str| {
+            imgs.iter()
+                .find(|i| i.path.ends_with(n))
+                .map(|i| (i.w, i.h, i.class))
+                .unwrap()
+        };
         assert_eq!(class("icon.png"), (48, 48, "graphic"));
         assert_eq!(class("photo.png"), (800, 600, "photo"));
-        assert_eq!(lock(&t.store).image_dims().unwrap().len(), 2, "sizes are remembered per content");
+        assert_eq!(
+            lock(&t.store).image_dims().unwrap().len(),
+            2,
+            "sizes are remembered per content"
+        );
     }
 
     #[test]
@@ -816,18 +1124,34 @@ mod tests {
             graphics: true,
             ..Default::default()
         };
-        let shots = Collection { name: "S".into(), rule: Some("screenshots".into()), graphics: true, ..Default::default() };
+        let shots = Collection {
+            name: "S".into(),
+            rule: Some("screenshots".into()),
+            graphics: true,
+            ..Default::default()
+        };
         let out = sanitize_collections(vec![c, shots]).unwrap();
         assert_eq!(out[0].exclude, ["C:\\x.png"]);
         assert!(out[0].graphics && !out[1].graphics);
-        let json = serde_json::to_string(&Collection { name: "N".into(), query: "q".into(), ..Default::default() }).unwrap();
-        assert!(!json.contains("exclude") && !json.contains("graphics"), "old readers see the old shape: {json}");
+        let json = serde_json::to_string(&Collection {
+            name: "N".into(),
+            query: "q".into(),
+            ..Default::default()
+        })
+        .unwrap();
+        assert!(
+            !json.contains("exclude") && !json.contains("graphics"),
+            "old readers see the old shape: {json}"
+        );
     }
 
     #[test]
     fn threshold_maps_to_gate_strictness() {
         let z = Tier1::threshold_z_min;
-        assert!((z(0.62) - 2.02).abs() < 1e-4, "the stored default dials search's own strictness");
+        assert!(
+            (z(0.62) - 2.02).abs() < 1e-4,
+            "the stored default dials search's own strictness"
+        );
         assert_eq!(z(0.4), 1.25);
         assert!((z(0.9) - 3.0).abs() < 1e-4);
         assert!((z(1.0) - 3.35).abs() < 1e-4);
@@ -842,10 +1166,27 @@ mod tests {
         add(&t, 2, r"C:\Pics\new.png", 6, 900, "h2", unit(2));
         add(&t, 3, r"C:\Other\x.jpg", 7, 500, "h3", unit(3));
         let v = t.library_images().unwrap();
-        assert_eq!(v, vec![
-            LibImage { path: r"C:\Pics\new.png".into(), size: 6, mtime: 900, w: 0, h: 0, class: "photo" },
-            LibImage { path: r"C:\Pics\old.jpg".into(), size: 5, mtime: 100, w: 0, h: 0, class: "photo" },
-        ]);
+        assert_eq!(
+            v,
+            vec![
+                LibImage {
+                    path: r"C:\Pics\new.png".into(),
+                    size: 6,
+                    mtime: 900,
+                    w: 0,
+                    h: 0,
+                    class: "photo"
+                },
+                LibImage {
+                    path: r"C:\Pics\old.jpg".into(),
+                    size: 5,
+                    mtime: 100,
+                    w: 0,
+                    h: 0,
+                    class: "photo"
+                },
+            ]
+        );
     }
 
     #[test]
@@ -864,8 +1205,16 @@ mod tests {
         add(&t, 6, &p("gone.jpg"), 50, 1, "hc", unit(3)); // not on disk
         add(&t, 7, &p("c.jpg"), 50, 2, "hc", unit(3));
         let g = t.library_dup_groups().unwrap();
-        assert_eq!(g.iter().map(|g| (g.id.as_str(), g.members.len(), g.reclaimable)).collect::<Vec<_>>(), vec![("hb", 3, 2000), ("ha", 2, 10)]);
-        assert!(g[0].members[0].mtime >= g[0].members[1].mtime, "newest first");
+        assert_eq!(
+            g.iter()
+                .map(|g| (g.id.as_str(), g.members.len(), g.reclaimable))
+                .collect::<Vec<_>>(),
+            vec![("hb", 3, 2000), ("ha", 2, 10)]
+        );
+        assert!(
+            g[0].members[0].mtime >= g[0].members[1].mtime,
+            "newest first"
+        );
     }
 
     #[test]
@@ -889,18 +1238,33 @@ mod tests {
         put("far_away.jpg", base + 60 * day, "h5", mix(1, 2, 0.02)); // similar, but another bucket
         let st = t.snapshot();
         let calls = std::cell::RefCell::new(Vec::new());
-        let g = near_groups(&t.store, &|q| st.in_scope(q), 0.95, &|| false, &|d, tot| calls.borrow_mut().push((d, tot))).unwrap();
+        let g = near_groups(&t.store, &|q| st.in_scope(q), 0.95, &|| false, &|d, tot| {
+            calls.borrow_mut().push((d, tot))
+        })
+        .unwrap();
         assert_eq!(g.len(), 1, "{g:?}");
-        let names: Vec<_> = g[0].members.iter().map(|m| m.path.rsplit('\\').next().unwrap().to_string()).collect();
-        assert_eq!(names, ["same_as_1.jpg", "burst3.jpg", "burst2.jpg"], "newest first; the exact pair burst1/same_as_1 counts once (its newest file)");
+        let names: Vec<_> = g[0]
+            .members
+            .iter()
+            .map(|m| m.path.rsplit('\\').next().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            names,
+            ["same_as_1.jpg", "burst3.jpg", "burst2.jpg"],
+            "newest first; the exact pair burst1/same_as_1 counts once (its newest file)"
+        );
         assert!(g[0].members.iter().all(|m| m.sim.unwrap() > 0.99));
-        assert!((g[0].members[0].sim.unwrap() - 1.0).abs() < 1e-5, "similarity to itself");
+        assert!(
+            (g[0].members[0].sim.unwrap() - 1.0).abs() < 1e-5,
+            "similarity to itself"
+        );
         let calls = calls.into_inner();
         assert_eq!(calls.first(), Some(&(0, 6)));
         assert_eq!(calls.last(), Some(&(6, 6)));
 
         // Neighbours in the burst are 0.9988 apart: a stricter cut-off finds nothing.
-        let strict = near_groups(&t.store, &|q| st.in_scope(q), 0.9995, &|| false, &|_, _| {}).unwrap();
+        let strict =
+            near_groups(&t.store, &|q| st.in_scope(q), 0.9995, &|| false, &|_, _| {}).unwrap();
         assert!(strict.is_empty());
     }
 
@@ -915,16 +1279,27 @@ mod tests {
 
     #[test]
     fn big_files_query_targets_the_profile_without_appdata() {
-        assert_eq!(big_files_query(r"C:\Users\User"), "file: \"C:\\Users\\User\\\" !\"\\AppData\\\"");
-        assert_eq!(big_files_query("C:\\Users\\User\\"), big_files_query(r"C:\Users\User"));
+        assert_eq!(
+            big_files_query(r"C:\Users\User"),
+            "file: \"C:\\Users\\User\\\" !\"\\AppData\\\""
+        );
+        assert_eq!(
+            big_files_query("C:\\Users\\User\\"),
+            big_files_query(r"C:\Users\User")
+        );
     }
 
     #[test]
     fn image_size_reads_the_header() {
         let dir = crate::tier1::test_tmp();
         let f = dir.path().join("a.png");
-        image::RgbImage::from_pixel(30, 12, image::Rgb([1, 2, 3])).save(&f).unwrap();
+        image::RgbImage::from_pixel(30, 12, image::Rgb([1, 2, 3]))
+            .save(&f)
+            .unwrap();
         assert_eq!(image_size(&f.to_string_lossy()), Some((30, 12)));
-        assert_eq!(image_size(&dir.path().join("nope.png").to_string_lossy()), None);
+        assert_eq!(
+            image_size(&dir.path().join("nope.png").to_string_lossy()),
+            None
+        );
     }
 }

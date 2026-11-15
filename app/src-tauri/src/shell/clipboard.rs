@@ -58,7 +58,7 @@ pub(super) fn open_clipboard(hwnd: HWND) -> Result<(), String> {
 
 /// The plain-text clipboard contents, if any (the clipboard hotkey shows it as the query).
 pub(super) fn read_text(hwnd: HWND) -> Option<String> {
-    use windows::Win32::System::DataExchange::{GetClipboardData, CloseClipboard};
+    use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData};
     use windows::Win32::System::Memory::{GlobalLock, GlobalUnlock};
     const CF_UNICODETEXT: u32 = 13;
     open_clipboard(hwnd).ok()?;
@@ -142,7 +142,10 @@ fn cf_html(fragment: &str) -> String {
     let start_fragment = start_html + PRE.len();
     let end_fragment = start_fragment + fragment.len();
     let end_html = end_fragment + POST.len();
-    format!("{}{PRE}{fragment}{POST}", header(start_html, end_html, start_fragment, end_fragment))
+    format!(
+        "{}{PRE}{fragment}{POST}",
+        header(start_html, end_html, start_fragment, end_fragment)
+    )
 }
 
 /// Put `text` (and, when given, `html` as `HTML Format`) on the clipboard.
@@ -199,21 +202,39 @@ mod tests {
     use windows::core::PCWSTR;
     use windows::Win32::System::DataExchange::GetClipboardData;
     use windows::Win32::UI::Shell::{DragQueryFileW, HDROP};
-    use windows::Win32::UI::WindowsAndMessaging::{CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP};
+    use windows::Win32::UI::WindowsAndMessaging::{
+        CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+    };
 
     #[test]
     fn cf_html_offsets_point_at_the_fragment() {
-        for fragment in ["<table><tr><td>a</td></tr></table>", "", "<td>caf\u{e9} \u{65e5}\u{672c}</td>"] {
+        for fragment in [
+            "<table><tr><td>a</td></tr></table>",
+            "",
+            "<td>caf\u{e9} \u{65e5}\u{672c}</td>",
+        ] {
             let s = cf_html(fragment);
             let num = |key: &str| -> usize {
                 let at = s.find(key).unwrap() + key.len();
                 s[at..at + 10].parse().unwrap()
             };
-            let (sh, eh, sf, ef) = (num("StartHTML:"), num("EndHTML:"), num("StartFragment:"), num("EndFragment:"));
+            let (sh, eh, sf, ef) = (
+                num("StartHTML:"),
+                num("EndHTML:"),
+                num("StartFragment:"),
+                num("EndFragment:"),
+            );
             assert_eq!(eh, s.len(), "EndHTML is the end of the payload");
-            assert_eq!(&s[sf..ef], fragment, "the fragment sits between the offsets (byte offsets)");
+            assert_eq!(
+                &s[sf..ef],
+                fragment,
+                "the fragment sits between the offsets (byte offsets)"
+            );
             assert!(s[sh..].starts_with("<html>"));
-            assert!(s[..sf].ends_with("<!--StartFragment-->") && s[ef..].starts_with("<!--EndFragment-->"));
+            assert!(
+                s[..sf].ends_with("<!--StartFragment-->")
+                    && s[ef..].starts_with("<!--EndFragment-->")
+            );
             assert!(s.starts_with("Version:0.9\r\n"));
         }
     }

@@ -7,7 +7,7 @@ use windows::Win32::System::Com::{CoTaskMemFree, IDataObject};
 use windows::Win32::System::Ole::{DROPEFFECT_COPY, DROPEFFECT_LINK, DROPEFFECT_MOVE};
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::Shell::{
-    SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHParseDisplayName, BHID_DataObject,
+    BHID_DataObject, SHCreateShellItemArrayFromIDLists, SHDoDragDrop, SHParseDisplayName,
 };
 
 /// Absolute PIDL freed on drop.
@@ -37,9 +37,16 @@ pub(super) fn start(hwnd: HWND, paths: &[String]) -> Result<String, String> {
     // SAFETY: PIDLs stay alive (via `pidls`) until after the drag finishes.
     let effect = unsafe {
         let arr = SHCreateShellItemArrayFromIDLists(&raw).map_err(|e| e.to_string())?;
-        let data: IDataObject = arr.BindToHandler(None, &BHID_DataObject).map_err(|e| e.to_string())?;
-        SHDoDragDrop(Some(hwnd), &data, None, DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK)
-            .map_err(|e| e.to_string())?
+        let data: IDataObject = arr
+            .BindToHandler(None, &BHID_DataObject)
+            .map_err(|e| e.to_string())?;
+        SHDoDragDrop(
+            Some(hwnd),
+            &data,
+            None,
+            DROPEFFECT_COPY | DROPEFFECT_MOVE | DROPEFFECT_LINK,
+        )
+        .map_err(|e| e.to_string())?
     };
     Ok(if effect.0 & DROPEFFECT_MOVE.0 != 0 {
         "move"

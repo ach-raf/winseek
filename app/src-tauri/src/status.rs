@@ -125,7 +125,13 @@ pub struct IndexMetaDto {
 
 impl From<&winseek_store::IndexMeta> for IndexMetaDto {
     fn from(m: &winseek_store::IndexMeta) -> Self {
-        IndexMetaDto { model_id: m.model_id.clone(), llama_build: m.llama_build.clone(), quant: m.quant.clone(), image_budget: m.image_budget, dims: m.dims }
+        IndexMetaDto {
+            model_id: m.model_id.clone(),
+            llama_build: m.llama_build.clone(),
+            quant: m.quant.clone(),
+            image_budget: m.image_budget,
+            dims: m.dims,
+        }
     }
 }
 
@@ -143,7 +149,10 @@ fn parse_verdict(raw: &str) -> IndexVerdictDto {
         Some((k, c)) => (k, c.parse::<f64>().ok()),
         None => (raw, None),
     };
-    IndexVerdictDto { kind: kind.into(), cos }
+    IndexVerdictDto {
+        kind: kind.into(),
+        cos,
+    }
 }
 
 /// Everything that decides keep vs. rebuild, read from the store.
@@ -152,14 +161,26 @@ fn index_section(t: &Tier1) -> IndexStateDto {
         let s = t.store.lock().unwrap_or_else(|e| e.into_inner());
         (
             s.stamp().clone(),
-            s.get_setting(winseek_store::SETTING_PROVENANCE_VERDICT).ok().flatten(),
-            s.get_setting(winseek_store::SETTING_INDEX_APP_VERSION).ok().flatten(),
-            s.get_setting(winseek_store::SETTING_INDEX_STAMPED_UNIX).ok().flatten().and_then(|v| v.parse().ok()),
+            s.get_setting(winseek_store::SETTING_PROVENANCE_VERDICT)
+                .ok()
+                .flatten(),
+            s.get_setting(winseek_store::SETTING_INDEX_APP_VERSION)
+                .ok()
+                .flatten(),
+            s.get_setting(winseek_store::SETTING_INDEX_STAMPED_UNIX)
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse().ok()),
         )
     };
     let current = embedder::index_meta(&Manifest::embedded().llama.build);
-    let state =
-        if stamp == current { "current" } else if stamp.same_but_build(&current) { "build_drift" } else { "mismatch" };
+    let state = if stamp == current {
+        "current"
+    } else if stamp.same_but_build(&current) {
+        "build_drift"
+    } else {
+        "mismatch"
+    };
     IndexStateDto {
         stamp: (&stamp).into(),
         current: (&current).into(),
@@ -172,7 +193,14 @@ fn index_section(t: &Tier1) -> IndexStateDto {
 }
 
 fn reasons(g: Vec<winseek_store::ReasonGroup>) -> Vec<ReasonDto> {
-    g.into_iter().map(|g| ReasonDto { reason: g.reason, count: g.count, examples: g.examples, details: g.details }).collect()
+    g.into_iter()
+        .map(|g| ReasonDto {
+            reason: g.reason,
+            count: g.count,
+            examples: g.examples,
+            details: g.details,
+        })
+        .collect()
 }
 
 /// What the queued (pending) files are waiting for, from the kinds the worker holds back.
@@ -339,17 +367,27 @@ pub struct StatusPageDto {
 
 /// Run `f` on a helper thread and give up after `timeout`. Only one probe runs at a time
 /// (`busy`): while an earlier one is still stuck, later polls report unavailable at once instead of piling up.
-fn probe(busy: &'static AtomicBool, timeout: Duration, f: impl FnOnce() -> Tier0Detail + Send + 'static) -> Tier0Detail {
-    let unavailable = || Tier0Detail { kind: "unavailable", uptime_s: None, volumes: vec![] };
+fn probe(
+    busy: &'static AtomicBool,
+    timeout: Duration,
+    f: impl FnOnce() -> Tier0Detail + Send + 'static,
+) -> Tier0Detail {
+    let unavailable = || Tier0Detail {
+        kind: "unavailable",
+        uptime_s: None,
+        volumes: vec![],
+    };
     if busy.swap(true, Ordering::SeqCst) {
         return unavailable();
     }
     let (tx, rx) = mpsc::channel();
-    let spawned = std::thread::Builder::new().name("status-tier0".into()).spawn(move || {
-        let d = f();
-        busy.store(false, Ordering::SeqCst);
-        let _ = tx.send(d);
-    });
+    let spawned = std::thread::Builder::new()
+        .name("status-tier0".into())
+        .spawn(move || {
+            let d = f();
+            busy.store(false, Ordering::SeqCst);
+            let _ = tx.send(d);
+        });
     if spawned.is_err() {
         busy.store(false, Ordering::SeqCst);
         return unavailable();
@@ -364,12 +402,22 @@ fn tier0_dto(detail: Tier0Detail, service: String) -> Tier0Dto {
         "demo" => Some("Needs the name service, which is not running.".to_string()),
         _ => Some("The name service is not answering.".to_string()),
     };
-    Tier0Dto { source: detail.kind, service, uptime_s: detail.uptime_s, volumes: detail.volumes, can_rescan, rescan_hint }
+    Tier0Dto {
+        source: detail.kind,
+        service,
+        uptime_s: detail.uptime_s,
+        volumes: detail.volumes,
+        can_rescan,
+        rescan_hint,
+    }
 }
 
 fn tier0_section(source: Arc<dyn NameSource>) -> Tier0Dto {
     static BUSY: AtomicBool = AtomicBool::new(false);
-    tier0_dto(probe(&BUSY, TIER0_TIMEOUT, move || source.detail()), service::service_state())
+    tier0_dto(
+        probe(&BUSY, TIER0_TIMEOUT, move || source.detail()),
+        service::service_state(),
+    )
 }
 
 // ---------------------------------------------------------------- Tier 1
@@ -401,7 +449,11 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
         (coverage(s.done, waiting, s.failed), waiting)
     });
     // Throughput only means something while the worker is actually embedding.
-    let rate = if st.state == "indexing" { t.rate() } else { None };
+    let rate = if st.state == "indexing" {
+        t.rate()
+    } else {
+        None
+    };
     let (waiting, failed_reasons, skipped_reasons) = {
         let s = t.store.lock().unwrap_or_else(|e| e.into_inner());
         (
@@ -410,7 +462,10 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
             reasons(s.reason_groups(true, 3, 12).unwrap_or_default()),
         )
     };
-    let ffmpeg = waiting.iter().any(|w| w.why == "ffmpeg_missing").then(crate::models::ffmpeg_fetch_state);
+    let ffmpeg = waiting
+        .iter()
+        .any(|w| w.why == "ffmpeg_missing")
+        .then(crate::models::ffmpeg_fetch_state);
     Tier1PageDto {
         waiting,
         ffmpeg,
@@ -432,7 +487,11 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
 
 /// The worker's `ocr_unavailable` store setting.
 fn ocr_unavailable(store: &Store) -> bool {
-    store.get_setting(tier1::process::SETTING_OCR_UNAVAILABLE).ok().flatten().is_some()
+    store
+        .get_setting(tier1::process::SETTING_OCR_UNAVAILABLE)
+        .ok()
+        .flatten()
+        .is_some()
 }
 
 // ---------------------------------------------------------------- Models
@@ -444,7 +503,9 @@ fn model_files(manifest: &Manifest, dir: &Path) -> Vec<ModelFileDto> {
 
 /// The files of the default entry for `id`: expected size from the manifest, actual size from disk.
 fn files_of(manifest: &Manifest, id: &str, dir: &Path) -> Vec<ModelFileDto> {
-    let Some(entry) = manifest.model(id, ModelProfile::Default) else { return vec![] };
+    let Some(entry) = manifest.model(id, ModelProfile::Default) else {
+        return vec![];
+    };
     entry
         .files
         .iter()
@@ -455,14 +516,23 @@ fn files_of(manifest: &Manifest, id: &str, dir: &Path) -> Vec<ModelFileDto> {
                 ModelRole::Mmproj => "mmproj",
             },
             expected_bytes: f.size,
-            bytes: std::fs::metadata(dir.join(f.file_name())).ok().filter(|m| m.is_file()).map(|m| m.len()),
+            bytes: std::fs::metadata(dir.join(f.file_name()))
+                .ok()
+                .filter(|m| m.is_file())
+                .map(|m| m.len()),
         })
         .collect()
 }
 
 /// Where pdfium is: the pinned install, the dev override, or nowhere.
-fn pdfium_section(root: Option<&Path>, manifest: &Manifest, env: Option<&std::ffi::OsStr>) -> PdfiumDto {
-    let installed = root.map(|r| pdfium_path(r, &manifest.pdfium)).filter(|p| p.is_file());
+fn pdfium_section(
+    root: Option<&Path>,
+    manifest: &Manifest,
+    env: Option<&std::ffi::OsStr>,
+) -> PdfiumDto {
+    let installed = root
+        .map(|r| pdfium_path(r, &manifest.pdfium))
+        .filter(|p| p.is_file());
     let found = pdf::locate_dll_in(env, root, manifest);
     let source = match (&found, &installed) {
         (None, _) => "missing",
@@ -474,11 +544,19 @@ fn pdfium_section(root: Option<&Path>, manifest: &Manifest, env: Option<&std::ff
         present: found.is_some(),
         source,
         expected_bytes: manifest.pdfium.size,
-        bytes: found.and_then(|p| std::fs::metadata(p).ok()).map(|m| m.len()),
+        bytes: found
+            .and_then(|p| std::fs::metadata(p).ok())
+            .map(|m| m.len()),
     }
 }
 
-fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: RuntimeInfo, parser: ParserState) -> ModelsPageDto {
+fn models_section(
+    root: Option<&Path>,
+    manifest: &Manifest,
+    det: &Detected,
+    rt: RuntimeInfo,
+    parser: ParserState,
+) -> ModelsPageDto {
     ModelsPageDto {
         llama_build: manifest.llama.build.clone(),
         backend: det.backend,
@@ -489,7 +567,9 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
         // to say whether the server ever frees its GPU memory.
         profile: parser.profile.as_str(),
         quant: embedder::QUANT,
-        files: root.map(|r| model_files(manifest, &embedder::models_dir(r))).unwrap_or_default(),
+        files: root
+            .map(|r| model_files(manifest, &embedder::models_dir(r)))
+            .unwrap_or_default(),
         pdfium: pdfium_section(root, manifest, std::env::var_os(pdf::ENV_PDFIUM).as_deref()),
         server: ServerDto {
             running: rt.running,
@@ -502,7 +582,10 @@ fn models_section(root: Option<&Path>, manifest: &Manifest, det: &Detected, rt: 
 }
 
 fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> ParserDto {
-    let now_unix = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
     let run = p.run.map(|r| ParserRunDto {
         started_unix: r.started_unix,
         done: r.done,
@@ -516,18 +599,29 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
     // The trailing-minute rate goes stale whenever a page takes longer than its window; the run
     // average keeps an honest ETA on screen while pages are still completing.
     let rate = p.rate.or(run.as_ref().and_then(|r| r.avg_rate));
-    let live = p.live.map(|l| ParserLiveDto { path: l.path, pages: l.pages as u32, age_s: l.at.elapsed().as_secs() });
+    let live = p.live.map(|l| ParserLiveDto {
+        path: l.path,
+        pages: l.pages as u32,
+        age_s: l.at.elapsed().as_secs(),
+    });
     ParserDto {
         model_id: parser::MODEL_ID,
         present: p.present,
-        files: root.map(|r| files_of(manifest, parser::MODEL_ID, &embedder::models_dir(r))).unwrap_or_default(),
+        files: root
+            .map(|r| files_of(manifest, parser::MODEL_ID, &embedder::models_dir(r)))
+            .unwrap_or_default(),
         server: ServerDto {
             running: p.rt.running,
             port: p.rt.port,
             unload_in_s: p.rt.unload_in_s,
             idle_unload_s: parser::IDLE_UNLOAD.as_secs(),
         },
-        queue: ParserQueueDto { queued: p.counts.queued, done: p.counts.done, failed: p.counts.failed, skipped: p.counts.skipped },
+        queue: ParserQueueDto {
+            queued: p.counts.queued,
+            done: p.counts.done,
+            failed: p.counts.failed,
+            skipped: p.counts.skipped,
+        },
         rate: p.rate,
         eta_s: eta_secs(p.counts.queued, rate),
         profile: p.profile.as_str(),
@@ -547,14 +641,18 @@ fn parser_section(root: Option<&Path>, manifest: &Manifest, p: ParserState) -> P
 #[tauri::command]
 pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
     let a = app.clone();
-    let t0 = tauri::async_runtime::spawn_blocking(move || tier0_section(a.state::<AppState>().source()));
+    let t0 =
+        tauri::async_runtime::spawn_blocking(move || tier0_section(a.state::<AppState>().source()));
     let rest = tauri::async_runtime::spawn_blocking(move || {
         let handle = app.state::<tier1::Handle>();
         let (worker, why) = match handle.get() {
             Ok(t) => (Some(t), None),
             Err(e) => (None, Some(e)),
         };
-        let rt = worker.as_ref().map(|t| t.runtime_info()).unwrap_or_default();
+        let rt = worker
+            .as_ref()
+            .map(|t| t.runtime_info())
+            .unwrap_or_default();
         let parser = worker
             .as_ref()
             .map(|t| ParserState {
@@ -569,11 +667,18 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
             .unwrap_or_default();
         let det = app.state::<Models>().detected();
         let root = tier1::data_root();
-        (tier1_section(worker.as_deref(), why), models_section(root.as_deref(), &Manifest::embedded(), &det, rt, parser))
+        (
+            tier1_section(worker.as_deref(), why),
+            models_section(root.as_deref(), &Manifest::embedded(), &det, rt, parser),
+        )
     });
     let tier0 = t0.await.map_err(|e| e.to_string())?;
     let (tier1, models) = rest.await.map_err(|e| e.to_string())?;
-    Ok(StatusPageDto { tier0, tier1, models })
+    Ok(StatusPageDto {
+        tier0,
+        tier1,
+        models,
+    })
 }
 
 /// Ask searchd to rebuild one volume's name index. Allowed for a normal user: the pipe grants
@@ -581,12 +686,16 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
 #[tauri::command]
 pub async fn rescan_volume(app: AppHandle, letter: String) -> Result<(), String> {
     let mut chars = letter.chars();
-    let (Some(l), None) = (chars.next(), chars.next()) else { return Err("Expected a single drive letter".into()) };
+    let (Some(l), None) = (chars.next(), chars.next()) else {
+        return Err("Expected a single drive letter".into());
+    };
     if !l.is_ascii_alphabetic() {
         return Err("Expected a drive letter".into());
     }
     let source = app.state::<AppState>().source();
-    tauri::async_runtime::spawn_blocking(move || source.rescan(l.to_ascii_uppercase())).await.map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || source.rescan(l.to_ascii_uppercase()))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Drop every embedding and index the chosen folders again. The name index (Tier 0) is untouched.
@@ -595,7 +704,10 @@ pub async fn tier1_rebuild(h: tauri::State<'_, tier1::Handle>) -> Result<(), Str
     let t = h.get()?;
     tauri::async_runtime::spawn_blocking(move || {
         let meta = embedder::index_meta(&Manifest::embedded().llama.build);
-        t.rebuild_with(|s| s.reset_in_place(&meta).map_err(|e| format!("reset store: {e}")))
+        t.rebuild_with(|s| {
+            s.reset_in_place(&meta)
+                .map_err(|e| format!("reset store: {e}"))
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -607,7 +719,11 @@ mod tests {
     use std::sync::atomic::AtomicUsize;
 
     fn detail(kind: &'static str) -> Tier0Detail {
-        Tier0Detail { kind, uptime_s: Some(5), volumes: vec![] }
+        Tier0Detail {
+            kind,
+            uptime_s: Some(5),
+            volumes: vec![],
+        }
     }
 
     #[test]
@@ -668,7 +784,11 @@ mod tests {
             assert_eq!((v.kind.as_str(), v.cos), (raw, None));
         }
         let v = parse_verdict("kept:not-a-number");
-        assert_eq!((v.kind.as_str(), v.cos), ("kept", None), "a broken cosine degrades to kind only");
+        assert_eq!(
+            (v.kind.as_str(), v.cos),
+            ("kept", None),
+            "a broken cosine degrades to kind only"
+        );
     }
 
     #[test]
@@ -677,8 +797,13 @@ mod tests {
         let man = Manifest::embedded();
         let none = model_files(&man, dir.path());
         assert_eq!(none.len(), 2);
-        assert!(none.iter().all(|f| f.bytes.is_none() && f.expected_bytes > 0));
-        assert_eq!(none.iter().map(|f| f.role).collect::<Vec<_>>(), ["model", "mmproj"]);
+        assert!(none
+            .iter()
+            .all(|f| f.bytes.is_none() && f.expected_bytes > 0));
+        assert_eq!(
+            none.iter().map(|f| f.role).collect::<Vec<_>>(),
+            ["model", "mmproj"]
+        );
         std::fs::write(dir.path().join(&none[0].name), b"12345").unwrap();
         let some = model_files(&man, dir.path());
         assert_eq!(some[0].bytes, Some(5));
@@ -687,16 +812,32 @@ mod tests {
 
     #[test]
     fn models_section_without_a_data_root() {
-        let det = Detected { backend: winseek_llama::Backend::Cpu, gpu_name: None, driver_version: None };
+        let det = Detected {
+            backend: winseek_llama::Backend::Cpu,
+            gpu_name: None,
+            driver_version: None,
+        };
         let m = models_section(
             None,
             &Manifest::embedded(),
             &det,
-            RuntimeInfo { running: true, port: Some(8123), unload_in_s: Some(90) },
+            RuntimeInfo {
+                running: true,
+                port: Some(8123),
+                unload_in_s: Some(90),
+            },
             ParserState::default(),
         );
         assert!(!m.llama_present && m.files.is_empty());
-        assert_eq!((m.server.running, m.server.port, m.server.unload_in_s, m.server.idle_unload_s), (true, Some(8123), Some(90), 120));
+        assert_eq!(
+            (
+                m.server.running,
+                m.server.port,
+                m.server.unload_in_s,
+                m.server.idle_unload_s
+            ),
+            (true, Some(8123), Some(90), 120)
+        );
         assert_eq!(m.model_id, "embeddinggemma-2");
     }
 
@@ -705,29 +846,54 @@ mod tests {
         let man = Manifest::embedded();
         let dir = tempfile::tempdir().unwrap();
         let none = pdfium_section(Some(dir.path()), &man, None);
-        assert_eq!((none.present, none.source, none.bytes), (false, "missing", None));
-        assert_eq!((none.build.as_str(), none.expected_bytes), ("7881", 3_733_154));
+        assert_eq!(
+            (none.present, none.source, none.bytes),
+            (false, "missing", None)
+        );
+        assert_eq!(
+            (none.build.as_str(), none.expected_bytes),
+            ("7881", 3_733_154)
+        );
         let dll = pdfium_path(dir.path(), &man.pdfium);
         std::fs::create_dir_all(dll.parent().unwrap()).unwrap();
         std::fs::write(&dll, b"12345").unwrap();
         let inst = pdfium_section(Some(dir.path()), &man, None);
-        assert_eq!((inst.present, inst.source, inst.bytes), (true, "installed", Some(5)));
+        assert_eq!(
+            (inst.present, inst.source, inst.bytes),
+            (true, "installed", Some(5))
+        );
         let dev = dir.path().join("dev.dll");
         std::fs::write(&dev, b"123").unwrap();
         let ov = pdfium_section(Some(dir.path()), &man, Some(dev.as_os_str()));
-        assert_eq!((ov.present, ov.source, ov.bytes), (true, "override", Some(3)));
+        assert_eq!(
+            (ov.present, ov.source, ov.bytes),
+            (true, "override", Some(3))
+        );
         assert_eq!(pdfium_section(None, &man, None).source, "missing");
     }
 
     #[test]
     fn queue_counts_text_only_files_as_waiting() {
         let mut s = Store::open_in_memory(&embedder::index_meta("test")).unwrap();
-        let key = |n| winseek_store::FileKey { vol_guid: "{v}".into(), frn: n };
+        let key = |n| winseek_store::FileKey {
+            vol_guid: "{v}".into(),
+            frn: n,
+        };
         let id = s.upsert_file(&key(1), r"C:.pdf", 1, 1, "pdf").unwrap();
-        let pend = [winseek_store::PendingVec { chunk: 0, kind: winseek_store::VecKind::Text, locator: None }];
-        s.complete_text_only(id, "h", &pend, &[(0, "words".into())]).unwrap();
+        let pend = [winseek_store::PendingVec {
+            chunk: 0,
+            kind: winseek_store::VecKind::Text,
+            locator: None,
+        }];
+        s.complete_text_only(id, "h", &pend, &[(0, "words".into())])
+            .unwrap();
         s.upsert_file(&key(2), r"C:.pdf", 1, 1, "pdf").unwrap();
-        let t = Tier1::new(s, Box::new(NoModels), Box::new(tier1::parser::NoParser), winseek_store::Scopes::default());
+        let t = Tier1::new(
+            s,
+            Box::new(NoModels),
+            Box::new(tier1::parser::NoParser),
+            winseek_store::Scopes::default(),
+        );
         let page = tier1_section(Some(&t), None);
         let st = page.stats.unwrap();
         assert_eq!((st.pending, st.text_only, st.done), (1, 1, 0));
@@ -755,9 +921,11 @@ mod tests {
     fn ocr_unavailable_follows_the_store_setting() {
         let mut s = Store::open_in_memory(&embedder::index_meta("test")).unwrap();
         assert!(!ocr_unavailable(&s));
-        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, Some("1")).unwrap();
+        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, Some("1"))
+            .unwrap();
         assert!(ocr_unavailable(&s));
-        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, None).unwrap();
+        s.set_setting(tier1::process::SETTING_OCR_UNAVAILABLE, None)
+            .unwrap();
         assert!(!ocr_unavailable(&s));
     }
 
@@ -787,7 +955,11 @@ mod tests {
             models: models_section(
                 None,
                 &Manifest::embedded(),
-                &Detected { backend: winseek_llama::Backend::Vulkan, gpu_name: Some("GPU".into()), driver_version: None },
+                &Detected {
+                    backend: winseek_llama::Backend::Vulkan,
+                    gpu_name: Some("GPU".into()),
+                    driver_version: None,
+                },
                 RuntimeInfo::default(),
                 ParserState::default(),
             ),
@@ -808,7 +980,9 @@ mod tests {
         assert_eq!(v["models"]["parser"]["model_id"], "infinity-parser2-flash");
         assert_eq!(v["models"]["parser"]["queue"]["queued"], 0);
         assert_eq!(v["models"]["parser"]["queue"]["skipped"], 0);
-        assert!(v["models"]["parser"]["rate"].is_null() && v["models"]["parser"]["eta_s"].is_null());
+        assert!(
+            v["models"]["parser"]["rate"].is_null() && v["models"]["parser"]["eta_s"].is_null()
+        );
         assert_eq!(v["models"]["parser"]["profile"], "balanced");
         assert_eq!(v["models"]["parser"]["routing"]["provisional"], false);
     }
@@ -820,8 +994,17 @@ mod tests {
         let models = embedder::models_dir(dir.path());
         std::fs::create_dir_all(&models).unwrap();
         let state = ParserState {
-            rt: RuntimeInfo { running: true, port: Some(9001), unload_in_s: Some(42) },
-            counts: ParseCounts { queued: 7, done: 3, failed: 1, skipped: 2 },
+            rt: RuntimeInfo {
+                running: true,
+                port: Some(9001),
+                unload_in_s: Some(42),
+            },
+            counts: ParseCounts {
+                queued: 7,
+                done: 3,
+                failed: 1,
+                skipped: 2,
+            },
             profile: Profile::Fast,
             present: false,
             rate: Some(0.25),
@@ -838,29 +1021,76 @@ mod tests {
         };
         let none = parser_section(Some(dir.path()), &man, state.clone());
         assert_eq!(none.files.len(), 2);
-        assert!(none.files.iter().all(|f| f.bytes.is_none() && f.expected_bytes > 0));
-        assert_eq!(none.files.iter().map(|f| f.role).collect::<Vec<_>>(), ["model", "mmproj"]);
+        assert!(none
+            .files
+            .iter()
+            .all(|f| f.bytes.is_none() && f.expected_bytes > 0));
+        assert_eq!(
+            none.files.iter().map(|f| f.role).collect::<Vec<_>>(),
+            ["model", "mmproj"]
+        );
         assert_eq!(none.files[0].name, "Infinity-Parser2-Flash.Q4_K_M.gguf");
         assert_eq!(
-            (none.server.running, none.server.port, none.server.unload_in_s, none.server.idle_unload_s),
+            (
+                none.server.running,
+                none.server.port,
+                none.server.unload_in_s,
+                none.server.idle_unload_s
+            ),
             (true, Some(9001), Some(42), 120)
         );
-        assert_eq!(none.queue, ParserQueueDto { queued: 7, done: 3, failed: 1, skipped: 2 });
-        assert_eq!((none.rate, none.eta_s), (Some(0.25), Some(28)), "7 queued pages at 0.25 pages/s");
-        assert_eq!(none.run.map(|r| (r.done, r.left, r.total)), Some((4, 7, 11)), "the run rides along");
+        assert_eq!(
+            none.queue,
+            ParserQueueDto {
+                queued: 7,
+                done: 3,
+                failed: 1,
+                skipped: 2
+            }
+        );
+        assert_eq!(
+            (none.rate, none.eta_s),
+            (Some(0.25), Some(28)),
+            "7 queued pages at 0.25 pages/s"
+        );
+        assert_eq!(
+            none.run.map(|r| (r.done, r.left, r.total)),
+            Some((4, 7, 11)),
+            "the run rides along"
+        );
         assert_eq!((none.profile, none.present), ("fast", false));
-        assert_eq!((none.routing.doc_min, none.routing.doc_margin, none.routing.screenshot_min_chars), (0.60, 0.04, 200));
-        assert!(!none.routing.provisional, "measured with winseek-eval route");
+        assert_eq!(
+            (
+                none.routing.doc_min,
+                none.routing.doc_margin,
+                none.routing.screenshot_min_chars
+            ),
+            (0.60, 0.04, 200)
+        );
+        assert!(
+            !none.routing.provisional,
+            "measured with winseek-eval route"
+        );
         std::fs::write(models.join(&none.files[1].name), b"abc").unwrap();
         let some = parser_section(Some(dir.path()), &man, state);
         assert_eq!((some.files[0].bytes, some.files[1].bytes), (None, Some(3)));
-        assert!(parser_section(None, &man, ParserState::default()).files.is_empty());
+        assert!(parser_section(None, &man, ParserState::default())
+            .files
+            .is_empty());
 
         // A stale trailing rate falls back to the run average for the ETA: 6 pages in 30 s
         // (vision parsing is slow enough that the minute-window rate keeps going stale).
-        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64;
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs() as i64;
         let slow = ParserState {
-            counts: ParseCounts { queued: 30, done: 6, failed: 0, skipped: 0 },
+            counts: ParseCounts {
+                queued: 30,
+                done: 6,
+                failed: 0,
+                skipped: 0,
+            },
             rate: None,
             run: Some(winseek_store::ParseRun {
                 started_unix: now - 30,
@@ -876,16 +1106,27 @@ mod tests {
         let s = parser_section(None, &man, slow);
         assert!(s.rate.is_none(), "the trailing rate stays null");
         assert_eq!(s.run.unwrap().avg_rate, Some(0.2));
-        assert_eq!(s.eta_s, Some(150), "30 pages left at the 0.2 pages/s run average");
+        assert_eq!(
+            s.eta_s,
+            Some(150),
+            "30 pages left at the 0.2 pages/s run average"
+        );
 
         let reading = parser_section(
             None,
             &man,
             ParserState {
-                live: Some(crate::tier1::parse_pass::ParseLive { path: r"C:\x\scan.pdf".into(), pages: 4, at: std::time::Instant::now() }),
+                live: Some(crate::tier1::parse_pass::ParseLive {
+                    path: r"C:\x\scan.pdf".into(),
+                    pages: 4,
+                    at: std::time::Instant::now(),
+                }),
                 ..ParserState::default()
             },
         );
-        assert_eq!(reading.live.map(|l| (l.pages, l.path)), Some((4, r"C:\x\scan.pdf".to_string())));
+        assert_eq!(
+            reading.live.map(|l| (l.pages, l.path)),
+            Some((4, r"C:\x\scan.pdf".to_string()))
+        );
     }
 }

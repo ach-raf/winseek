@@ -21,14 +21,18 @@ pub fn open(app: &AppHandle) -> Result<(), String> {
     }
     // Built hidden, placed centred on the monitor under the cursor, then shown — so it never
     // flashes at an OS-default (top-left-ish) spot before the real position lands.
-    let w = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::App("index.html?view=library".into()))
-        .title("winseek Library")
-        .inner_size(1100.0, 750.0)
-        .min_inner_size(760.0, 520.0)
-        .resizable(true)
-        .visible(false)
-        .build()
-        .map_err(|e| e.to_string())?;
+    let w = WebviewWindowBuilder::new(
+        app,
+        LABEL,
+        WebviewUrl::App("index.html?view=library".into()),
+    )
+    .title("winseek Library")
+    .inner_size(1100.0, 750.0)
+    .min_inner_size(760.0, 520.0)
+    .resizable(true)
+    .visible(false)
+    .build()
+    .map_err(|e| e.to_string())?;
     crate::popup::place_centered_on_cursor_monitor(&w);
     let _ = w.show();
     let _ = w.set_focus();

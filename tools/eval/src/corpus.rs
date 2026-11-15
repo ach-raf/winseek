@@ -60,11 +60,17 @@ struct Spec {
 }
 
 const fn img(label: &'static str, p: Pattern) -> Spec {
-    Spec { label, content: Content::Image(p) }
+    Spec {
+        label,
+        content: Content::Image(p),
+    }
 }
 
 const fn txt(label: &'static str, body: &'static str) -> Spec {
-    Spec { label, content: Content::Text(body) }
+    Spec {
+        label,
+        content: Content::Text(body),
+    }
 }
 
 use Pattern::*;
@@ -145,38 +151,114 @@ const CASES: &[(&str, &str, &[&str])] = &[
     ("an orange image", "color", &["solid-orange"]),
     ("purple", "color", &["solid-purple"]),
     ("an all black image", "color", &["solid-black"]),
-    ("a red circle on a white background", "shape", &["circle-red"]),
+    (
+        "a red circle on a white background",
+        "shape",
+        &["circle-red"],
+    ),
     ("a blue circle", "shape", &["circle-blue"]),
     ("a green circle", "shape", &["circle-green"]),
     ("a yellow circle", "shape", &["circle-yellow"]),
     ("a red square", "shape", &["square-red"]),
-    ("a blue square", "shape", &["square-blue", "dup-square-blue"]),
+    (
+        "a blue square",
+        "shape",
+        &["square-blue", "dup-square-blue"],
+    ),
     ("a green square", "shape", &["square-green"]),
     ("an orange square", "shape", &["square-orange"]),
-    ("a yellow triangle", "shape", &["triangle-yellow", "dup-triangle-yellow"]),
+    (
+        "a yellow triangle",
+        "shape",
+        &["triangle-yellow", "dup-triangle-yellow"],
+    ),
     ("a purple triangle", "shape", &["triangle-purple"]),
     ("a green triangle", "shape", &["triangle-green"]),
     ("a red triangle", "shape", &["triangle-red"]),
-    ("red and white horizontal stripes", "pattern", &["stripes-red-white-h"]),
-    ("blue and yellow vertical stripes", "pattern", &["stripes-blue-yellow-v"]),
-    ("black and white vertical stripes", "pattern", &["stripes-black-white-v"]),
-    ("green and white striped pattern", "pattern", &["stripes-green-white-h"]),
-    ("a black and white checkerboard", "pattern", &["checker-black-white"]),
-    ("a red and yellow checkered pattern", "pattern", &["checker-red-yellow"]),
-    ("a gradient from red to yellow", "gradient", &["gradient-red-yellow"]),
-    ("a gradient fading from blue to white", "gradient", &["gradient-blue-white"]),
-    ("a smooth gradient from black to white", "gradient", &["gradient-black-white"]),
-    ("a gradient from green to blue", "gradient", &["gradient-green-blue"]),
-    ("a white page with lines of text", "doc", &["page-1", "page-2", "page-3", "page-4"]),
-    ("a scanned document", "doc", &["page-1", "page-2", "page-3", "page-4"]),
-    ("pancake recipe with flour and eggs", "text", &["note-pancakes"]),
+    (
+        "red and white horizontal stripes",
+        "pattern",
+        &["stripes-red-white-h"],
+    ),
+    (
+        "blue and yellow vertical stripes",
+        "pattern",
+        &["stripes-blue-yellow-v"],
+    ),
+    (
+        "black and white vertical stripes",
+        "pattern",
+        &["stripes-black-white-v"],
+    ),
+    (
+        "green and white striped pattern",
+        "pattern",
+        &["stripes-green-white-h"],
+    ),
+    (
+        "a black and white checkerboard",
+        "pattern",
+        &["checker-black-white"],
+    ),
+    (
+        "a red and yellow checkered pattern",
+        "pattern",
+        &["checker-red-yellow"],
+    ),
+    (
+        "a gradient from red to yellow",
+        "gradient",
+        &["gradient-red-yellow"],
+    ),
+    (
+        "a gradient fading from blue to white",
+        "gradient",
+        &["gradient-blue-white"],
+    ),
+    (
+        "a smooth gradient from black to white",
+        "gradient",
+        &["gradient-black-white"],
+    ),
+    (
+        "a gradient from green to blue",
+        "gradient",
+        &["gradient-green-blue"],
+    ),
+    (
+        "a white page with lines of text",
+        "doc",
+        &["page-1", "page-2", "page-3", "page-4"],
+    ),
+    (
+        "a scanned document",
+        "doc",
+        &["page-1", "page-2", "page-3", "page-4"],
+    ),
+    (
+        "pancake recipe with flour and eggs",
+        "text",
+        &["note-pancakes"],
+    ),
     ("quarterly budget meeting notes", "text", &["note-meeting"]),
     ("what to pack for a hike", "text", &["note-hiking"]),
-    ("consulting invoice with hourly rate", "text", &["note-invoice"]),
+    (
+        "consulting invoice with hourly rate",
+        "text",
+        &["note-invoice"],
+    ),
     ("un cercle rouge sur fond blanc", "xling", &["circle-red"]),
-    ("rayures bleues et jaunes verticales", "xling", &["stripes-blue-yellow-v"]),
+    (
+        "rayures bleues et jaunes verticales",
+        "xling",
+        &["stripes-blue-yellow-v"],
+    ),
     ("recette de crepes", "xling", &["note-pancakes"]),
-    ("un triangulo amarillo", "xling", &["triangle-yellow", "dup-triangle-yellow"]),
+    (
+        "un triangulo amarillo",
+        "xling",
+        &["triangle-yellow", "dup-triangle-yellow"],
+    ),
     ("grocery shopping list", "xling", &["note-compras-es"]),
     ("chocolate cake recipe", "xling", &["note-gateau-fr"]),
     ("INV-2024-00817", "exact", &["note-inv-00817"]),
@@ -228,17 +310,38 @@ pub fn title_file_name(i: usize) -> String {
 /// `(query, acceptable title-note stems)`.
 const TITLE_CASES: &[(&str, &[&str])] = &[
     ("pancake recipe with flour and eggs", &["pancake-recipe"]),
-    ("quarterly budget review meeting notes", &["quarterly-budget-review-notes"]),
+    (
+        "quarterly budget review meeting notes",
+        &["quarterly-budget-review-notes"],
+    ),
     ("what to pack for a hike", &["hiking-packing-list"]),
-    ("consulting invoice with hourly rate", &["consulting-invoice-2043"]),
+    (
+        "consulting invoice with hourly rate",
+        &["consulting-invoice-2043"],
+    ),
     ("chocolate cake recipe", &["recette-gateau-chocolat"]),
     ("grocery shopping list", &["lista-de-la-compra"]),
     ("invoice for the office chairs", &["office-chairs-invoice"]),
-    ("cloud hosting subscription bill", &["cloud-hosting-invoice"]),
-    ("installer stopped access denied", &["installer-access-denied-log"]),
-    ("what should I pack for the hawaii trip", &["hawaii-trip-packing-list"]),
-    ("draft of the wedding speech and toast", &["wedding-speech-draft"]),
-    ("dentist appointment reminder", &["dental-cleaning-appointment-card"]),
+    (
+        "cloud hosting subscription bill",
+        &["cloud-hosting-invoice"],
+    ),
+    (
+        "installer stopped access denied",
+        &["installer-access-denied-log"],
+    ),
+    (
+        "what should I pack for the hawaii trip",
+        &["hawaii-trip-packing-list"],
+    ),
+    (
+        "draft of the wedding speech and toast",
+        &["wedding-speech-draft"],
+    ),
+    (
+        "dentist appointment reminder",
+        &["dental-cleaning-appointment-card"],
+    ),
 ];
 
 /// The eval cases for the title notes (what `eval/title-cases.json` must equal).
@@ -251,7 +354,10 @@ pub fn title_cases() -> Vec<Case> {
             expect: stems
                 .iter()
                 .map(|s| {
-                    TITLE_NOTES.iter().position(|(stem, _)| stem == s).map(title_file_name)
+                    TITLE_NOTES
+                        .iter()
+                        .position(|(stem, _)| stem == s)
+                        .map(title_file_name)
                         .unwrap_or_else(|| panic!("unknown title stem {s}"))
                 })
                 .collect(),
@@ -267,7 +373,11 @@ pub fn generate_with_titles(dir: &Path) -> std::io::Result<usize> {
     for (i, (_, body)) in TITLE_NOTES.iter().enumerate() {
         let name = title_file_name(i);
         std::fs::write(dir.join(&name), format!("{body}\n"))?;
-        idx.files.push(CorpusFile { name, kind: "text".into(), desc: format!("title-{}", TITLE_NOTES[i].0) });
+        idx.files.push(CorpusFile {
+            name,
+            kind: "text".into(),
+            desc: format!("title-{}", TITLE_NOTES[i].0),
+        });
         n += 1;
     }
     let json = serde_json::to_string_pretty(&idx).expect("serialise");
@@ -286,7 +396,10 @@ pub fn cases() -> Vec<Case> {
         .map(|(q, tag, labels)| Case {
             q: (*q).into(),
             tag: (*tag).into(),
-            expect: labels.iter().map(|l| name_of_label(l).unwrap_or_else(|| panic!("unknown label {l}"))).collect(),
+            expect: labels
+                .iter()
+                .map(|l| name_of_label(l).unwrap_or_else(|| panic!("unknown label {l}")))
+                .collect(),
         })
         .collect()
 }
@@ -303,7 +416,10 @@ struct Lcg(u64);
 
 impl Lcg {
     fn next(&mut self) -> u32 {
-        self.0 = self.0.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        self.0 = self
+            .0
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (self.0 >> 33) as u32
     }
 }
@@ -323,15 +439,21 @@ fn in_shape(shape: Shape, x: u32, y: u32) -> bool {
 }
 
 fn render_rgb(idx: usize) -> RgbImage {
-    let Content::Image(p) = SPECS[idx].content else { panic!("spec {idx} is not an image") };
+    let Content::Image(p) = SPECS[idx].content else {
+        panic!("spec {idx} is not an image")
+    };
     match p {
         Solid(c) => RgbImage::from_pixel(W, H, Rgb(c)),
-        Shaped(s, c) => RgbImage::from_fn(W, H, |x, y| Rgb(if in_shape(s, x, y) { c } else { WHITE })),
+        Shaped(s, c) => {
+            RgbImage::from_fn(W, H, |x, y| Rgb(if in_shape(s, x, y) { c } else { WHITE }))
+        }
         Stripes(a, b, vertical) => RgbImage::from_fn(W, H, |x, y| {
             let band = if vertical { x / 50 } else { y / 50 };
             Rgb(if band % 2 == 0 { a } else { b })
         }),
-        Checker(a, b) => RgbImage::from_fn(W, H, |x, y| Rgb(if (x / 80 + y / 80) % 2 == 0 { a } else { b })),
+        Checker(a, b) => RgbImage::from_fn(W, H, |x, y| {
+            Rgb(if (x / 80 + y / 80) % 2 == 0 { a } else { b })
+        }),
         Gradient(a, b) => RgbImage::from_fn(W, H, |x, _| Rgb(mix(a, b, x as f32 / (W - 1) as f32))),
         Page(seed) => {
             let (pw, ph) = (600u32, 800u32);
@@ -347,7 +469,11 @@ fn render_rgb(idx: usize) -> RgbImage {
             bar(&mut img, 50, 220 + rng.next() % 100, 16); // title
             let mut y = 110;
             while y + 10 < ph - 50 {
-                let len = if rng.next().is_multiple_of(6) { 120 + rng.next() % 200 } else { 440 };
+                let len = if rng.next().is_multiple_of(6) {
+                    120 + rng.next() % 200
+                } else {
+                    440
+                };
                 bar(&mut img, y, len, 7);
                 y += 26;
             }
@@ -410,7 +536,12 @@ pub fn index() -> CorpusIndex {
             .enumerate()
             .map(|(i, s)| CorpusFile {
                 name: file_name(i),
-                kind: if matches!(s.content, Content::Image(_)) { "image" } else { "text" }.into(),
+                kind: if matches!(s.content, Content::Image(_)) {
+                    "image"
+                } else {
+                    "text"
+                }
+                .into(),
                 desc: s.label.into(),
             })
             .collect(),
@@ -430,7 +561,8 @@ pub fn generate(dir: &Path) -> std::io::Result<usize> {
 
 pub fn load_index(dir: &Path) -> Result<CorpusIndex, String> {
     let p = dir.join("corpus.json");
-    let s = std::fs::read_to_string(&p).map_err(|e| format!("{}: {e} (run `winseek-eval gen` first)", p.display()))?;
+    let s = std::fs::read_to_string(&p)
+        .map_err(|e| format!("{}: {e} (run `winseek-eval gen` first)", p.display()))?;
     serde_json::from_str(&s).map_err(|e| format!("{}: {e}", p.display()))
 }
 
@@ -452,9 +584,15 @@ mod tests {
         generate(a.path()).unwrap();
         generate(b.path()).unwrap();
         for f in index().files {
-            assert_eq!(std::fs::read(a.path().join(&f.name)).unwrap(), std::fs::read(b.path().join(&f.name)).unwrap());
+            assert_eq!(
+                std::fs::read(a.path().join(&f.name)).unwrap(),
+                std::fs::read(b.path().join(&f.name)).unwrap()
+            );
         }
-        assert_eq!(std::fs::read(a.path().join("corpus.json")).unwrap(), std::fs::read(b.path().join("corpus.json")).unwrap());
+        assert_eq!(
+            std::fs::read(a.path().join("corpus.json")).unwrap(),
+            std::fs::read(b.path().join("corpus.json")).unwrap()
+        );
         assert_eq!(load_index(a.path()).unwrap(), index());
     }
 
@@ -464,7 +602,12 @@ mod tests {
         let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
         for n in &names {
             assert!(n.starts_with("img_") || n.starts_with("note_"), "{n}");
-            assert!(!["red", "blue", "circle", "stripes", "page"].iter().any(|w| n.contains(w)), "{n}");
+            assert!(
+                !["red", "blue", "circle", "stripes", "page"]
+                    .iter()
+                    .any(|w| n.contains(w)),
+                "{n}"
+            );
         }
         names.sort();
         names.dedup();
@@ -494,11 +637,17 @@ mod tests {
         assert!(cs.len() >= 40);
         for c in &cs {
             for e in &c.expect {
-                assert!(names.iter().any(|n| glob_match(e, n)), "{} expects missing {e}", c.q);
+                assert!(
+                    names.iter().any(|n| glob_match(e, n)),
+                    "{} expects missing {e}",
+                    c.q
+                );
             }
         }
         let tags: std::collections::HashSet<_> = cs.iter().map(|c| c.tag.as_str()).collect();
-        for t in ["color", "shape", "pattern", "gradient", "doc", "text", "xling"] {
+        for t in [
+            "color", "shape", "pattern", "gradient", "doc", "text", "xling",
+        ] {
             assert!(tags.contains(t), "{t}");
         }
         assert!(cs.iter().filter(|c| c.tag == "xling").count() >= 2);
@@ -507,7 +656,8 @@ mod tests {
     #[test]
     fn committed_cases_json_is_in_sync() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/cases.json");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert_eq!(
             parse_cases(&text).unwrap(),
             cases(),
@@ -518,7 +668,8 @@ mod tests {
     #[test]
     fn committed_title_cases_json_is_in_sync() {
         let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/title-cases.json");
-        let text = std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
         assert_eq!(
             parse_cases(&text).unwrap(),
             title_cases(),
@@ -539,7 +690,11 @@ mod tests {
         assert_eq!(names.len(), before, "file names collide");
         for c in title_cases() {
             for e in &c.expect {
-                assert!(names.iter().any(|n| glob_match(e, n)), "{} expects missing {e}", c.q);
+                assert!(
+                    names.iter().any(|n| glob_match(e, n)),
+                    "{} expects missing {e}",
+                    c.q
+                );
             }
         }
     }

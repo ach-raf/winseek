@@ -14,10 +14,12 @@ pub const SECTOR: usize = 512;
 /// Little-endian reads that return 0 when out of bounds, so a corrupt record
 /// can never panic (loops terminate on the zero lengths).
 pub fn u16_at(b: &[u8], off: usize) -> u16 {
-    b.get(off..off + 2).map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
+    b.get(off..off + 2)
+        .map_or(0, |s| u16::from_le_bytes([s[0], s[1]]))
 }
 pub fn u32_at(b: &[u8], off: usize) -> u32 {
-    b.get(off..off + 4).map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
+    b.get(off..off + 4)
+        .map_or(0, |s| u32::from_le_bytes([s[0], s[1], s[2], s[3]]))
 }
 pub fn u64_at(b: &[u8], off: usize) -> u64 {
     b.get(off..off + 8).map_or(0, |s| {
@@ -91,7 +93,8 @@ impl Parsed {
 pub fn apply_fixup(rec: &mut [u8]) -> Result<(), RecordError> {
     let usa_off = u16_at(rec, 4) as usize;
     let usa_count = u16_at(rec, 6) as usize;
-    if usa_count < 1 || usa_off + 2 * usa_count > rec.len() || (usa_count - 1) * SECTOR > rec.len() {
+    if usa_count < 1 || usa_off + 2 * usa_count > rec.len() || (usa_count - 1) * SECTOR > rec.len()
+    {
         return Err(RecordError::BadFixup);
     }
     let usn = u16_at(rec, usa_off);
@@ -149,7 +152,11 @@ pub fn decode_data_runs(buf: &[u8], runs_off: usize, max_len: usize) -> Vec<(u64
 fn utf16le_to_string(b: &[u8]) -> String {
     let n = b.len() / 2;
     let mut s = String::with_capacity(n);
-    let mut it = b.as_chunks::<2>().0.iter().map(|c| u16::from_le_bytes([c[0], c[1]]));
+    let mut it = b
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .map(|c| u16::from_le_bytes([c[0], c[1]]));
     // Fast path: copy ASCII units until the first non-ASCII one.
     let mut rest = None;
     for u in it.by_ref() {
@@ -259,9 +266,9 @@ pub fn select_names(names: &[NameAttr]) -> Vec<&NameAttr> {
     let mut out: Vec<&NameAttr> = Vec::new();
     for n in names {
         if n.namespace == 2
-            && names
-                .iter()
-                .any(|o| o.namespace != 2 && o.parent_ref & REC_NO_MASK == n.parent_ref & REC_NO_MASK)
+            && names.iter().any(|o| {
+                o.namespace != 2 && o.parent_ref & REC_NO_MASK == n.parent_ref & REC_NO_MASK
+            })
         {
             continue;
         }
@@ -300,9 +307,9 @@ pub fn select_names_owned(mut names: Vec<NameAttr>) -> Vec<NameAttr> {
     let mut keep: Vec<usize> = Vec::with_capacity(names.len());
     for (i, n) in names.iter().enumerate() {
         if n.namespace == 2
-            && names
-                .iter()
-                .any(|o| o.namespace != 2 && o.parent_ref & REC_NO_MASK == n.parent_ref & REC_NO_MASK)
+            && names.iter().any(|o| {
+                o.namespace != 2 && o.parent_ref & REC_NO_MASK == n.parent_ref & REC_NO_MASK
+            })
         {
             continue;
         }
@@ -314,7 +321,9 @@ pub fn select_names_owned(mut names: Vec<NameAttr>) -> Vec<NameAttr> {
         }
         keep.push(i);
     }
-    keep.iter().map(|&i| std::mem::take(&mut names[i])).collect()
+    keep.iter()
+        .map(|&i| std::mem::take(&mut names[i]))
+        .collect()
 }
 
 #[cfg(any(test, feature = "testutil"))]
@@ -459,27 +468,42 @@ mod tests {
     fn torn_record_is_rejected() {
         let mut rec = Rb::new(true, false).name(5, "f", 1).seal();
         rec[1022] ^= 0xFF; // tail no longer equals USN
-        assert_eq!(parse_record(&mut rec, 1, CL).unwrap_err(), RecordError::FixupMismatch);
+        assert_eq!(
+            parse_record(&mut rec, 1, CL).unwrap_err(),
+            RecordError::FixupMismatch
+        );
     }
 
     #[test]
     fn bad_usa_bounds() {
         let mut rec = Rb::new(true, false).seal();
         rec[6..8].copy_from_slice(&200u16.to_le_bytes());
-        assert_eq!(parse_record(&mut rec, 1, CL).unwrap_err(), RecordError::BadFixup);
+        assert_eq!(
+            parse_record(&mut rec, 1, CL).unwrap_err(),
+            RecordError::BadFixup
+        );
     }
 
     #[test]
     fn magic_and_in_use() {
         let mut z = vec![0u8; 1024];
-        assert_eq!(parse_record(&mut z, 0, CL).unwrap_err(), RecordError::BadMagic);
+        assert_eq!(
+            parse_record(&mut z, 0, CL).unwrap_err(),
+            RecordError::BadMagic
+        );
         let mut d = Rb::new(false, false).name(5, "gone", 1).seal();
-        assert_eq!(parse_record(&mut d, 0, CL).unwrap_err(), RecordError::NotInUse);
+        assert_eq!(
+            parse_record(&mut d, 0, CL).unwrap_err(),
+            RecordError::NotInUse
+        );
     }
 
     #[test]
     fn nonresident_alloc_from_runs_and_dir_flag() {
-        let mut rec = Rb::new(true, true).name(5, "d", 1).data_nonres(0, 5_000_000, 200).seal();
+        let mut rec = Rb::new(true, true)
+            .name(5, "d", 1)
+            .data_nonres(0, 5_000_000, 200)
+            .seal();
         let p = parse_record(&mut rec, 7, CL).unwrap();
         assert!(p.is_dir);
         assert_eq!(p.size, Some(5_000_000));
@@ -488,8 +512,14 @@ mod tests {
 
     #[test]
     fn extension_record_and_merge() {
-        let mut base = Rb::new(true, false).name(5, "big.bin", 1).attr_list().seal();
-        let mut ext = Rb::new(true, false).base(77 | (3 << 48)).data_nonres(0, 10_000, 3).seal();
+        let mut base = Rb::new(true, false)
+            .name(5, "big.bin", 1)
+            .attr_list()
+            .seal();
+        let mut ext = Rb::new(true, false)
+            .base(77 | (3 << 48))
+            .data_nonres(0, 10_000, 3)
+            .seal();
         let mut bp = parse_record(&mut base, 77, CL).unwrap();
         let ep = parse_record(&mut ext, 500, CL).unwrap();
         assert!(bp.has_attr_list);
@@ -541,8 +571,16 @@ mod tests {
             for (na, nb) in [("x", "x"), ("x", "y")] {
                 for (sa, sb) in (0..4u8).flat_map(|a| (0..4u8).map(move |b| (a, b))) {
                     let v = vec![
-                        NameAttr { parent_ref: pa, namespace: sa, name: na.into() },
-                        NameAttr { parent_ref: pb, namespace: sb, name: nb.into() },
+                        NameAttr {
+                            parent_ref: pa,
+                            namespace: sa,
+                            name: na.into(),
+                        },
+                        NameAttr {
+                            parent_ref: pb,
+                            namespace: sb,
+                            name: nb.into(),
+                        },
                     ];
                     let want: Vec<NameAttr> = select_names(&v).into_iter().cloned().collect();
                     assert_eq!(select_names_owned(v.clone()), want, "{v:?}");
@@ -577,8 +615,14 @@ mod tests {
             .name(5, "a.txt", 1) // exact dup
             .seal();
         let p = parse_record(&mut rec, 1, CL).unwrap();
-        let sel: Vec<_> = select_names(&p.names).iter().map(|n| (n.parent_ref, n.name.clone())).collect();
-        assert_eq!(sel, vec![(5, "a.txt".to_string()), (9, "b.txt".to_string())]);
+        let sel: Vec<_> = select_names(&p.names)
+            .iter()
+            .map(|n| (n.parent_ref, n.name.clone()))
+            .collect();
+        assert_eq!(
+            sel,
+            vec![(5, "a.txt".to_string()), (9, "b.txt".to_string())]
+        );
     }
 
     #[test]
@@ -592,7 +636,9 @@ mod tests {
 
     #[test]
     fn unicode_name_roundtrip() {
-        let mut rec = Rb::new(true, false).name(5, "日本語 ファイル.txt", 1).seal();
+        let mut rec = Rb::new(true, false)
+            .name(5, "日本語 ファイル.txt", 1)
+            .seal();
         let p = parse_record(&mut rec, 1, CL).unwrap();
         assert_eq!(p.names[0].name, "日本語 ファイル.txt");
     }
@@ -600,9 +646,15 @@ mod tests {
     #[test]
     fn data_runs_roundtrip_and_negative() {
         let r = [0x11u8, 8, 100, 0x01, 2, 0x00];
-        assert_eq!(decode_data_runs(&r, 0, r.len()), vec![(8, Some(100)), (2, None)]);
+        assert_eq!(
+            decode_data_runs(&r, 0, r.len()),
+            vec![(8, Some(100)), (2, None)]
+        );
         let r = [0x11u8, 4, 50, 0x11, 4, 0xEC];
-        assert_eq!(decode_data_runs(&r, 0, r.len()), vec![(4, Some(50)), (4, Some(30))]);
+        assert_eq!(
+            decode_data_runs(&r, 0, r.len()),
+            vec![(4, Some(50)), (4, Some(30))]
+        );
         // truncated run header must not panic
         let r = [0x21u8, 4];
         assert!(decode_data_runs(&r, 0, r.len()).is_empty());

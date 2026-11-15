@@ -1,6 +1,10 @@
 //! Raw Win32 declarations shared by the modules (kernel32 only).
 
-#![allow(non_snake_case, clippy::upper_case_acronyms, clippy::too_many_arguments)]
+#![allow(
+    non_snake_case,
+    clippy::upper_case_acronyms,
+    clippy::too_many_arguments
+)]
 
 use std::ffi::{c_void, OsStr};
 use std::io;
@@ -156,7 +160,10 @@ extern "system" {
 
 /// NUL-terminated UTF-16 for Win32 calls.
 pub(crate) fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// UTF-16 up to the first NUL (or the end of the slice), lossy.
@@ -225,7 +232,15 @@ pub(crate) fn open_handle(path: &str, access: DWORD, flags: DWORD) -> io::Result
     let w = wide(path);
     // SAFETY: `w` is NUL-terminated; no security attributes or template file.
     let h = unsafe {
-        CreateFileW(w.as_ptr(), access, FILE_SHARE_ALL, std::ptr::null_mut(), OPEN_EXISTING, flags, 0)
+        CreateFileW(
+            w.as_ptr(),
+            access,
+            FILE_SHARE_ALL,
+            std::ptr::null_mut(),
+            OPEN_EXISTING,
+            flags,
+            0,
+        )
     };
     if h == INVALID_HANDLE_VALUE || h == 0 {
         Err(io::Error::last_os_error())

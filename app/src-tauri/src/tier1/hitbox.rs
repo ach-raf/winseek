@@ -101,19 +101,32 @@ pub fn hit_boxes(locator: Option<&str>, query: &str) -> Option<Vec<HitBox>> {
     if let Some(ocr) = v.get("ocr") {
         let (w, h) = (num(&ocr["w"])?, num(&ocr["h"])?);
         for line in ocr.get("lines")?.as_array()? {
-            let (Some(t), Some(r)) = (line["t"].as_str(), line["r"].as_array()) else { continue };
+            let (Some(t), Some(r)) = (line["t"].as_str(), line["r"].as_array()) else {
+                continue;
+            };
             let r: Vec<f64> = r.iter().filter_map(num).collect();
             if r.len() != 4 || !matches(t) || r[2] <= 0.0 || r[3] <= 0.0 {
                 continue;
             }
-            out.push(HitBox { x: frac(r[0], w), y: frac(r[1], h), w: frac(r[2], w), h: frac(r[3], h) });
+            out.push(HitBox {
+                x: frac(r[0], w),
+                y: frac(r[1], h),
+                w: frac(r[2], w),
+                h: frac(r[3], h),
+            });
         }
     }
     if let Some(boxes) = v.pointer("/parser/boxes").and_then(Value::as_array) {
         for b in boxes {
-            let (Some(t), Some(r)) = (b["t"].as_str(), b["b"].as_array()) else { continue };
+            let (Some(t), Some(r)) = (b["t"].as_str(), b["b"].as_array()) else {
+                continue;
+            };
             let r: Vec<f64> = r.iter().filter_map(num).collect();
-            let text = if b["c"] == "table" { strip_tags(t) } else { t.to_string() };
+            let text = if b["c"] == "table" {
+                strip_tags(t)
+            } else {
+                t.to_string()
+            };
             if r.len() != 4 || !matches(&text) || r[2] <= r[0] || r[3] <= r[1] {
                 continue;
             }
@@ -145,7 +158,10 @@ mod tests {
 
     #[test]
     fn terms_are_folded_words_of_two_or_more_chars() {
-        assert_eq!(query_terms("Invoice a  café, INVOICE x-ray"), ["invoice", "cafe", "ray"]);
+        assert_eq!(
+            query_terms("Invoice a  café, INVOICE x-ray"),
+            ["invoice", "cafe", "ray"]
+        );
         assert!(query_terms("a b").is_empty());
         assert!(query_terms("").is_empty());
     }
@@ -153,10 +169,26 @@ mod tests {
     #[test]
     fn ocr_lines_that_contain_a_term_become_fractions() {
         let b = hit_boxes(Some(OCR), "CAFE").unwrap();
-        assert_eq!(b, vec![HitBox { x: 0.1, y: 0.4, w: 0.8, h: 0.2 }]);
+        assert_eq!(
+            b,
+            vec![HitBox {
+                x: 0.1,
+                y: 0.4,
+                w: 0.8,
+                h: 0.2
+            }]
+        );
         let b = hit_boxes(Some(OCR), "invoice due").unwrap();
         assert_eq!(b.len(), 2);
-        assert_eq!(b[0], HitBox { x: 0.1, y: 0.1, w: 0.5, h: 0.2 });
+        assert_eq!(
+            b[0],
+            HitBox {
+                x: 0.1,
+                y: 0.1,
+                w: 0.5,
+                h: 0.2
+            }
+        );
         assert!(hit_boxes(Some(OCR), "zebra").is_none());
     }
 
@@ -166,10 +198,29 @@ mod tests {
             {"b":[100,200,600,300],"c":"text","t":"Total due: 1,869.00"},
             {"b":[100,400,900,500],"c":"table","t":"<table><tr><td>Item</td></tr></table>"},
             {"b":[0,0,0,0],"c":"text","t":"total degenerate"}]}}"#;
-        assert_eq!(hit_boxes(Some(loc), "total").unwrap(), vec![HitBox { x: 0.1, y: 0.2, w: 0.5, h: 0.1 }]);
-        assert!(hit_boxes(Some(loc), "table").is_none(), "tag names are not text");
+        assert_eq!(
+            hit_boxes(Some(loc), "total").unwrap(),
+            vec![HitBox {
+                x: 0.1,
+                y: 0.2,
+                w: 0.5,
+                h: 0.1
+            }]
+        );
+        assert!(
+            hit_boxes(Some(loc), "table").is_none(),
+            "tag names are not text"
+        );
         let t = hit_boxes(Some(loc), "item").unwrap();
-        assert_eq!(t, vec![HitBox { x: 0.1, y: 0.4, w: 0.8, h: 0.1 }]);
+        assert_eq!(
+            t,
+            vec![HitBox {
+                x: 0.1,
+                y: 0.4,
+                w: 0.8,
+                h: 0.1
+            }]
+        );
     }
 
     #[test]
@@ -180,6 +231,14 @@ mod tests {
         assert!(hit_boxes(Some(OCR), "  ").is_none());
         // out-of-range rectangles are clamped, empty ones dropped
         let loc = r#"{"ocr":{"w":10,"h":10,"lines":[{"t":"abc","r":[8,8,10,10]},{"t":"abc","r":[0,0,0,5]}]}}"#;
-        assert_eq!(hit_boxes(Some(loc), "abc").unwrap(), vec![HitBox { x: 0.8, y: 0.8, w: 1.0, h: 1.0 }]);
+        assert_eq!(
+            hit_boxes(Some(loc), "abc").unwrap(),
+            vec![HitBox {
+                x: 0.8,
+                y: 0.8,
+                w: 1.0,
+                h: 1.0
+            }]
+        );
     }
 }

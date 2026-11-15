@@ -28,7 +28,9 @@ pub const W_TEXT_MAX: f32 = 3.0;
 fn code_like(tok: &str) -> bool {
     let digits = tok.chars().filter(char::is_ascii_digit).count();
     let letters = tok.chars().filter(|c| c.is_alphabetic()).count();
-    let joined = tok.chars().any(|c| matches!(c, '_' | '-' | '/' | '\\' | '.' | ':' | '#'));
+    let joined = tok
+        .chars()
+        .any(|c| matches!(c, '_' | '-' | '/' | '\\' | '.' | ':' | '#'));
     if digits >= 1 && (letters >= 1 || joined) {
         return true; // INV-2024-00817, 0x80070005, 12.04.2023, A4
     }
@@ -36,14 +38,22 @@ fn code_like(tok: &str) -> bool {
         return true; // 00817, 20240331, 4111111111
     }
     let upper = tok.chars().filter(|c| c.is_uppercase()).count();
-    (tok.contains('_') && letters >= 3) || (joined && upper >= 3 && upper == letters && letters >= 3)
+    (tok.contains('_') && letters >= 3)
+        || (joined && upper >= 3 && upper == letters && letters >= 3)
 }
 
 /// 0..=1: the share of query tokens that look like codes or numbers. 0 for plain words.
 pub fn exact_lean(query: &str) -> f32 {
     let toks: Vec<&str> = query
         .split_whitespace()
-        .map(|t| t.trim_matches(|c: char| matches!(c, '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']' | '?' | '!')))
+        .map(|t| {
+            t.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    '"' | '\'' | ',' | ';' | '(' | ')' | '[' | ']' | '?' | '!'
+                )
+            })
+        })
         .filter(|t| !t.is_empty())
         .collect();
     if toks.is_empty() {
@@ -59,16 +69,22 @@ pub fn fuse_order(sem: &[String], text: &[String], lean: f32) -> Vec<String> {
     let mut score: std::collections::HashMap<&str, (f32, usize)> = std::collections::HashMap::new();
     let mut first_seen = 0usize;
     for (i, k) in sem.iter().enumerate() {
-        score.entry(k).or_insert_with(|| {
-            first_seen += 1;
-            (0.0, first_seen)
-        }).0 += 1.0 / (K + 1.0 + i as f32);
+        score
+            .entry(k)
+            .or_insert_with(|| {
+                first_seen += 1;
+                (0.0, first_seen)
+            })
+            .0 += 1.0 / (K + 1.0 + i as f32);
     }
     for (i, k) in text.iter().enumerate() {
-        score.entry(k).or_insert_with(|| {
-            first_seen += 1;
-            (0.0, first_seen)
-        }).0 += w / (K + 1.0 + i as f32);
+        score
+            .entry(k)
+            .or_insert_with(|| {
+                first_seen += 1;
+                (0.0, first_seen)
+            })
+            .0 += w / (K + 1.0 + i as f32);
     }
     let mut v: Vec<(&str, f32, usize)> = score.into_iter().map(|(k, (s, o))| (k, s, o)).collect();
     v.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.2.cmp(&b.2)));
@@ -85,10 +101,24 @@ mod tests {
 
     #[test]
     fn lean_reads_codes_and_numbers_not_words() {
-        for q in ["INV-2024-00817", "0x80070005", "ERR_FILE_NOT_FOUND", "\"00817\"", "12.04.2023", "KB5034441"] {
+        for q in [
+            "INV-2024-00817",
+            "0x80070005",
+            "ERR_FILE_NOT_FOUND",
+            "\"00817\"",
+            "12.04.2023",
+            "KB5034441",
+        ] {
             assert_eq!(exact_lean(q), 1.0, "{q}");
         }
-        for q in ["grocery shopping list", "chocolate cake recipe", "a red circle", "2024", "café", ""] {
+        for q in [
+            "grocery shopping list",
+            "chocolate cake recipe",
+            "a red circle",
+            "2024",
+            "café",
+            "",
+        ] {
             assert_eq!(exact_lean(q), 0.0, "{q}");
         }
         assert_eq!(exact_lean("invoice INV-2024-00817"), 0.5);
@@ -100,20 +130,30 @@ mod tests {
         let out = fuse_order(&s(&["a", "b", "c"]), &s(&["x", "y"]), 0.0);
         assert_eq!(out, s(&["a", "b", "c", "x", "y"]));
         // No text hits at all: identical order.
-        assert_eq!(fuse_order(&s(&["a", "b", "c"]), &[], 0.0), s(&["a", "b", "c"]));
+        assert_eq!(
+            fuse_order(&s(&["a", "b", "c"]), &[], 0.0),
+            s(&["a", "b", "c"])
+        );
     }
 
     #[test]
     fn a_file_found_by_both_climbs() {
         let out = fuse_order(&s(&["a", "b", "c", "d"]), &s(&["d"]), 0.0);
-        assert_eq!(out[0], "d", "semantic rank 4 + exact hit beats rank 1 alone");
+        assert_eq!(
+            out[0], "d",
+            "semantic rank 4 + exact hit beats rank 1 alone"
+        );
         assert_eq!(out.len(), 4, "no duplicates");
     }
 
     #[test]
     fn a_code_query_puts_the_literal_hit_first_even_when_meaning_missed_it() {
         // The invoice has no semantic standing (not in the gated list at all).
-        let out = fuse_order(&s(&["a", "b", "c"]), &s(&["inv"]), exact_lean("INV-2024-00817"));
+        let out = fuse_order(
+            &s(&["a", "b", "c"]),
+            &s(&["inv"]),
+            exact_lean("INV-2024-00817"),
+        );
         assert_eq!(out, s(&["inv", "a", "b", "c"]));
         // Hit in both lists: still first.
         let out = fuse_order(&s(&["a", "b", "inv"]), &s(&["inv"]), 1.0);
@@ -126,6 +166,9 @@ mod tests {
         let out = fuse_order(&s(&["a", "b", "c"]), &s(&["inv"]), lean);
         assert_eq!(out[0], "inv");
         let out = fuse_order(&s(&["a", "b", "c"]), &s(&["x", "y", "z"]), lean);
-        assert_eq!(out[0], "x", "text rank 1 outweighs semantic rank 1 at lean 0.5; the rest interleave");
+        assert_eq!(
+            out[0], "x",
+            "text rank 1 outweighs semantic rank 1 at lean 0.5; the rest interleave"
+        );
     }
 }

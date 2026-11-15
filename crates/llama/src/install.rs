@@ -16,7 +16,8 @@ pub fn install_dir(root: &Path, build: &str, backend: Backend) -> PathBuf {
 
 /// Extract `zip_path` into `dest_dir` (created). Rejects entries escaping `dest_dir`.
 pub fn extract_zip(zip_path: &Path, dest_dir: &Path) -> Result<()> {
-    let mut z = zip::ZipArchive::new(File::open(zip_path)?).map_err(|e| Error::Zip(e.to_string()))?;
+    let mut z =
+        zip::ZipArchive::new(File::open(zip_path)?).map_err(|e| Error::Zip(e.to_string()))?;
     fs::create_dir_all(dest_dir)?;
     for i in 0..z.len() {
         let mut entry = z.by_index(i).map_err(|e| Error::Zip(e.to_string()))?;
@@ -88,7 +89,12 @@ pub fn install_llama_with(
         .ok_or_else(|| Error::NotFound(format!("asset for {backend:?} in manifest")))?;
     let dl = root.join("downloads");
     let mut zips: Vec<(&str, &str)> = vec![(&asset.url, &asset.sha256)];
-    zips.extend(asset.extra.iter().map(|e| (e.url.as_str(), e.sha256.as_str())));
+    zips.extend(
+        asset
+            .extra
+            .iter()
+            .map(|e| (e.url.as_str(), e.sha256.as_str())),
+    );
 
     let tmp = dir.with_extension("tmp");
     let _ = fs::remove_dir_all(&tmp);
@@ -96,7 +102,13 @@ pub fn install_llama_with(
         let name = url.rsplit('/').next().unwrap_or("asset.zip");
         let dest = dl.join(name);
         let ep = std::env::var("WINSEEK_HF_ENDPOINT").ok();
-        fetch_with(&[rewrite_hf(url, ep.as_deref())], &dest, sha, opts, &mut |p| progress(name, p))?;
+        fetch_with(
+            &[rewrite_hf(url, ep.as_deref())],
+            &dest,
+            sha,
+            opts,
+            &mut |p| progress(name, p),
+        )?;
         if opts.is_cancelled() {
             return Err(Error::Cancelled);
         }
@@ -126,7 +138,11 @@ pub fn extract_tgz_member(tgz: &Path, member: &str, dest: &Path) -> Result<()> {
     let want = member.trim_start_matches("./");
     for entry in ar.entries().map_err(|e| Error::Zip(format!("tgz: {e}")))? {
         let mut entry = entry.map_err(|e| Error::Zip(format!("tgz: {e}")))?;
-        let name = entry.path().map_err(|e| Error::Zip(format!("tgz: {e}")))?.to_string_lossy().replace('\\', "/");
+        let name = entry
+            .path()
+            .map_err(|e| Error::Zip(format!("tgz: {e}")))?
+            .to_string_lossy()
+            .replace('\\', "/");
         if name.trim_start_matches("./") != want {
             continue;
         }
@@ -160,8 +176,16 @@ pub fn install_pdfium_with(
         return Ok(dll);
     }
     let name = p.url.rsplit('/').next().unwrap_or("pdfium.tgz");
-    let dest = root.join("downloads").join(format!("pdfium-{}-{name}", p.build));
-    fetch_with(std::slice::from_ref(&p.url), &dest, &p.sha256, opts, &mut |pr| progress(name, pr))?;
+    let dest = root
+        .join("downloads")
+        .join(format!("pdfium-{}-{name}", p.build));
+    fetch_with(
+        std::slice::from_ref(&p.url),
+        &dest,
+        &p.sha256,
+        opts,
+        &mut |pr| progress(name, pr),
+    )?;
     if opts.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -179,7 +203,8 @@ pub fn ffmpeg_path(root: &Path, f: &FfmpegManifest) -> PathBuf {
 /// Pull one member out of a `.zip` into `dest` via a temp file (a crash never leaves a truncated
 /// exe). Only the exact member path is read; nothing else is written.
 pub fn extract_zip_member(zip_path: &Path, member: &str, dest: &Path) -> Result<()> {
-    let mut z = zip::ZipArchive::new(File::open(zip_path)?).map_err(|e| Error::Zip(e.to_string()))?;
+    let mut z =
+        zip::ZipArchive::new(File::open(zip_path)?).map_err(|e| Error::Zip(e.to_string()))?;
     let want = member.trim_start_matches("./");
     for i in 0..z.len() {
         let mut entry = z.by_index(i).map_err(|e| Error::Zip(e.to_string()))?;
@@ -199,7 +224,10 @@ pub fn extract_zip_member(zip_path: &Path, member: &str, dest: &Path) -> Result<
         fs::rename(&tmp, dest)?;
         return Ok(());
     }
-    Err(Error::NotFound(format!("{member} in {}", zip_path.display())))
+    Err(Error::NotFound(format!(
+        "{member} in {}",
+        zip_path.display()
+    )))
 }
 
 /// Download (resumable, sha256-verified) and unpack the pinned ffmpeg. Idempotent. An unpinned
@@ -211,14 +239,25 @@ pub fn install_ffmpeg_with(
     opts: &FetchOptions,
     progress: &mut dyn FnMut(&str, Progress),
 ) -> Result<PathBuf> {
-    let f = manifest.ffmpeg.as_ref().ok_or_else(|| Error::NotFound("ffmpeg entry in manifest".into()))?;
+    let f = manifest
+        .ffmpeg
+        .as_ref()
+        .ok_or_else(|| Error::NotFound("ffmpeg entry in manifest".into()))?;
     let exe = ffmpeg_path(root, f);
     if exe.is_file() {
         return Ok(exe);
     }
     let name = f.url.rsplit('/').next().unwrap_or("ffmpeg.zip");
-    let dest = root.join("downloads").join(format!("ffmpeg-{}-{name}", f.build));
-    fetch_with(std::slice::from_ref(&f.url), &dest, &f.sha256, opts, &mut |pr| progress(name, pr))?;
+    let dest = root
+        .join("downloads")
+        .join(format!("ffmpeg-{}-{name}", f.build));
+    fetch_with(
+        std::slice::from_ref(&f.url),
+        &dest,
+        &f.sha256,
+        opts,
+        &mut |pr| progress(name, pr),
+    )?;
     if opts.is_cancelled() {
         return Err(Error::Cancelled);
     }
@@ -233,9 +272,17 @@ pub fn installed_ffmpeg(root: &Path, f: &FfmpegManifest) -> Option<PathBuf> {
     if pinned.is_file() {
         return Some(pinned);
     }
-    let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("ffmpeg")).ok()?.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+    let mut dirs: Vec<PathBuf> = fs::read_dir(root.join("ffmpeg"))
+        .ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.is_dir())
+        .collect();
     dirs.sort();
-    dirs.into_iter().rev().map(|d| d.join(f.exe_name())).find(|p| p.is_file())
+    dirs.into_iter()
+        .rev()
+        .map(|d| d.join(f.exe_name()))
+        .find(|p| p.is_file())
 }
 
 /// Installed build names (`bNNNN`) for `backend`, newest first.
@@ -289,7 +336,10 @@ mod tests {
     use std::io::Write;
 
     fn tmp(tag: &str) -> PathBuf {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let d = std::env::temp_dir().join(format!("winseek-inst-{tag}-{}-{t}", std::process::id()));
         fs::create_dir_all(&d).unwrap();
         d
@@ -317,7 +367,8 @@ mod tests {
     }
 
     fn make_tgz(path: &Path, files: &[(&str, &[u8])]) {
-        let gz = flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
+        let gz =
+            flate2::write::GzEncoder::new(File::create(path).unwrap(), flate2::Compression::fast());
         let mut b = tar::Builder::new(gz);
         for (n, c) in files {
             let mut h = tar::Header::new_gnu();
@@ -333,7 +384,14 @@ mod tests {
     fn tgz_member_extraction() {
         let d = tmp("tgz");
         let t = d.join("p.tgz");
-        make_tgz(&t, &[("LICENSE", b"lic"), ("bin/pdfium.dll", b"MZ-dll"), ("lib/pdfium.dll.lib", b"nope")]);
+        make_tgz(
+            &t,
+            &[
+                ("LICENSE", b"lic"),
+                ("bin/pdfium.dll", b"MZ-dll"),
+                ("lib/pdfium.dll.lib", b"nope"),
+            ],
+        );
         let out = d.join("x").join("pdfium").join("7881").join("pdfium.dll");
         extract_tgz_member(&t, "bin/pdfium.dll", &out).unwrap();
         assert_eq!(fs::read(&out).unwrap(), b"MZ-dll");
@@ -341,7 +399,10 @@ mod tests {
         // overwrite is fine, a missing member is an error and writes nothing
         extract_tgz_member(&t, "bin/pdfium.dll", &out).unwrap();
         let other = d.join("other.dll");
-        assert!(matches!(extract_tgz_member(&t, "bin/missing.dll", &other), Err(Error::NotFound(_))));
+        assert!(matches!(
+            extract_tgz_member(&t, "bin/missing.dll", &other),
+            Err(Error::NotFound(_))
+        ));
         assert!(!other.exists());
         assert!(extract_tgz_member(&d.join("nope.tgz"), "bin/pdfium.dll", &other).is_err());
     }
@@ -350,14 +411,27 @@ mod tests {
     fn pdfium_path_is_versioned() {
         let m = Manifest::embedded();
         let p = pdfium_path(Path::new("R"), &m.pdfium);
-        assert_eq!(p, Path::new("R").join("pdfium").join("7881").join("pdfium.dll"));
+        assert_eq!(
+            p,
+            Path::new("R")
+                .join("pdfium")
+                .join("7881")
+                .join("pdfium.dll")
+        );
     }
 
     #[test]
     fn zip_member_extraction_and_ffmpeg_lookup() {
         let d = tmp("ffz");
         let z = d.join("f.zip");
-        make_zip(&z, &[("ffmpeg-7/LICENSE", b"lic"), ("ffmpeg-7/bin/ffmpeg.exe", b"MZ-ff"), ("ffmpeg-7/bin/ffplay.exe", b"no")]);
+        make_zip(
+            &z,
+            &[
+                ("ffmpeg-7/LICENSE", b"lic"),
+                ("ffmpeg-7/bin/ffmpeg.exe", b"MZ-ff"),
+                ("ffmpeg-7/bin/ffplay.exe", b"no"),
+            ],
+        );
         let f = FfmpegManifest {
             build: "7.0".into(),
             url: "https://x/f.zip".into(),
@@ -376,7 +450,10 @@ mod tests {
         let mut newer = f.clone();
         newer.build = "7.1".into();
         assert_eq!(installed_ffmpeg(&d, &newer).unwrap(), exe);
-        assert!(matches!(extract_zip_member(&z, "nope/ffmpeg.exe", &d.join("o.exe")), Err(Error::NotFound(_))));
+        assert!(matches!(
+            extract_zip_member(&z, "nope/ffmpeg.exe", &d.join("o.exe")),
+            Err(Error::NotFound(_))
+        ));
         assert!(!d.join("o.exe").exists());
     }
 
@@ -388,11 +465,17 @@ mod tests {
         m.ffmpeg.as_mut().expect("ffmpeg entry in manifest").sha256 = "TODO-pin-in-CI".into();
         let opts = FetchOptions::default();
         assert!(
-            matches!(install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}), Err(Error::UnpinnedHash(_))),
+            matches!(
+                install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}),
+                Err(Error::UnpinnedHash(_))
+            ),
             "TODO-pin-in-CI must not download"
         );
         m.ffmpeg = None;
-        assert!(matches!(install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}), Err(Error::NotFound(_))));
+        assert!(matches!(
+            install_ffmpeg_with(&d, &m, &opts, &mut |_, _| {}),
+            Err(Error::NotFound(_))
+        ));
     }
 
     #[test]
@@ -400,7 +483,10 @@ mod tests {
         let d = tmp("slip");
         let z = d.join("a.zip");
         make_zip(&z, &[("../evil.txt", b"x")]);
-        assert!(matches!(extract_zip(&z, &d.join("out")), Err(Error::Zip(_))));
+        assert!(matches!(
+            extract_zip(&z, &d.join("out")),
+            Err(Error::Zip(_))
+        ));
         assert!(!d.join("evil.txt").exists());
     }
 
@@ -412,10 +498,16 @@ mod tests {
             fs::create_dir_all(&dir).unwrap();
             fs::write(dir.join("llama-server.exe"), b"x").unwrap();
         }
-        assert_eq!(installed_builds(&root, Backend::Cpu), ["b300", "b200", "b100"]);
+        assert_eq!(
+            installed_builds(&root, Backend::Cpu),
+            ["b300", "b200", "b100"]
+        );
         let mut m = Manifest::embedded();
         m.llama.build = "b400".into(); // pinned build not installed -> newest older
-        assert_eq!(resolve_exe(&root, &m, Backend::Cpu).unwrap(), install_dir(&root, "b300", Backend::Cpu).join("llama-server.exe"));
+        assert_eq!(
+            resolve_exe(&root, &m, Backend::Cpu).unwrap(),
+            install_dir(&root, "b300", Backend::Cpu).join("llama-server.exe")
+        );
         assert!(resolve_exe(&root, &m, Backend::Vulkan).is_none());
         prune_builds(&root, "b400").unwrap();
         assert_eq!(installed_builds(&root, Backend::Cpu), ["b300"]);

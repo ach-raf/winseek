@@ -31,7 +31,9 @@ pub struct History {
 }
 
 fn now_secs() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs() as i64)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64)
 }
 
 /// Recency multiplier: today 1.0, week 0.7, month 0.45, quarter 0.25, older 0.12.
@@ -180,7 +182,10 @@ mod tests {
         let mut h = History::default();
         h.record_at("a-very-long-query-beyond-sixteen", "app:x", T0);
         let frec = FREC_SCALE.round() as u32;
-        assert_eq!(h.boost_at("a-very-long-query-beyond-sixteen!", "app:x", T0), PAIR_WEIGHT + frec);
+        assert_eq!(
+            h.boost_at("a-very-long-query-beyond-sixteen!", "app:x", T0),
+            PAIR_WEIGHT + frec
+        );
     }
 
     #[test]
@@ -197,6 +202,9 @@ mod tests {
         h.record_at("mp", "app:mpv", T0);
         let json = serde_json::to_vec(&h).unwrap();
         let back: History = serde_json::from_slice(&json).unwrap();
-        assert_eq!(back.boost_at("mp", "app:mpv", T0), PAIR_WEIGHT + FREC_SCALE.round() as u32);
+        assert_eq!(
+            back.boost_at("mp", "app:mpv", T0),
+            PAIR_WEIGHT + FREC_SCALE.round() as u32
+        );
     }
 }

@@ -7,10 +7,10 @@ use std::io;
 use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
-use winseek_ipc::pipe::{connect, PipeConn};
-use winseek_ipc::{read_message, write_message, AgentRequest, AgentResponse};
 #[cfg(windows)]
 use winseek_ipc::agent_pipe_name;
+use winseek_ipc::pipe::{connect, PipeConn};
+use winseek_ipc::{read_message, write_message, AgentRequest, AgentResponse};
 
 /// Quick first probe: the common case is the app already running.
 const CONNECT_TIMEOUT: Duration = Duration::from_millis(300);
@@ -30,12 +30,20 @@ pub struct Link {
 
 impl Link {
     pub fn new() -> io::Result<Self> {
-        Ok(Link { name: agent_pipe_name()?, conn: None, next_id: AtomicU64::new(1) })
+        Ok(Link {
+            name: agent_pipe_name()?,
+            conn: None,
+            next_id: AtomicU64::new(1),
+        })
     }
 
     #[cfg(test)]
     fn with_name(name: String) -> Self {
-        Link { name, conn: None, next_id: AtomicU64::new(1) }
+        Link {
+            name,
+            conn: None,
+            next_id: AtomicU64::new(1),
+        }
     }
 
     fn id(&self) -> u64 {
@@ -60,7 +68,9 @@ impl Link {
                     return Ok(());
                 }
                 Err(e) if Instant::now() >= deadline => {
-                    return Err(format!("winseek is not running and could not be started ({e})"))
+                    return Err(format!(
+                        "winseek is not running and could not be started ({e})"
+                    ))
                 }
                 Err(_) => {}
             }
@@ -93,7 +103,12 @@ impl Backend for Link {
     }
 
     fn call(&mut self, client: &str, tool: &str, args: Value) -> Result<Value, String> {
-        let req = AgentRequest::Call { id: self.id(), client: client.to_owned(), tool: tool.to_owned(), args };
+        let req = AgentRequest::Call {
+            id: self.id(),
+            client: client.to_owned(),
+            tool: tool.to_owned(),
+            args,
+        };
         self.ensure_conn()?;
         match self.try_send(&req) {
             Err(first) => self.retry_after_reconnect(&first, &req),
@@ -131,13 +146,16 @@ fn start_app() -> Result<(), String> {
         return Err("winseek-app.exe not found next to winseek-mcp.exe".into());
     }
     let mut cmd = Command::new(&app);
-    cmd.arg(crate::AUTOSTART_ARG).creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
+    cmd.arg(crate::AUTOSTART_ARG)
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP | CREATE_BREAKAWAY_FROM_JOB);
     match cmd.spawn() {
         Ok(_) => Ok(()),
         Err(e) if e.kind() == io::ErrorKind::PermissionDenied => {
             eprintln!("winseek-mcp: could not detach winseek from the client's job object ({e}); winseek will close when the client closes");
             cmd.creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP);
-            cmd.spawn().map(|_| ()).map_err(|e| format!("could not start winseek-app.exe: {e}"))
+            cmd.spawn()
+                .map(|_| ())
+                .map_err(|e| format!("could not start winseek-app.exe: {e}"))
         }
         Err(e) => Err(format!("could not start winseek-app.exe: {e}")),
     }
@@ -151,7 +169,10 @@ mod tests {
     use winseek_ipc::{current_user_sid, AgentResponse};
 
     fn unique() -> String {
-        let t = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         format!(r"\\.\pipe\winseek-mcp-test-{t}")
     }
 
@@ -164,8 +185,14 @@ mod tests {
                 let mut c = server.accept().unwrap();
                 let req: AgentRequest = read_message(&mut c).unwrap();
                 let resp = match req {
-                    AgentRequest::List { id } => AgentResponse::Tools { id, tools: serde_json::json!([{"name": "index_status"}]) },
-                    AgentRequest::Call { id, tool, .. } => AgentResponse::Result { id, value: serde_json::json!({"echo": tool}) },
+                    AgentRequest::List { id } => AgentResponse::Tools {
+                        id,
+                        tools: serde_json::json!([{"name": "index_status"}]),
+                    },
+                    AgentRequest::Call { id, tool, .. } => AgentResponse::Result {
+                        id,
+                        value: serde_json::json!({"echo": tool}),
+                    },
                 };
                 write_message(&mut c, &resp).unwrap();
                 if drop_after_each {
@@ -182,7 +209,9 @@ mod tests {
         let mut link = Link::with_name(name);
         let tools = link.list().unwrap();
         assert_eq!(tools[0]["name"], "index_status");
-        let v = link.call("tester", "index_status", serde_json::json!({})).unwrap();
+        let v = link
+            .call("tester", "index_status", serde_json::json!({}))
+            .unwrap();
         assert_eq!(v["echo"], "index_status");
         t.join().unwrap();
     }
@@ -193,10 +222,17 @@ mod tests {
         let name = unique();
         let t1 = fake_server(name.clone(), 1, true);
         let mut link = Link::with_name(name.clone());
-        assert_eq!(link.call("tester", "first", serde_json::json!({})).unwrap()["echo"], "first");
+        assert_eq!(
+            link.call("tester", "first", serde_json::json!({})).unwrap()["echo"],
+            "first"
+        );
         t1.join().unwrap();
         let t2 = fake_server(name, 1, true);
-        assert_eq!(link.call("tester", "second", serde_json::json!({})).unwrap()["echo"], "second");
+        assert_eq!(
+            link.call("tester", "second", serde_json::json!({}))
+                .unwrap()["echo"],
+            "second"
+        );
         t2.join().unwrap();
     }
 
@@ -219,7 +255,9 @@ mod tests {
         let mut link = Link::new().unwrap();
         let tools = link.list().unwrap();
         println!("tools: {tools}");
-        let status = link.call("selftest", "index_status", serde_json::json!({})).unwrap();
+        let status = link
+            .call("selftest", "index_status", serde_json::json!({}))
+            .unwrap();
         println!("index_status: {status}");
     }
 }

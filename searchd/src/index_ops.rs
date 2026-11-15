@@ -25,7 +25,9 @@ pub struct Event {
 }
 
 pub fn now_filetime() -> i64 {
-    let d = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
+    let d = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
     filetime_from_unix_ms(d.as_millis() as i64)
 }
 
@@ -53,30 +55,66 @@ pub fn apply_change(ix: &mut Index, vol: u8, change: &Change) -> Option<Event> {
         Change::Create(r) => {
             let (frn, parent) = (r.frn as u64, r.parent_frn as u64);
             let is_dir = r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
-            let known = if is_dir { ix.folder_idx(vol, frn) } else { ix.find_file(vol, parent, &r.name) };
+            let known = if is_dir {
+                ix.folder_idx(vol, frn)
+            } else {
+                ix.find_file(vol, parent, &r.name)
+            };
             let (size, mtime) = match known {
-                Some(i) if !ix.is_stub(i) => (ix.size(i).unwrap_or(0), ix.mtime(i).filter(|&m| m != 0).unwrap_or(now)),
+                Some(i) if !ix.is_stub(i) => (
+                    ix.size(i).unwrap_or(0),
+                    ix.mtime(i).filter(|&m| m != 0).unwrap_or(now),
+                ),
                 _ => (0, now),
             };
             let i = ix.insert(vol, frn, parent, &r.name, is_dir, size, mtime);
-            Some(Event { kind: ChangeKind::Created, path: ix.full_path(i), old_path: None, is_dir, idx: Some(i) })
+            Some(Event {
+                kind: ChangeKind::Created,
+                path: ix.full_path(i),
+                old_path: None,
+                is_dir,
+                idx: Some(i),
+            })
         }
         Change::Delete(r) => {
             let (frn, parent) = (r.frn as u64, r.parent_frn as u64);
             let is_dir = r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0;
-            let i = if is_dir { ix.folder_idx(vol, frn) } else { ix.find_file(vol, parent, &r.name) }?;
+            let i = if is_dir {
+                ix.folder_idx(vol, frn)
+            } else {
+                ix.find_file(vol, parent, &r.name)
+            }?;
             let stub = ix.is_stub(i);
-            let ev = Event { kind: ChangeKind::Deleted, path: ix.full_path(i), old_path: None, is_dir: ix.is_dir(i), idx: None };
+            let ev = Event {
+                kind: ChangeKind::Deleted,
+                path: ix.full_path(i),
+                old_path: None,
+                is_dir: ix.is_dir(i),
+                idx: None,
+            };
             ix.remove(i);
             (!stub).then_some(ev)
         }
-        Change::Rename { frn, old_parent, old_name, new_parent, new_name } => {
-            let (frn, old_parent, new_parent) = (&(*frn as u64), &(*old_parent as u64), &(*new_parent as u64));
+        Change::Rename {
+            frn,
+            old_parent,
+            old_name,
+            new_parent,
+            new_name,
+        } => {
+            let (frn, old_parent, new_parent) =
+                (&(*frn as u64), &(*old_parent as u64), &(*new_parent as u64));
             let known_dir = ix.folder_idx(vol, *frn);
             if known_dir.is_some_and(|i| ix.is_stub(i)) {
                 // Children were seen before their folder: this rename names the stub.
                 let i = ix.insert(vol, *frn, *new_parent, new_name, true, 0, now);
-                return Some(Event { kind: ChangeKind::Created, path: ix.full_path(i), old_path: None, is_dir: true, idx: Some(i) });
+                return Some(Event {
+                    kind: ChangeKind::Created,
+                    path: ix.full_path(i),
+                    old_path: None,
+                    is_dir: true,
+                    idx: Some(i),
+                });
             }
             match known_dir.or_else(|| ix.find_file(vol, *old_parent, old_name)) {
                 Some(i) => {
@@ -95,7 +133,13 @@ pub fn apply_change(ix: &mut Index, vol: u8, change: &Change) -> Option<Event> {
                 }
                 None => {
                     let i = ix.insert(vol, *frn, *new_parent, new_name, false, 0, now);
-                    Some(Event { kind: ChangeKind::Created, path: ix.full_path(i), old_path: None, is_dir: false, idx: Some(i) })
+                    Some(Event {
+                        kind: ChangeKind::Created,
+                        path: ix.full_path(i),
+                        old_path: None,
+                        is_dir: false,
+                        idx: Some(i),
+                    })
                 }
             }
         }
@@ -105,11 +149,25 @@ pub fn apply_change(ix: &mut Index, vol: u8, change: &Change) -> Option<Event> {
             }
             let i = match ix.find_file(vol, r.parent_frn as u64, &r.name) {
                 Some(i) => i,
-                None => ix.insert(vol, r.frn as u64, r.parent_frn as u64, &r.name, false, 0, now),
+                None => ix.insert(
+                    vol,
+                    r.frn as u64,
+                    r.parent_frn as u64,
+                    &r.name,
+                    false,
+                    0,
+                    now,
+                ),
             };
             let size = ix.size(i).unwrap_or(0);
             ix.update_meta(i, size, now);
-            Some(Event { kind: ChangeKind::Modified, path: ix.full_path(i), old_path: None, is_dir: false, idx: Some(i) })
+            Some(Event {
+                kind: ChangeKind::Modified,
+                path: ix.full_path(i),
+                old_path: None,
+                is_dir: false,
+                idx: Some(i),
+            })
         }
     }
 }
@@ -129,13 +187,23 @@ pub fn map_refs_change(ix: &mut Index, vol: u8, change: &Change) -> Change {
         } else {
             ix.lookup128(vol, r.frn).unwrap_or(0) as u128
         };
-        UsnRecord { frn, parent_frn: parent, ..r.clone() }
+        UsnRecord {
+            frn,
+            parent_frn: parent,
+            ..r.clone()
+        }
     };
     match change {
         Change::Create(r) => Change::Create(rec(ix, r, true)),
         Change::Delete(r) => Change::Delete(rec(ix, r, false)),
         Change::Modify(r) => Change::Modify(rec(ix, r, false)),
-        Change::Rename { frn, old_parent, old_name, new_parent, new_name } => Change::Rename {
+        Change::Rename {
+            frn,
+            old_parent,
+            old_name,
+            new_parent,
+            new_name,
+        } => Change::Rename {
             frn: ix.lookup128(vol, *frn).unwrap_or(0) as u128,
             old_parent: ix.intern128(vol, *old_parent) as u128,
             old_name: old_name.clone(),
@@ -150,10 +218,23 @@ pub fn map_refs_change(ix: &mut Index, vol: u8, change: &Change) -> Change {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PathOp {
     /// Added or modified: find-or-insert, refresh size/mtime.
-    Upsert { rel: String, is_dir: bool, size: u64, mtime: i64 },
-    Remove { rel: String },
+    Upsert {
+        rel: String,
+        is_dir: bool,
+        size: u64,
+        mtime: i64,
+    },
+    Remove {
+        rel: String,
+    },
     /// Rename/move; `is_dir`/`size`/`mtime` describe the new path (used if `old` is unknown).
-    Rename { old: String, new: String, is_dir: bool, size: u64, mtime: i64 },
+    Rename {
+        old: String,
+        new: String,
+        is_dir: bool,
+        size: u64,
+        mtime: i64,
+    },
 }
 
 fn split_rel(rel: &str) -> (&str, &str) {
@@ -184,7 +265,14 @@ fn ensure_dir_path(ix: &mut Index, vol: u8, rel: &str) -> Option<u32> {
     Some(cur)
 }
 
-fn upsert(ix: &mut Index, vol: u8, rel: &str, is_dir: bool, size: u64, mtime: i64) -> Option<Event> {
+fn upsert(
+    ix: &mut Index,
+    vol: u8,
+    rel: &str,
+    is_dir: bool,
+    size: u64,
+    mtime: i64,
+) -> Option<Event> {
     let (dir, name) = split_rel(rel);
     if name.is_empty() {
         return None;
@@ -196,28 +284,70 @@ fn upsert(ix: &mut Index, vol: u8, rel: &str, is_dir: bool, size: u64, mtime: i6
                 return None; // folder metadata is not tracked; nothing changed for the index
             }
             ix.update_meta(i, size, mtime);
-            return Some(Event { kind: ChangeKind::Modified, path: ix.full_path(i), old_path: None, is_dir, idx: Some(i) });
+            return Some(Event {
+                kind: ChangeKind::Modified,
+                path: ix.full_path(i),
+                old_path: None,
+                is_dir,
+                idx: Some(i),
+            });
         }
         ix.remove(i); // a file became a folder or vice versa
     }
     let id = if is_dir { ix.alloc_id(vol) } else { 0 };
     let pf = ix.frn(parent);
-    let i = ix.insert(vol, id, pf, name, is_dir, if is_dir { 0 } else { size }, mtime);
-    Some(Event { kind: ChangeKind::Created, path: ix.full_path(i), old_path: None, is_dir, idx: Some(i) })
+    let i = ix.insert(
+        vol,
+        id,
+        pf,
+        name,
+        is_dir,
+        if is_dir { 0 } else { size },
+        mtime,
+    );
+    Some(Event {
+        kind: ChangeKind::Created,
+        path: ix.full_path(i),
+        old_path: None,
+        is_dir,
+        idx: Some(i),
+    })
 }
 
 /// Apply one folder-watch op idempotently (replays after a rescan are expected).
 pub fn apply_path_op(ix: &mut Index, vol: u8, op: &PathOp) -> Option<Event> {
     match op {
-        PathOp::Upsert { rel, is_dir, size, mtime } => upsert(ix, vol, rel, *is_dir, *size, *mtime),
+        PathOp::Upsert {
+            rel,
+            is_dir,
+            size,
+            mtime,
+        } => upsert(ix, vol, rel, *is_dir, *size, *mtime),
         PathOp::Remove { rel } => {
-            let i = ix.find_path(vol, rel).filter(|&i| Some(i) != ix.root_of(vol))?;
-            let ev = Event { kind: ChangeKind::Deleted, path: ix.full_path(i), old_path: None, is_dir: ix.is_dir(i), idx: None };
+            let i = ix
+                .find_path(vol, rel)
+                .filter(|&i| Some(i) != ix.root_of(vol))?;
+            let ev = Event {
+                kind: ChangeKind::Deleted,
+                path: ix.full_path(i),
+                old_path: None,
+                is_dir: ix.is_dir(i),
+                idx: None,
+            };
             ix.remove(i);
             Some(ev)
         }
-        PathOp::Rename { old, new, is_dir, size, mtime } => {
-            let Some(i) = ix.find_path(vol, old).filter(|&i| Some(i) != ix.root_of(vol)) else {
+        PathOp::Rename {
+            old,
+            new,
+            is_dir,
+            size,
+            mtime,
+        } => {
+            let Some(i) = ix
+                .find_path(vol, old)
+                .filter(|&i| Some(i) != ix.root_of(vol))
+            else {
                 return upsert(ix, vol, new, *is_dir, *size, *mtime);
             };
             let old_path = ix.full_path(i);
@@ -229,7 +359,13 @@ pub fn apply_path_op(ix: &mut Index, vol: u8, op: &PathOp) -> Option<Event> {
             if !ix.rename(i, np, name) {
                 return None;
             }
-            Some(Event { kind: ChangeKind::Renamed, path: ix.full_path(i), old_path: Some(old_path), is_dir: ix.is_dir(i), idx: Some(i) })
+            Some(Event {
+                kind: ChangeKind::Renamed,
+                path: ix.full_path(i),
+                old_path: Some(old_path),
+                is_dir: ix.is_dir(i),
+                idx: Some(i),
+            })
         }
     }
 }
@@ -260,7 +396,15 @@ fn copy_records(b: &mut IndexBuilder, src: &Index, keep: impl Fn(u8) -> bool) {
             continue;
         }
         let pf = src.frn(src.parent(i));
-        b.push(vol, src.frn(i), pf, src.name(i), src.is_dir(i), src.size(i).unwrap_or(0), src.mtime(i).unwrap_or(0));
+        b.push(
+            vol,
+            src.frn(i),
+            pf,
+            src.name(i),
+            src.is_dir(i),
+            src.size(i).unwrap_or(0),
+            src.mtime(i).unwrap_or(0),
+        );
     }
 }
 
@@ -278,7 +422,12 @@ pub fn replace_volume(old: &Index, fresh: &Index) -> Index {
 /// Keep only the volumes `keep` accepts (a removed USB drive, a snapshot volume whose
 /// filesystem changed). Returns `ix` untouched when nothing is dropped.
 pub fn retain_volumes(ix: Index, keep: impl Fn(&VolumeMeta) -> bool) -> Index {
-    let letters: Vec<u8> = ix.volumes().iter().filter(|v| keep(v)).map(|v| v.letter).collect();
+    let letters: Vec<u8> = ix
+        .volumes()
+        .iter()
+        .filter(|v| keep(v))
+        .map(|v| v.letter)
+        .collect();
     if letters.len() == ix.volumes().len() {
         return ix;
     }
@@ -297,11 +446,22 @@ mod tests {
     const D: u8 = b'D';
 
     fn rec(frn: u128, parent: u128, name: &str, dir: bool) -> UsnRecord {
-        UsnRecord { frn, parent_frn: parent, usn: 0, reason: 0, attrs: if dir { 0x10 } else { 0x20 }, name: name.into() }
+        UsnRecord {
+            frn,
+            parent_frn: parent,
+            usn: 0,
+            reason: 0,
+            attrs: if dir { 0x10 } else { 0x20 },
+            name: name.into(),
+        }
     }
     fn paths(ix: &Index, q: &str) -> Vec<String> {
-        let mut v: Vec<String> =
-            ix.search_str(q, &SearchOptions::default()).items.iter().map(|&i| ix.full_path(i)).collect();
+        let mut v: Vec<String> = ix
+            .search_str(q, &SearchOptions::default())
+            .items
+            .iter()
+            .map(|&i| ix.full_path(i))
+            .collect();
         v.sort();
         v
     }
@@ -319,7 +479,10 @@ mod tests {
     fn create_file_and_idempotent_replay() {
         let mut ix = base();
         let ev = apply_change(&mut ix, C, &Change::Create(rec(101, 10, "new.txt", false))).unwrap();
-        assert_eq!((ev.kind, ev.path.as_str(), ev.is_dir), (ChangeKind::Created, "C:\\A\\new.txt", false));
+        assert_eq!(
+            (ev.kind, ev.path.as_str(), ev.is_dir),
+            (ChangeKind::Created, "C:\\A\\new.txt", false)
+        );
         apply_change(&mut ix, C, &Change::Create(rec(101, 10, "new.txt", false)));
         assert_eq!(paths(&ix, "new.txt"), vec!["C:\\A\\new.txt"]);
         // replaying Create of an existing file keeps its size
@@ -334,7 +497,13 @@ mod tests {
         let ev = apply_change(
             &mut ix,
             C,
-            &Change::Rename { frn: 100, old_parent: 10, old_name: "x.txt".into(), new_parent: 11, new_name: "y.txt".into() },
+            &Change::Rename {
+                frn: 100,
+                old_parent: 10,
+                old_name: "x.txt".into(),
+                new_parent: 11,
+                new_name: "y.txt".into(),
+            },
         )
         .unwrap();
         assert_eq!(ev.kind, ChangeKind::Renamed);
@@ -347,7 +516,13 @@ mod tests {
         let ev = apply_change(
             &mut ix,
             C,
-            &Change::Rename { frn: 10, old_parent: 5, old_name: "A".into(), new_parent: 11, new_name: "A2".into() },
+            &Change::Rename {
+                frn: 10,
+                old_parent: 5,
+                old_name: "A".into(),
+                new_parent: 11,
+                new_name: "A2".into(),
+            },
         )
         .unwrap();
         assert!(ev.is_dir);
@@ -361,7 +536,10 @@ mod tests {
         apply_change(&mut ix, C, &Change::Create(rec(12, 10, "sub", true)));
         apply_change(&mut ix, C, &Change::Create(rec(103, 12, "deep.txt", false)));
         let ev = apply_change(&mut ix, C, &Change::Delete(rec(100, 10, "x.txt", false))).unwrap();
-        assert_eq!((ev.kind, ev.path.as_str()), (ChangeKind::Deleted, "C:\\A\\x.txt"));
+        assert_eq!(
+            (ev.kind, ev.path.as_str()),
+            (ChangeKind::Deleted, "C:\\A\\x.txt")
+        );
         let ev = apply_change(&mut ix, C, &Change::Delete(rec(10, 5, "A", true))).unwrap();
         assert!(ev.is_dir);
         assert_eq!(ev.path, "C:\\A");
@@ -376,7 +554,12 @@ mod tests {
     #[test]
     fn create_under_unknown_parent_uses_stub_then_fills() {
         let mut ix = base();
-        let ev = apply_change(&mut ix, C, &Change::Create(rec(200, 77, "orphan.txt", false))).unwrap();
+        let ev = apply_change(
+            &mut ix,
+            C,
+            &Change::Create(rec(200, 77, "orphan.txt", false)),
+        )
+        .unwrap();
         assert_eq!(ev.path, "C:\\<4d>\\orphan.txt");
         assert!(paths(&ix, "<4d>").is_empty(), "stubs are not searchable");
         // the real folder shows up later: stub is filled in place, child follows
@@ -394,7 +577,12 @@ mod tests {
         assert_eq!(ix.size(i), Some(42));
         assert!(ix.mtime(i).unwrap() > FILETIME_UNIX_EPOCH);
         assert!(apply_change(&mut ix, C, &Change::Modify(rec(10, 5, "A", true))).is_none());
-        apply_change(&mut ix, C, &Change::Modify(rec(300, 11, "unseen.bin", false))).unwrap();
+        apply_change(
+            &mut ix,
+            C,
+            &Change::Modify(rec(300, 11, "unseen.bin", false)),
+        )
+        .unwrap();
         assert_eq!(paths(&ix, "unseen"), vec!["C:\\B\\unseen.bin"]);
     }
 
@@ -404,10 +592,19 @@ mod tests {
         let ev = apply_change(
             &mut ix,
             C,
-            &Change::Rename { frn: 400, old_parent: 11, old_name: "nope".into(), new_parent: 11, new_name: "now.txt".into() },
+            &Change::Rename {
+                frn: 400,
+                old_parent: 11,
+                old_name: "nope".into(),
+                new_parent: 11,
+                new_name: "now.txt".into(),
+            },
         )
         .unwrap();
-        assert_eq!((ev.kind, ev.path.as_str()), (ChangeKind::Created, "C:\\B\\now.txt"));
+        assert_eq!(
+            (ev.kind, ev.path.as_str()),
+            (ChangeKind::Created, "C:\\B\\now.txt")
+        );
     }
 
     #[test]
@@ -432,13 +629,29 @@ mod tests {
         let mut m = replace_volume(&old, &fresh);
         assert_eq!(
             paths(&m, ""),
-            vec!["C:\\fresh", "C:\\fresh\\new.txt", "D:\\<3e7>\\orphan.txt", "D:\\keep", "D:\\keep\\d.txt"]
+            vec![
+                "C:\\fresh",
+                "C:\\fresh\\new.txt",
+                "D:\\<3e7>\\orphan.txt",
+                "D:\\keep",
+                "D:\\keep\\d.txt"
+            ]
         );
         let i = m.find_file(D, 20, "d.txt").unwrap();
         assert_eq!(m.size(i), Some(5));
         assert_eq!(m.mtime(i), Some(123));
-        assert_eq!(m.volumes().iter().find(|v| v.letter == D).unwrap().next_usn, 777);
-        assert_eq!(m.volumes().iter().find(|v| v.letter == C).unwrap().journal_id, 5);
+        assert_eq!(
+            m.volumes().iter().find(|v| v.letter == D).unwrap().next_usn,
+            777
+        );
+        assert_eq!(
+            m.volumes()
+                .iter()
+                .find(|v| v.letter == C)
+                .unwrap()
+                .journal_id,
+            5
+        );
     }
 
     const R: u8 = b'R';
@@ -479,20 +692,39 @@ mod tests {
         // rename/move the folder A under B: children follow
         let ev = refs_apply(
             &mut ix,
-            Change::Rename { frn: sub_a, old_parent: docs, old_name: "A".into(), new_parent: sub_b, new_name: "A2".into() },
+            Change::Rename {
+                frn: sub_a,
+                old_parent: docs,
+                old_name: "A".into(),
+                new_parent: sub_b,
+                new_name: "A2".into(),
+            },
         )
         .unwrap();
-        assert_eq!((ev.kind, ev.path.as_str()), (ChangeKind::Renamed, r"R:\B\A2"));
+        assert_eq!(
+            (ev.kind, ev.path.as_str()),
+            (ChangeKind::Renamed, r"R:\B\A2")
+        );
         assert_eq!(paths(&ix, "in-a"), vec![r"R:\B\A2\in-a.txt"]);
         // file rename by parent + name
         let ev = refs_apply(
             &mut ix,
-            Change::Rename { frn: 5000, old_parent: docs, old_name: "a.txt".into(), new_parent: docs, new_name: "b.txt".into() },
+            Change::Rename {
+                frn: 5000,
+                old_parent: docs,
+                old_name: "a.txt".into(),
+                new_parent: docs,
+                new_name: "b.txt".into(),
+            },
         )
         .unwrap();
         assert_eq!(ev.path, r"R:\Docs\b.txt");
         // folder delete by its 128-bit FRN; unknown FRNs are no-ops
-        assert!(refs_apply(&mut ix, Change::Delete(rec((3 << 64) | 0x42, docs, "ghost", true))).is_none());
+        assert!(refs_apply(
+            &mut ix,
+            Change::Delete(rec((3 << 64) | 0x42, docs, "ghost", true))
+        )
+        .is_none());
         let ev = refs_apply(&mut ix, Change::Delete(rec(sub_b, ROOT128, "B", true))).unwrap();
         assert!(ev.is_dir);
         assert!(paths(&ix, "in-").is_empty());
@@ -514,7 +746,12 @@ mod tests {
         b.finish()
     }
     fn up(rel: &str, is_dir: bool, size: u64) -> PathOp {
-        PathOp::Upsert { rel: rel.into(), is_dir, size, mtime: 1000 }
+        PathOp::Upsert {
+            rel: rel.into(),
+            is_dir,
+            size,
+            mtime: 1000,
+        }
     }
 
     #[test]
@@ -522,7 +759,10 @@ mod tests {
         let mut ix = folder_vol();
         // add in an existing folder, then a deep path whose folders are missing
         let ev = apply_path_op(&mut ix, F, &up(r"A\new.txt", false, 9)).unwrap();
-        assert_eq!((ev.kind, ev.path.as_str()), (ChangeKind::Created, r"F:\A\new.txt"));
+        assert_eq!(
+            (ev.kind, ev.path.as_str()),
+            (ChangeKind::Created, r"F:\A\new.txt")
+        );
         apply_path_op(&mut ix, F, &up(r"B\C\deep.txt", false, 2)).unwrap();
         assert_eq!(paths(&ix, "deep"), vec![r"F:\B\C\deep.txt"]);
         assert_eq!(paths(&ix, "C"), vec![r"F:\B\C"]);
@@ -531,26 +771,73 @@ mod tests {
         assert_eq!(ev.kind, ChangeKind::Modified);
         assert_eq!(ix.size(ev.idx.unwrap()), Some(10));
         assert_eq!(paths(&ix, "new.txt").len(), 1);
-        assert!(apply_path_op(&mut ix, F, &up("A", true, 0)).is_none(), "existing folder: no event");
+        assert!(
+            apply_path_op(&mut ix, F, &up("A", true, 0)).is_none(),
+            "existing folder: no event"
+        );
         // folder ids are fresh and unique
-        let ids: Vec<u64> = ["A", "B", r"B\C"].iter().map(|p| { let i = ix.find_path(F, p).unwrap(); ix.frn(i) }).collect();
-        assert!(ids[0] != ids[1] && ids[1] != ids[2] && ids.iter().all(|&i| i >= winseek_index::FIRST_SYNTHETIC_ID));
+        let ids: Vec<u64> = ["A", "B", r"B\C"]
+            .iter()
+            .map(|p| {
+                let i = ix.find_path(F, p).unwrap();
+                ix.frn(i)
+            })
+            .collect();
+        assert!(
+            ids[0] != ids[1]
+                && ids[1] != ids[2]
+                && ids.iter().all(|&i| i >= winseek_index::FIRST_SYNTHETIC_ID)
+        );
         // move a folder: children follow
         let ev = apply_path_op(
             &mut ix,
             F,
-            &PathOp::Rename { old: "B".into(), new: r"A\B2".into(), is_dir: true, size: 0, mtime: 0 },
+            &PathOp::Rename {
+                old: "B".into(),
+                new: r"A\B2".into(),
+                is_dir: true,
+                size: 0,
+                mtime: 0,
+            },
         )
         .unwrap();
-        assert_eq!((ev.kind, ev.path.as_str(), ev.old_path.as_deref()), (ChangeKind::Renamed, r"F:\A\B2", Some(r"F:\B")));
+        assert_eq!(
+            (ev.kind, ev.path.as_str(), ev.old_path.as_deref()),
+            (ChangeKind::Renamed, r"F:\A\B2", Some(r"F:\B"))
+        );
         assert_eq!(paths(&ix, "deep"), vec![r"F:\A\B2\C\deep.txt"]);
         // rename over an existing file replaces it
-        apply_path_op(&mut ix, F, &PathOp::Rename { old: r"A\new.txt".into(), new: r"A\x.txt".into(), is_dir: false, size: 0, mtime: 0 }).unwrap();
+        apply_path_op(
+            &mut ix,
+            F,
+            &PathOp::Rename {
+                old: r"A\new.txt".into(),
+                new: r"A\x.txt".into(),
+                is_dir: false,
+                size: 0,
+                mtime: 0,
+            },
+        )
+        .unwrap();
         assert_eq!(paths(&ix, "x.txt"), vec![r"F:\A\x.txt"]);
         assert!(paths(&ix, "new.txt").is_empty());
         // rename of an unknown path = add
-        let ev = apply_path_op(&mut ix, F, &PathOp::Rename { old: "nope".into(), new: "yes.txt".into(), is_dir: false, size: 4, mtime: 0 }).unwrap();
-        assert_eq!((ev.kind, ev.path.as_str()), (ChangeKind::Created, r"F:\yes.txt"));
+        let ev = apply_path_op(
+            &mut ix,
+            F,
+            &PathOp::Rename {
+                old: "nope".into(),
+                new: "yes.txt".into(),
+                is_dir: false,
+                size: 4,
+                mtime: 0,
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            (ev.kind, ev.path.as_str()),
+            (ChangeKind::Created, r"F:\yes.txt")
+        );
         // recursive remove; removing the unknown or the root is a no-op
         let ev = apply_path_op(&mut ix, F, &PathOp::Remove { rel: "A".into() }).unwrap();
         assert!(ev.is_dir);
@@ -575,10 +862,17 @@ mod tests {
         ix = replace_volume(&ix, &refs());
         ix = replace_volume(&ix, &folder_vol());
         let kinds: Vec<_> = ix.volumes().iter().map(|v| (v.letter, v.kind)).collect();
-        assert!(kinds.contains(&(R, VolKind::Refs)) && kinds.contains(&(F, VolKind::Folder)) && kinds.contains(&(C, VolKind::Ntfs)));
+        assert!(
+            kinds.contains(&(R, VolKind::Refs))
+                && kinds.contains(&(F, VolKind::Folder))
+                && kinds.contains(&(C, VolKind::Ntfs))
+        );
         assert_eq!(ix.lookup128(R, ROOT128), Some(5));
         let docs_id = ix.lookup128(R, (9 << 64) | 1).unwrap();
-        assert_eq!(ix.folder_idx(R, docs_id).map(|i| ix.full_path(i)), Some(r"R:\Docs".into()));
+        assert_eq!(
+            ix.folder_idx(R, docs_id).map(|i| ix.full_path(i)),
+            Some(r"R:\Docs".into())
+        );
         let next = ix.volumes().iter().find(|v| v.letter == F).unwrap().next_id;
         assert_eq!(ix.alloc_id(F), next, "next_id survives the copy");
         // drop the folder volume (USB unplugged)
@@ -595,6 +889,9 @@ mod tests {
     #[test]
     fn filetime_conversions() {
         assert_eq!(filetime_to_unix_ms(0), None);
-        assert_eq!(filetime_to_unix_ms(filetime_from_unix_ms(1_700_000_000_123)), Some(1_700_000_000_123));
+        assert_eq!(
+            filetime_to_unix_ms(filetime_from_unix_ms(1_700_000_000_123)),
+            Some(1_700_000_000_123)
+        );
     }
 }

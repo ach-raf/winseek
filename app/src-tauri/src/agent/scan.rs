@@ -76,7 +76,10 @@ pub fn scan<T>(
 mod tests {
     use super::*;
 
-    fn pager(total: usize, mtimes: Vec<i64>) -> impl FnMut(usize, usize) -> Result<(u64, Vec<i64>), String> {
+    fn pager(
+        total: usize,
+        mtimes: Vec<i64>,
+    ) -> impl FnMut(usize, usize) -> Result<(u64, Vec<i64>), String> {
         move |offset, limit| {
             let end = (offset + limit).min(total);
             if offset >= total {
@@ -94,7 +97,10 @@ mod tests {
         let mtimes: Vec<i64> = (0..50).map(|i| -i * DAY).collect();
         let (total, kept, truncated) = scan(
             pager(50, mtimes),
-            &Bound::Date { from_ms: -3 * DAY, to_ms: DAY },
+            &Bound::Date {
+                from_ms: -3 * DAY,
+                to_ms: DAY,
+            },
             &|_| true,
             |m| *m,
             |_| None,
@@ -114,7 +120,10 @@ mod tests {
         let mtimes: Vec<i64> = (0..40_000).map(|i| -i64::from(i) * 1000).collect();
         let (total, kept, truncated) = scan(
             pager(40_000, mtimes),
-            &Bound::Date { from_ms: -5 * DAY, to_ms: DAY },
+            &Bound::Date {
+                from_ms: -5 * DAY,
+                to_ms: DAY,
+            },
             &|_| true,
             |m| *m,
             |_| None,
@@ -132,7 +141,10 @@ mod tests {
         let mtimes: Vec<i64> = (0..20).map(|i| -(i as i64) * DAY).collect();
         let (_, kept, _) = scan(
             pager(20, mtimes),
-            &Bound::Date { from_ms: -10 * DAY, to_ms: DAY },
+            &Bound::Date {
+                from_ms: -10 * DAY,
+                to_ms: DAY,
+            },
             &|_| true,
             |m| *m,
             |_| None,
@@ -151,7 +163,10 @@ mod tests {
                 let end = (offset + limit).min(4);
                 Ok((4, sizes[offset..end].to_vec()))
             },
-            &Bound::Size { min: Some(200), max: None },
+            &Bound::Size {
+                min: Some(200),
+                max: None,
+            },
             &|_| true,
             |_| 0,
             |s| *s,

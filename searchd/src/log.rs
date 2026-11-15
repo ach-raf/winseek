@@ -15,7 +15,10 @@ pub fn init(path: &Path) {
     }
     match OpenOptions::new().create(true).append(true).open(path) {
         Ok(f) => *FILE.lock().unwrap() = Some(f),
-        Err(e) => eprintln!("searchd: cannot open log file {}: {e} (logging to stderr only)", path.display()),
+        Err(e) => eprintln!(
+            "searchd: cannot open log file {}: {e} (logging to stderr only)",
+            path.display()
+        ),
     }
 }
 
@@ -43,7 +46,9 @@ pub fn timestamp(unix_ms: u64) -> String {
 }
 
 pub fn write_line(level: &str, msg: &str) {
-    let ms = SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_millis() as u64);
+    let ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_millis() as u64);
     let line = format!("{} {level:5} {msg}\n", timestamp(ms));
     let _ = std::io::stderr().write_all(line.as_bytes());
     if let Some(f) = FILE.lock().unwrap().as_mut() {
@@ -62,6 +67,9 @@ mod tests {
     #[test]
     fn timestamp_format() {
         assert_eq!(super::timestamp(0), "1970-01-01T00:00:00.000Z");
-        assert_eq!(super::timestamp(1_709_164_800_123), "2024-02-29T00:00:00.123Z");
+        assert_eq!(
+            super::timestamp(1_709_164_800_123),
+            "2024-02-29T00:00:00.123Z"
+        );
     }
 }

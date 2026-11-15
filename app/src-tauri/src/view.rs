@@ -46,7 +46,10 @@ fn path(root: &std::path::Path) -> std::path::PathBuf {
 
 /// Missing or corrupt file -> defaults (compact): a broken file must not change how the popup opens.
 pub fn load_from(root: &std::path::Path) -> UiCfg {
-    std::fs::read(path(root)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    std::fs::read(path(root))
+        .ok()
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
 }
 
 pub fn save_to(root: &std::path::Path, c: &UiCfg) -> Result<(), String> {
@@ -56,7 +59,9 @@ pub fn save_to(root: &std::path::Path, c: &UiCfg) -> Result<(), String> {
 }
 
 fn load() -> UiCfg {
-    tier1::data_root().map(|r| load_from(&r)).unwrap_or_default()
+    tier1::data_root()
+        .map(|r| load_from(&r))
+        .unwrap_or_default()
 }
 
 pub fn is_full() -> bool {
@@ -64,7 +69,11 @@ pub fn is_full() -> bool {
 }
 
 fn mode_of(full: bool) -> Mode {
-    if full { Mode::Full } else { Mode::Compact }
+    if full {
+        Mode::Full
+    } else {
+        Mode::Compact
+    }
 }
 
 /// The demo scales its prototype down to fit the screen with 48 px margins on each side
@@ -90,7 +99,11 @@ fn fitted_size(w: &WebviewWindow, ww: f64, hh: f64) -> (f64, f64) {
 /// places it: the compact popup opens Spotlight-style on the monitor under the cursor, the full
 /// window opens dead centre — a workspace window anchored in the upper third sits high on screen.
 fn apply(w: &WebviewWindow, full: bool) {
-    let (ww, hh) = if full { (FULL_W, FULL_H) } else { (COMPACT_W, COMPACT_H) };
+    let (ww, hh) = if full {
+        (FULL_W, FULL_H)
+    } else {
+        (COMPACT_W, COMPACT_H)
+    };
     let (ww, hh) = fitted_size(w, ww, hh);
     let _ = w.set_size(LogicalSize::new(ww, hh));
     if full {
@@ -112,13 +125,18 @@ pub fn begin_show(app: &AppHandle, w: &WebviewWindow) {
 
 #[tauri::command]
 pub fn view_get() -> ViewState {
-    ViewState { default_view: load().default_view, current: mode_of(is_full()) }
+    ViewState {
+        default_view: load().default_view,
+        current: mode_of(is_full()),
+    }
 }
 
 /// Saves the default view (what Alt+Space opens next time).
 #[tauri::command]
 pub fn view_set_default(mode: Mode) -> Result<ViewState, String> {
-    let Some(root) = tier1::data_root() else { return Err("no data dir".into()) };
+    let Some(root) = tier1::data_root() else {
+        return Err("no data dir".into());
+    };
     save_to(&root, &UiCfg { default_view: mode })?;
     Ok(view_get())
 }
@@ -146,7 +164,13 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("winseek-view-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         assert_eq!(load_from(&dir).default_view, Mode::Compact);
-        save_to(&dir, &UiCfg { default_view: Mode::Full }).unwrap();
+        save_to(
+            &dir,
+            &UiCfg {
+                default_view: Mode::Full,
+            },
+        )
+        .unwrap();
         assert_eq!(load_from(&dir).default_view, Mode::Full);
         std::fs::write(path(&dir), b"{ nope").unwrap();
         assert_eq!(load_from(&dir).default_view, Mode::Compact);
@@ -158,7 +182,10 @@ mod tests {
     #[test]
     fn mode_serialises_lowercase() {
         assert_eq!(serde_json::to_string(&Mode::Full).unwrap(), "\"full\"");
-        assert_eq!(serde_json::from_str::<Mode>("\"compact\"").unwrap(), Mode::Compact);
+        assert_eq!(
+            serde_json::from_str::<Mode>("\"compact\"").unwrap(),
+            Mode::Compact
+        );
     }
 
     #[test]
@@ -180,12 +207,19 @@ mod tests {
             (1920.0, 1040.0, false), // popup on a big desktop
             (1024.0, 600.0, false),  // popup on a tiny screen
         ] {
-            let (ww, hh) = if full { (1280.0, 800.0) } else { (780.0, 560.0) };
+            let (ww, hh) = if full {
+                (1280.0, 800.0)
+            } else {
+                (780.0, 560.0)
+            };
             let avail_w = screen_w - 96.0;
             let avail_h = screen_h - 96.0;
             let sc = 1.0f64.min(avail_w / ww).min(avail_h / hh).max(0.5);
             let (w, h) = ((ww * sc).floor(), (hh * sc).floor());
-            assert!(w <= avail_w && h <= avail_h, "{w}x{h} covers {avail_w}x{avail_h}");
+            assert!(
+                w <= avail_w && h <= avail_h,
+                "{w}x{h} covers {avail_w}x{avail_h}"
+            );
             assert!(sc == 1.0 || w >= 390.0, "never smaller than half the popup");
         }
     }

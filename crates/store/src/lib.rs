@@ -13,15 +13,15 @@ use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
 pub mod fuse;
 mod provenance;
-mod recover;
 pub mod reason;
+mod recover;
 pub mod relevance;
 mod tail;
 pub use provenance::{drift, verdict, Verdict, PROBE_MIN_COS};
 pub use recover::{is_corruption_message, Recovery};
-pub use tail::{TailCounts, TailJob};
 use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
+pub use tail::{TailCounts, TailJob};
 
 const SCHEMA_VERSION: i64 = 6;
 
@@ -37,47 +37,183 @@ const STATE_TEXT_ONLY: i64 = 4;
 /// it is stored under the `ignore` settings key, and unset means this list.
 pub const DEFAULT_IGNORE: &[&str] = &[
     // Windows / system / trash
-    "AppData", "$RECYCLE.BIN", "System Volume Information", "$WinREAgent", "Config.Msi",
-    "Thumbs.db", "desktop.ini", "__MACOSX", ".DS_Store", ".Trash", ".Trash-*", ".Spotlight-V100",
-    ".fseventsd", ".cache",
+    "AppData",
+    "$RECYCLE.BIN",
+    "System Volume Information",
+    "$WinREAgent",
+    "Config.Msi",
+    "Thumbs.db",
+    "desktop.ini",
+    "__MACOSX",
+    ".DS_Store",
+    ".Trash",
+    ".Trash-*",
+    ".Spotlight-V100",
+    ".fseventsd",
+    ".cache",
     // secrets & credentials (privacy)
-    ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".kube", ".docker", ".pki",
-    "*.kdbx", "*.kdb", "*.agilekeychain", "*.opvault", "*.1pux",
+    ".ssh",
+    ".gnupg",
+    ".password-store",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".pki",
+    "*.kdbx",
+    "*.kdb",
+    "*.agilekeychain",
+    "*.opvault",
+    "*.1pux",
     // version control
-    ".git", ".hg", ".svn", ".bzr", "_darcs", ".jj", ".pijul", ".fossil", "CVS",
+    ".git",
+    ".hg",
+    ".svn",
+    ".bzr",
+    "_darcs",
+    ".jj",
+    ".pijul",
+    ".fossil",
+    "CVS",
     // editors / IDEs
-    ".idea", ".vs", ".vscode", ".fleet", ".history", ".metadata", ".settings", ".sts4-cache",
-    ".ccls-cache", ".clangd", ".cache-loader",
+    ".idea",
+    ".vs",
+    ".vscode",
+    ".fleet",
+    ".history",
+    ".metadata",
+    ".settings",
+    ".sts4-cache",
+    ".ccls-cache",
+    ".clangd",
+    ".cache-loader",
     // JavaScript / TypeScript / web
-    "node_modules", "bower_components", "jspm_packages", "web_modules", ".npm", ".yarn",
-    ".pnpm-store", ".pnp", ".next", ".nuxt", ".output", ".svelte-kit", ".astro", ".angular",
-    ".parcel-cache", ".turbo", ".vercel", ".netlify", ".docusaurus", ".expo", ".vite",
-    ".webpack", ".serverless", ".wrangler", ".nx", ".rush", "storybook-static", ".nyc_output",
-    "coverage", ".eslintcache", ".stylelintcache", ".sass-cache", ".deno", "elm-stuff",
+    "node_modules",
+    "bower_components",
+    "jspm_packages",
+    "web_modules",
+    ".npm",
+    ".yarn",
+    ".pnpm-store",
+    ".pnp",
+    ".next",
+    ".nuxt",
+    ".output",
+    ".svelte-kit",
+    ".astro",
+    ".angular",
+    ".parcel-cache",
+    ".turbo",
+    ".vercel",
+    ".netlify",
+    ".docusaurus",
+    ".expo",
+    ".vite",
+    ".webpack",
+    ".serverless",
+    ".wrangler",
+    ".nx",
+    ".rush",
+    "storybook-static",
+    ".nyc_output",
+    "coverage",
+    ".eslintcache",
+    ".stylelintcache",
+    ".sass-cache",
+    ".deno",
+    "elm-stuff",
     // Python
-    "venv", ".venv", "virtualenv", ".virtualenv", "env.bak", "venv.bak", "__pycache__",
-    "__pypackages__", "site-packages", "dist-packages", ".tox", ".nox", ".pytest_cache",
-    ".mypy_cache", ".ruff_cache", ".pyre", ".pytype", ".hypothesis", ".ipynb_checkpoints",
-    ".eggs", "*.egg-info", ".pixi", ".conda", "conda-meta", "htmlcov", ".pdm-build",
+    "venv",
+    ".venv",
+    "virtualenv",
+    ".virtualenv",
+    "env.bak",
+    "venv.bak",
+    "__pycache__",
+    "__pypackages__",
+    "site-packages",
+    "dist-packages",
+    ".tox",
+    ".nox",
+    ".pytest_cache",
+    ".mypy_cache",
+    ".ruff_cache",
+    ".pyre",
+    ".pytype",
+    ".hypothesis",
+    ".ipynb_checkpoints",
+    ".eggs",
+    "*.egg-info",
+    ".pixi",
+    ".conda",
+    "conda-meta",
+    "htmlcov",
+    ".pdm-build",
     // Rust
-    "target", ".cargo", ".rustup",
+    "target",
+    ".cargo",
+    ".rustup",
     // Java / Kotlin / Scala / Clojure (JVM)
-    ".gradle", ".m2", ".mvn", ".kotlin", ".bloop", ".metals", ".bsp", ".scala-build",
-    ".cpcache", ".clj-kondo", ".lsp", ".shadow-cljs",
+    ".gradle",
+    ".m2",
+    ".mvn",
+    ".kotlin",
+    ".bloop",
+    ".metals",
+    ".bsp",
+    ".scala-build",
+    ".cpcache",
+    ".clj-kondo",
+    ".lsp",
+    ".shadow-cljs",
     // build outputs (generic, any language)
-    "build", "builds", "dist", "out", "bin", "obj", "_build", ".build", "cmake-build-*",
-    "CMakeFiles", "bazel-*", ".cxx", ".externalNativeBuild", "zig-cache", ".zig-cache",
-    "zig-out", ".stack-work", "dist-newstyle", "_opam", ".elixir_ls", "deps",
+    "build",
+    "builds",
+    "dist",
+    "out",
+    "bin",
+    "obj",
+    "_build",
+    ".build",
+    "cmake-build-*",
+    "CMakeFiles",
+    "bazel-*",
+    ".cxx",
+    ".externalNativeBuild",
+    "zig-cache",
+    ".zig-cache",
+    "zig-out",
+    ".stack-work",
+    "dist-newstyle",
+    "_opam",
+    ".elixir_ls",
+    "deps",
     // .NET / C / C++
-    "packages", "TestResults", "ipch", ".nuget",
+    "packages",
+    "TestResults",
+    "ipch",
+    ".nuget",
     // Go / PHP / Ruby
-    "vendor", ".bundle",
+    "vendor",
+    ".bundle",
     // mobile / Apple / Dart
-    "Pods", "DerivedData", "Carthage", ".swiftpm", ".dart_tool", ".pub-cache", ".fvm",
+    "Pods",
+    "DerivedData",
+    "Carthage",
+    ".swiftpm",
+    ".dart_tool",
+    ".pub-cache",
+    ".fvm",
     // game engines
-    ".godot", ".import",
+    ".godot",
+    ".import",
     // infra / misc tooling
-    ".terraform", ".terragrunt-cache", ".direnv", ".devenv", ".vagrant", ".Rproj.user",
+    ".terraform",
+    ".terragrunt-cache",
+    ".direnv",
+    ".devenv",
+    ".vagrant",
+    ".Rproj.user",
 ];
 
 /// Hard deny-list: names (any path segment, case-insensitive, `*`/`?` wildcards) that are NEVER
@@ -86,19 +222,78 @@ pub const DEFAULT_IGNORE: &[&str] = &[
 /// segment of a path, include roots too ([`in_scope_with`], [`hard_denied`]).
 pub const HARD_DENY: &[&str] = &[
     // credential / key folders
-    ".ssh", ".gnupg", ".password-store", ".aws", ".azure", ".kube", ".docker", ".pki",
+    ".ssh",
+    ".gnupg",
+    ".password-store",
+    ".aws",
+    ".azure",
+    ".kube",
+    ".docker",
+    ".pki",
     // password managers
-    "*.kdbx", "*.kdb", "*.agilekeychain", "*.opvault", "*.1pux", "*.psafe3", "*.keychain", "*.keychain-db", "*.wallet",
+    "*.kdbx",
+    "*.kdb",
+    "*.agilekeychain",
+    "*.opvault",
+    "*.1pux",
+    "*.psafe3",
+    "*.keychain",
+    "*.keychain-db",
+    "*.wallet",
     // keys and certificates
-    "*.pem", "*.key", "*.pfx", "*.p12", "*.ppk", "*.jks", "*.keystore", "*.gpg", "*.pgp", "*.crt", "*.cer", "*.der", "*.csr",
-    "id_rsa*", "id_dsa*", "id_ecdsa*", "id_ed25519*",
+    "*.pem",
+    "*.key",
+    "*.pfx",
+    "*.p12",
+    "*.ppk",
+    "*.jks",
+    "*.keystore",
+    "*.gpg",
+    "*.pgp",
+    "*.crt",
+    "*.cer",
+    "*.der",
+    "*.csr",
+    "id_rsa*",
+    "id_dsa*",
+    "id_ecdsa*",
+    "id_ed25519*",
     // credential files
-    ".env", ".env.*", "*.env", ".netrc", "_netrc", ".npmrc", ".pypirc", ".pgpass", ".git-credentials", ".htpasswd",
-    "credentials", "credentials.json", "secrets.json", "secrets.yml", "secrets.yaml", "service-account*.json",
-    "*password*.txt", "*passwords*.csv", "terraform.tfstate", "*.tfvars",
+    ".env",
+    ".env.*",
+    "*.env",
+    ".netrc",
+    "_netrc",
+    ".npmrc",
+    ".pypirc",
+    ".pgpass",
+    ".git-credentials",
+    ".htpasswd",
+    "credentials",
+    "credentials.json",
+    "secrets.json",
+    "secrets.yml",
+    "secrets.yaml",
+    "service-account*.json",
+    "*password*.txt",
+    "*passwords*.csv",
+    "terraform.tfstate",
+    "*.tfvars",
     // caches
-    ".cache", "__pycache__", "INetCache", "GPUCache", "Code Cache", "ShaderCache", "Cache_Data", "CacheStorage", ".npm", ".pnpm-store",
-    ".gradle", ".m2", ".nuget", ".cargo",
+    ".cache",
+    "__pycache__",
+    "INetCache",
+    "GPUCache",
+    "Code Cache",
+    "ShaderCache",
+    "Cache_Data",
+    "CacheStorage",
+    ".npm",
+    ".pnpm-store",
+    ".gradle",
+    ".m2",
+    ".nuget",
+    ".cargo",
 ];
 
 fn hard_deny_set() -> &'static Ignore {
@@ -110,7 +305,8 @@ fn hard_deny_set() -> &'static Ignore {
 pub fn hard_denied(path: &str) -> bool {
     let p = norm_path(path);
     let ig = hard_deny_set();
-    p.split('\\').any(|seg| !seg.is_empty() && ig.matches_seg(seg))
+    p.split('\\')
+        .any(|seg| !seg.is_empty() && ig.matches_seg(seg))
 }
 
 /// The default ignore list as owned strings (what Settings shows on "Reset to defaults").
@@ -132,7 +328,10 @@ pub enum Error {
     /// The database was written by a newer schema version.
     SchemaTooNew(i64),
     /// A vector (or query) has the wrong number of dimensions.
-    BadVector { expected: usize, got: usize },
+    BadVector {
+        expected: usize,
+        got: usize,
+    },
     NoSuchFile(FileId),
 }
 
@@ -452,7 +651,11 @@ impl DupGroup {
     /// Bytes freed by keeping one copy (the others are redundant).
     pub fn reclaimable(&self) -> u64 {
         let largest = self.files.iter().map(|f| f.size).max().unwrap_or(0);
-        self.files.iter().map(|f| f.size).sum::<u64>().saturating_sub(largest)
+        self.files
+            .iter()
+            .map(|f| f.size)
+            .sum::<u64>()
+            .saturating_sub(largest)
     }
 }
 
@@ -685,7 +888,13 @@ impl Store {
         self.conn.execute(
             "INSERT INTO index_meta(id, model_id, llama_build, quant, image_budget, dims)
              VALUES (1, ?1, ?2, ?3, ?4, ?5)",
-            params![meta.model_id, meta.llama_build, meta.quant, meta.image_budget, meta.dims],
+            params![
+                meta.model_id,
+                meta.llama_build,
+                meta.quant,
+                meta.image_budget,
+                meta.dims
+            ],
         )?;
         self.dims = meta.dims as usize;
         self.meta = meta.clone();
@@ -754,7 +963,9 @@ impl Store {
         let size_i = size as i64;
         let existing: Option<(i64, String, i64, i64)> = self
             .conn
-            .prepare_cached("SELECT id, path, size, mtime FROM files WHERE vol_guid = ?1 AND frn = ?2")?
+            .prepare_cached(
+                "SELECT id, path, size, mtime FROM files WHERE vol_guid = ?1 AND frn = ?2",
+            )?
             .query_row(params![key.vol_guid, frn], |r| {
                 Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
             })
@@ -851,7 +1062,12 @@ impl Store {
         let n = self.conn.execute(
             "UPDATE files SET path = ?3 || substr(path, ?4)
              WHERE path LIKE ?1 ESCAPE '^' OR path LIKE ?2 ESCAPE '^'",
-            params![esc, format!("{esc}\\%"), new, old.chars().count() as i64 + 1],
+            params![
+                esc,
+                format!("{esc}\\%"),
+                new,
+                old.chars().count() as i64 + 1
+            ],
         )?;
         Ok(n)
     }
@@ -859,7 +1075,9 @@ impl Store {
     /// Remove every file row of `kind` (e.g. source code when the opt-in is switched off) and
     /// collect the content nothing references any more. Returns the number of files removed.
     pub fn remove_kind(&mut self, kind: &str) -> Result<usize> {
-        let n = self.conn.execute("DELETE FROM files WHERE kind = ?1", [kind])?;
+        let n = self
+            .conn
+            .execute("DELETE FROM files WHERE kind = ?1", [kind])?;
         self.gc()?;
         Ok(n)
     }
@@ -909,7 +1127,12 @@ impl Store {
         exclude: &[&str],
         after_id: i64,
     ) -> Result<Vec<PendingFile>> {
-        let list = |k: &[&str]| k.iter().map(|x| format!("'{}'", x.replace('\'', ""))).collect::<Vec<_>>().join(",");
+        let list = |k: &[&str]| {
+            k.iter()
+                .map(|x| format!("'{}'", x.replace('\'', "")))
+                .collect::<Vec<_>>()
+                .join(",")
+        };
         let mut sql = String::from("SELECT id, vol_guid, frn, path, size, mtime, kind FROM files WHERE state = 0 AND id > ?2");
         if !only.is_empty() {
             sql.push_str(&format!(" AND kind IN ({})", list(only)));
@@ -917,12 +1140,19 @@ impl Store {
         if !exclude.is_empty() {
             sql.push_str(&format!(" AND kind NOT IN ({})", list(exclude)));
         }
-        sql.push_str(if after_id > 0 { " ORDER BY id LIMIT ?1" } else { " ORDER BY mtime DESC, id LIMIT ?1" });
+        sql.push_str(if after_id > 0 {
+            " ORDER BY id LIMIT ?1"
+        } else {
+            " ORDER BY mtime DESC, id LIMIT ?1"
+        });
         let mut st = self.conn.prepare_cached(&sql)?;
         let rows = st.query_map(params![limit as i64, after_id], |r| {
             Ok(PendingFile {
                 id: FileId(r.get(0)?),
-                key: FileKey { vol_guid: r.get(1)?, frn: r.get::<_, i64>(2)? as u64 },
+                key: FileKey {
+                    vol_guid: r.get(1)?,
+                    frn: r.get::<_, i64>(2)? as u64,
+                },
                 path: r.get(3)?,
                 size: r.get::<_, i64>(4)? as u64,
                 mtime: r.get(5)?,
@@ -934,7 +1164,10 @@ impl Store {
 
     /// Is any file of `kind` waiting to be processed?
     pub fn has_pending_kind(&self, kind: &str) -> Result<bool> {
-        Ok(self.conn.prepare_cached("SELECT 1 FROM files WHERE state = 0 AND kind = ?1 LIMIT 1")?.exists([kind])?)
+        Ok(self
+            .conn
+            .prepare_cached("SELECT 1 FROM files WHERE state = 0 AND kind = ?1 LIMIT 1")?
+            .exists([kind])?)
     }
 
     // ------------------------------------------------------------ content
@@ -1017,11 +1250,14 @@ impl Store {
             return self.complete(file_id, hash, &[], texts);
         }
         let tx = self.conn.transaction()?;
-        let known = tx.prepare_cached("SELECT 1 FROM content WHERE hash = ?1")?.exists([hash])?;
+        let known = tx
+            .prepare_cached("SELECT 1 FROM content WHERE hash = ?1")?
+            .exists([hash])?;
         if !known {
             tx.execute("INSERT INTO content(hash) VALUES (?1)", [hash])?;
             {
-                let mut ins_t = tx.prepare_cached("INSERT INTO texts(hash, chunk, body) VALUES (?1,?2,?3)")?;
+                let mut ins_t =
+                    tx.prepare_cached("INSERT INTO texts(hash, chunk, body) VALUES (?1,?2,?3)")?;
                 for (chunk, body) in texts {
                     ins_t.execute(params![hash, chunk, body])?;
                 }
@@ -1033,7 +1269,9 @@ impl Store {
                 }
             }
         }
-        let waiting = tx.prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?.exists([hash])?;
+        let waiting = tx
+            .prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?
+            .exists([hash])?;
         let state = if waiting { STATE_TEXT_ONLY } else { STATE_DONE };
         let n = tx
             .prepare_cached("UPDATE files SET content_hash=?2, state=?3, error=NULL WHERE id=?1")?
@@ -1053,28 +1291,37 @@ impl Store {
              GROUP BY content_hash ORDER BY MAX(mtime) DESC, id LIMIT ?1",
         )?;
         let rows = st.query_map([limit as i64], |r| {
-            Ok(TextOnlyFile { id: FileId(r.get(0)?), path: r.get(1)?, kind: r.get(2)?, hash: r.get(3)? })
+            Ok(TextOnlyFile {
+                id: FileId(r.get(0)?),
+                path: r.get(1)?,
+                kind: r.get(2)?,
+                hash: r.get(3)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// The vectors still owed for `hash`, in chunk order.
     pub fn pending_vecs(&self, hash: &str) -> Result<Vec<PendingVec>> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT chunk, kind, locator FROM pending_vecs WHERE hash = ?1 ORDER BY chunk")?;
+        let mut st = self.conn.prepare_cached(
+            "SELECT chunk, kind, locator FROM pending_vecs WHERE hash = ?1 ORDER BY chunk",
+        )?;
         let rows = st.query_map([hash], |r| {
             let kind: String = r.get(1)?;
-            Ok(PendingVec { chunk: r.get(0)?, kind: VecKind::parse(&kind).unwrap_or(VecKind::Text), locator: r.get(2)? })
+            Ok(PendingVec {
+                chunk: r.get(0)?,
+                kind: VecKind::parse(&kind).unwrap_or(VecKind::Text),
+                locator: r.get(2)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
     /// The stored chunk texts of `hash`, in chunk order.
     pub fn texts_of(&self, hash: &str) -> Result<Vec<(u32, String)>> {
-        let mut st = self
-            .conn
-            .prepare_cached("SELECT chunk, body FROM texts WHERE hash = ?1 ORDER BY CAST(chunk AS INTEGER)")?;
+        let mut st = self.conn.prepare_cached(
+            "SELECT chunk, body FROM texts WHERE hash = ?1 ORDER BY CAST(chunk AS INTEGER)",
+        )?;
         let rows = st.query_map([hash], |r| Ok((r.get::<_, i64>(0)? as u32, r.get(1)?)))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -1083,7 +1330,10 @@ impl Store {
     pub fn finish_vectors(&mut self, hash: &str, vectors: &[ChunkVec]) -> Result<()> {
         for v in vectors {
             if v.vec.len() != self.dims {
-                return Err(Error::BadVector { expected: self.dims, got: v.vec.len() });
+                return Err(Error::BadVector {
+                    expected: self.dims,
+                    got: v.vec.len(),
+                });
             }
         }
         let tx = self.conn.transaction()?;
@@ -1100,7 +1350,10 @@ impl Store {
             }
         }
         tx.execute("DELETE FROM pending_vecs WHERE hash = ?1", [hash])?;
-        tx.execute("UPDATE files SET state = 1 WHERE content_hash = ?1 AND state = 4", [hash])?;
+        tx.execute(
+            "UPDATE files SET state = 1 WHERE content_hash = ?1 AND state = 4",
+            [hash],
+        )?;
         tx.commit()?;
         Ok(())
     }
@@ -1148,15 +1401,24 @@ impl Store {
     pub fn requeue_skipped(&mut self, reasons: &[&str]) -> Result<usize> {
         let mut n = 0;
         for r in reasons {
-            n += self.conn.prepare_cached("UPDATE files SET state=0, error=NULL, detail=NULL WHERE state=?1 AND error=?2")?.execute(params![STATE_SKIPPED, r])?;
+            n += self
+                .conn
+                .prepare_cached(
+                    "UPDATE files SET state=0, error=NULL, detail=NULL WHERE state=?1 AND error=?2",
+                )?
+                .execute(params![STATE_SKIPPED, r])?;
         }
         Ok(n)
     }
 
     /// Pending files per kind (what is queued, by what it needs).
     pub fn pending_by_kind(&self) -> Result<Vec<(String, u64)>> {
-        let mut st = self.conn.prepare_cached("SELECT kind, COUNT(*) FROM files WHERE state = ?1 GROUP BY kind ORDER BY 2 DESC")?;
-        let rows = st.query_map([STATE_PENDING], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64)))?;
+        let mut st = self.conn.prepare_cached(
+            "SELECT kind, COUNT(*) FROM files WHERE state = ?1 GROUP BY kind ORDER BY 2 DESC",
+        )?;
+        let rows = st.query_map([STATE_PENDING], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?.max(0) as u64))
+        })?;
         Ok(rows.collect::<std::result::Result<Vec<_>, _>>()?)
     }
 
@@ -1175,18 +1437,33 @@ impl Store {
 
     /// Failed (`skipped == false`) or skipped (`true`) files grouped by their recorded reason, biggest
     /// group first, with up to `examples` paths each. At most `max_groups` groups.
-    pub fn reason_groups(&self, skipped: bool, examples: usize, max_groups: usize) -> Result<Vec<ReasonGroup>> {
+    pub fn reason_groups(
+        &self,
+        skipped: bool,
+        examples: usize,
+        max_groups: usize,
+    ) -> Result<Vec<ReasonGroup>> {
         let state = if skipped { STATE_SKIPPED } else { STATE_FAILED };
         let mut st = self.conn.prepare_cached("SELECT COALESCE(error, ''), path, kind, COALESCE(detail, '') FROM files WHERE state = ?1 ORDER BY id DESC")?;
         let mut rows = st.query([state])?;
         let mut groups: Vec<ReasonGroup> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
         while let Some(r) = rows.next()? {
-            let (raw, path, kind, detail): (String, String, String, String) = (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+            let (raw, path, kind, detail): (String, String, String, String) =
+                (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
             // Rows an older version wrote as free text still group by code.
-            let reason = if raw.is_empty() { raw } else { reason::classify(&raw, &kind).to_string() };
+            let reason = if raw.is_empty() {
+                raw
+            } else {
+                reason::classify(&raw, &kind).to_string()
+            };
             let i = *index.entry(reason.clone()).or_insert_with(|| {
-                groups.push(ReasonGroup { reason, count: 0, examples: Vec::new(), details: Vec::new() });
+                groups.push(ReasonGroup {
+                    reason,
+                    count: 0,
+                    examples: Vec::new(),
+                    details: Vec::new(),
+                });
                 groups.len() - 1
             });
             groups[i].count += 1;
@@ -1204,7 +1481,11 @@ impl Store {
     pub fn file_error(&self, path: &str) -> Result<Option<String>> {
         let v: Option<Option<String>> = self
             .conn
-            .query_row("SELECT error FROM files WHERE path = ?1 COLLATE NOCASE", [norm_sep(path)], |r| r.get(0))
+            .query_row(
+                "SELECT error FROM files WHERE path = ?1 COLLATE NOCASE",
+                [norm_sep(path)],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(v.flatten())
     }
@@ -1223,22 +1504,38 @@ impl Store {
     pub fn file_detail(&self, path: &str) -> Result<Option<String>> {
         let v: Option<Option<String>> = self
             .conn
-            .query_row("SELECT detail FROM files WHERE path = ?1 COLLATE NOCASE", [norm_sep(path)], |r| r.get(0))
+            .query_row(
+                "SELECT detail FROM files WHERE path = ?1 COLLATE NOCASE",
+                [norm_sep(path)],
+                |r| r.get(0),
+            )
             .optional()?;
         Ok(v.flatten())
     }
 
     /// A message or a code: a code is stored as is, a message becomes its code with the text as detail.
     fn set_state(&mut self, id: FileId, state: i64, msg: &str) -> Result<()> {
-        let kind: String = self.conn.query_row("SELECT kind FROM files WHERE id = ?1", [id.0], |r| r.get(0)).optional()?.unwrap_or_default();
+        let kind: String = self
+            .conn
+            .query_row("SELECT kind FROM files WHERE id = ?1", [id.0], |r| r.get(0))
+            .optional()?
+            .unwrap_or_default();
         let (code, detail) = reason::split(msg, &kind);
         self.set_state_detail(id, state, code, detail.as_deref())
     }
 
-    fn set_state_detail(&mut self, id: FileId, state: i64, code: &str, detail: Option<&str>) -> Result<()> {
+    fn set_state_detail(
+        &mut self,
+        id: FileId,
+        state: i64,
+        code: &str,
+        detail: Option<&str>,
+    ) -> Result<()> {
         let n = self
             .conn
-            .prepare_cached("UPDATE files SET state=?2, error=?3, detail=?4, content_hash=NULL WHERE id=?1")?
+            .prepare_cached(
+                "UPDATE files SET state=?2, error=?3, detail=?4, content_hash=NULL WHERE id=?1",
+            )?
             .execute(params![id.0, state, code, detail])?;
         if n == 0 {
             return Err(Error::NoSuchFile(id));
@@ -1360,7 +1657,12 @@ impl Store {
     /// deviation, and each file content's best row becomes its `z`. Returns the best
     /// `per_modality` file contents of each modality as candidates (one per file path), ungated:
     /// [`relevance::gate`] decides.
-    pub fn search_calibrated(&self, query: &[f32], hub: &[f32], per_modality: usize) -> Result<Vec<Candidate>> {
+    pub fn search_calibrated(
+        &self,
+        query: &[f32],
+        hub: &[f32],
+        per_modality: usize,
+    ) -> Result<Vec<Candidate>> {
         self.search_calibrated_multi(&[query], hub, per_modality, &HashSet::new())
     }
 
@@ -1383,7 +1685,13 @@ impl Store {
     /// count limit: what "Show all" lists. Costs the same single pass over the vectors as
     /// [`Store::search_calibrated`]; only the contents that pass are looked up further.
     pub fn search_relevant(&self, query: &[f32], hub: &[f32]) -> Result<Vec<Candidate>> {
-        self.calibrated(&[query], hub, usize::MAX, &HashSet::new(), Some(relevance::Z_MIN))
+        self.calibrated(
+            &[query],
+            hub,
+            usize::MAX,
+            &HashSet::new(),
+            Some(relevance::Z_MIN),
+        )
     }
 
     /// `passing`: keep only the contents that pass the gate at this strictness.
@@ -1395,8 +1703,16 @@ impl Store {
         skip: &HashSet<String>,
         passing: Option<f32>,
     ) -> Result<Vec<Candidate>> {
-        if let Some(bad) = queries.iter().map(|q| q.len()).chain([hub.len()]).find(|n| *n != self.dims) {
-            return Err(Error::BadVector { expected: self.dims, got: bad });
+        if let Some(bad) = queries
+            .iter()
+            .map(|q| q.len())
+            .chain([hub.len()])
+            .find(|n| *n != self.dims)
+        {
+            return Err(Error::BadVector {
+                expected: self.dims,
+                got: bad,
+            });
         }
         let nq = queries.len();
         if nq == 0 {
@@ -1413,7 +1729,10 @@ impl Store {
                 if skip.contains(&hash) {
                     continue;
                 }
-                by_hash.entry(hash).or_default().push((FileId(r.get(1)?), r.get(2)?));
+                by_hash
+                    .entry(hash)
+                    .or_default()
+                    .push((FileId(r.get(1)?), r.get(2)?));
             }
         }
         // (hash, modality) -> per query (adj, raw, chunk)
@@ -1422,14 +1741,18 @@ impl Store {
         // per query: sums of the hub-corrected score over EVERY row (not per-file best) -> the scale
         let mut row_stats: Vec<relevance::RowStats> = vec![relevance::RowStats::default(); nq];
         {
-            let mut st = self.conn.prepare_cached("SELECT hash, chunk, kind, vec FROM vectors")?;
+            let mut st = self
+                .conn
+                .prepare_cached("SELECT hash, chunk, kind, vec FROM vectors")?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
                 let hash = r.get_ref(0)?.as_str()?;
                 if !by_hash.contains_key(hash) {
                     continue;
                 }
-                let Some(kind) = VecKind::parse(r.get_ref(2)?.as_str()?) else { continue };
+                let Some(kind) = VecKind::parse(r.get_ref(2)?.as_str()?) else {
+                    continue;
+                };
                 let blob = r.get_ref(3)?.as_blob()?;
                 if blob.len() != self.dims * 4 {
                     continue;
@@ -1455,8 +1778,11 @@ impl Store {
         type Pick<'a> = (&'a String, f32, f32, u32, Option<f32>);
         let mut out = Vec::new();
         for m in [Modality::Visual, Modality::Text, Modality::Audio] {
-            let items: Vec<(&String, &PerQuery)> =
-                best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v)).collect();
+            let items: Vec<(&String, &PerQuery)> = best
+                .iter()
+                .filter(|((_, km), _)| *km == m)
+                .map(|((h, _), v)| (h, v))
+                .collect();
             // each content under the query it stands out most for: (hash, adj, raw, chunk, z)
             let mut picked: Vec<Pick<'_>> = items
                 .iter()
@@ -1477,9 +1803,24 @@ impl Store {
             let key = |i: &Pick<'_>| i.4.unwrap_or(i.1);
             picked.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.0.cmp(b.0)));
             let keep = |c: &Pick<'_>| {
-                passing.is_none_or(|zm| Candidate { file_id: FileId(0), path: String::new(), hash: String::new(), chunk: 0, locator: None, modality: m, score: c.2, adj: c.1, z: c.4 }.passes_at(zm))
+                passing.is_none_or(|zm| {
+                    Candidate {
+                        file_id: FileId(0),
+                        path: String::new(),
+                        hash: String::new(),
+                        chunk: 0,
+                        locator: None,
+                        modality: m,
+                        score: c.2,
+                        adj: c.1,
+                        z: c.4,
+                    }
+                    .passes_at(zm)
+                })
             };
-            for (hash, adj, raw, chunk, z) in picked.into_iter().filter(|p| keep(p)).take(per_modality) {
+            for (hash, adj, raw, chunk, z) in
+                picked.into_iter().filter(|p| keep(p)).take(per_modality)
+            {
                 let locator: Option<String> = self
                     .conn
                     .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?
@@ -1586,7 +1927,15 @@ impl Store {
         );
         let n = |r: &rusqlite::Row<'_>, i: usize| r.get::<_, i64>(i).map(|v| v.max(0) as u64);
         Ok(self.conn.query_row(&sql, [], |r| {
-            Ok(Stats { files: n(r, 0)?, pending: n(r, 1)?, done: n(r, 2)?, failed: n(r, 3)?, skipped: n(r, 4)?, text_only: n(r, 5)?, vectors: n(r, 6)? })
+            Ok(Stats {
+                files: n(r, 0)?,
+                pending: n(r, 1)?,
+                done: n(r, 2)?,
+                failed: n(r, 3)?,
+                skipped: n(r, 4)?,
+                text_only: n(r, 5)?,
+                vectors: n(r, 6)?,
+            })
         })?)
     }
 
@@ -1609,17 +1958,27 @@ impl Store {
              WHERE state = 1 AND kind = 'image' AND content_hash IS NOT NULL
              ORDER BY mtime DESC, id DESC",
         )?;
-        let rows = st.query_map([], Self::image_row)?.collect::<std::result::Result<Vec<_>, _>>()?;
+        let rows = st
+            .query_map([], Self::image_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(rows)
     }
 
     /// Pixel size of every image content measured so far (`(0, 0)` = could not be read).
     pub fn image_dims(&self) -> Result<HashMap<String, (u32, u32)>> {
-        let mut st = self.conn.prepare_cached("SELECT hash, w, h FROM image_dims")?;
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT hash, w, h FROM image_dims")?;
         let mut rows = st.query([])?;
         let mut out = HashMap::new();
         while let Some(r) = rows.next()? {
-            out.insert(r.get(0)?, (r.get::<_, i64>(1)?.max(0) as u32, r.get::<_, i64>(2)?.max(0) as u32));
+            out.insert(
+                r.get(0)?,
+                (
+                    r.get::<_, i64>(1)?.max(0) as u32,
+                    r.get::<_, i64>(2)?.max(0) as u32,
+                ),
+            );
         }
         Ok(out)
     }
@@ -1628,7 +1987,9 @@ impl Store {
     pub fn set_image_dims(&mut self, rows: &[(String, u32, u32)]) -> Result<()> {
         let tx = self.conn.transaction()?;
         {
-            let mut st = tx.prepare_cached("INSERT OR REPLACE INTO image_dims(hash, w, h) VALUES (?1, ?2, ?3)")?;
+            let mut st = tx.prepare_cached(
+                "INSERT OR REPLACE INTO image_dims(hash, w, h) VALUES (?1, ?2, ?3)",
+            )?;
             for (hash, w, h) in rows {
                 st.execute(params![hash, w, h])?;
             }
@@ -1653,16 +2014,27 @@ impl Store {
             let row = Self::image_row(r)?;
             match groups.last_mut() {
                 Some(g) if g.hash == row.content_hash => g.files.push(row),
-                _ => groups.push(DupGroup { hash: row.content_hash.clone(), files: vec![row] }),
+                _ => groups.push(DupGroup {
+                    hash: row.content_hash.clone(),
+                    files: vec![row],
+                }),
             }
         }
-        groups.sort_by(|a, b| b.reclaimable().cmp(&a.reclaimable()).then_with(|| a.hash.cmp(&b.hash)));
+        groups.sort_by(|a, b| {
+            b.reclaimable()
+                .cmp(&a.reclaimable())
+                .then_with(|| a.hash.cmp(&b.hash))
+        });
         Ok(groups)
     }
 
     /// Finished images modified in `[from_ms, to_ms)` with their image vector (chunk 0), newest
     /// first. Used by the near-duplicate scan, one time bucket at a time.
-    pub fn images_with_vectors(&self, from_ms: i64, to_ms: i64) -> Result<Vec<(ImageRow, Vec<f32>)>> {
+    pub fn images_with_vectors(
+        &self,
+        from_ms: i64,
+        to_ms: i64,
+    ) -> Result<Vec<(ImageRow, Vec<f32>)>> {
         let mut st = self.conn.prepare_cached(
             "SELECT f.id, f.path, f.size, f.mtime, f.content_hash, v.vec
              FROM files f JOIN vectors v ON v.hash = f.content_hash AND v.chunk = 0 AND v.kind = 'image'
@@ -1677,7 +2049,12 @@ impl Store {
             if blob.len() != self.dims * 4 {
                 continue;
             }
-            let v = blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
+            let v = blob
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
             out.push((row, v));
         }
         Ok(out)
@@ -1690,15 +2067,18 @@ impl Store {
     /// (re)taken, so [`parse_run`](Self::parse_run) reports progress for this burst of work.
     pub fn queue_parse(&mut self, hash: &str, page: u32, reason: &str) -> Result<bool> {
         let tx = self.conn.transaction()?;
-        let added = tx
-            .execute(
-                "INSERT OR IGNORE INTO parse_queue(hash, page, reason) VALUES (?1, ?2, ?3)",
-                params![hash, page, reason],
-            )?
-            > 0;
-        let waiting: i64 = tx.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [STATE_PENDING], |r| r.get(0))?;
+        let added = tx.execute(
+            "INSERT OR IGNORE INTO parse_queue(hash, page, reason) VALUES (?1, ?2, ?3)",
+            params![hash, page, reason],
+        )? > 0;
+        let waiting: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM parse_queue WHERE state = ?1",
+            [STATE_PENDING],
+            |r| r.get(0),
+        )?;
         if added && waiting == 1 {
-            let (done, failed, skipped) = counts_by_state(&tx, [STATE_DONE, STATE_FAILED, STATE_SKIPPED]);
+            let (done, failed, skipped) =
+                counts_by_state(&tx, [STATE_DONE, STATE_FAILED, STATE_SKIPPED]);
             tx.execute(
                 "INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)",
                 params![
@@ -1706,7 +2086,10 @@ impl Store {
                     serde_json::json!({ "done": done, "failed": failed, "skipped": skipped, "started": unix_now() }).to_string()
                 ],
             )?;
-            tx.execute("DELETE FROM settings WHERE key = ?1", [SETTING_PARSE_RUN_ENDED])?;
+            tx.execute(
+                "DELETE FROM settings WHERE key = ?1",
+                [SETTING_PARSE_RUN_ENDED],
+            )?;
         }
         tx.commit()?;
         Ok(added)
@@ -1722,7 +2105,13 @@ impl Store {
              GROUP BY q.hash, q.page ORDER BY MAX(f.mtime) DESC, q.hash, q.page LIMIT ?1",
         )?;
         let rows = st.query_map([limit as i64], |r| {
-            Ok(ParseJob { hash: r.get(0)?, page: r.get(1)?, reason: r.get(2)?, attempts: r.get(3)?, path: r.get(4)? })
+            Ok(ParseJob {
+                hash: r.get(0)?,
+                page: r.get(1)?,
+                reason: r.get(2)?,
+                attempts: r.get(3)?,
+                path: r.get(4)?,
+            })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
@@ -1760,7 +2149,11 @@ impl Store {
         )?;
         Ok(self
             .conn
-            .query_row("SELECT attempts FROM parse_queue WHERE hash = ?1 AND page = ?2", params![hash, page], |r| r.get(0))
+            .query_row(
+                "SELECT attempts FROM parse_queue WHERE hash = ?1 AND page = ?2",
+                params![hash, page],
+                |r| r.get(0),
+            )
             .optional()?
             .unwrap_or(0))
     }
@@ -1777,7 +2170,13 @@ impl Store {
 
     /// Like [`skip_parse`](Self::skip_parse), but also stores `result` as the item's text (the OCR text of
     /// a document image the parser does not support, so it still becomes text-searchable).
-    pub fn skip_parse_replacing(&mut self, hash: &str, page: u32, reason: &str, result: &ParseResult) -> Result<()> {
+    pub fn skip_parse_replacing(
+        &mut self,
+        hash: &str,
+        page: u32,
+        reason: &str,
+        result: &ParseResult,
+    ) -> Result<()> {
         let tx = self.conn.transaction()?;
         replace_item_text(&tx, self.dims, hash, page, result)?;
         tx.execute(
@@ -1801,30 +2200,45 @@ impl Store {
 
     pub fn parse_counts(&self) -> Result<ParseCounts> {
         let n = |s: i64| -> Result<u64> {
-            Ok(self.conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0))? as u64)
+            Ok(self.conn.query_row(
+                "SELECT COUNT(*) FROM parse_queue WHERE state = ?1",
+                [s],
+                |r| r.get::<_, i64>(0),
+            )? as u64)
         };
-        Ok(ParseCounts { queued: n(STATE_PENDING)?, done: n(STATE_DONE)?, failed: n(STATE_FAILED)?, skipped: n(STATE_SKIPPED)? })
+        Ok(ParseCounts {
+            queued: n(STATE_PENDING)?,
+            done: n(STATE_DONE)?,
+            failed: n(STATE_FAILED)?,
+            skipped: n(STATE_SKIPPED)?,
+        })
     }
 
     /// Progress of the current / most recent parse run (see [`ParseRun`]): the counters recorded
     /// when the queue filled, minus what they are now. `None` when nothing has been queued since
     /// the store was created or reset.
     pub fn parse_run(&self) -> Result<Option<ParseRun>> {
-        let Some(base) = self.get_setting(SETTING_PARSE_RUN_BASE)? else { return Ok(None) };
+        let Some(base) = self.get_setting(SETTING_PARSE_RUN_BASE)? else {
+            return Ok(None);
+        };
         let Some((done0, failed0, skipped0, started)) =
-            serde_json::from_str::<serde_json::Value>(&base).ok().and_then(|v| {
-                Some((
-                    v.get("done")?.as_u64()?,
-                    v.get("failed")?.as_u64()?,
-                    v.get("skipped")?.as_u64()?,
-                    v.get("started")?.as_i64()?,
-                ))
-            })
+            serde_json::from_str::<serde_json::Value>(&base)
+                .ok()
+                .and_then(|v| {
+                    Some((
+                        v.get("done")?.as_u64()?,
+                        v.get("failed")?.as_u64()?,
+                        v.get("skipped")?.as_u64()?,
+                        v.get("started")?.as_i64()?,
+                    ))
+                })
         else {
             return Ok(None);
         };
         let c = self.parse_counts()?;
-        let ended_unix = self.get_setting(SETTING_PARSE_RUN_ENDED)?.and_then(|s| s.parse().ok());
+        let ended_unix = self
+            .get_setting(SETTING_PARSE_RUN_ENDED)?
+            .and_then(|s| s.parse().ok());
         let mut run = ParseRun {
             started_unix: started,
             done: c.done.saturating_sub(done0),
@@ -1854,21 +2268,38 @@ impl Store {
             if blob.len() != self.dims * 4 {
                 continue;
             }
-            let vec = blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect();
-            out.push(RouteImage { rowid: r.get(0)?, hash: r.get(1)?, vec });
+            let vec = blob
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|b| f32::from_le_bytes(*b))
+                .collect();
+            out.push(RouteImage {
+                rowid: r.get(0)?,
+                hash: r.get(1)?,
+                vec,
+            });
         }
         Ok(out)
     }
 
     /// Highest rowid in `vectors` (0 when empty).
     pub fn max_vector_rowid(&self) -> Result<i64> {
-        Ok(self.conn.query_row("SELECT COALESCE(MAX(rowid), 0) FROM vectors", [], |r| r.get(0))?)
+        Ok(self
+            .conn
+            .query_row("SELECT COALESCE(MAX(rowid), 0) FROM vectors", [], |r| {
+                r.get(0)
+            })?)
     }
 
     /// Every still-waiting `(hash, page)` pair, for the one-time routing-gate re-check.
     pub fn queued_all(&self) -> Result<Vec<(String, u32)>> {
-        let mut st = self.conn.prepare_cached("SELECT hash, page FROM parse_queue WHERE state = ?1")?;
-        let rows = st.query_map([STATE_PENDING], |r| Ok((r.get(0)?, r.get::<_, i64>(1)? as u32)))?;
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT hash, page FROM parse_queue WHERE state = ?1")?;
+        let rows = st.query_map([STATE_PENDING], |r| {
+            Ok((r.get(0)?, r.get::<_, i64>(1)? as u32))
+        })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
@@ -1897,7 +2328,9 @@ impl Store {
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         let v: Option<String> = self
             .conn
-            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| r.get(0))
+            .query_row("SELECT value FROM settings WHERE key = ?1", [key], |r| {
+                r.get(0)
+            })
             .optional()?;
         Ok(v)
     }
@@ -1913,7 +2346,8 @@ impl Store {
                 )?;
             }
             None => {
-                self.conn.execute("DELETE FROM settings WHERE key = ?1", [key])?;
+                self.conn
+                    .execute("DELETE FROM settings WHERE key = ?1", [key])?;
             }
         }
         Ok(())
@@ -1954,7 +2388,9 @@ impl Store {
     pub fn get_ignore(&self) -> Result<Vec<String>> {
         let v: Option<String> = self
             .conn
-            .query_row("SELECT value FROM settings WHERE key = 'ignore'", [], |r| r.get(0))
+            .query_row("SELECT value FROM settings WHERE key = 'ignore'", [], |r| {
+                r.get(0)
+            })
             .optional()?;
         match v {
             Some(s) => Ok(serde_json::from_str(&s)?),
@@ -1966,7 +2402,8 @@ impl Store {
     /// `None` forgets it so the defaults apply again.
     pub fn set_ignore(&mut self, list: Option<&[String]>) -> Result<()> {
         let Some(list) = list else {
-            self.conn.execute("DELETE FROM settings WHERE key = 'ignore'", [])?;
+            self.conn
+                .execute("DELETE FROM settings WHERE key = 'ignore'", [])?;
             return Ok(());
         };
         let mut seen = HashSet::new();
@@ -2045,27 +2482,49 @@ fn locator_page(locator: Option<&str>) -> u32 {
 /// add the new chunks from `MAX(chunk)+1`, and rewrite the locator of its image / page vector.
 /// New chunks without a vector become pending vectors, which moves a done file to `text_only` so
 /// the upgrade pass embeds them.
-fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, page: u32, result: &ParseResult) -> Result<()> {
+fn replace_item_text(
+    tx: &rusqlite::Transaction<'_>,
+    dims: usize,
+    hash: &str,
+    page: u32,
+    result: &ParseResult,
+) -> Result<()> {
     for c in &result.chunks {
         if let Some(v) = &c.vec {
             if v.len() != dims {
-                return Err(Error::BadVector { expected: dims, got: v.len() });
+                return Err(Error::BadVector {
+                    expected: dims,
+                    got: v.len(),
+                });
             }
         }
     }
     let rows = |sql: &str| -> Result<Vec<(u32, Option<String>)>> {
         let mut st = tx.prepare_cached(sql)?;
-        let r = st.query_map([hash], |r| Ok((r.get::<_, u32>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        let r = st.query_map([hash], |r| {
+            Ok((r.get::<_, u32>(0)?, r.get::<_, Option<String>>(1)?))
+        })?;
         Ok(r.collect::<std::result::Result<_, _>>()?)
     };
     let in_page = |r: &&(u32, Option<String>)| locator_page(r.1.as_deref()) == page;
     let vec_text = rows("SELECT chunk, locator FROM vectors WHERE hash = ?1 AND kind = 'text'")?;
-    let pend_text = rows("SELECT chunk, locator FROM pending_vecs WHERE hash = ?1 AND kind = 'text'")?;
-    let mut old: Vec<u32> = vec_text.iter().chain(&pend_text).filter(in_page).map(|r| r.0).collect();
+    let pend_text =
+        rows("SELECT chunk, locator FROM pending_vecs WHERE hash = ?1 AND kind = 'text'")?;
+    let mut old: Vec<u32> = vec_text
+        .iter()
+        .chain(&pend_text)
+        .filter(in_page)
+        .map(|r| r.0)
+        .collect();
     if page == 0 {
         // text rows that never got a vector (embedding failed) have no locator to match on
         let known: HashSet<u32> = vec_text.iter().chain(&pend_text).map(|r| r.0).collect();
-        old.extend(rows("SELECT chunk, NULL FROM texts WHERE hash = ?1")?.into_iter().map(|r| r.0).filter(|c| !known.contains(c)));
+        old.extend(
+            rows("SELECT chunk, NULL FROM texts WHERE hash = ?1")?
+                .into_iter()
+                .map(|r| r.0)
+                .filter(|c| !known.contains(c)),
+        );
     }
     let next: u32 = tx.query_row(
         "SELECT COALESCE(MAX(c), -1) + 1 FROM (
@@ -2076,13 +2535,25 @@ fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, pa
         |r| r.get(0),
     )?;
     for c in &old {
-        tx.execute("DELETE FROM texts WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
-        tx.execute("DELETE FROM vectors WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
-        tx.execute("DELETE FROM pending_vecs WHERE hash = ?1 AND chunk = ?2", params![hash, c])?;
+        tx.execute(
+            "DELETE FROM texts WHERE hash = ?1 AND chunk = ?2",
+            params![hash, c],
+        )?;
+        tx.execute(
+            "DELETE FROM vectors WHERE hash = ?1 AND chunk = ?2",
+            params![hash, c],
+        )?;
+        tx.execute(
+            "DELETE FROM pending_vecs WHERE hash = ?1 AND chunk = ?2",
+            params![hash, c],
+        )?;
     }
     for (i, c) in result.chunks.iter().enumerate() {
         let chunk = next + i as u32;
-        tx.execute("INSERT INTO texts(hash, chunk, body) VALUES (?1, ?2, ?3)", params![hash, chunk, c.text])?;
+        tx.execute(
+            "INSERT INTO texts(hash, chunk, body) VALUES (?1, ?2, ?3)",
+            params![hash, chunk, c.text],
+        )?;
         match &c.vec {
             Some(v) => {
                 let mut blob = Vec::with_capacity(v.len() * 4);
@@ -2103,7 +2574,9 @@ fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, pa
         }
     }
     for table in ["vectors", "pending_vecs"] {
-        let imgs = rows(&format!("SELECT chunk, locator FROM {table} WHERE hash = ?1 AND kind IN ('image', 'page')"))?;
+        let imgs = rows(&format!(
+            "SELECT chunk, locator FROM {table} WHERE hash = ?1 AND kind IN ('image', 'page')"
+        ))?;
         for (chunk, _) in imgs.iter().filter(in_page) {
             tx.execute(
                 &format!("UPDATE {table} SET locator = ?3 WHERE hash = ?1 AND chunk = ?2"),
@@ -2111,28 +2584,47 @@ fn replace_item_text(tx: &rusqlite::Transaction<'_>, dims: usize, hash: &str, pa
             )?;
         }
     }
-    let waiting = tx.prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?.exists([hash])?;
+    let waiting = tx
+        .prepare_cached("SELECT 1 FROM pending_vecs WHERE hash = ?1")?
+        .exists([hash])?;
     if waiting {
-        tx.execute("UPDATE files SET state = ?2 WHERE content_hash = ?1 AND state = ?3", params![hash, STATE_TEXT_ONLY, STATE_DONE])?;
+        tx.execute(
+            "UPDATE files SET state = ?2 WHERE content_hash = ?1 AND state = ?3",
+            params![hash, STATE_TEXT_ONLY, STATE_DONE],
+        )?;
     }
     Ok(())
 }
 
 /// Unix seconds now (parse-run bookkeeping stamps).
 fn unix_now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
 
 /// Current row count per state, in the order of `states`.
 fn counts_by_state(conn: &Connection, states: [i64; 3]) -> (u64, u64, u64) {
-    let n = |s: i64| conn.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [s], |r| r.get::<_, i64>(0)).unwrap_or(0) as u64;
+    let n = |s: i64| {
+        conn.query_row(
+            "SELECT COUNT(*) FROM parse_queue WHERE state = ?1",
+            [s],
+            |r| r.get::<_, i64>(0),
+        )
+        .unwrap_or(0) as u64
+    };
     (n(states[0]), n(states[1]), n(states[2]))
 }
 
 /// When the update drained the queue, stamp the run's end (`SETTING_PARSE_RUN_ENDED`). Runs inside
 /// the caller's transaction.
 fn mark_run_ended(tx: &Transaction) -> Result<()> {
-    let waiting: i64 = tx.query_row("SELECT COUNT(*) FROM parse_queue WHERE state = ?1", [STATE_PENDING], |r| r.get(0))?;
+    let waiting: i64 = tx.query_row(
+        "SELECT COUNT(*) FROM parse_queue WHERE state = ?1",
+        [STATE_PENDING],
+        |r| r.get(0),
+    )?;
     if waiting == 0 {
         tx.execute(
             "INSERT OR REPLACE INTO settings(key, value) VALUES (?1, ?2)",
@@ -2245,21 +2737,33 @@ fn migrate(conn: &Connection) -> Result<()> {
         // Reason codes: `error` keeps the code, the old free text moves to `detail`. Files that
         // failed under the old readers get one more try with the new ones.
         conn.execute_batch("BEGIN;")?;
-        let has_detail: i64 = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'detail'", [], |r| r.get(0))?;
+        let has_detail: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('files') WHERE name = 'detail'",
+            [],
+            |r| r.get(0),
+        )?;
         if has_detail == 0 {
             conn.execute_batch("ALTER TABLE files ADD COLUMN detail TEXT;")?;
         }
         let rows: Vec<(i64, i64, String, String)> = {
             let mut st = conn.prepare("SELECT id, state, error, kind FROM files WHERE state IN (?1, ?2) AND error IS NOT NULL")?;
-            let it = st.query_map([STATE_FAILED, STATE_SKIPPED], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+            let it = st.query_map([STATE_FAILED, STATE_SKIPPED], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))
+            })?;
             it.collect::<std::result::Result<Vec<_>, _>>()?
         };
         for (id, state, error, kind) in rows {
             let (code, detail) = reason::split(&error, &kind);
             if state == STATE_FAILED {
-                conn.execute("UPDATE files SET state = ?2, error = NULL, detail = NULL WHERE id = ?1", params![id, STATE_PENDING])?;
+                conn.execute(
+                    "UPDATE files SET state = ?2, error = NULL, detail = NULL WHERE id = ?1",
+                    params![id, STATE_PENDING],
+                )?;
             } else {
-                conn.execute("UPDATE files SET error = ?2, detail = ?3 WHERE id = ?1", params![id, code, detail])?;
+                conn.execute(
+                    "UPDATE files SET error = ?2, detail = ?3 WHERE id = ?1",
+                    params![id, code, detail],
+                )?;
             }
         }
         conn.execute_batch("PRAGMA user_version = 6; COMMIT;")?;
@@ -2310,7 +2814,8 @@ mod tests {
         {
             let mut s = Store::open(&p, &meta()).unwrap();
             let id = add(&mut s, 1, r"C:\a.jpg", 1);
-            s.complete(id, "h1", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+            s.complete(id, "h1", &[cv(0, [1., 0., 0., 0.])], &[])
+                .unwrap();
             s.set_scopes(&Scopes {
                 include: vec![r"C:\a".into()],
                 exclude: vec![],
@@ -2342,34 +2847,66 @@ mod tests {
         let a = add(&mut s, 1, r"C:.pdf", 1);
         let b = add(&mut s, 2, r"C:\copy.pdf", 2);
         let pend = [
-            PendingVec { chunk: 0, kind: VecKind::Text, locator: Some("{\"page\":1}".into()) },
-            PendingVec { chunk: 1, kind: VecKind::Image, locator: Some("{\"page\":2}".into()) },
+            PendingVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: Some("{\"page\":1}".into()),
+            },
+            PendingVec {
+                chunk: 1,
+                kind: VecKind::Image,
+                locator: Some("{\"page\":2}".into()),
+            },
         ];
-        s.complete_text_only(a, "h", &pend, &[(0, "quarterly invoice".into())]).unwrap();
+        s.complete_text_only(a, "h", &pend, &[(0, "quarterly invoice".into())])
+            .unwrap();
         // same content at another path: linked, and also waiting
-        s.complete_text_only(b, "h", &pend, &[(0, "quarterly invoice".into())]).unwrap();
+        s.complete_text_only(b, "h", &pend, &[(0, "quarterly invoice".into())])
+            .unwrap();
         let st = s.stats().unwrap();
-        assert_eq!((st.text_only, st.done, st.pending, st.vectors), (2, 0, 0, 0));
+        assert_eq!(
+            (st.text_only, st.done, st.pending, st.vectors),
+            (2, 0, 0, 0)
+        );
         // searchable by text immediately, but not by vector
         assert_eq!(s.search_text(&fts_escape("invoice"), 5).unwrap().len(), 2);
-        assert!(s.search_vectors(&[1., 0., 0., 0.], 5, None).unwrap().is_empty());
+        assert!(s
+            .search_vectors(&[1., 0., 0., 0.], 5, None)
+            .unwrap()
+            .is_empty());
         // the queue offers one entry per content, with everything needed to finish it
         let q = s.next_text_only(10).unwrap();
         assert_eq!(q.len(), 1);
         assert_eq!(q[0].hash, "h");
         assert_eq!(s.pending_vecs("h").unwrap(), pend);
-        assert_eq!(s.texts_of("h").unwrap(), vec![(0, "quarterly invoice".to_string())]);
+        assert_eq!(
+            s.texts_of("h").unwrap(),
+            vec![(0, "quarterly invoice".to_string())]
+        );
         // models arrive: vectors are stored, both files become done, FTS unchanged
         let vecs = [
-            ChunkVec { chunk: 0, kind: VecKind::Text, locator: pend[0].locator.clone(), vec: vec![1., 0., 0., 0.] },
-            ChunkVec { chunk: 1, kind: VecKind::Image, locator: pend[1].locator.clone(), vec: vec![0., 1., 0., 0.] },
+            ChunkVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: pend[0].locator.clone(),
+                vec: vec![1., 0., 0., 0.],
+            },
+            ChunkVec {
+                chunk: 1,
+                kind: VecKind::Image,
+                locator: pend[1].locator.clone(),
+                vec: vec![0., 1., 0., 0.],
+            },
         ];
         s.finish_vectors("h", &vecs).unwrap();
         let st = s.stats().unwrap();
         assert_eq!((st.text_only, st.done, st.vectors), (0, 2, 2));
         assert!(s.next_text_only(10).unwrap().is_empty());
         assert!(s.pending_vecs("h").unwrap().is_empty());
-        assert_eq!(s.search_vectors(&[0., 1., 0., 0.], 5, None).unwrap().len(), 2);
+        assert_eq!(
+            s.search_vectors(&[0., 1., 0., 0.], 5, None).unwrap().len(),
+            2
+        );
         assert_eq!(s.search_text(&fts_escape("invoice"), 5).unwrap().len(), 2);
         // a later copy of the finished content is simply done
         let c = add(&mut s, 3, r"C:\c.pdf", 3);
@@ -2385,24 +2922,50 @@ mod tests {
         s.upsert_file(&key(3), "c.docx", 1, 3, "doc").unwrap();
         s.upsert_file(&key(4), "d.png", 1, 2, "image").unwrap();
         let kinds = |v: Vec<PendingFile>| v.into_iter().map(|f| f.path).collect::<Vec<_>>();
-        assert_eq!(kinds(s.next_pending_where(10, &[], &["image"], 0).unwrap()), ["b.pdf", "c.docx"]);
-        assert_eq!(kinds(s.next_pending_where(10, &[], &["image", "pdf"], 0).unwrap()), ["c.docx"]);
-        assert_eq!(kinds(s.next_pending_where(10, &["pdf"], &[], 0).unwrap()), ["b.pdf"]);
+        assert_eq!(
+            kinds(s.next_pending_where(10, &[], &["image"], 0).unwrap()),
+            ["b.pdf", "c.docx"]
+        );
+        assert_eq!(
+            kinds(s.next_pending_where(10, &[], &["image", "pdf"], 0).unwrap()),
+            ["c.docx"]
+        );
+        assert_eq!(
+            kinds(s.next_pending_where(10, &["pdf"], &[], 0).unwrap()),
+            ["b.pdf"]
+        );
         // cursor walk over images by id
         let first = s.next_pending_where(1, &["image"], &[], 0).unwrap();
         assert_eq!(first[0].path, "a.png");
-        let next = s.next_pending_where(5, &["image"], &[], first[0].id.0).unwrap();
+        let next = s
+            .next_pending_where(5, &["image"], &[], first[0].id.0)
+            .unwrap();
         assert_eq!(kinds(next), ["d.png"]);
         assert!(s.has_pending_kind("pdf").unwrap() && !s.has_pending_kind("code").unwrap());
         // text hits carry the chunk locator, from the pending row first and from the vector later
         let f = s.upsert_file(&key(2), "b.pdf", 1, 4, "pdf").unwrap();
-        let pend = [PendingVec { chunk: 3, kind: VecKind::Text, locator: Some("{\"page\":7}".into()) }];
-        s.complete_text_only(f, "hp", &pend, &[(3, "needle in haystack".into())]).unwrap();
+        let pend = [PendingVec {
+            chunk: 3,
+            kind: VecKind::Text,
+            locator: Some("{\"page\":7}".into()),
+        }];
+        s.complete_text_only(f, "hp", &pend, &[(3, "needle in haystack".into())])
+            .unwrap();
         let h = s.search_text(&fts_escape("needle"), 5).unwrap();
         assert_eq!(h[0].locator.as_deref(), Some("{\"page\":7}"));
-        let v = ChunkVec { chunk: 3, kind: VecKind::Text, locator: pend[0].locator.clone(), vec: vec![1., 0., 0., 0.] };
+        let v = ChunkVec {
+            chunk: 3,
+            kind: VecKind::Text,
+            locator: pend[0].locator.clone(),
+            vec: vec![1., 0., 0., 0.],
+        };
         s.finish_vectors("hp", &[v]).unwrap();
-        assert_eq!(s.search_text(&fts_escape("needle"), 5).unwrap()[0].locator.as_deref(), Some("{\"page\":7}"));
+        assert_eq!(
+            s.search_text(&fts_escape("needle"), 5).unwrap()[0]
+                .locator
+                .as_deref(),
+            Some("{\"page\":7}")
+        );
     }
 
     #[test]
@@ -2410,12 +2973,21 @@ mod tests {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         let a = add(&mut s, 1, r"C:.pdf", 1);
         // nothing owed -> a normal done file
-        s.complete_text_only(a, "h0", &[], &[(0, "plain".into())]).unwrap();
-        assert_eq!((s.stats().unwrap().done, s.stats().unwrap().text_only), (1, 0));
+        s.complete_text_only(a, "h0", &[], &[(0, "plain".into())])
+            .unwrap();
+        assert_eq!(
+            (s.stats().unwrap().done, s.stats().unwrap().text_only),
+            (1, 0)
+        );
         // modifying a text-only file sends it back to pending and gc forgets its pending rows
         let b = add(&mut s, 2, r"C:.pdf", 1);
-        let pend = [PendingVec { chunk: 0, kind: VecKind::Text, locator: None }];
-        s.complete_text_only(b, "h1", &pend, &[(0, "words".into())]).unwrap();
+        let pend = [PendingVec {
+            chunk: 0,
+            kind: VecKind::Text,
+            locator: None,
+        }];
+        s.complete_text_only(b, "h1", &pend, &[(0, "words".into())])
+            .unwrap();
         assert_eq!(s.stats().unwrap().text_only, 1);
         s.upsert_file(&key(2), r"C:.pdf", 11, 5, "doc").unwrap();
         let st = s.stats().unwrap();
@@ -2423,14 +2995,23 @@ mod tests {
         s.gc().unwrap();
         assert!(s.pending_vecs("h1").unwrap().is_empty() && s.texts_of("h1").unwrap().is_empty());
         // reset (rebuild) drops pending rows too
-        s.complete_text_only(b, "h2", &pend, &[(0, "again".into())]).unwrap();
+        s.complete_text_only(b, "h2", &pend, &[(0, "again".into())])
+            .unwrap();
         assert_eq!(s.stats().unwrap().text_only, 1);
         s.remove(&key(2)).unwrap();
         s.gc().unwrap();
         assert!(s.pending_vecs("h2").unwrap().is_empty());
         // wrong dimension is rejected
-        let bad = ChunkVec { chunk: 0, kind: VecKind::Text, locator: None, vec: vec![1.0] };
-        assert!(matches!(s.finish_vectors("h2", &[bad]), Err(Error::BadVector { .. })));
+        let bad = ChunkVec {
+            chunk: 0,
+            kind: VecKind::Text,
+            locator: None,
+            vec: vec![1.0],
+        };
+        assert!(matches!(
+            s.finish_vectors("h2", &[bad]),
+            Err(Error::BadVector { .. })
+        ));
     }
 
     #[test]
@@ -2441,7 +3022,8 @@ mod tests {
             let conn = Connection::open(&p).unwrap();
             conn.execute_batch("PRAGMA user_version = 0;").unwrap();
             migrate(&conn).unwrap();
-            conn.execute_batch("DROP TABLE pending_vecs; PRAGMA user_version = 1;").unwrap();
+            conn.execute_batch("DROP TABLE pending_vecs; PRAGMA user_version = 1;")
+                .unwrap();
         }
         let s = Store::open(&p, &meta()).unwrap();
         assert!(s.pending_vecs("x").unwrap().is_empty());
@@ -2450,15 +3032,29 @@ mod tests {
     #[test]
     fn failures_are_grouped_by_code_and_keep_the_raw_detail() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        let a = s.upsert_file(&key(1), r"C:\v\a.mp4", 10, 1, "video").unwrap();
-        let b = s.upsert_file(&key(2), r"C:\v\b.mp4", 10, 1, "video").unwrap();
-        let raw = |p: &str| format!("ffmpeg: [in#0 @ 00000222cd15a800] Error opening input file {p}. | Invalid data found when processing input");
+        let a = s
+            .upsert_file(&key(1), r"C:\v\a.mp4", 10, 1, "video")
+            .unwrap();
+        let b = s
+            .upsert_file(&key(2), r"C:\v\b.mp4", 10, 1, "video")
+            .unwrap();
+        let raw = |p: &str| {
+            format!("ffmpeg: [in#0 @ 00000222cd15a800] Error opening input file {p}. | Invalid data found when processing input")
+        };
         s.fail(a, &raw(r"C:\Q\x\a.mp4")).unwrap();
         s.fail(b, &raw(r"C:\Q\y\b.mp4")).unwrap();
         let g = s.reason_groups(false, 3, 10).unwrap();
-        assert_eq!(g.len(), 1, "different pointers and paths do not split the group");
+        assert_eq!(
+            g.len(),
+            1,
+            "different pointers and paths do not split the group"
+        );
         assert_eq!((g[0].reason.as_str(), g[0].count), ("damaged_video", 2));
-        assert!(s.file_detail(r"C:\v\a.mp4").unwrap().unwrap().contains(r"C:\Q\x\a.mp4"));
+        assert!(s
+            .file_detail(r"C:\v\a.mp4")
+            .unwrap()
+            .unwrap()
+            .contains(r"C:\Q\x\a.mp4"));
         s.skip(a, "too_large").unwrap();
         assert_eq!(s.file_detail(r"C:\v\a.mp4").unwrap(), None);
     }
@@ -2469,28 +3065,44 @@ mod tests {
         let p = dir.path().join("old.db");
         {
             let mut s = Store::open(&p, &meta()).unwrap();
-            let a = s.upsert_file(&key(1), r"C:\p\a.png", 10, 1, "image").unwrap();
+            let a = s
+                .upsert_file(&key(1), r"C:\p\a.png", 10, 1, "image")
+                .unwrap();
             let b = s.upsert_file(&key(2), r"C:\p\b.pdf", 10, 1, "pdf").unwrap();
             s.fail(a, "x").unwrap();
             s.skip(b, "x").unwrap();
             s.conn.execute("UPDATE files SET error = 'decode: The image format could not be determined', detail = NULL WHERE id = ?1", [a.0]).unwrap();
-            s.conn.execute("UPDATE files SET error = 'encrypted' WHERE id = ?1", [b.0]).unwrap();
+            s.conn
+                .execute("UPDATE files SET error = 'encrypted' WHERE id = ?1", [b.0])
+                .unwrap();
             s.conn.execute_batch("PRAGMA user_version = 5;").unwrap();
         }
         let s = Store::open(&p, &meta()).unwrap();
-        assert!(s.reason_groups(false, 3, 10).unwrap().is_empty(), "the failed row is pending again");
-        assert_eq!(s.file_error(r"C:\p\b.pdf").unwrap().as_deref(), Some("password_protected"));
-        assert_eq!(s.file_detail(r"C:\p\b.pdf").unwrap().as_deref(), Some("encrypted"));
+        assert!(
+            s.reason_groups(false, 3, 10).unwrap().is_empty(),
+            "the failed row is pending again"
+        );
+        assert_eq!(
+            s.file_error(r"C:\p\b.pdf").unwrap().as_deref(),
+            Some("password_protected")
+        );
+        assert_eq!(
+            s.file_detail(r"C:\p\b.pdf").unwrap().as_deref(),
+            Some("encrypted")
+        );
     }
 
     #[test]
     fn rename_keeps_vectors() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         let id = add(&mut s, 1, r"C:\old\a.jpg", 1);
-        s.complete(id, "h1", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(id, "h1", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         assert!(s.rename(&key(1), r"C:\new\b.jpg").unwrap());
         // upsert with only a path change is also free
-        let id2 = s.upsert_file(&key(1), r"C:\newer\c.jpg", 10, 1, "image").unwrap();
+        let id2 = s
+            .upsert_file(&key(1), r"C:\newer\c.jpg", 10, 1, "image")
+            .unwrap();
         assert_eq!(id, id2);
         assert_eq!(s.stats().unwrap().done, 1);
         let hits = s.search_vectors(&[1., 0., 0., 0.], 5, None).unwrap();
@@ -2528,7 +3140,8 @@ mod tests {
     fn modified_file_goes_pending() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         let id = add(&mut s, 1, r"C:\a.jpg", 1);
-        s.complete(id, "h", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(id, "h", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         assert!(s.next_pending(10).unwrap().is_empty());
         // unchanged upsert stays done
         add(&mut s, 1, r"C:\a.jpg", 1);
@@ -2538,7 +3151,10 @@ mod tests {
         assert_eq!(p.len(), 1);
         assert_eq!(p[0].id, id);
         // not searchable while pending
-        assert!(s.search_vectors(&[1., 0., 0., 0.], 5, None).unwrap().is_empty());
+        assert!(s
+            .search_vectors(&[1., 0., 0., 0.], 5, None)
+            .unwrap()
+            .is_empty());
         // failed/skipped are not pending
         s.fail(id, "boom").unwrap();
         assert!(s.next_pending(10).unwrap().is_empty());
@@ -2569,9 +3185,16 @@ mod tests {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         add(&mut s, 1, r"C:\Pics\a.jpg", 1);
         add(&mut s, 2, r"C:\Pics\b.jpg", 1);
-        assert!(s.rename_path(r"c:\pics\A.JPG", r"C:\Pics\sub\a.jpg").unwrap());
+        assert!(s
+            .rename_path(r"c:\pics\A.JPG", r"C:\Pics\sub\a.jpg")
+            .unwrap());
         assert!(!s.rename_path(r"C:\nope.jpg", r"C:\x.jpg").unwrap());
-        let p: Vec<_> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        let p: Vec<_> = s
+            .next_pending(10)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         assert!(p.contains(&r"C:\Pics\sub\a.jpg".to_string()));
         assert!(s.remove_path(r"C:/PICS/b.jpg").unwrap());
         assert!(!s.remove_path(r"C:\Pics\b.jpg").unwrap());
@@ -2586,7 +3209,12 @@ mod tests {
         add(&mut s, 3, r"C:\Pics2\c.jpg", 1);
         add(&mut s, 4, r"C:\other\d.jpg", 0);
         assert_eq!(s.rename_under(r"c:\pics\", r"D:\Moved\Pics").unwrap(), 2);
-        let mut p: Vec<_> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        let mut p: Vec<_> = s
+            .next_pending(10)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         p.sort();
         assert_eq!(
             p,
@@ -2610,21 +3238,37 @@ mod tests {
         let b = add(&mut s, 2, "b", 1);
         let t = add(&mut s, 3, "t", 1);
         // a: on topic; b: a hub (close to the hub direction, so close to everything)
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
-        s.complete(b, "hb", &[cv(0, [0.8, 0.6, 0., 0.])], &[]).unwrap();
-        let text = ChunkVec { kind: VecKind::Text, ..cv(1, [0.6, 0., 0.8, 0.]) };
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
+        s.complete(b, "hb", &[cv(0, [0.8, 0.6, 0., 0.])], &[])
+            .unwrap();
+        let text = ChunkVec {
+            kind: VecKind::Text,
+            ..cv(1, [0.6, 0., 0.8, 0.])
+        };
         s.complete(t, "ht", &[text], &[]).unwrap();
         let hub = [0., 1., 0., 0.];
         let c = s.search_calibrated(&[0.8, 0.6, 0., 0.], &hub, 10).unwrap();
         assert_eq!(c.len(), 3);
-        let visual: Vec<&str> = c.iter().filter(|c| c.modality == Modality::Visual).map(|c| c.path.as_str()).collect();
-        assert_eq!(visual, ["a", "b"], "raw score favours the hub b, adj favours a");
+        let visual: Vec<&str> = c
+            .iter()
+            .filter(|c| c.modality == Modality::Visual)
+            .map(|c| c.path.as_str())
+            .collect();
+        assert_eq!(
+            visual,
+            ["a", "b"],
+            "raw score favours the hub b, adj favours a"
+        );
         let ca = c.iter().find(|c| c.path == "a").unwrap();
         assert!((ca.adj - 0.8).abs() < 1e-5 && (ca.score - 0.8).abs() < 1e-5);
         assert!(ca.z.is_none(), "two files are no population");
         let ct = c.iter().find(|c| c.path == "t").unwrap();
         assert_eq!((ct.modality, ct.chunk), (Modality::Text, 1));
-        assert!(matches!(s.search_calibrated(&[1., 0.], &hub, 5), Err(Error::BadVector { .. })));
+        assert!(matches!(
+            s.search_calibrated(&[1., 0.], &hub, 5),
+            Err(Error::BadVector { .. })
+        ));
     }
 
     #[test]
@@ -2633,29 +3277,51 @@ mod tests {
         let a = add(&mut s, 1, "a", 1);
         let b = add(&mut s, 2, "b", 1);
         let c = add(&mut s, 3, "c", 1);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap(); // matches phrase 1 only
-        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap(); // matches phrase 2 only
-        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[]).unwrap(); // matches neither
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap(); // matches phrase 1 only
+        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[])
+            .unwrap(); // matches phrase 2 only
+        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[])
+            .unwrap(); // matches neither
         let hub = [0., 1., 0., 0.];
         let (q1, q2) = ([1., 0., 0., 0.], [0., 0., 1., 0.]);
         let none = HashSet::new();
         let one = s.search_calibrated_multi(&[&q1], &hub, 10, &none).unwrap();
-        assert_eq!(one.iter().find(|x| x.path == "b").unwrap().adj, 0.0, "one phrase misses b");
-        let both = s.search_calibrated_multi(&[&q1, &q2], &hub, 10, &none).unwrap();
+        assert_eq!(
+            one.iter().find(|x| x.path == "b").unwrap().adj,
+            0.0,
+            "one phrase misses b"
+        );
+        let both = s
+            .search_calibrated_multi(&[&q1, &q2], &hub, 10, &none)
+            .unwrap();
         let adj = |p: &str| both.iter().find(|x| x.path == p).unwrap().adj;
-        assert_eq!((adj("a"), adj("b"), adj("c")), (1.0, 1.0, 0.0), "each content is scored under its best phrase");
+        assert_eq!(
+            (adj("a"), adj("b"), adj("c")),
+            (1.0, 1.0, 0.0),
+            "each content is scored under its best phrase"
+        );
         assert_eq!(both.iter().find(|x| x.path == "a").unwrap().hash, "ha");
         let skip: HashSet<String> = ["ha".to_string()].into();
-        let rest = s.search_calibrated_multi(&[&q1, &q2], &hub, 10, &skip).unwrap();
-        assert!(rest.iter().all(|x| x.path != "a") && rest.len() == 2, "skipped contents are not candidates");
-        assert!(s.search_calibrated_multi(&[], &hub, 10, &none).unwrap().is_empty());
+        let rest = s
+            .search_calibrated_multi(&[&q1, &q2], &hub, 10, &skip)
+            .unwrap();
+        assert!(
+            rest.iter().all(|x| x.path != "a") && rest.len() == 2,
+            "skipped contents are not candidates"
+        );
+        assert!(s
+            .search_calibrated_multi(&[], &hub, 10, &none)
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
     fn image_dims_roundtrip_and_replace() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         assert!(s.image_dims().unwrap().is_empty());
-        s.set_image_dims(&[("h1".into(), 640, 480), ("h2".into(), 0, 0)]).unwrap();
+        s.set_image_dims(&[("h1".into(), 640, 480), ("h2".into(), 0, 0)])
+            .unwrap();
         s.set_image_dims(&[("h1".into(), 800, 600)]).unwrap();
         let d = s.image_dims().unwrap();
         assert_eq!((d["h1"], d["h2"], d.len()), ((800, 600), (0, 0), 2));
@@ -2667,7 +3333,12 @@ mod tests {
         add(&mut s, 1, "a", 100);
         add(&mut s, 2, "b", 300);
         add(&mut s, 3, "c", 200);
-        let p: Vec<_> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        let p: Vec<_> = s
+            .next_pending(10)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         assert_eq!(p, ["b", "c", "a"]);
         assert_eq!(s.next_pending(2).unwrap().len(), 2);
     }
@@ -2679,10 +3350,17 @@ mod tests {
         let b = add(&mut s, 2, "b", 1);
         let c = add(&mut s, 3, "c", 1);
         // a: two chunks, one close to the query
-        s.complete(a, "ha", &[cv(0, [0., 1., 0., 0.]), cv(1, [0.8, 0.6, 0., 0.])], &[])
+        s.complete(
+            a,
+            "ha",
+            &[cv(0, [0., 1., 0., 0.]), cv(1, [0.8, 0.6, 0., 0.])],
+            &[],
+        )
+        .unwrap();
+        s.complete(b, "hb", &[cv(0, [1., 0., 0., 0.])], &[])
             .unwrap();
-        s.complete(b, "hb", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
-        s.complete(c, "hc", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        s.complete(c, "hc", &[cv(0, [0., 0., 1., 0.])], &[])
+            .unwrap();
         let hits = s.search_vectors(&[1., 0., 0., 0.], 10, None).unwrap();
         assert_eq!(hits.len(), 3, "one hit per file");
         assert_eq!(hits[0].path, "b");
@@ -2690,7 +3368,10 @@ mod tests {
         assert_eq!(hits[1].chunk, 1);
         assert!(hits[1].locator.as_deref().unwrap().contains("1"));
         assert!(hits[0].score > hits[1].score && hits[1].score > hits[2].score);
-        assert_eq!(s.search_vectors(&[1., 0., 0., 0.], 1, None).unwrap().len(), 1);
+        assert_eq!(
+            s.search_vectors(&[1., 0., 0., 0.], 1, None).unwrap().len(),
+            1
+        );
         assert!(s
             .search_vectors(&[1., 0., 0., 0.], 5, Some(VecKind::Text))
             .unwrap()
@@ -2700,7 +3381,15 @@ mod tests {
             Err(Error::BadVector { .. })
         ));
         assert!(matches!(
-            s.complete(a, "x", &[ChunkVec { vec: vec![1.0], ..cv(0, [0.; 4]) }], &[]),
+            s.complete(
+                a,
+                "x",
+                &[ChunkVec {
+                    vec: vec![1.0],
+                    ..cv(0, [0.; 4])
+                }],
+                &[]
+            ),
             Err(Error::BadVector { .. })
         ));
     }
@@ -2727,7 +3416,10 @@ mod tests {
         assert!(hits[0].snippet.contains("[caf"));
         assert_eq!(s.search_text("FERME", 10).unwrap().len(), 1);
         assert!(s.search_text("zzz", 10).unwrap().is_empty());
-        assert_eq!(s.search_text(&fts_escape("tea \"only"), 10).unwrap().len(), 1);
+        assert_eq!(
+            s.search_text(&fts_escape("tea \"only"), 10).unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -2743,7 +3435,10 @@ mod tests {
         assert!(!in_scope(&sc, r"C:\Users\a\private\x"), "exclude wins");
         assert!(!in_scope(&sc, r"C:\Users\a\Private"));
         assert!(in_scope(&sc, r"C:\Users\a\PrivateStuff\x"));
-        assert!(!in_scope(&sc, r"C:\Users\a\AppData\Local\x"), "default segment");
+        assert!(
+            !in_scope(&sc, r"C:\Users\a\AppData\Local\x"),
+            "default segment"
+        );
         assert!(!in_scope(&sc, r"C:\Users\a\proj\node_modules\x"));
         assert!(!in_scope(&sc, r"C:\Users\a\proj\.git\config"));
         assert!(in_scope(&sc, r"C:\Users\a\gitstuff\x"));
@@ -2761,7 +3456,11 @@ mod tests {
     #[test]
     fn hard_deny_beats_any_user_ignore_list_and_include_root() {
         let none = Ignore::new::<&str>(&[]); // user cleared the whole ignore list
-        let sc = Scopes { include: vec![r"C:\u\Documents".into(), r"C:\u\.ssh".into()], exclude: vec![], ..Default::default() };
+        let sc = Scopes {
+            include: vec![r"C:\u\Documents".into(), r"C:\u\.ssh".into()],
+            exclude: vec![],
+            ..Default::default()
+        };
         for p in [
             r"C:\u\Documents\.ssh\id_rsa",
             r"C:\u\Documents\keys\server.pem",
@@ -2781,38 +3480,83 @@ mod tests {
 
     #[test]
     fn skips_for_a_temporary_cause_can_be_requeued() {
-        let meta = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
         let mut s = Store::open_in_memory(&meta).unwrap();
-        let k = |n: u64| FileKey { vol_guid: "v".into(), frn: n };
+        let k = |n: u64| FileKey {
+            vol_guid: "v".into(),
+            frn: n,
+        };
         let a = s.upsert_file(&k(1), r"C:\p\a.jpg", 10, 1, "image").unwrap();
         let b = s.upsert_file(&k(2), r"C:\p\b.jpg", 10, 1, "image").unwrap();
         s.skip(a, "cloud_only").unwrap();
         s.skip(b, "too_large").unwrap();
-        assert_eq!(s.requeue_skipped(&["cloud_only", "no_heic_codec"]).unwrap(), 1);
-        let pending: Vec<String> = s.next_pending(10).unwrap().into_iter().map(|f| f.path).collect();
+        assert_eq!(
+            s.requeue_skipped(&["cloud_only", "no_heic_codec"]).unwrap(),
+            1
+        );
+        let pending: Vec<String> = s
+            .next_pending(10)
+            .unwrap()
+            .into_iter()
+            .map(|f| f.path)
+            .collect();
         assert_eq!(pending, [r"C:\p\a.jpg"]);
         assert_eq!(s.all_file_paths().unwrap().len(), 2);
     }
 
     #[test]
     fn code_files_are_searchable_only_through_search_code() {
-        let meta = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
         let mut s = Store::open_in_memory(&meta).unwrap();
-        let k = |n: u64| FileKey { vol_guid: "v".into(), frn: n };
-        let code = s.upsert_file(&k(1), r"C:\p\main.rs", 10, 1, "code").unwrap();
-        let doc = s.upsert_file(&k(2), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
-        s.complete(code, "h1", &[], &[(0, "frobnicate the widget".into())]).unwrap();
-        s.complete(doc, "h2", &[], &[(0, "meeting about the widget".into())]).unwrap();
+        let k = |n: u64| FileKey {
+            vol_guid: "v".into(),
+            frn: n,
+        };
+        let code = s
+            .upsert_file(&k(1), r"C:\p\main.rs", 10, 1, "code")
+            .unwrap();
+        let doc = s
+            .upsert_file(&k(2), r"C:\p\notes.txt", 10, 1, "doc")
+            .unwrap();
+        s.complete(code, "h1", &[], &[(0, "frobnicate the widget".into())])
+            .unwrap();
+        s.complete(doc, "h2", &[], &[(0, "meeting about the widget".into())])
+            .unwrap();
         let general = s.search_text("widget", 10).unwrap();
-        assert_eq!(general.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), [r"C:\p\notes.txt"]);
-        assert!(s.search_text("frobnicate", 10).unwrap().is_empty(), "code never mixes into general results");
+        assert_eq!(
+            general.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            [r"C:\p\notes.txt"]
+        );
+        assert!(
+            s.search_text("frobnicate", 10).unwrap().is_empty(),
+            "code never mixes into general results"
+        );
         let c = s.search_code("widget", 10).unwrap();
-        assert_eq!(c.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), [r"C:\p\main.rs"]);
+        assert_eq!(
+            c.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            [r"C:\p\main.rs"]
+        );
     }
 
     #[test]
     fn default_ignore_covers_dev_junk() {
-        let sc = Scopes { include: vec![r"C:\u\Documents".into()], exclude: vec![], ..Default::default() };
+        let sc = Scopes {
+            include: vec![r"C:\u\Documents".into()],
+            exclude: vec![],
+            ..Default::default()
+        };
         for junk in [
             r"proj\node_modules\x.png",
             r"proj\.venv\Lib\x.png",
@@ -2836,42 +3580,88 @@ mod tests {
         ] {
             assert!(!in_scope(&sc, &format!(r"C:\u\Documents\{junk}")), "{junk}");
         }
-        assert!(in_scope(&sc, r"C:\u\Documents\Targets 2025\x.png"), "whole names only");
+        assert!(
+            in_scope(&sc, r"C:\u\Documents\Targets 2025\x.png"),
+            "whole names only"
+        );
         assert!(in_scope(&sc, r"C:\u\Documents\builder\x.png"));
         // the include root's own segments are exempt
-        let root = Scopes { include: vec![r"D:\build\photos".into()], exclude: vec![], ..Default::default() };
+        let root = Scopes {
+            include: vec![r"D:\build\photos".into()],
+            exclude: vec![],
+            ..Default::default()
+        };
         assert!(in_scope(&root, r"D:\build\photos\x.jpg"));
         assert!(!in_scope(&root, r"D:\build\photos\out\x.jpg"));
         // a projects library: sources in, build output and environments out
-        let lib = Scopes { include: vec![r"D:\Projects".into()], exclude: vec![], ..Default::default() };
+        let lib = Scopes {
+            include: vec![r"D:\Projects".into()],
+            exclude: vec![],
+            ..Default::default()
+        };
         assert!(in_scope(&lib, r"D:\Projects\winseek\docs\shot.png"));
         assert!(!in_scope(&lib, r"D:\Projects\winseek\target\debug\x.png"));
-        assert!(!in_scope(&lib, r"D:\Projects\winseek\app\ui\node_modules\x.png"));
+        assert!(!in_scope(
+            &lib,
+            r"D:\Projects\winseek\app\ui\node_modules\x.png"
+        ));
         assert!(!in_scope(&lib, r"D:\Projects\photo\.venv\Lib\x.png"));
     }
 
     #[test]
     fn custom_ignore_and_globs() {
-        let sc = Scopes { include: vec![r"C:\p".into()], exclude: vec![], ..Default::default() };
+        let sc = Scopes {
+            include: vec![r"C:\p".into()],
+            exclude: vec![],
+            ..Default::default()
+        };
         let ig = Ignore::new(&["Raw*", "?tmp", " /Secret\\ ", ""]);
         assert!(!in_scope_with(&sc, &ig, r"C:\p\RAWs\x.jpg"));
         assert!(!in_scope_with(&sc, &ig, r"C:\p\xtmp\x.jpg"));
-        assert!(in_scope_with(&sc, &ig, r"C:\p\tmp\x.jpg"), "? needs one char");
+        assert!(
+            in_scope_with(&sc, &ig, r"C:\p\tmp\x.jpg"),
+            "? needs one char"
+        );
         assert!(!in_scope_with(&sc, &ig, r"C:\p\secret\x.jpg"));
-        assert!(in_scope_with(&sc, &ig, r"C:\p\node_modules\x.jpg"), "custom list replaces defaults");
-        assert!(in_scope_with(&sc, &Ignore::new::<&str>(&[]), r"C:\p\.git\x"));
-        assert!(glob_match(&"a*b*c".chars().collect::<Vec<_>>(), &"axxbyyc".chars().collect::<Vec<_>>()));
-        assert!(!glob_match(&"a*b".chars().collect::<Vec<_>>(), &"axxbc".chars().collect::<Vec<_>>()));
+        assert!(
+            in_scope_with(&sc, &ig, r"C:\p\node_modules\x.jpg"),
+            "custom list replaces defaults"
+        );
+        assert!(in_scope_with(
+            &sc,
+            &Ignore::new::<&str>(&[]),
+            r"C:\p\.git\x"
+        ));
+        assert!(glob_match(
+            &"a*b*c".chars().collect::<Vec<_>>(),
+            &"axxbyyc".chars().collect::<Vec<_>>()
+        ));
+        assert!(!glob_match(
+            &"a*b".chars().collect::<Vec<_>>(),
+            &"axxbc".chars().collect::<Vec<_>>()
+        ));
     }
 
     #[test]
     fn ignore_persists() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         assert_eq!(s.get_ignore().unwrap(), default_ignore());
-        s.set_ignore(Some(&[" build ".into(), "".into(), "Build".into(), "x*".into()])).unwrap();
-        assert_eq!(s.get_ignore().unwrap(), vec!["build".to_string(), "x*".into()]);
+        s.set_ignore(Some(&[
+            " build ".into(),
+            "".into(),
+            "Build".into(),
+            "x*".into(),
+        ]))
+        .unwrap();
+        assert_eq!(
+            s.get_ignore().unwrap(),
+            vec!["build".to_string(), "x*".into()]
+        );
         s.set_ignore(Some(&[])).unwrap();
-        assert!(s.get_ignore().unwrap().is_empty(), "an empty list is a real choice");
+        assert!(
+            s.get_ignore().unwrap().is_empty(),
+            "an empty list is a real choice"
+        );
         s.set_ignore(None).unwrap();
         assert_eq!(s.get_ignore().unwrap(), default_ignore());
     }
@@ -2887,11 +3677,23 @@ mod tests {
         };
         s.set_scopes(&sc).unwrap();
         s.set_scopes(&sc).unwrap();
-        assert_eq!(s.get_scopes().unwrap(), sc, "including the configured marker");
+        assert_eq!(
+            s.get_scopes().unwrap(),
+            sc,
+            "including the configured marker"
+        );
         // An old store row without the field reads as never-configured.
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        s.set_setting("scopes", Some(r#"{"include":["C:\\a"],"exclude":[]}"#)).unwrap();
-        assert_eq!(s.get_scopes().unwrap(), Scopes { include: vec!["C:\\a".into()], exclude: vec![], configured: false });
+        s.set_setting("scopes", Some(r#"{"include":["C:\\a"],"exclude":[]}"#))
+            .unwrap();
+        assert_eq!(
+            s.get_scopes().unwrap(),
+            Scopes {
+                include: vec!["C:\\a".into()],
+                exclude: vec![],
+                configured: false
+            }
+        );
     }
 
     #[test]
@@ -2901,8 +3703,13 @@ mod tests {
         let b = add(&mut s, 2, "b", 1);
         add(&mut s, 3, "c", 1);
         add(&mut s, 4, "d", 1);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.]), cv(1, [0., 1., 0., 0.])], &[])
-            .unwrap();
+        s.complete(
+            a,
+            "ha",
+            &[cv(0, [1., 0., 0., 0.]), cv(1, [0., 1., 0., 0.])],
+            &[],
+        )
+        .unwrap();
         s.fail(b, "bad").unwrap();
         let st = s.stats().unwrap();
         assert_eq!(
@@ -2927,7 +3734,10 @@ mod tests {
             .unwrap()
             .pragma_update(None, "user_version", 99)
             .unwrap();
-        assert!(matches!(Store::open(&p, &meta()), Err(Error::SchemaTooNew(99))));
+        assert!(matches!(
+            Store::open(&p, &meta()),
+            Err(Error::SchemaTooNew(99))
+        ));
     }
 
     #[test]
@@ -2936,22 +3746,37 @@ mod tests {
         let a = add(&mut s, 1, r"C:\p\a.jpg", 300);
         let b = add(&mut s, 2, r"C:\p\copy of a.jpg", 100);
         let c = add(&mut s, 3, r"C:\p\c.png", 200);
-        let d = s.upsert_file(&key(4), r"C:\p\notes.pdf", 10, 400, "pdf").unwrap();
+        let d = s
+            .upsert_file(&key(4), r"C:\p\notes.pdf", 10, 400, "pdf")
+            .unwrap();
         add(&mut s, 5, r"C:\p\pending.jpg", 500);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         s.complete(b, "ha", &[], &[]).unwrap(); // same content as a
-        s.complete(c, "hc", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
-        s.complete(d, "hd", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        s.complete(c, "hc", &[cv(0, [0., 1., 0., 0.])], &[])
+            .unwrap();
+        s.complete(d, "hd", &[cv(0, [0., 0., 1., 0.])], &[])
+            .unwrap();
 
         let imgs = s.list_images().unwrap();
         let paths: Vec<_> = imgs.iter().map(|i| i.path.as_str()).collect();
-        assert_eq!(paths, vec![r"C:\p\a.jpg", r"C:\p\c.png", r"C:\p\copy of a.jpg"], "done images only, newest first");
-        assert_eq!((imgs[0].size, imgs[0].mtime, imgs[0].content_hash.as_str()), (10, 300, "ha"));
+        assert_eq!(
+            paths,
+            vec![r"C:\p\a.jpg", r"C:\p\c.png", r"C:\p\copy of a.jpg"],
+            "done images only, newest first"
+        );
+        assert_eq!(
+            (imgs[0].size, imgs[0].mtime, imgs[0].content_hash.as_str()),
+            (10, 300, "ha")
+        );
 
         let groups = s.dup_groups().unwrap();
         assert_eq!(groups.len(), 1);
         assert_eq!(groups[0].hash, "ha");
-        assert_eq!(groups[0].files.iter().map(|f| f.mtime).collect::<Vec<_>>(), vec![300, 100]);
+        assert_eq!(
+            groups[0].files.iter().map(|f| f.mtime).collect::<Vec<_>>(),
+            vec![300, 100]
+        );
         assert_eq!(groups[0].reclaimable(), 10);
     }
 
@@ -2959,8 +3784,11 @@ mod tests {
     fn dup_groups_sorted_by_reclaimable() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         let mk = |s: &mut Store, n: u64, size: u64, hash: &str| {
-            let id = s.upsert_file(&key(n), &format!("C:\\x\\{n}.jpg"), size, n as i64, "image").unwrap();
-            s.complete(id, hash, &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+            let id = s
+                .upsert_file(&key(n), &format!("C:\\x\\{n}.jpg"), size, n as i64, "image")
+                .unwrap();
+            s.complete(id, hash, &[cv(0, [1., 0., 0., 0.])], &[])
+                .unwrap();
         };
         mk(&mut s, 1, 5, "small");
         mk(&mut s, 2, 5, "small");
@@ -2968,7 +3796,12 @@ mod tests {
         mk(&mut s, 4, 100, "big");
         mk(&mut s, 5, 100, "big");
         let g = s.dup_groups().unwrap();
-        assert_eq!(g.iter().map(|g| (g.hash.as_str(), g.reclaimable())).collect::<Vec<_>>(), vec![("big", 200), ("small", 5)]);
+        assert_eq!(
+            g.iter()
+                .map(|g| (g.hash.as_str(), g.reclaimable()))
+                .collect::<Vec<_>>(),
+            vec![("big", 200), ("small", 5)]
+        );
     }
 
     #[test]
@@ -2977,9 +3810,17 @@ mod tests {
         let a = add(&mut s, 1, r"C:\p\a.jpg", 100);
         let b = add(&mut s, 2, r"C:\p\b.jpg", 200);
         let c = add(&mut s, 3, r"C:\p\c.jpg", 300);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
-        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.]), cv(1, [0., 0., 1., 0.])], &[]).unwrap();
-        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[]).unwrap();
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
+        s.complete(
+            b,
+            "hb",
+            &[cv(0, [0., 1., 0., 0.]), cv(1, [0., 0., 1., 0.])],
+            &[],
+        )
+        .unwrap();
+        s.complete(c, "hc", &[cv(0, [0., 0., 0., 1.])], &[])
+            .unwrap();
         let r = s.images_with_vectors(100, 300).unwrap();
         assert_eq!(r.len(), 2, "[from, to) range");
         assert_eq!(r[0].0.path, r"C:\p\b.jpg");
@@ -2994,7 +3835,11 @@ mod tests {
         let c = [0.848f32, 0.53]; // cos(b,c) ~ 0.96, cos(a,c) ~ 0.85
         let d = [0.0f32, 1.0];
         let v: Vec<&[f32]> = vec![&a, &b, &c, &d];
-        assert_eq!(cluster_near(&v, 0.95), vec![vec![0, 1, 2]], "single linkage joins a-b-c");
+        assert_eq!(
+            cluster_near(&v, 0.95),
+            vec![vec![0, 1, 2]],
+            "single linkage joins a-b-c"
+        );
         assert!(cluster_near(&v, 0.99).is_empty());
         assert_eq!(cluster_near(&v, 0.5), vec![vec![0, 1, 2, 3]]);
         assert!(cluster_near(&[], 0.9).is_empty());
@@ -3006,14 +3851,40 @@ mod tests {
         let a = add(&mut s, 1, r"C:\p\a.pdf", 100);
         let b = add(&mut s, 2, r"C:\p\b.jpg", 200);
         // a: one page image + one text chunk; b: image only
-        let text_vec = ChunkVec { chunk: 1, kind: VecKind::Text, locator: None, vec: vec![0., 1., 0., 0.] };
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.]), text_vec], &[(1, "body".into())]).unwrap();
-        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        let text_vec = ChunkVec {
+            chunk: 1,
+            kind: VecKind::Text,
+            locator: None,
+            vec: vec![0., 1., 0., 0.],
+        };
+        s.complete(
+            a,
+            "ha",
+            &[cv(0, [1., 0., 0., 0.]), text_vec],
+            &[(1, "body".into())],
+        )
+        .unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 0., 1., 0.])], &[])
+            .unwrap();
         assert!(s.next_text_only(10).unwrap().is_empty(), "both done");
 
-        assert_eq!(s.reset_text_vectors().unwrap(), 1, "only the file with a text chunk");
-        assert_eq!(s.pending_vecs("ha").unwrap(), vec![PendingVec { chunk: 1, kind: VecKind::Text, locator: None }]);
-        assert!(s.pending_vecs("hb").unwrap().is_empty(), "image vectors stay");
+        assert_eq!(
+            s.reset_text_vectors().unwrap(),
+            1,
+            "only the file with a text chunk"
+        );
+        assert_eq!(
+            s.pending_vecs("ha").unwrap(),
+            vec![PendingVec {
+                chunk: 1,
+                kind: VecKind::Text,
+                locator: None
+            }]
+        );
+        assert!(
+            s.pending_vecs("hb").unwrap().is_empty(),
+            "image vectors stay"
+        );
         assert_eq!(s.texts_of("ha").unwrap().len(), 1, "text survives for FTS");
         let only = s.next_text_only(10).unwrap();
         assert_eq!(only.len(), 1);
@@ -3033,9 +3904,12 @@ mod tests {
         assert!(!s.get_index_code().unwrap());
 
         let a = s.upsert_file(&key(1), r"C:\p\a.rs", 10, 1, "code").unwrap();
-        let b = s.upsert_file(&key(2), r"C:\p\b.jpg", 10, 1, "image").unwrap();
+        let b = s
+            .upsert_file(&key(2), r"C:\p\b.jpg", 10, 1, "image")
+            .unwrap();
         s.complete(a, "hc", &[], &[(0, "fn main".into())]).unwrap();
-        s.complete(b, "hi", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(b, "hi", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         assert_eq!(s.remove_kind("code").unwrap(), 1);
         assert_eq!(s.stats().unwrap().files, 1);
         assert!(!s.has_content("hc").unwrap(), "orphaned content collected");
@@ -3045,9 +3919,15 @@ mod tests {
     #[test]
     fn dup_groups_only_offer_images() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        for (n, p, k) in [(1, r"C:\a.txt", "doc"), (2, r"C:\b.txt", "doc"), (3, r"C:\c.jpg", "image"), (4, r"C:\d.jpg", "image")] {
+        for (n, p, k) in [
+            (1, r"C:\a.txt", "doc"),
+            (2, r"C:\b.txt", "doc"),
+            (3, r"C:\c.jpg", "image"),
+            (4, r"C:\d.jpg", "image"),
+        ] {
             let id = s.upsert_file(&key(n), p, 10, 1, k).unwrap();
-            s.complete(id, if k == "doc" { "hd" } else { "hj" }, &[], &[]).unwrap();
+            s.complete(id, if k == "doc" { "hd" } else { "hj" }, &[], &[])
+                .unwrap();
         }
         let g = s.dup_groups().unwrap();
         assert_eq!(g.len(), 1);
@@ -3057,20 +3937,38 @@ mod tests {
     // ---- parse queue --------------------------------------------------------------
 
     fn tv(chunk: u32, page: u32, v: [f32; 4]) -> ChunkVec {
-        ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!("{{\"page\":{page}}}")), vec: v.to_vec() }
+        ChunkVec {
+            chunk,
+            kind: VecKind::Text,
+            locator: Some(format!("{{\"page\":{page}}}")),
+            vec: v.to_vec(),
+        }
     }
 
     fn iv(chunk: u32, page: u32, v: [f32; 4]) -> ChunkVec {
-        ChunkVec { chunk, kind: VecKind::Image, locator: Some(format!("{{\"page\":{page}}}")), vec: v.to_vec() }
+        ChunkVec {
+            chunk,
+            kind: VecKind::Image,
+            locator: Some(format!("{{\"page\":{page}}}")),
+            vec: v.to_vec(),
+        }
     }
 
     fn pc(text: &str, page: u32, v: Option<[f32; 4]>) -> ParseChunk {
-        ParseChunk { text: text.into(), locator: format!("{{\"page\":{page},\"parser\":{{}}}}"), vec: v.map(|v| v.to_vec()) }
+        ParseChunk {
+            text: text.into(),
+            locator: format!("{{\"page\":{page},\"parser\":{{}}}}"),
+            vec: v.map(|v| v.to_vec()),
+        }
     }
 
     fn locator_of(s: &Store, hash: &str, chunk: u32) -> Option<String> {
         s.conn
-            .query_row("SELECT locator FROM vectors WHERE hash = ?1 AND chunk = ?2", params![hash, chunk], |r| r.get(0))
+            .query_row(
+                "SELECT locator FROM vectors WHERE hash = ?1 AND chunk = ?2",
+                params![hash, chunk],
+                |r| r.get(0),
+            )
             .unwrap()
     }
 
@@ -3082,12 +3980,24 @@ mod tests {
             let conn = Connection::open(&p).unwrap();
             conn.execute_batch("PRAGMA user_version = 0;").unwrap();
             migrate(&conn).unwrap();
-            conn.execute_batch("DROP TABLE parse_queue; PRAGMA user_version = 2;").unwrap();
+            conn.execute_batch("DROP TABLE parse_queue; PRAGMA user_version = 2;")
+                .unwrap();
         }
         let mut s = Store::open(&p, &meta()).unwrap();
         assert!(s.queue_parse("h", 0, "screenshot").unwrap());
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 0, failed: 0, skipped: 0 });
-        let v: i64 = s.conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(
+            s.parse_counts().unwrap(),
+            ParseCounts {
+                queued: 1,
+                done: 0,
+                failed: 0,
+                skipped: 0
+            }
+        );
+        let v: i64 = s
+            .conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
         assert_eq!(v, SCHEMA_VERSION);
     }
 
@@ -3097,21 +4007,34 @@ mod tests {
         let old = add(&mut s, 1, r"C:\p\old.png", 100);
         let new = add(&mut s, 2, r"C:\p\new.png", 300);
         let dead = add(&mut s, 3, r"C:\p\dead.png", 500);
-        s.complete(old, "ho", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
-        s.complete(new, "hn", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
-        s.complete(dead, "hd", &[cv(0, [0., 0., 1., 0.])], &[]).unwrap();
+        s.complete(old, "ho", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
+        s.complete(new, "hn", &[cv(0, [0., 1., 0., 0.])], &[])
+            .unwrap();
+        s.complete(dead, "hd", &[cv(0, [0., 0., 1., 0.])], &[])
+            .unwrap();
         assert!(s.queue_parse("ho", 0, "doc_image").unwrap());
         assert!(s.queue_parse("hn", 0, "screenshot").unwrap());
         assert!(s.queue_parse("hd", 0, "doc_image").unwrap());
-        assert!(!s.queue_parse("hn", 0, "doc_image").unwrap(), "INSERT OR IGNORE");
+        assert!(
+            !s.queue_parse("hn", 0, "doc_image").unwrap(),
+            "INSERT OR IGNORE"
+        );
         s.remove(&key(3)).unwrap();
         s.queue_parse("hn", 2, "scanned_pdf").unwrap();
 
         let jobs = s.next_parse(10).unwrap();
-        let got: Vec<_> = jobs.iter().map(|j| (j.hash.as_str(), j.page, j.reason.as_str(), j.path.as_str())).collect();
+        let got: Vec<_> = jobs
+            .iter()
+            .map(|j| (j.hash.as_str(), j.page, j.reason.as_str(), j.path.as_str()))
+            .collect();
         assert_eq!(
             got,
-            vec![("hn", 0, "screenshot", r"C:\p\new.png"), ("hn", 2, "scanned_pdf", r"C:\p\new.png"), ("ho", 0, "doc_image", r"C:\p\old.png")],
+            vec![
+                ("hn", 0, "screenshot", r"C:\p\new.png"),
+                ("hn", 2, "scanned_pdf", r"C:\p\new.png"),
+                ("ho", 0, "doc_image", r"C:\p\old.png")
+            ],
             "newest file first, dead content left out"
         );
         assert_eq!(s.next_parse(1).unwrap().len(), 1);
@@ -3120,11 +4043,36 @@ mod tests {
 
         assert_eq!(s.bump_parse("ho", 0, "boom").unwrap(), 1);
         assert_eq!(s.bump_parse("ho", 0, "boom").unwrap(), 2);
-        assert_eq!(s.next_parse(10).unwrap().iter().find(|j| j.hash == "ho").unwrap().attempts, 2);
+        assert_eq!(
+            s.next_parse(10)
+                .unwrap()
+                .iter()
+                .find(|j| j.hash == "ho")
+                .unwrap()
+                .attempts,
+            2
+        );
         s.fail_parse("ho", 0, "boom").unwrap();
         s.skip_parse("hn", 2, "empty").unwrap();
-        s.finish_parse("hn", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 1, done: 1, failed: 1, skipped: 1 }, "only the dead one is still queued");
+        s.finish_parse(
+            "hn",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            s.parse_counts().unwrap(),
+            ParseCounts {
+                queued: 1,
+                done: 1,
+                failed: 1,
+                skipped: 1
+            },
+            "only the dead one is still queued"
+        );
         assert!(s.next_parse(10).unwrap().is_empty());
     }
 
@@ -3138,7 +4086,15 @@ mod tests {
         s.skip_parse("hb", 3, "ocr_ok").unwrap();
         s.fail_parse("hb", 0, "boom").unwrap();
         s.queue_parse("hc", 0, "doc_image").unwrap();
-        s.finish_parse("hc", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.finish_parse(
+            "hc",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
         let mut got = s.queued_all().unwrap();
         got.sort();
         assert_eq!(got, vec![("ha".into(), 0)]);
@@ -3147,24 +4103,60 @@ mod tests {
     #[test]
     fn page_text_takes_the_chunks_of_that_page() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        let id = s.upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf").unwrap();
+        let id = s
+            .upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf")
+            .unwrap();
         // page 1: OCR text with its vector; page 2: text whose vector is still owed
-        let v = |chunk, page: u32, vec| ChunkVec { chunk, kind: VecKind::Text, locator: Some(format!(r#"{{"page":{page}}}"#)), vec };
-        s.complete(id, "hs", &[v(1, 1, cvv()), v(3, 2, cvv())], &[(1, "page one words".into()), (3, "page two words".into())]).unwrap();
+        let v = |chunk, page: u32, vec| ChunkVec {
+            chunk,
+            kind: VecKind::Text,
+            locator: Some(format!(r#"{{"page":{page}}}"#)),
+            vec,
+        };
+        s.complete(
+            id,
+            "hs",
+            &[v(1, 1, cvv()), v(3, 2, cvv())],
+            &[(1, "page one words".into()), (3, "page two words".into())],
+        )
+        .unwrap();
         assert_eq!(s.page_text("hs", 1).unwrap(), "page one words");
-        assert_eq!(s.page_text("hs", 2).unwrap(), "page two words", "owed vector's locator counts");
+        assert_eq!(
+            s.page_text("hs", 2).unwrap(),
+            "page two words",
+            "owed vector's locator counts"
+        );
         assert_eq!(s.page_text("hs", 0).unwrap(), "", "no standalone chunks");
         assert_eq!(s.page_text("hs", 7).unwrap(), "");
         assert_eq!(s.page_text("missing", 1).unwrap(), "");
         // a text-only file: the vector is owed, its locator lives in pending_vecs
-        let oid = s.upsert_file(&key(3), r"C:\p\notes.pdf", 10, 1, "pdf").unwrap();
-        let pend = [PendingVec { chunk: 5, kind: VecKind::Text, locator: Some(r#"{"page":7}"#.into()) }];
-        s.complete_text_only(oid, "hn", &pend, &[(5, "page seven".into())]).unwrap();
-        assert_eq!(s.page_text("hn", 7).unwrap(), "page seven", "pending_vecs fallback");
+        let oid = s
+            .upsert_file(&key(3), r"C:\p\notes.pdf", 10, 1, "pdf")
+            .unwrap();
+        let pend = [PendingVec {
+            chunk: 5,
+            kind: VecKind::Text,
+            locator: Some(r#"{"page":7}"#.into()),
+        }];
+        s.complete_text_only(oid, "hn", &pend, &[(5, "page seven".into())])
+            .unwrap();
+        assert_eq!(
+            s.page_text("hn", 7).unwrap(),
+            "page seven",
+            "pending_vecs fallback"
+        );
         // a parsed page-0 image: its chunks carry no page key, so page 0 finds them
-        let img = s.upsert_file(&key(2), r"C:\p\shot.png", 10, 1, "image").unwrap();
-        let noloc = ChunkVec { chunk: 0, kind: VecKind::Text, locator: Some(r#"{"ocr":{"w":1}}"#.into()), vec: cvv() };
-        s.complete(img, "hi", &[noloc], &[(0, "standalone ocr text".into())]).unwrap();
+        let img = s
+            .upsert_file(&key(2), r"C:\p\shot.png", 10, 1, "image")
+            .unwrap();
+        let noloc = ChunkVec {
+            chunk: 0,
+            kind: VecKind::Text,
+            locator: Some(r#"{"ocr":{"w":1}}"#.into()),
+            vec: cvv(),
+        };
+        s.complete(img, "hi", &[noloc], &[(0, "standalone ocr text".into())])
+            .unwrap();
         assert_eq!(s.page_text("hi", 0).unwrap(), "standalone ocr text");
         assert_eq!(s.page_text("hi", 1).unwrap(), "");
     }
@@ -3176,7 +4168,9 @@ mod tests {
     #[test]
     fn finish_parse_replaces_only_that_pages_text_and_rewrites_locator() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        let f = s.upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf").unwrap();
+        let f = s
+            .upsert_file(&key(1), r"C:\p\scan.pdf", 10, 1, "pdf")
+            .unwrap();
         // pages 1 and 2 are scanned: image vector, then OCR text; chunk numbers run across pages
         let vecs = [
             iv(0, 1, [1., 0., 0., 0.]),
@@ -3185,11 +4179,18 @@ mod tests {
             tv(3, 2, [0., 0., 0., 1.]),
             tv(4, 2, [1., 1., 0., 0.]),
         ];
-        let texts: Vec<(u32, String)> = vec![(1, "p1 ocr".into()), (3, "p2 ocr a".into()), (4, "p2 ocr b".into())];
+        let texts: Vec<(u32, String)> = vec![
+            (1, "p1 ocr".into()),
+            (3, "p2 ocr a".into()),
+            (4, "p2 ocr b".into()),
+        ];
         s.complete(f, "h", &vecs, &texts).unwrap();
 
         let res = ParseResult {
-            chunks: vec![pc("p2 parsed one", 2, Some([0., 0., 1., 1.])), pc("p2 parsed two", 2, Some([1., 0., 1., 0.]))],
+            chunks: vec![
+                pc("p2 parsed one", 2, Some([0., 0., 1., 1.])),
+                pc("p2 parsed two", 2, Some([1., 0., 1., 0.])),
+            ],
             locator: r#"{"page":2,"parser":{"v":"x"}}"#.into(),
         };
         s.queue_parse("h", 2, "scanned_pdf").unwrap();
@@ -3198,24 +4199,54 @@ mod tests {
         let t = s.texts_of("h").unwrap();
         assert_eq!(
             t,
-            vec![(1, "p1 ocr".into()), (5, "p2 parsed one".into()), (6, "p2 parsed two".into())],
+            vec![
+                (1, "p1 ocr".into()),
+                (5, "p2 parsed one".into()),
+                (6, "p2 parsed two".into())
+            ],
             "page 1 untouched, new numbers from MAX+1"
         );
-        assert_eq!(locator_of(&s, "h", 2).as_deref(), Some(r#"{"page":2,"parser":{"v":"x"}}"#), "page image locator rewritten");
-        assert_eq!(locator_of(&s, "h", 0).as_deref(), Some(r#"{"page":1}"#), "page 1 image untouched");
+        assert_eq!(
+            locator_of(&s, "h", 2).as_deref(),
+            Some(r#"{"page":2,"parser":{"v":"x"}}"#),
+            "page image locator rewritten"
+        );
+        assert_eq!(
+            locator_of(&s, "h", 0).as_deref(),
+            Some(r#"{"page":1}"#),
+            "page 1 image untouched"
+        );
         assert_eq!(locator_of(&s, "h", 1).as_deref(), Some(r#"{"page":1}"#));
-        assert_eq!(locator_of(&s, "h", 5).as_deref(), Some(r#"{"page":2,"parser":{}}"#));
-        assert!(s.search_text("ocr", 5).unwrap().len() == 1, "only the page 1 text still says ocr");
-        let hits = s.search_vectors(&[0., 0., 1., 1.], 3, Some(VecKind::Text)).unwrap();
+        assert_eq!(
+            locator_of(&s, "h", 5).as_deref(),
+            Some(r#"{"page":2,"parser":{}}"#)
+        );
+        assert!(
+            s.search_text("ocr", 5).unwrap().len() == 1,
+            "only the page 1 text still says ocr"
+        );
+        let hits = s
+            .search_vectors(&[0., 0., 1., 1.], 3, Some(VecKind::Text))
+            .unwrap();
         assert_eq!(hits[0].chunk, 5, "the new text vectors are searchable");
-        assert!(s.search_text("parsed", 5).unwrap().iter().all(|h| h.chunk >= 5));
+        assert!(s
+            .search_text("parsed", 5)
+            .unwrap()
+            .iter()
+            .all(|h| h.chunk >= 5));
         assert_eq!(s.stats().unwrap().done, 1);
         assert_eq!(s.parse_counts().unwrap().done, 1);
 
         // re-parsing replaces the previous parse again
-        let again = ParseResult { chunks: vec![pc("p2 third", 2, Some([1., 1., 1., 1.]))], locator: res.locator.clone() };
+        let again = ParseResult {
+            chunks: vec![pc("p2 third", 2, Some([1., 1., 1., 1.]))],
+            locator: res.locator.clone(),
+        };
         s.finish_parse("h", 2, &again).unwrap();
-        assert_eq!(s.texts_of("h").unwrap(), vec![(1, "p1 ocr".into()), (7, "p2 third".into())]);
+        assert_eq!(
+            s.texts_of("h").unwrap(),
+            vec![(1, "p1 ocr".into()), (7, "p2 third".into())]
+        );
     }
 
     #[test]
@@ -3224,30 +4255,71 @@ mod tests {
         let f = add(&mut s, 1, r"C:\p\shot.png", 1);
         let ocr_loc = r#"{"ocr":{"w":10,"h":10,"lines":[]}}"#;
         let vecs = [
-            ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(ocr_loc.into()), vec: vec![1., 0., 0., 0.] },
-            ChunkVec { chunk: 1, kind: VecKind::Text, locator: Some(ocr_loc.into()), vec: vec![0., 1., 0., 0.] },
+            ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: Some(ocr_loc.into()),
+                vec: vec![1., 0., 0., 0.],
+            },
+            ChunkVec {
+                chunk: 1,
+                kind: VecKind::Text,
+                locator: Some(ocr_loc.into()),
+                vec: vec![0., 1., 0., 0.],
+            },
         ];
-        s.complete(f, "h", &vecs, &[(1, "short ocr".into())]).unwrap();
+        s.complete(f, "h", &vecs, &[(1, "short ocr".into())])
+            .unwrap();
         let res = ParseResult {
-            chunks: vec![ParseChunk { text: "parsed".into(), locator: "{\"parser\":{}}".into(), vec: None }],
+            chunks: vec![ParseChunk {
+                text: "parsed".into(),
+                locator: "{\"parser\":{}}".into(),
+                vec: None,
+            }],
             locator: "{\"parser\":{\"v\":\"x\"}}".into(),
         };
         s.finish_parse("h", 0, &res).unwrap();
         assert_eq!(s.texts_of("h").unwrap(), vec![(2, "parsed".to_string())]);
-        assert_eq!(locator_of(&s, "h", 0).as_deref(), Some("{\"parser\":{\"v\":\"x\"}}"));
+        assert_eq!(
+            locator_of(&s, "h", 0).as_deref(),
+            Some("{\"parser\":{\"v\":\"x\"}}")
+        );
         // the text vector is owed: the file waits as text_only and the upgrade pass can find it
         let pend = s.pending_vecs("h").unwrap();
-        assert_eq!(pend, vec![PendingVec { chunk: 2, kind: VecKind::Text, locator: Some("{\"parser\":{}}".into()) }]);
+        assert_eq!(
+            pend,
+            vec![PendingVec {
+                chunk: 2,
+                kind: VecKind::Text,
+                locator: Some("{\"parser\":{}}".into())
+            }]
+        );
         assert_eq!(s.stats().unwrap().text_only, 1);
         assert_eq!(s.next_text_only(5).unwrap().len(), 1);
-        s.finish_vectors("h", &[ChunkVec { chunk: 2, kind: VecKind::Text, locator: Some("{}".into()), vec: vec![0., 0., 1., 0.] }]).unwrap();
+        s.finish_vectors(
+            "h",
+            &[ChunkVec {
+                chunk: 2,
+                kind: VecKind::Text,
+                locator: Some("{}".into()),
+                vec: vec![0., 0., 1., 0.],
+            }],
+        )
+        .unwrap();
         assert_eq!(s.stats().unwrap().done, 1);
         // wrong dimension is rejected before anything changes
         let bad = ParseResult {
-            chunks: vec![ParseChunk { text: "x".into(), locator: "{}".into(), vec: Some(vec![1.0]) }],
+            chunks: vec![ParseChunk {
+                text: "x".into(),
+                locator: "{}".into(),
+                vec: Some(vec![1.0]),
+            }],
             locator: "{}".into(),
         };
-        assert!(matches!(s.finish_parse("h", 0, &bad), Err(Error::BadVector { .. })));
+        assert!(matches!(
+            s.finish_parse("h", 0, &bad),
+            Err(Error::BadVector { .. })
+        ));
         assert_eq!(s.texts_of("h").unwrap().len(), 1);
     }
 
@@ -3258,16 +4330,37 @@ mod tests {
         s.complete(f, "h", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
         s.queue_parse("h", 0, "doc_image").unwrap();
         let res = ParseResult {
-            chunks: vec![ParseChunk { text: "arabic text".into(), locator: "{\"ocr\":{}}".into(), vec: Some(vec![0., 1., 0., 0.]) }],
+            chunks: vec![ParseChunk {
+                text: "arabic text".into(),
+                locator: "{\"ocr\":{}}".into(),
+                vec: Some(vec![0., 1., 0., 0.]),
+            }],
             locator: "{\"ocr\":{}}".into(),
         };
         s.skip_parse_replacing("h", 0, "script", &res).unwrap();
-        assert_eq!(s.texts_of("h").unwrap(), vec![(1, "arabic text".to_string())]);
+        assert_eq!(
+            s.texts_of("h").unwrap(),
+            vec![(1, "arabic text".to_string())]
+        );
         assert_eq!(s.search_text("arabic", 3).unwrap().len(), 1);
-        let (state, err): (i64, String) =
-            s.conn.query_row("SELECT state, error FROM parse_queue WHERE hash = 'h'", [], |r| Ok((r.get(0)?, r.get(1)?))).unwrap();
+        let (state, err): (i64, String) = s
+            .conn
+            .query_row(
+                "SELECT state, error FROM parse_queue WHERE hash = 'h'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
         assert_eq!((state, err.as_str()), (STATE_SKIPPED, "script"));
-        assert_eq!(s.parse_counts().unwrap(), ParseCounts { queued: 0, done: 0, failed: 0, skipped: 1 });
+        assert_eq!(
+            s.parse_counts().unwrap(),
+            ParseCounts {
+                queued: 0,
+                done: 0,
+                failed: 0,
+                skipped: 1
+            }
+        );
     }
 
     #[test]
@@ -3276,19 +4369,57 @@ mod tests {
         let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
         let p = s.upsert_file(&key(2), r"C:\p\b.pdf", 10, 2, "pdf").unwrap();
         let c = add(&mut s, 3, r"C:\p\c.jpg", 3);
-        s.complete(a, "ha", &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec![1., 0., 0., 0.] }], &[]).unwrap();
-        s.complete(p, "hp", &[iv(0, 1, [0., 1., 0., 0.]), tv(1, 1, [0., 0., 1., 0.])], &[(1, "t".into())]).unwrap();
+        s.complete(
+            a,
+            "ha",
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: None,
+                vec: vec![1., 0., 0., 0.],
+            }],
+            &[],
+        )
+        .unwrap();
+        s.complete(
+            p,
+            "hp",
+            &[iv(0, 1, [0., 1., 0., 0.]), tv(1, 1, [0., 0., 1., 0.])],
+            &[(1, "t".into())],
+        )
+        .unwrap();
         let ocr = r#"{"ocr":{"w":1,"h":1,"lines":[]}}"#;
-        s.complete(c, "hc", &[ChunkVec { chunk: 0, kind: VecKind::Image, locator: Some(ocr.into()), vec: vec![0., 0., 0., 1.] }], &[]).unwrap();
+        s.complete(
+            c,
+            "hc",
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: Some(ocr.into()),
+                vec: vec![0., 0., 0., 1.],
+            }],
+            &[],
+        )
+        .unwrap();
         assert!(s.max_vector_rowid().unwrap() >= 4);
         let r = s.image_vectors_after(0, 10).unwrap();
-        assert_eq!(r.iter().map(|x| x.hash.as_str()).collect::<Vec<_>>(), vec!["ha", "hc"], "page vectors are not standalone images");
+        assert_eq!(
+            r.iter().map(|x| x.hash.as_str()).collect::<Vec<_>>(),
+            vec!["ha", "hc"],
+            "page vectors are not standalone images"
+        );
         assert_eq!(r[1].vec, vec![0., 0., 0., 1.]);
         assert_eq!(s.image_vectors_after(r[0].rowid, 10).unwrap().len(), 1);
         assert_eq!(s.image_vectors_after(r[1].rowid, 10).unwrap().len(), 0);
         assert_eq!(s.image_vectors_after(0, 1).unwrap().len(), 1, "limit");
-        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("7")).unwrap();
-        assert_eq!(s.get_setting(SETTING_PARSE_ROUTE_CURSOR).unwrap().as_deref(), Some("7"));
+        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("7"))
+            .unwrap();
+        assert_eq!(
+            s.get_setting(SETTING_PARSE_ROUTE_CURSOR)
+                .unwrap()
+                .as_deref(),
+            Some("7")
+        );
     }
 
     #[test]
@@ -3297,12 +4428,18 @@ mod tests {
         let p = dir.path().join("s.db");
         let mut s = Store::open(&p, &meta()).unwrap();
         let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         s.queue_parse("ha", 0, "doc_image").unwrap();
         s.queue_parse("ghost", 0, "doc_image").unwrap(); // content nothing references
-        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("3")).unwrap();
+        s.set_setting(SETTING_PARSE_ROUTE_CURSOR, Some("3"))
+            .unwrap();
         s.gc().unwrap();
-        assert_eq!(s.parse_counts().unwrap().queued, 1, "only the live content keeps its row");
+        assert_eq!(
+            s.parse_counts().unwrap().queued,
+            1,
+            "only the live content keeps its row"
+        );
         s.remove(&key(1)).unwrap();
         s.gc().unwrap();
         assert_eq!(s.parse_counts().unwrap().queued, 0);
@@ -3316,14 +4453,27 @@ mod tests {
     #[test]
     fn parse_run_scopes_progress_to_the_current_burst_of_work() {
         let mut s = Store::open_in_memory(&meta()).unwrap();
-        assert!(s.parse_run().unwrap().is_none(), "nothing queued yet: no run");
+        assert!(
+            s.parse_run().unwrap().is_none(),
+            "nothing queued yet: no run"
+        );
         let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
         let b = add(&mut s, 2, r"C:\p\b.jpg", 2);
-        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[])
+            .unwrap();
         // A lifetime of history before this run: 2 done, 1 failed, 1 skipped.
         s.queue_parse("old1", 0, "doc_image").unwrap();
-        s.finish_parse("old1", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.finish_parse(
+            "old1",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
         s.queue_parse("old2", 0, "doc_image").unwrap();
         s.fail_parse("old2", 0, "boom").unwrap();
         s.queue_parse("old3", 0, "doc_image").unwrap();
@@ -3332,22 +4482,56 @@ mod tests {
         s.queue_parse("ha", 0, "doc_image").unwrap();
         s.queue_parse("hb", 0, "doc_image").unwrap();
         let r = s.parse_run().unwrap().unwrap();
-        assert_eq!((r.left, r.total, r.done, r.failed, r.skipped), (2, 2, 0, 0, 0), "baseline at 2 queued, history excluded");
+        assert_eq!(
+            (r.left, r.total, r.done, r.failed, r.skipped),
+            (2, 2, 0, 0, 0),
+            "baseline at 2 queued, history excluded"
+        );
         assert_eq!(r.ended_unix, None);
-        s.finish_parse("ha", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.finish_parse(
+            "ha",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
         s.fail_parse("hb", 0, "boom").unwrap();
         let r = s.parse_run().unwrap().unwrap();
         assert_eq!((r.done, r.failed, r.left, r.total), (1, 1, 0, 2));
-        assert!(r.ended_unix.is_some(), "draining the queue stamps the run's end");
-        assert_eq!(r.avg_rate(r.started_unix + 10), None, "a finished run has no rate");
+        assert!(
+            r.ended_unix.is_some(),
+            "draining the queue stamps the run's end"
+        );
+        assert_eq!(
+            r.avg_rate(r.started_unix + 10),
+            None,
+            "a finished run has no rate"
+        );
         // More work later is a NEW run (a fresh page hash: re-queuing a finished one is a no-op).
         s.queue_parse("new1", 0, "doc_image").unwrap();
         let r = s.parse_run().unwrap().unwrap();
-        assert_eq!((r.left, r.total, r.done, r.failed, r.skipped), (1, 1, 0, 0, 0), "baseline retaken, last run's results excluded");
-        assert_eq!(r.ended_unix, None, "the old end stamp does not leak into the new run");
+        assert_eq!(
+            (r.left, r.total, r.done, r.failed, r.skipped),
+            (1, 1, 0, 0, 0),
+            "baseline retaken, last run's results excluded"
+        );
+        assert_eq!(
+            r.ended_unix, None,
+            "the old end stamp does not leak into the new run"
+        );
         // Pages queued while a run is going count into it.
         s.queue_parse("new2", 0, "doc_image").unwrap();
-        s.finish_parse("new1", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.finish_parse(
+            "new1",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
         let r = s.parse_run().unwrap().unwrap();
         assert_eq!((r.done, r.left, r.total), (1, 1, 2));
         // A reset clears the bookkeeping with the rest of the derived data.
@@ -3360,17 +4544,34 @@ mod tests {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         let a = add(&mut s, 1, r"C:\p\a.jpg", 1);
         let b = add(&mut s, 2, r"C:\p\b.jpg", 2);
-        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[]).unwrap();
-        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[]).unwrap();
+        s.complete(a, "ha", &[cv(0, [1., 0., 0., 0.])], &[])
+            .unwrap();
+        s.complete(b, "hb", &[cv(0, [0., 1., 0., 0.])], &[])
+            .unwrap();
         s.queue_parse("ha", 0, "doc_image").unwrap();
         s.queue_parse("hb", 0, "doc_image").unwrap();
         let r = s.parse_run().unwrap().unwrap();
         assert_eq!(r.avg_rate(r.started_unix), None, "nothing handled yet");
-        s.finish_parse("ha", 0, &ParseResult { chunks: vec![], locator: "{}".into() }).unwrap();
+        s.finish_parse(
+            "ha",
+            0,
+            &ParseResult {
+                chunks: vec![],
+                locator: "{}".into(),
+            },
+        )
+        .unwrap();
         let r = s.parse_run().unwrap().unwrap();
         assert_eq!(r.done, 1);
         assert!(r.ended_unix.is_none(), "one page still waits");
-        assert!(r.avg_rate(r.started_unix + 30).is_some(), "one page in 30 s is a rate, not 'unknown'");
-        assert_eq!(r.avg_rate(r.started_unix - 5), Some(1.0), "clamped to at least one second");
+        assert!(
+            r.avg_rate(r.started_unix + 30).is_some(),
+            "one page in 30 s is a rate, not 'unknown'"
+        );
+        assert_eq!(
+            r.avg_rate(r.started_unix - 5),
+            Some(1.0),
+            "clamped to at least one second"
+        );
     }
 }

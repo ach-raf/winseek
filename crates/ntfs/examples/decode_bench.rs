@@ -11,7 +11,10 @@ fn template(n: usize) -> Vec<u8> {
     for i in 0..n {
         let parent = 5u64 | (5 << 48);
         let rec = match i % 16 {
-            0 => Rb::new(true, true).std_info(130_000_000_000_000_000, 0x10).name(parent, &format!("dir{i}"), 1).seal(),
+            0 => Rb::new(true, true)
+                .std_info(130_000_000_000_000_000, 0x10)
+                .name(parent, &format!("dir{i}"), 1)
+                .seal(),
             1 => vec![0u8; 1024],
             2 => Rb::new(false, false).name(parent, "deleted.tmp", 1).seal(),
             3 => Rb::new(true, false)
@@ -27,9 +30,19 @@ fn template(n: usize) -> Vec<u8> {
                 .data_nonres(0, 1 << 20, 200)
                 .seal(),
             // base with attribute list, its extension is the next slot
-            5 => Rb::new(true, false).name(parent, &format!("frag{i}.dat"), 1).attr_list().seal(),
-            6 => Rb::new(true, false).base((i - 1) as u64 | (7 << 48)).data_nonres(0, 5 << 20, 64).seal(),
-            7 => Rb::new(true, false).std_info(1, 0x20).name(parent, &format!("日本語ファイル{i}.docx"), 1).data_nonres(0, 90_000, 24).seal(),
+            5 => Rb::new(true, false)
+                .name(parent, &format!("frag{i}.dat"), 1)
+                .attr_list()
+                .seal(),
+            6 => Rb::new(true, false)
+                .base((i - 1) as u64 | (7 << 48))
+                .data_nonres(0, 5 << 20, 64)
+                .seal(),
+            7 => Rb::new(true, false)
+                .std_info(1, 0x20)
+                .name(parent, &format!("日本語ファイル{i}.docx"), 1)
+                .data_nonres(0, 90_000, 24)
+                .seal(),
             _ => Rb::new(true, false)
                 .std_info(130_000_000_000_000_000, 0x20)
                 .name(parent, &format!("file_{i}.txt"), 1)
@@ -43,7 +56,10 @@ fn template(n: usize) -> Vec<u8> {
 
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
-    let total: usize = args.first().and_then(|a| a.parse().ok()).unwrap_or(2_000_000);
+    let total: usize = args
+        .first()
+        .and_then(|a| a.parse().ok())
+        .unwrap_or(2_000_000);
     let threads: Vec<usize> = if args.len() > 1 {
         args[1..].iter().filter_map(|a| a.parse().ok()).collect()
     } else {
@@ -52,7 +68,10 @@ fn main() {
     let per = 2048;
     let tpl = template(per);
     let batches = total / per;
-    println!("template {per} records, {batches} batches = {} records", batches * per);
+    println!(
+        "template {per} records, {batches} batches = {} records",
+        batches * per
+    );
     {
         let mut buf = tpl.clone();
         let t0 = std::time::Instant::now();
@@ -60,7 +79,10 @@ fn main() {
             buf.copy_from_slice(&tpl);
             std::hint::black_box(&buf);
         }
-        println!("memcpy-only overhead included in the numbers below: {:.3}s", t0.elapsed().as_secs_f64());
+        println!(
+            "memcpy-only overhead included in the numbers below: {:.3}s",
+            t0.elapsed().as_secs_f64()
+        );
     }
     for &t in &threads {
         let mut best = f64::MAX;

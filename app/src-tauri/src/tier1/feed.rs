@@ -22,13 +22,25 @@ use super::Tier1;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StoreOp {
     /// Read identity from disk and insert / refresh the row.
-    Upsert { path: String },
-    RemovePath { path: String },
-    RemoveUnder { path: String },
+    Upsert {
+        path: String,
+    },
+    RemovePath {
+        path: String,
+    },
+    RemoveUnder {
+        path: String,
+    },
     /// File rename; falls back to `Upsert { new }` when the old path is unknown (moved in).
-    RenamePath { old: String, new: String },
+    RenamePath {
+        old: String,
+        new: String,
+    },
     /// Folder rename; falls back to a crawl of `new` when no row lived under `old`.
-    RenameUnder { old: String, new: String },
+    RenameUnder {
+        old: String,
+        new: String,
+    },
 }
 
 /// Pure mapping from one searchd change event to store operations.
@@ -41,7 +53,10 @@ pub fn map_change(
     old_path: Option<&str>,
     is_dir: bool,
 ) -> Vec<StoreOp> {
-    let wanted = |p: &str| kind_in(p, index_code, guard::in_code_project(p)).is_some() && in_scope_with(scopes, ignore, p);
+    let wanted = |p: &str| {
+        kind_in(p, index_code, guard::in_code_project(p)).is_some()
+            && in_scope_with(scopes, ignore, p)
+    };
     match kind {
         ChangeKind::Created | ChangeKind::Modified => {
             if !is_dir && wanted(path) {
@@ -59,17 +74,31 @@ pub fn map_change(
             }
         }
         ChangeKind::Renamed => match old_path {
-            None => map_change(scopes, ignore, index_code, ChangeKind::Created, path, None, is_dir),
+            None => map_change(
+                scopes,
+                ignore,
+                index_code,
+                ChangeKind::Created,
+                path,
+                None,
+                is_dir,
+            ),
             Some(old) if is_dir => {
                 if in_scope_with(scopes, ignore, path) {
-                    vec![StoreOp::RenameUnder { old: old.into(), new: path.into() }]
+                    vec![StoreOp::RenameUnder {
+                        old: old.into(),
+                        new: path.into(),
+                    }]
                 } else {
                     vec![StoreOp::RemoveUnder { path: old.into() }]
                 }
             }
             Some(old) => {
                 if wanted(path) {
-                    vec![StoreOp::RenamePath { old: old.into(), new: path.into() }]
+                    vec![StoreOp::RenamePath {
+                        old: old.into(),
+                        new: path.into(),
+                    }]
                 } else {
                     vec![StoreOp::RemovePath { path: old.into() }]
                 }
@@ -86,7 +115,9 @@ pub fn drop_gitignored(ops: Vec<StoreOp>, ignored: &dyn Fn(&str) -> bool) -> Vec
     ops.into_iter()
         .filter_map(|op| match op {
             StoreOp::Upsert { path } if is_ignored_code(&path) => None,
-            StoreOp::RenamePath { old, new } if is_ignored_code(&new) => Some(StoreOp::RemovePath { path: old }),
+            StoreOp::RenamePath { old, new } if is_ignored_code(&new) => {
+                Some(StoreOp::RemovePath { path: old })
+            }
             op => Some(op),
         })
         .collect()
@@ -104,7 +135,15 @@ pub fn apply_ops(
     let mut changed = 0;
     let upsert = |store: &mut Store, path: &str| -> bool {
         match probe(path) {
-            Ok(i) => store.upsert_file(&i.key, path, i.size, i.mtime_ms, kind_in(path, true, guard::in_code_project(path)).unwrap_or(KIND_IMAGE)).is_ok(),
+            Ok(i) => store
+                .upsert_file(
+                    &i.key,
+                    path,
+                    i.size,
+                    i.mtime_ms,
+                    kind_in(path, true, guard::in_code_project(path)).unwrap_or(KIND_IMAGE),
+                )
+                .is_ok(),
             Err(_) => false, // gone again before we got to it; its Deleted event follows
         }
     };
@@ -159,7 +198,12 @@ impl CodeDebounce {
     }
     /// Paths whose quiet period is over; they leave the table.
     pub fn take_due(&mut self, now: std::time::Instant) -> Vec<String> {
-        let ready: Vec<String> = self.due.iter().filter(|(_, t)| **t <= now).map(|(p, _)| p.clone()).collect();
+        let ready: Vec<String> = self
+            .due
+            .iter()
+            .filter(|(_, t)| **t <= now)
+            .map(|(p, _)| p.clone())
+            .collect();
         for p in &ready {
             self.due.remove(p);
         }
@@ -169,7 +213,12 @@ impl CodeDebounce {
 
 /// Split `ops` into the ones to apply now and code upserts to hold back; removals and renames
 /// cancel the held path. `is_code` says whether a path belongs to the code index.
-pub fn defer_code(ops: Vec<StoreOp>, is_code: &dyn Fn(&str) -> bool, deb: &mut CodeDebounce, now: std::time::Instant) -> Vec<StoreOp> {
+pub fn defer_code(
+    ops: Vec<StoreOp>,
+    is_code: &dyn Fn(&str) -> bool,
+    deb: &mut CodeDebounce,
+    now: std::time::Instant,
+) -> Vec<StoreOp> {
     let mut now_ops = Vec::new();
     for op in ops {
         match &op {
@@ -224,7 +273,15 @@ pub fn run(t: Arc<Tier1>) {
             }
         };
         let mut conn = conn;
-        if write_message(&mut conn, &Request::Subscribe { id: 1, roots: scopes.include.clone() }).is_err() {
+        if write_message(
+            &mut conn,
+            &Request::Subscribe {
+                id: 1,
+                roots: scopes.include.clone(),
+            },
+        )
+        .is_err()
+        {
             std::thread::sleep(backoff);
             backoff = next_backoff(backoff);
             continue;
@@ -245,9 +302,23 @@ pub fn run(t: Arc<Tier1>) {
         });
         loop {
             match rx.recv_timeout(Duration::from_millis(500)) {
-                Ok(Ok(Response::Change { kind, path, old_path, is_dir })) => {
-                    let ops = map_change(scopes, &snap.ignore, snap.index_code, kind, &path, old_path.as_deref(), is_dir);
-                    let is_code = |p: &str| kind_in(p, true, guard::in_code_project(p)) == Some(KIND_CODE);
+                Ok(Ok(Response::Change {
+                    kind,
+                    path,
+                    old_path,
+                    is_dir,
+                })) => {
+                    let ops = map_change(
+                        scopes,
+                        &snap.ignore,
+                        snap.index_code,
+                        kind,
+                        &path,
+                        old_path.as_deref(),
+                        is_dir,
+                    );
+                    let is_code =
+                        |p: &str| kind_in(p, true, guard::in_code_project(p)) == Some(KIND_CODE);
                     let ops = defer_code(ops, &is_code, &mut held, std::time::Instant::now());
                     if !ops.is_empty() {
                         t.apply_ops(&ops);
@@ -258,7 +329,11 @@ pub fn run(t: Arc<Tier1>) {
                 Err(RecvTimeoutError::Timeout) => {}
             }
             if !held.is_empty() {
-                let due: Vec<StoreOp> = held.take_due(std::time::Instant::now()).into_iter().map(|path| StoreOp::Upsert { path }).collect();
+                let due: Vec<StoreOp> = held
+                    .take_due(std::time::Instant::now())
+                    .into_iter()
+                    .map(|path| StoreOp::Upsert { path })
+                    .collect();
                 if !due.is_empty() {
                     t.apply_ops(&due);
                 }
@@ -274,12 +349,18 @@ pub fn run(t: Arc<Tier1>) {
 pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
     let snap = t.snapshot();
     let recrawl = |dir: &str| {
-        let sub = Scopes { include: vec![dir.to_string()], exclude: snap.scopes.exclude.clone(), ..Default::default() };
+        let sub = Scopes {
+            include: vec![dir.to_string()],
+            exclude: snap.scopes.exclude.clone(),
+            ..Default::default()
+        };
         // The moved-in folder must itself be inside the real scopes (map_change checked that).
         crawl(&t.store, &sub, &snap.ignore, snap.index_code, &|| false);
     };
     let ops = if snap.index_code {
-        drop_gitignored(ops.to_vec(), &|p| gitignore::is_ignored(&snap.scopes.include, p))
+        drop_gitignored(ops.to_vec(), &|p| {
+            gitignore::is_ignored(&snap.scopes.include, p)
+        })
     } else {
         ops.to_vec()
     };
@@ -295,7 +376,9 @@ pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
         }
         Ok(i)
     };
-    let n = apply_ops(&mut store, ops, &probe, &mut |d| deferred.push(d.to_string()));
+    let n = apply_ops(&mut store, ops, &probe, &mut |d| {
+        deferred.push(d.to_string())
+    });
     drop(store);
     for d in deferred {
         recrawl(&d);
@@ -309,7 +392,11 @@ mod tests {
     use winseek_store::{FileKey, IndexMeta};
 
     fn scopes() -> Scopes {
-        Scopes { include: vec![r"C:\Pics".into()], exclude: vec![r"C:\Pics\private".into()], ..Default::default() }
+        Scopes {
+            include: vec![r"C:\Pics".into()],
+            exclude: vec![r"C:\Pics\private".into()],
+            ..Default::default()
+        }
     }
 
     fn map(kind: ChangeKind, path: &str, old: Option<&str>, dir: bool) -> Vec<StoreOp> {
@@ -318,7 +405,9 @@ mod tests {
 
     #[test]
     fn created_and_modified() {
-        let up = vec![StoreOp::Upsert { path: r"C:\Pics\a.JPG".into() }];
+        let up = vec![StoreOp::Upsert {
+            path: r"C:\Pics\a.JPG".into(),
+        }];
         assert_eq!(map(ChangeKind::Created, r"C:\Pics\a.JPG", None, false), up);
         assert_eq!(map(ChangeKind::Modified, r"C:\Pics\a.JPG", None, false), up);
         // unsupported, out of scope, excluded, directory
@@ -326,38 +415,96 @@ mod tests {
         assert!(map(ChangeKind::Created, r"C:\Other\a.jpg", None, false).is_empty());
         assert!(map(ChangeKind::Created, r"C:\Pics\private\a.jpg", None, false).is_empty());
         assert!(map(ChangeKind::Created, r"C:\Pics\sub", None, true).is_empty());
-        assert!(map(ChangeKind::Modified, r"C:\Pics\node_modules\a.jpg", None, false).is_empty());
+        assert!(map(
+            ChangeKind::Modified,
+            r"C:\Pics\node_modules\a.jpg",
+            None,
+            false
+        )
+        .is_empty());
     }
 
     #[test]
     fn documents_always_and_code_only_with_the_opt_in() {
-        let m = |idx: bool, p: &str| map_change(&scopes(), &Ignore::defaults(), idx, ChangeKind::Created, p, None, false);
-        assert_eq!(m(false, r"C:\Pics\n.docx"), vec![StoreOp::Upsert { path: r"C:\Pics\n.docx".into() }]);
+        let m = |idx: bool, p: &str| {
+            map_change(
+                &scopes(),
+                &Ignore::defaults(),
+                idx,
+                ChangeKind::Created,
+                p,
+                None,
+                false,
+            )
+        };
+        assert_eq!(
+            m(false, r"C:\Pics\n.docx"),
+            vec![StoreOp::Upsert {
+                path: r"C:\Pics\n.docx".into()
+            }]
+        );
         assert!(m(false, r"C:\Pics\lib.rs").is_empty());
-        assert_eq!(m(true, r"C:\Pics\lib.rs"), vec![StoreOp::Upsert { path: r"C:\Pics\lib.rs".into() }]);
+        assert_eq!(
+            m(true, r"C:\Pics\lib.rs"),
+            vec![StoreOp::Upsert {
+                path: r"C:\Pics\lib.rs".into()
+            }]
+        );
         assert!(m(true, r"C:\Pics\private\lib.rs").is_empty());
         // opt-in off: a renamed code file drops out
-        let r = map_change(&scopes(), &Ignore::defaults(), false, ChangeKind::Renamed, r"C:\Pics\b.rs", Some(r"C:\Pics\a.rs"), false);
-        assert_eq!(r, vec![StoreOp::RemovePath { path: r"C:\Pics\a.rs".into() }]);
+        let r = map_change(
+            &scopes(),
+            &Ignore::defaults(),
+            false,
+            ChangeKind::Renamed,
+            r"C:\Pics\b.rs",
+            Some(r"C:\Pics\a.rs"),
+            false,
+        );
+        assert_eq!(
+            r,
+            vec![StoreOp::RemovePath {
+                path: r"C:\Pics\a.rs".into()
+            }]
+        );
     }
 
     #[test]
     fn gitignored_code_is_dropped_but_documents_and_removals_are_not() {
         let ops = vec![
-            StoreOp::Upsert { path: r"C:\Pics\gen\a.rs".into() },
-            StoreOp::Upsert { path: r"C:\Pics\gen\a.docx".into() },
-            StoreOp::Upsert { path: r"C:\Pics\ok.rs".into() },
-            StoreOp::RenamePath { old: r"C:\Pics\x.rs".into(), new: r"C:\Pics\gen\x.rs".into() },
-            StoreOp::RemovePath { path: r"C:\Pics\gen\gone.rs".into() },
+            StoreOp::Upsert {
+                path: r"C:\Pics\gen\a.rs".into(),
+            },
+            StoreOp::Upsert {
+                path: r"C:\Pics\gen\a.docx".into(),
+            },
+            StoreOp::Upsert {
+                path: r"C:\Pics\ok.rs".into(),
+            },
+            StoreOp::RenamePath {
+                old: r"C:\Pics\x.rs".into(),
+                new: r"C:\Pics\gen\x.rs".into(),
+            },
+            StoreOp::RemovePath {
+                path: r"C:\Pics\gen\gone.rs".into(),
+            },
         ];
         let out = drop_gitignored(ops, &|p| p.contains("gen"));
         assert_eq!(
             out,
             vec![
-                StoreOp::Upsert { path: r"C:\Pics\gen\a.docx".into() },
-                StoreOp::Upsert { path: r"C:\Pics\ok.rs".into() },
-                StoreOp::RemovePath { path: r"C:\Pics\x.rs".into() },
-                StoreOp::RemovePath { path: r"C:\Pics\gen\gone.rs".into() },
+                StoreOp::Upsert {
+                    path: r"C:\Pics\gen\a.docx".into()
+                },
+                StoreOp::Upsert {
+                    path: r"C:\Pics\ok.rs".into()
+                },
+                StoreOp::RemovePath {
+                    path: r"C:\Pics\x.rs".into()
+                },
+                StoreOp::RemovePath {
+                    path: r"C:\Pics\gen\gone.rs".into()
+                },
             ]
         );
     }
@@ -366,51 +513,90 @@ mod tests {
     fn deleted_file_and_dir() {
         assert_eq!(
             map(ChangeKind::Deleted, r"C:\Pics\a.jpg", None, false),
-            vec![StoreOp::RemovePath { path: r"C:\Pics\a.jpg".into() }]
+            vec![StoreOp::RemovePath {
+                path: r"C:\Pics\a.jpg".into()
+            }]
         );
         assert_eq!(
             map(ChangeKind::Deleted, r"C:\Pics\sub", None, true),
-            vec![StoreOp::RemoveUnder { path: r"C:\Pics\sub".into() }]
+            vec![StoreOp::RemoveUnder {
+                path: r"C:\Pics\sub".into()
+            }]
         );
         // deletes are not scope-filtered
-        assert_eq!(map(ChangeKind::Deleted, r"C:\Gone\a.png", None, false).len(), 1);
+        assert_eq!(
+            map(ChangeKind::Deleted, r"C:\Gone\a.png", None, false).len(),
+            1
+        );
     }
 
     #[test]
     fn renamed_file() {
         assert_eq!(
-            map(ChangeKind::Renamed, r"C:\Pics\b.jpg", Some(r"C:\Pics\a.jpg"), false),
-            vec![StoreOp::RenamePath { old: r"C:\Pics\a.jpg".into(), new: r"C:\Pics\b.jpg".into() }]
+            map(
+                ChangeKind::Renamed,
+                r"C:\Pics\b.jpg",
+                Some(r"C:\Pics\a.jpg"),
+                false
+            ),
+            vec![StoreOp::RenamePath {
+                old: r"C:\Pics\a.jpg".into(),
+                new: r"C:\Pics\b.jpg".into()
+            }]
         );
         // moved out of scope / renamed to unsupported ext -> remove the old row
-        for new in [r"C:\Elsewhere\b.jpg", r"C:\Pics\b.tmp", r"C:\Pics\private\b.jpg"] {
+        for new in [
+            r"C:\Elsewhere\b.jpg",
+            r"C:\Pics\b.tmp",
+            r"C:\Pics\private\b.jpg",
+        ] {
             assert_eq!(
                 map(ChangeKind::Renamed, new, Some(r"C:\Pics\a.jpg"), false),
-                vec![StoreOp::RemovePath { path: r"C:\Pics\a.jpg".into() }],
+                vec![StoreOp::RemovePath {
+                    path: r"C:\Pics\a.jpg".into()
+                }],
                 "{new}"
             );
         }
         // no old path: behaves like Created
         assert_eq!(
             map(ChangeKind::Renamed, r"C:\Pics\n.jpg", None, false),
-            vec![StoreOp::Upsert { path: r"C:\Pics\n.jpg".into() }]
+            vec![StoreOp::Upsert {
+                path: r"C:\Pics\n.jpg".into()
+            }]
         );
     }
 
     #[test]
     fn renamed_dir() {
         assert_eq!(
-            map(ChangeKind::Renamed, r"C:\Pics\new", Some(r"C:\Pics\old"), true),
-            vec![StoreOp::RenameUnder { old: r"C:\Pics\old".into(), new: r"C:\Pics\new".into() }]
+            map(
+                ChangeKind::Renamed,
+                r"C:\Pics\new",
+                Some(r"C:\Pics\old"),
+                true
+            ),
+            vec![StoreOp::RenameUnder {
+                old: r"C:\Pics\old".into(),
+                new: r"C:\Pics\new".into()
+            }]
         );
         assert_eq!(
             map(ChangeKind::Renamed, r"D:\away", Some(r"C:\Pics\old"), true),
-            vec![StoreOp::RemoveUnder { path: r"C:\Pics\old".into() }]
+            vec![StoreOp::RemoveUnder {
+                path: r"C:\Pics\old".into()
+            }]
         );
     }
 
     fn store() -> Store {
-        let m = IndexMeta { model_id: "t".into(), llama_build: "b".into(), quant: "q".into(), image_budget: 280, dims: 4 };
+        let m = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
         Store::open_in_memory(&m).unwrap()
     }
 
@@ -419,7 +605,15 @@ mod tests {
             return Err(io::Error::from(io::ErrorKind::NotFound));
         }
         let frn = path.bytes().map(u64::from).sum::<u64>();
-        Ok(FileInfo { key: FileKey { vol_guid: "{v}".into(), frn }, size: 5, mtime_ms: 1, attrs: 0 })
+        Ok(FileInfo {
+            key: FileKey {
+                vol_guid: "{v}".into(),
+                frn,
+            },
+            size: 5,
+            mtime_ms: 1,
+            attrs: 0,
+        })
     }
 
     #[test]
@@ -429,25 +623,93 @@ mod tests {
         let run = |s: &mut Store, ops: Vec<StoreOp>, d: &mut Vec<String>| {
             apply_ops(s, &ops, &fake_probe, &mut |p| d.push(p.to_string()))
         };
-        assert_eq!(run(&mut s, vec![StoreOp::Upsert { path: r"C:\Pics\a.jpg".into() }], &mut deferred), 1);
-        assert_eq!(run(&mut s, vec![StoreOp::Upsert { path: r"C:\Pics\gone.jpg".into() }], &mut deferred), 0);
+        assert_eq!(
+            run(
+                &mut s,
+                vec![StoreOp::Upsert {
+                    path: r"C:\Pics\a.jpg".into()
+                }],
+                &mut deferred
+            ),
+            1
+        );
+        assert_eq!(
+            run(
+                &mut s,
+                vec![StoreOp::Upsert {
+                    path: r"C:\Pics\gone.jpg".into()
+                }],
+                &mut deferred
+            ),
+            0
+        );
         assert_eq!(s.stats().unwrap().files, 1);
         // rename of a known file keeps one row
-        run(&mut s, vec![StoreOp::RenamePath { old: r"C:\Pics\a.jpg".into(), new: r"C:\Pics\b.jpg".into() }], &mut deferred);
+        run(
+            &mut s,
+            vec![StoreOp::RenamePath {
+                old: r"C:\Pics\a.jpg".into(),
+                new: r"C:\Pics\b.jpg".into(),
+            }],
+            &mut deferred,
+        );
         assert_eq!(s.next_pending(5).unwrap()[0].path, r"C:\Pics\b.jpg");
         assert_eq!(s.stats().unwrap().files, 1);
         // rename of an unknown file (moved into scope) upserts
-        run(&mut s, vec![StoreOp::RenamePath { old: r"C:\Out\x.jpg".into(), new: r"C:\Pics\x.jpg".into() }], &mut deferred);
+        run(
+            &mut s,
+            vec![StoreOp::RenamePath {
+                old: r"C:\Out\x.jpg".into(),
+                new: r"C:\Pics\x.jpg".into(),
+            }],
+            &mut deferred,
+        );
         assert_eq!(s.stats().unwrap().files, 2);
         // folder rename moves rows; unknown folder requests a crawl
-        run(&mut s, vec![StoreOp::RenameUnder { old: r"C:\Pics".into(), new: r"C:\Pix".into() }], &mut deferred);
-        assert!(s.next_pending(5).unwrap().iter().all(|f| f.path.starts_with(r"C:\Pix\")));
+        run(
+            &mut s,
+            vec![StoreOp::RenameUnder {
+                old: r"C:\Pics".into(),
+                new: r"C:\Pix".into(),
+            }],
+            &mut deferred,
+        );
+        assert!(s
+            .next_pending(5)
+            .unwrap()
+            .iter()
+            .all(|f| f.path.starts_with(r"C:\Pix\")));
         assert!(deferred.is_empty());
-        run(&mut s, vec![StoreOp::RenameUnder { old: r"C:\Nowhere".into(), new: r"C:\Pix\in".into() }], &mut deferred);
+        run(
+            &mut s,
+            vec![StoreOp::RenameUnder {
+                old: r"C:\Nowhere".into(),
+                new: r"C:\Pix\in".into(),
+            }],
+            &mut deferred,
+        );
         assert_eq!(deferred, [r"C:\Pix\in"]);
         // deletes
-        assert_eq!(run(&mut s, vec![StoreOp::RemovePath { path: r"C:\Pix\b.jpg".into() }], &mut deferred), 1);
-        assert_eq!(run(&mut s, vec![StoreOp::RemoveUnder { path: r"C:\Pix".into() }], &mut deferred), 1);
+        assert_eq!(
+            run(
+                &mut s,
+                vec![StoreOp::RemovePath {
+                    path: r"C:\Pix\b.jpg".into()
+                }],
+                &mut deferred
+            ),
+            1
+        );
+        assert_eq!(
+            run(
+                &mut s,
+                vec![StoreOp::RemoveUnder {
+                    path: r"C:\Pix".into()
+                }],
+                &mut deferred
+            ),
+            1
+        );
         assert_eq!(s.stats().unwrap().files, 0);
     }
 
@@ -459,21 +721,65 @@ mod tests {
         let mut deb = CodeDebounce::default();
         let up = |p: &str| StoreOp::Upsert { path: p.into() };
         // a burst of saves: code is held, documents go through at once
-        let now_ops = defer_code(vec![up(r"C:\p\a.rs"), up(r"C:\p\n.docx")], &is_code, &mut deb, t0);
+        let now_ops = defer_code(
+            vec![up(r"C:\p\a.rs"), up(r"C:\p\n.docx")],
+            &is_code,
+            &mut deb,
+            t0,
+        );
         assert_eq!(now_ops, [up(r"C:\p\n.docx")]);
-        assert!(deb.take_due(t0 + CODE_QUIET - Duration::from_secs(1)).is_empty());
+        assert!(deb
+            .take_due(t0 + CODE_QUIET - Duration::from_secs(1))
+            .is_empty());
         // another save restarts the clock
-        defer_code(vec![up(r"C:\P\A.rs")], &is_code, &mut deb, t0 + Duration::from_secs(50));
-        assert!(deb.take_due(t0 + CODE_QUIET + Duration::from_secs(5)).is_empty(), "quiet period restarted");
-        assert_eq!(deb.take_due(t0 + Duration::from_secs(50) + CODE_QUIET), [r"c:\p\a.rs"]);
+        defer_code(
+            vec![up(r"C:\P\A.rs")],
+            &is_code,
+            &mut deb,
+            t0 + Duration::from_secs(50),
+        );
+        assert!(
+            deb.take_due(t0 + CODE_QUIET + Duration::from_secs(5))
+                .is_empty(),
+            "quiet period restarted"
+        );
+        assert_eq!(
+            deb.take_due(t0 + Duration::from_secs(50) + CODE_QUIET),
+            [r"c:\p\a.rs"]
+        );
         assert!(deb.is_empty());
         // deleting (or moving away) a held file drops it; folders too
-        defer_code(vec![up(r"C:\p\b.rs"), up(r"C:\p\sub\c.rs")], &is_code, &mut deb, t0);
-        let ops = defer_code(vec![StoreOp::RemovePath { path: r"C:\p\b.rs".into() }, StoreOp::RemoveUnder { path: r"C:\p\sub".into() }], &is_code, &mut deb, t0);
+        defer_code(
+            vec![up(r"C:\p\b.rs"), up(r"C:\p\sub\c.rs")],
+            &is_code,
+            &mut deb,
+            t0,
+        );
+        let ops = defer_code(
+            vec![
+                StoreOp::RemovePath {
+                    path: r"C:\p\b.rs".into(),
+                },
+                StoreOp::RemoveUnder {
+                    path: r"C:\p\sub".into(),
+                },
+            ],
+            &is_code,
+            &mut deb,
+            t0,
+        );
         assert_eq!(ops.len(), 2);
         assert!(deb.is_empty());
         // a rename moves the row now and re-reads later
-        let ops = defer_code(vec![StoreOp::RenamePath { old: r"C:\p\x.rs".into(), new: r"C:\p\y.rs".into() }], &is_code, &mut deb, t0);
+        let ops = defer_code(
+            vec![StoreOp::RenamePath {
+                old: r"C:\p\x.rs".into(),
+                new: r"C:\p\y.rs".into(),
+            }],
+            &is_code,
+            &mut deb,
+            t0,
+        );
         assert_eq!(ops.len(), 1);
         assert_eq!(deb.take_due(t0 + CODE_QUIET), [r"c:\p\y.rs"]);
     }

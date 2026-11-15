@@ -16,13 +16,64 @@ impl Rng {
 }
 
 const WORDS: &[&str] = &[
-    "report", "annual", "design", "doc", "notes", "photo", "vacation", "IMG", "main", "index", "config", "readme", "kernel", "driver",
-    "system", "backup", "invoice", "budget", "project", "draft", "final", "archive", "data", "test", "build", "release", "debug",
-    "Windows", "Program", "Users", "Documents", "Pictures", "src", "lib", "node_modules", "cache", "temp", "log", "update", "setup",
-    "été", "Müller", "résumé", "日本語", "مرحبا", "tmp", "old", "new", "copy", "screenshot", "music", "video", "game", "save",
+    "report",
+    "annual",
+    "design",
+    "doc",
+    "notes",
+    "photo",
+    "vacation",
+    "IMG",
+    "main",
+    "index",
+    "config",
+    "readme",
+    "kernel",
+    "driver",
+    "system",
+    "backup",
+    "invoice",
+    "budget",
+    "project",
+    "draft",
+    "final",
+    "archive",
+    "data",
+    "test",
+    "build",
+    "release",
+    "debug",
+    "Windows",
+    "Program",
+    "Users",
+    "Documents",
+    "Pictures",
+    "src",
+    "lib",
+    "node_modules",
+    "cache",
+    "temp",
+    "log",
+    "update",
+    "setup",
+    "été",
+    "Müller",
+    "résumé",
+    "日本語",
+    "مرحبا",
+    "tmp",
+    "old",
+    "new",
+    "copy",
+    "screenshot",
+    "music",
+    "video",
+    "game",
+    "save",
 ];
 const EXTS: &[&str] = &[
-    "txt", "jpg", "png", "pdf", "docx", "rs", "dll", "exe", "log", "md", "json", "xml", "cpp", "h", "py", "js", "zip", "mp3", "mp4", "ini",
+    "txt", "jpg", "png", "pdf", "docx", "rs", "dll", "exe", "log", "md", "json", "xml", "cpp", "h",
+    "py", "js", "zip", "mp3", "mp4", "ini",
 ];
 
 fn name(r: &mut Rng, ext: bool) -> String {
@@ -34,7 +85,11 @@ fn name(r: &mut Rng, ext: bool) -> String {
             s.push_str(WORDS[r.below(WORDS.len())]);
         }
         2 => s.push_str(&format!("_{}", r.below(100000))),
-        _ => s.push_str(&format!(" {} ({})", WORDS[r.below(WORDS.len())], r.below(50))),
+        _ => s.push_str(&format!(
+            " {} ({})",
+            WORDS[r.below(WORDS.len())],
+            r.below(50)
+        )),
     }
     if ext {
         s.push('.');
@@ -49,7 +104,10 @@ fn pct(v: &mut [u128], p: f64) -> u128 {
 }
 
 fn main() {
-    let total: usize = std::env::args().nth(1).and_then(|s| s.parse().ok()).unwrap_or(2_000_000);
+    let total: usize = std::env::args()
+        .nth(1)
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(2_000_000);
     let mut r = Rng(0x9E3779B97F4A7C15);
     let nfolders = total / 8;
     // folders: (frn, parent frn, depth)
@@ -90,7 +148,12 @@ fn main() {
         rows.swap(i, j);
     }
     let mean_depth = fold.iter().map(|f| f.1 as f64).sum::<f64>() / fold.len() as f64;
-    println!("synth: {} records ({} folders), mean folder depth {:.1}", rows.len(), nfolders, mean_depth);
+    println!(
+        "synth: {} records ({} folders), mean folder depth {:.1}",
+        rows.len(),
+        nfolders,
+        mean_depth
+    );
 
     let t = Instant::now();
     let mut b = IndexBuilder::with_capacity(true, rows.len());
@@ -103,24 +166,50 @@ fn main() {
     let t = Instant::now();
     ix.rebuild_order();
     let t_sort = t.elapsed();
-    println!("build (push+resolve): {:?}   name+path sort: {:?}", t_build, t_sort);
+    println!(
+        "build (push+resolve): {:?}   name+path sort: {:?}",
+        t_build, t_sort
+    );
     let mem = ix.mem_bytes();
-    println!("memory: {:.1} MB  = {:.1} bytes/record (incl. size+mtime 16 B, no mutation links)", mem as f64 / 1e6, mem as f64 / ix.slots() as f64);
+    println!(
+        "memory: {:.1} MB  = {:.1} bytes/record (incl. size+mtime 16 B, no mutation links)",
+        mem as f64 / 1e6,
+        mem as f64 / ix.slots() as f64
+    );
 
     let t = Instant::now();
     ix.insert(b'C', 9_999_999, 5, "warm.txt", false, 0, 0);
     ix.refresh();
-    println!("first insert (builds links+hash table) + refresh: {:?}", t.elapsed());
+    println!(
+        "first insert (builds links+hash table) + refresh: {:?}",
+        t.elapsed()
+    );
     let mem2 = ix.mem_bytes();
-    println!("memory with mutation structures: {:.1} bytes/record", mem2 as f64 / ix.slots() as f64);
+    println!(
+        "memory with mutation structures: {:.1} bytes/record",
+        mem2 as f64 / ix.slots() as f64
+    );
     let t = Instant::now();
     for k in 0..1000u64 {
-        ix.insert(b'C', 10_000_000 + k, 5, &format!("live_{k}.txt"), false, 0, 0);
+        ix.insert(
+            b'C',
+            10_000_000 + k,
+            5,
+            &format!("live_{k}.txt"),
+            false,
+            0,
+            0,
+        );
     }
     let t_ins = t.elapsed();
     let t = Instant::now();
     ix.refresh();
-    println!("1000 inserts: {:?}; refresh (merge 1000 into {}): {:?}", t_ins, ix.order_len(), t.elapsed());
+    println!(
+        "1000 inserts: {:?}; refresh (merge 1000 into {}): {:?}",
+        t_ins,
+        ix.order_len(),
+        t.elapsed()
+    );
 
     let path = std::env::temp_dir().join("winseek_bench.wsix");
     let t = Instant::now();
@@ -132,7 +221,14 @@ fn main() {
     let sz = std::fs::metadata(&path).unwrap().len();
     let t = Instant::now();
     let ld = Index::load(&path).unwrap();
-    println!("snapshot: {:.1} MB ({:.1} B/rec); save {:?}; load {:?}; loaded {} recs", sz as f64 / 1e6, sz as f64 / ix.slots() as f64, t_save, t.elapsed(), ld.live_count());
+    println!(
+        "snapshot: {:.1} MB ({:.1} B/rec); save {:?}; load {:?}; loaded {} recs",
+        sz as f64 / 1e6,
+        sz as f64 / ix.slots() as f64,
+        t_save,
+        t.elapsed(),
+        ld.live_count()
+    );
     std::fs::remove_file(&path).ok();
 
     let queries = [
@@ -157,8 +253,15 @@ fn main() {
         "node_modules\\ index",
         "program*\\*.dll",
     ];
-    let opts = SearchOptions { offset: 0, limit: 100, order: Order::NameAsc };
-    println!("\n{:<28} {:>9} {:>9} {:>9}", "query", "matches", "p50 us", "p99 us");
+    let opts = SearchOptions {
+        offset: 0,
+        limit: 100,
+        order: Order::NameAsc,
+    };
+    println!(
+        "\n{:<28} {:>9} {:>9} {:>9}",
+        "query", "matches", "p50 us", "p99 us"
+    );
     let mut all = Vec::new();
     for q in queries {
         let qq = Query::parse(q);
@@ -172,9 +275,21 @@ fn main() {
             total = res.total;
         }
         all.extend(lat.iter().copied());
-        println!("{:<28} {:>9} {:>9} {:>9}", q, total, pct(&mut lat, 0.5), pct(&mut lat, 0.99));
+        println!(
+            "{:<28} {:>9} {:>9} {:>9}",
+            q,
+            total,
+            pct(&mut lat, 0.5),
+            pct(&mut lat, 0.99)
+        );
     }
-    println!("{:<28} {:>9} {:>9} {:>9}", "ALL", "", pct(&mut all, 0.5), pct(&mut all, 0.99));
+    println!(
+        "{:<28} {:>9} {:>9} {:>9}",
+        "ALL",
+        "",
+        pct(&mut all, 0.5),
+        pct(&mut all, 0.99)
+    );
 
     // Paging a huge result (what a scrollbar jump costs): the match set is built once per
     // query, then any 400-row window is a lookup.
@@ -198,10 +313,17 @@ fn main() {
     let t = Instant::now();
     let sorted = ix.sort_slots(slots, MetaKey::Mtime, None).len();
     let sort_t = t.elapsed();
-    println!("\npaging \"e\": {} matches ({count} counted in {count_t:.1?})", set.total());
+    println!(
+        "\npaging \"e\": {} matches ({count} counted in {count_t:.1?})",
+        set.total()
+    );
     println!("  name order : match set {build:.1?} ({} KB), then {page:.1?} per 400-row window anywhere ({rows} rows read)", set.mem_bytes() / 1024);
     let t = Instant::now();
     let totals = ix.folder_totals();
-    println!("  folder totals: {:.1?} for {} slots", t.elapsed(), totals.len());
+    println!(
+        "  folder totals: {:.1?} for {} slots",
+        t.elapsed(),
+        totals.len()
+    );
     println!("  date order : first {top} rows {top_t:.1?} (scan + select); full sort of {sorted} for deep jumps {sort_t:.1?}, then slices");
 }

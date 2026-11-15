@@ -5,12 +5,14 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{CloseHandle, GetLastError, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST};
+use windows::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST,
+};
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
 use windows::Win32::System::Services::{
     CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, StartServiceW, SC_HANDLE,
-    SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START, SERVICE_START_PENDING,
-    SERVICE_STATUS, SERVICE_STOPPED, SERVICE_STOP_PENDING,
+    SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
+    SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STOPPED, SERVICE_STOP_PENDING,
 };
 use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
@@ -22,7 +24,10 @@ const SERVICE_NAME: PCWSTR = w!("winseek-searchd");
 static FAST_POLL_UNTIL_MS: AtomicU64 = AtomicU64::new(0);
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 /// Ask the watcher to poll quickly for the next `secs` seconds.
@@ -46,7 +51,8 @@ impl Drop for ScHandle {
 fn open_service(access: u32) -> Result<Option<ScHandle>, String> {
     unsafe {
         let scm = ScHandle(
-            OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT).map_err(|e| e.to_string())?,
+            OpenSCManagerW(PCWSTR::null(), PCWSTR::null(), SC_MANAGER_CONNECT)
+                .map_err(|e| e.to_string())?,
         );
         match OpenServiceW(scm.0, SERVICE_NAME, access) {
             Ok(h) => Ok(Some(ScHandle(h))),
@@ -106,7 +112,10 @@ fn wide(s: &str) -> Vec<u16> {
 /// Run `searchd.exe --install` elevated (one UAC prompt) and wait for it.
 fn install_blocking() -> Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let searchd = exe.parent().map(|p| p.join("searchd.exe")).filter(|p| p.is_file());
+    let searchd = exe
+        .parent()
+        .map(|p| p.join("searchd.exe"))
+        .filter(|p| p.is_file());
     let Some(searchd) = searchd else {
         return Err("searchd.exe not found next to winseek-app.exe".into());
     };
@@ -152,7 +161,9 @@ fn install_blocking() -> Result<(), String> {
 
 #[tauri::command]
 pub async fn install_service() -> Result<(), String> {
-    tauri::async_runtime::spawn_blocking(install_blocking).await.map_err(|e| e.to_string())??;
+    tauri::async_runtime::spawn_blocking(install_blocking)
+        .await
+        .map_err(|e| e.to_string())??;
     kick_watcher(10);
     Ok(())
 }
@@ -162,7 +173,13 @@ pub fn parse_accent_palette(b: &[u8]) -> Option<Vec<String>> {
     if b.len() != 32 {
         return None;
     }
-    Some(b.as_chunks::<4>().0.iter().map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2])).collect())
+    Some(
+        b.as_chunks::<4>()
+            .0
+            .iter()
+            .map(|c| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]))
+            .collect(),
+    )
 }
 
 fn read_accent_bytes() -> Option<Vec<u8>> {
@@ -216,6 +233,17 @@ mod tests {
     #[test]
     fn state_is_allowed() {
         let s = service_state();
-        assert!(["not_installed", "stopped", "starting", "running", "stopping", "unknown"].contains(&s.as_str()), "{s}");
+        assert!(
+            [
+                "not_installed",
+                "stopped",
+                "starting",
+                "running",
+                "stopping",
+                "unknown"
+            ]
+            .contains(&s.as_str()),
+            "{s}"
+        );
     }
 }

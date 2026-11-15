@@ -74,13 +74,18 @@ fn catalog_from(entries: Vec<RawEntry>, build: u32) -> Vec<LaunchItem> {
     let mut items: Vec<LaunchItem> = Vec::new();
     let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
     for e in entries {
-        if e.introduced_in_build.is_some_and(|b| b > build) || e.deprecated_in_build.is_some_and(|b| b <= build) {
+        if e.introduced_in_build.is_some_and(|b| b > build)
+            || e.deprecated_in_build.is_some_and(|b| b <= build)
+        {
             continue;
         }
         if !seen.insert(e.command.to_lowercase()) {
             continue; // same command listed twice: the first (better-placed) entry wins
         }
-        let title = TITLES.iter().find(|(n, _)| *n == e.name).map_or_else(|| humanize(&e.name), |(_, t)| t.to_string());
+        let title = TITLES
+            .iter()
+            .find(|(n, _)| *n == e.name)
+            .map_or_else(|| humanize(&e.name), |(_, t)| t.to_string());
         let area = humanize(&e.area);
         // The vendored data tags many task links with area "Unknown": never show that word.
         let area_known = !area.is_empty() && !area.eq_ignore_ascii_case("unknown");
@@ -108,9 +113,12 @@ fn catalog_from(entries: Vec<RawEntry>, build: u32) -> Vec<LaunchItem> {
         keywords.push(e.name.clone());
         keywords.retain(|k| !k.is_empty());
 
-        let uri = e.command.to_lowercase().starts_with("ms-settings:") || e.command.to_lowercase().starts_with("shell:");
+        let uri = e.command.to_lowercase().starts_with("ms-settings:")
+            || e.command.to_lowercase().starts_with("shell:");
         let target = if uri {
-            Target::Uri { uri: e.command.clone() }
+            Target::Uri {
+                uri: e.command.clone(),
+            }
         } else {
             let (exe, args) = split_command(&e.command);
             Target::Exec { exe, args }
@@ -126,7 +134,10 @@ fn catalog_from(entries: Vec<RawEntry>, build: u32) -> Vec<LaunchItem> {
             admin_ok: false,
         });
     }
-    eprintln!("winseek: settings catalog {} pages for build {build}", items.len());
+    eprintln!(
+        "winseek: settings catalog {} pages for build {build}",
+        items.len()
+    );
     items
 }
 
@@ -146,11 +157,17 @@ pub fn os_build() -> u32 {
         )
     };
     if r.0 != 0 {
-        eprintln!("winseek: could not read the OS build (error {}); assuming 19041", r.0);
+        eprintln!(
+            "winseek: could not read the OS build (error {}); assuming 19041",
+            r.0
+        );
         return 19041; // last version whose settings pages are all still valid everywhere
     }
     let n = (len as usize / 2).saturating_sub(1).min(buf.len());
-    String::from_utf16_lossy(&buf[..n]).trim().parse().unwrap_or(19041)
+    String::from_utf16_lossy(&buf[..n])
+        .trim()
+        .parse()
+        .unwrap_or(19041)
 }
 
 /// "AccessWorkOrSchool" -> "Access work or school". Runs of capitals stay one word ("HVCI");
@@ -171,7 +188,13 @@ pub(crate) fn humanize(name: &str) -> String {
             Some(p) if p.is_alphabetic() && ch.is_ascii_digit() => true,
             Some(p) if p.is_ascii_digit() && ch.is_alphabetic() => true,
             // End of an acronym run: "WiFiSettings" -> Wi Fi Settings, "HSVCIvalues" -> HSVCI values.
-            Some(p) if p.is_uppercase() && ch.is_uppercase() && next.is_some_and(|n| n.is_lowercase()) => true,
+            Some(p)
+                if p.is_uppercase()
+                    && ch.is_uppercase()
+                    && next.is_some_and(|n| n.is_lowercase()) =>
+            {
+                true
+            }
             _ => false,
         };
         if boundary && !cur.is_empty() {
@@ -218,7 +241,11 @@ fn split_command(command: &str) -> (String, Vec<String>) {
         eprintln!("winseek: empty settings command, dropping");
         return (String::new(), Vec::new());
     };
-    let exe = if first.eq_ignore_ascii_case("control") { "control.exe".to_string() } else { expand_root(&first) };
+    let exe = if first.eq_ignore_ascii_case("control") {
+        "control.exe".to_string()
+    } else {
+        expand_root(&first)
+    };
     (exe, parts.collect())
 }
 
@@ -237,14 +264,26 @@ pub(crate) fn expand_root(token: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::matcher;
+    use super::*;
 
     #[test]
     fn real_file_parses_and_bluetooth_survives_19045() {
         let items = catalog(19045);
-        assert!(items.len() > 400, "expected a big catalog, got {}", items.len());
-        let bt = items.iter().find(|i| i.target == Target::Uri { uri: "ms-settings:bluetooth".into() }).expect("bluetooth page");
+        assert!(
+            items.len() > 400,
+            "expected a big catalog, got {}",
+            items.len()
+        );
+        let bt = items
+            .iter()
+            .find(|i| {
+                i.target
+                    == Target::Uri {
+                        uri: "ms-settings:bluetooth".into(),
+                    }
+            })
+            .expect("bluetooth page");
         assert_eq!(bt.title, "Bluetooth & devices");
         assert_eq!(bt.subtitle, "Settings › Devices");
         assert!(bt.icon.is_some());
@@ -263,9 +302,16 @@ mod tests {
             deprecated_in_build: deprecated,
             keywords: None,
         };
-        let entries = vec![mk("Future", Some(22000), None), mk("Old", None, Some(17763)), mk("Current", None, None)];
+        let entries = vec![
+            mk("Future", Some(22000), None),
+            mk("Old", None, Some(17763)),
+            mk("Current", None, None),
+        ];
         let got = catalog_from(entries.clone(), 19045);
-        assert_eq!(got.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(), ["set:ms-settings:Current"]);
+        assert_eq!(
+            got.iter().map(|i| i.id.as_str()).collect::<Vec<_>>(),
+            ["set:ms-settings:Current"]
+        );
         let got = catalog_from(entries, 22621);
         assert_eq!(got.len(), 2); // Future + Current, Old stays dropped
     }
@@ -279,7 +325,10 @@ mod tests {
         assert!(exe.to_lowercase().ends_with("\\control.exe"), "{exe}");
         assert_eq!(args[0], "-name");
         let (exe, args) = split_command(r#""%windir%\syswow64\odbcad32.exe""#);
-        assert!(!exe.contains('"') && exe.to_lowercase().ends_with("odbcad32.exe"), "{exe}");
+        assert!(
+            !exe.contains('"') && exe.to_lowercase().ends_with("odbcad32.exe"),
+            "{exe}"
+        );
         assert!(args.is_empty());
     }
 
@@ -303,7 +352,10 @@ mod tests {
                 .max_by_key(|(s, _)| *s)
                 .map(|(_, i)| i)
         };
-        assert_eq!(best_for("bluetooth").map(|i| i.id.as_str()), Some("set:ms-settings:bluetooth"));
+        assert_eq!(
+            best_for("bluetooth").map(|i| i.id.as_str()),
+            Some("set:ms-settings:bluetooth")
+        );
         let dark = best_for("dark").expect("a page for 'dark'");
         assert_eq!(dark.id, "set:ms-settings:colors");
     }
@@ -317,10 +369,25 @@ mod tests {
             .filter(|i| i.title.starts_with("Bluetooth"))
             .filter_map(|i| matcher::score_item("bluetooth", i).map(|m| (m.score, i.id.as_str())))
             .collect();
-        assert!(scored.iter().any(|(_, id)| *id == "set:ms-settings:bluetooth"), "{scored:?}");
-        let modern = scored.iter().find(|(_, id)| *id == "set:ms-settings:bluetooth").unwrap().0;
-        let legacy = scored.iter().find(|(_, id)| id.contains("BluetoothDevices")).map(|(s, _)| *s);
-        assert!(legacy.is_none_or(|l| modern > l), "modern {modern} vs legacy {legacy:?}");
+        assert!(
+            scored
+                .iter()
+                .any(|(_, id)| *id == "set:ms-settings:bluetooth"),
+            "{scored:?}"
+        );
+        let modern = scored
+            .iter()
+            .find(|(_, id)| *id == "set:ms-settings:bluetooth")
+            .unwrap()
+            .0;
+        let legacy = scored
+            .iter()
+            .find(|(_, id)| id.contains("BluetoothDevices"))
+            .map(|(s, _)| *s);
+        assert!(
+            legacy.is_none_or(|l| modern > l),
+            "modern {modern} vs legacy {legacy:?}"
+        );
     }
 
     #[test]

@@ -12,11 +12,15 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
 use winseek_index::{Index, MetaKey, Query, RankSet, Rollup, VolKind};
-use winseek_ipc::{ChangeKind, Hit, Monitor, Response, Sort, UsageDetail, UsageEntry, UsageTree, UsageType, VolumeState, VolumeStatus};
+use winseek_ipc::{
+    ChangeKind, Hit, Monitor, Response, Sort, UsageDetail, UsageEntry, UsageTree, UsageType,
+    VolumeState, VolumeStatus,
+};
 use winseek_usn::{Change, JournalCursor};
 
 use crate::index_ops::{
-    apply_change, apply_path_op, filetime_to_unix_ms, map_refs_change, replace_volume, retain_volumes, Event, PathOp,
+    apply_change, apply_path_op, filetime_to_unix_ms, map_refs_change, replace_volume,
+    retain_volumes, Event, PathOp,
 };
 use crate::log::{info, warn};
 
@@ -61,11 +65,18 @@ impl FolderSizes {
             .map(|i| (folder_key(ix, i), totals[i as usize]))
             .collect();
         table.sort_unstable_by_key(|e| e.0);
-        FolderSizes { gen, at: Instant::now(), table }
+        FolderSizes {
+            gen,
+            at: Instant::now(),
+            table,
+        }
     }
     fn get(&self, ix: &Index, i: u32) -> Option<u64> {
         let k = folder_key(ix, i);
-        self.table.binary_search_by_key(&k, |e| e.0).ok().map(|p| self.table[p].1)
+        self.table
+            .binary_search_by_key(&k, |e| e.0)
+            .ok()
+            .map(|p| self.table[p].1)
     }
 }
 
@@ -130,12 +141,25 @@ impl QCache {
     }
     fn put(&mut self, gen: u64, query: &str, class: SortClass, data: Arc<Cached>) {
         self.map.retain(|_, e| e.gen == gen); // a new generation invalidates everything older
-        self.map.insert((query.to_string(), class), CacheEntry { gen, data, used: Instant::now() });
+        self.map.insert(
+            (query.to_string(), class),
+            CacheEntry {
+                gen,
+                data,
+                used: Instant::now(),
+            },
+        );
         // Evict least-recently-used entries (never the only one left) over either budget.
         while self.map.len() > 1
-            && (self.map.len() > QUERY_CACHE_ENTRIES || self.map.values().map(|e| e.data.bytes()).sum::<usize>() > QUERY_CACHE_BYTES)
+            && (self.map.len() > QUERY_CACHE_ENTRIES
+                || self.map.values().map(|e| e.data.bytes()).sum::<usize>() > QUERY_CACHE_BYTES)
         {
-            let oldest = self.map.iter().min_by_key(|(_, e)| e.used).map(|(k, _)| k.clone()).expect("non-empty");
+            let oldest = self
+                .map
+                .iter()
+                .min_by_key(|(_, e)| e.used)
+                .map(|(k, _)| k.clone())
+                .expect("non-empty");
             self.map.remove(&oldest);
         }
     }
@@ -198,7 +222,12 @@ impl Shared {
         Shared {
             index: RwLock::new(index),
             recent: Mutex::new(VecDeque::with_capacity(RECENT_CAP)),
-            vols: Mutex::new(letters.iter().map(|&l| (l, VolumeState::Scanning { done: 0, total: 0 })).collect()),
+            vols: Mutex::new(
+                letters
+                    .iter()
+                    .map(|&l| (l, VolumeState::Scanning { done: 0, total: 0 }))
+                    .collect(),
+            ),
             info: Mutex::new(BTreeMap::new()),
             ctl: Mutex::new(letters.iter().map(|&l| (l, Default::default())).collect()),
             subs: Mutex::new(Vec::new()),
@@ -220,7 +249,13 @@ impl Shared {
     }
 
     pub fn set_info(&self, letter: char, fs: &str, monitor: Monitor) {
-        self.info.lock().unwrap().insert(letter, VolInfo { fs: fs.to_string(), monitor });
+        self.info.lock().unwrap().insert(
+            letter,
+            VolInfo {
+                fs: fs.to_string(),
+                monitor,
+            },
+        );
     }
 
     /// The control flags of a volume (created on first use: volumes can arrive later).
@@ -237,12 +272,17 @@ impl Shared {
     /// folder row lately, while the table matches the index, or within `FOLDER_SIZES_EVERY`.
     pub fn refresh_folder_sizes(&self) {
         let seen = self.folders_seen.load(Ordering::Relaxed);
-        if seen == 0 || self.started.elapsed().as_secs().saturating_sub(seen) > FOLDER_SIZES_WANTED.as_secs() {
+        if seen == 0
+            || self.started.elapsed().as_secs().saturating_sub(seen) > FOLDER_SIZES_WANTED.as_secs()
+        {
             return;
         }
         let cur = self.folder_sizes.lock().unwrap().clone();
         let gen = self.gen.load(Ordering::Relaxed);
-        if cur.as_ref().is_some_and(|c| c.gen == gen || c.at.elapsed() < FOLDER_SIZES_EVERY) {
+        if cur
+            .as_ref()
+            .is_some_and(|c| c.gen == gen || c.at.elapsed() < FOLDER_SIZES_EVERY)
+        {
             return;
         }
         let ix = self.index.read().unwrap();
@@ -288,11 +328,18 @@ impl Shared {
         let old = ev.old_path.as_ref().map(|p| p.to_lowercase());
         subs.retain(|s| {
             let hit = s.roots.is_empty()
-                || s.roots.iter().any(|r| under(&path, r) || old.as_deref().is_some_and(|o| under(o, r)));
+                || s.roots
+                    .iter()
+                    .any(|r| under(&path, r) || old.as_deref().is_some_and(|o| under(o, r)));
             if !hit {
                 return true;
             }
-            let msg = Response::Change { kind: ev.kind, path: ev.path.clone(), old_path: ev.old_path.clone(), is_dir: ev.is_dir };
+            let msg = Response::Change {
+                kind: ev.kind,
+                path: ev.path.clone(),
+                old_path: ev.old_path.clone(),
+                is_dir: ev.is_dir,
+            };
             match s.tx.try_send(msg) {
                 Ok(()) => true,
                 Err(std::sync::mpsc::TrySendError::Full(_)) => {
@@ -306,23 +353,38 @@ impl Shared {
 }
 
 fn normalize_root(r: &str) -> String {
-    r.trim_end_matches(['\\', '/']).replace('/', "\\").to_lowercase()
+    r.trim_end_matches(['\\', '/'])
+        .replace('/', "\\")
+        .to_lowercase()
 }
 
 fn under(path_lower: &str, root: &str) -> bool {
-    path_lower.strip_prefix(root).is_some_and(|rest| rest.is_empty() || rest.starts_with('\\'))
+    path_lower
+        .strip_prefix(root)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('\\'))
 }
 
 pub enum Msg {
     /// Changes for one volume plus the journal cursor reached after them. ReFS changes
     /// carry 128-bit FRNs and are interned by the writer.
-    Changes { vol: u8, changes: Vec<Change>, cursor: JournalCursor },
+    Changes {
+        vol: u8,
+        changes: Vec<Change>,
+        cursor: JournalCursor,
+    },
     /// Folder-watch changes (FAT/exFAT/ReFS without a journal), already stat'ed.
-    Paths { vol: u8, ops: Vec<PathOp> },
+    Paths {
+        vol: u8,
+        ops: Vec<PathOp>,
+    },
     /// A finished fresh scan (journal cursor stored in its volume meta) replacing its volume.
-    Replace { fresh: Box<Index> },
+    Replace {
+        fresh: Box<Index>,
+    },
     /// The volume went away: drop its records.
-    Drop { vol: u8 },
+    Drop {
+        vol: u8,
+    },
     Shutdown,
 }
 
@@ -330,7 +392,11 @@ pub enum Msg {
 pub fn writer_loop(sh: &Shared, rx: Receiver<Msg>) {
     while let Ok(msg) = rx.recv() {
         match msg {
-            Msg::Changes { vol, changes, cursor } => apply_batch(sh, vol, &changes, cursor),
+            Msg::Changes {
+                vol,
+                changes,
+                cursor,
+            } => apply_batch(sh, vol, &changes, cursor),
             Msg::Paths { vol, ops } => apply_paths(sh, vol, &ops),
             Msg::Replace { fresh } => replace(sh, *fresh),
             Msg::Drop { vol } => drop_volume(sh, vol),
@@ -355,7 +421,9 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             } else {
                 c
             };
-            let Some(ev) = apply_change(&mut ix, vol, c) else { continue };
+            let Some(ev) = apply_change(&mut ix, vol, c) else {
+                continue;
+            };
             if let (Some(i), false, true) = (ev.idx, ev.is_dir, to_stat.len() < STAT_BUDGET) {
                 to_stat.push((i, events.len()));
             }
@@ -372,10 +440,21 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         .iter()
         .map(|&(i, e)| {
             let md = std::fs::metadata(&events[e].path).ok();
-            (i, md.map(|md| {
-                let mt = md.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
-                (md.len(), mt.map_or(0, |d| crate::index_ops::filetime_from_unix_ms(d.as_millis() as i64)))
-            }))
+            (
+                i,
+                md.map(|md| {
+                    let mt = md
+                        .modified()
+                        .ok()
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok());
+                    (
+                        md.len(),
+                        mt.map_or(0, |d| {
+                            crate::index_ops::filetime_from_unix_ms(d.as_millis() as i64)
+                        }),
+                    )
+                }),
+            )
         })
         .collect();
     let mut recent: Vec<Hit> = Vec::new();
@@ -383,7 +462,11 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         let mut ix = sh.index.write().unwrap();
         for (i, st) in stats {
             if let Some((len, ft)) = st {
-                let ft = if ft != 0 { ft } else { ix.mtime(i).unwrap_or(0) };
+                let ft = if ft != 0 {
+                    ft
+                } else {
+                    ix.mtime(i).unwrap_or(0)
+                };
                 ix.update_meta(i, len, ft);
             }
         }
@@ -411,7 +494,9 @@ fn apply_paths(sh: &Shared, vol: u8, ops: &[PathOp]) {
             return; // not scanned yet (or dropped): the scan/rescan covers these
         }
         for op in ops {
-            let Some(ev) = apply_path_op(&mut ix, vol, op) else { continue };
+            let Some(ev) = apply_path_op(&mut ix, vol, op) else {
+                continue;
+            };
             if let (Some(i), true) = (ev.idx, ev.kind != ChangeKind::Deleted) {
                 recent.push(hit_at(&ix, i));
             }
@@ -432,10 +517,17 @@ fn drop_volume(sh: &Shared, vol: u8) {
     }
     sh.gen.fetch_add(1, Ordering::Relaxed);
     let prefix = format!("{}:\\", vol as char).to_lowercase();
-    sh.recent.lock().unwrap().retain(|h| !h.path.to_lowercase().starts_with(&prefix));
+    sh.recent
+        .lock()
+        .unwrap()
+        .retain(|h| !h.path.to_lowercase().starts_with(&prefix));
     sh.forget(vol as char);
     sh.save_now.store(true, Ordering::Relaxed);
-    info!("{}: volume dropped from the index in {:.1?}", vol as char, t.elapsed());
+    info!(
+        "{}: volume dropped from the index in {:.1?}",
+        vol as char,
+        t.elapsed()
+    );
 }
 
 /// Push hits into the recent ring and change events to subscribers.
@@ -505,7 +597,13 @@ pub fn hit_at(ix: &Index, i: u32) -> Hit {
 /// The first request of a query computes its match set once and caches it; every further
 /// window - the next page or a scrollbar jump to row 8,000,000 - is a lookup, whatever the
 /// size of the result. `limit == 0` only counts (the type-chip counters) and caches nothing.
-pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> (u64, Vec<Hit>, Option<&'static str>) {
+pub fn search(
+    sh: &Shared,
+    query: &str,
+    offset: u32,
+    limit: u32,
+    sort: Sort,
+) -> (u64, Vec<Hit>, Option<&'static str>) {
     let (class, reverse, note) = match sort {
         Sort::NameAsc => (SortClass::Name, false, None),
         Sort::NameDesc => (SortClass::Name, true, None),
@@ -515,7 +613,11 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
         Sort::SizeAsc => (SortClass::Size, true, None),
         Sort::TypeAsc => (SortClass::Type, false, None),
         Sort::TypeDesc => (SortClass::Type, true, None),
-        Sort::PathAsc => (SortClass::Name, false, Some("path_asc is not supported yet; used name_asc")),
+        Sort::PathAsc => (
+            SortClass::Name,
+            false,
+            Some("path_asc is not supported yet; used name_asc"),
+        ),
     };
     let lim = limit.min(10_000) as usize;
     let off = offset as usize;
@@ -546,19 +648,27 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
                 let slots = ix.match_slots(&q);
                 // A size sort with folders in it ranks them by what they hold (computed for
                 // exactly this index state; it also refreshes the table the rows read).
-                let totals = (key == MetaKey::Size && slots.iter().any(|&i| ix.is_dir(i))).then(|| ix.folder_totals());
+                let totals = (key == MetaKey::Size && slots.iter().any(|&i| ix.is_dir(i)))
+                    .then(|| ix.folder_totals());
                 if let Some(t) = &totals {
-                    *sh.folder_sizes.lock().unwrap() = Some(Arc::new(FolderSizes::build(&ix, t, gen)));
+                    *sh.folder_sizes.lock().unwrap() =
+                        Some(Arc::new(FolderSizes::build(&ix, t, gen)));
                 }
                 let dirs = totals.as_deref();
                 if slots.len() <= META_FULL_SORT || reverse || off + lim > META_TOP {
                     Cached::Sorted(ix.sort_slots(slots, key, dirs))
                 } else {
-                    Cached::Top { total: slots.len(), items: ix.top_slots(&slots, key, META_TOP, dirs) }
+                    Cached::Top {
+                        total: slots.len(),
+                        items: ix.top_slots(&slots, key, META_TOP, dirs),
+                    }
                 }
             }
         });
-        sh.qcache.lock().unwrap().put(gen, query, class, fresh.clone());
+        sh.qcache
+            .lock()
+            .unwrap()
+            .put(gen, query, class, fresh.clone());
         fresh
     });
     let slots: Vec<u32> = match &*data {
@@ -566,7 +676,11 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
         Cached::Sorted(v) | Cached::Top { items: v, .. } => {
             if reverse {
                 let hi = v.len().saturating_sub(off);
-                v[hi.saturating_sub(lim)..hi].iter().rev().copied().collect()
+                v[hi.saturating_sub(lim)..hi]
+                    .iter()
+                    .rev()
+                    .copied()
+                    .collect()
             } else {
                 v[off.min(v.len())..(off + lim).min(v.len())].to_vec()
             }
@@ -575,7 +689,8 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
     let has_dirs = slots.iter().any(|&i| ix.is_dir(i));
     let mut sizes = None;
     if has_dirs {
-        sh.folders_seen.store(sh.started.elapsed().as_secs().max(1), Ordering::Relaxed);
+        sh.folders_seen
+            .store(sh.started.elapsed().as_secs().max(1), Ordering::Relaxed);
         sizes = sh.folder_sizes.lock().unwrap().clone();
         if sizes.is_none() {
             // First folder row since start: compute once here so it never shows without a size.
@@ -584,7 +699,10 @@ pub fn search(sh: &Shared, query: &str, offset: u32, limit: u32, sort: Sort) -> 
             sizes = Some(fresh);
         }
     }
-    let hits = slots.into_iter().map(|i| hit_sized(&ix, i, sizes.as_deref())).collect();
+    let hits = slots
+        .into_iter()
+        .map(|i| hit_sized(&ix, i, sizes.as_deref()))
+        .collect();
     (data.total() as u64, hits, note)
 }
 
@@ -596,14 +714,29 @@ pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
         .into_iter()
         .map(|(letter, state)| {
             let (files, folders) = ix.counts(letter as u8);
-            let (fs, monitor) = info.get(&letter).map_or((String::new(), Monitor::Usn), |i| (i.fs.clone(), i.monitor));
-            VolumeStatus { letter, files, folders, state, fs, monitor }
+            let (fs, monitor) = info
+                .get(&letter)
+                .map_or((String::new(), Monitor::Usn), |i| (i.fs.clone(), i.monitor));
+            VolumeStatus {
+                letter,
+                files,
+                folders,
+                state,
+                fs,
+                monitor,
+            }
         })
         .collect()
 }
 
 pub fn recent(sh: &Shared, limit: u32) -> Vec<Hit> {
-    sh.recent.lock().unwrap().iter().take(limit.min(500) as usize).cloned().collect()
+    sh.recent
+        .lock()
+        .unwrap()
+        .iter()
+        .take(limit.min(500) as usize)
+        .cloned()
+        .collect()
 }
 
 /// Biggest children listed per folder when the caller names no limit; the rest is summed into `more`.
@@ -622,7 +755,8 @@ pub struct UsageCache {
 
 impl Shared {
     fn note_usage_use(&self) {
-        self.usage_seen.store(self.started.elapsed().as_secs().max(1), Ordering::Relaxed);
+        self.usage_seen
+            .store(self.started.elapsed().as_secs().max(1), Ordering::Relaxed);
     }
 
     /// The roll-up: the cached one, or (first use) a fresh build. Concurrent first requests share one build.
@@ -643,15 +777,26 @@ impl Shared {
         let gen = self.gen.load(Ordering::Relaxed);
         let ru = ix.rollup();
         drop(ix);
-        info!("disk usage roll-up: {} folders, {} MB, {:.0?}", ru.dir_count(), ru.mem_bytes() >> 20, t.elapsed());
-        let c = Arc::new(UsageCache { gen, at: Instant::now(), ru });
+        info!(
+            "disk usage roll-up: {} folders, {} MB, {:.0?}",
+            ru.dir_count(),
+            ru.mem_bytes() >> 20,
+            t.elapsed()
+        );
+        let c = Arc::new(UsageCache {
+            gen,
+            at: Instant::now(),
+            ru,
+        });
         *self.usage_cache.lock().unwrap() = Some(c.clone());
         Ok(c)
     }
 
     /// Main loop tick: rebuild a stale roll-up while somebody is looking, drop it when nobody is.
     pub fn refresh_usage(&self) {
-        let Some(cur) = self.usage_cache.lock().unwrap().clone() else { return };
+        let Some(cur) = self.usage_cache.lock().unwrap().clone() else {
+            return;
+        };
         let seen = self.usage_seen.load(Ordering::Relaxed);
         if self.started.elapsed().as_secs().saturating_sub(seen) > USAGE_WANTED.as_secs() {
             *self.usage_cache.lock().unwrap() = None;
@@ -660,12 +805,18 @@ impl Shared {
         if cur.gen == self.gen.load(Ordering::Relaxed) || cur.at.elapsed() < USAGE_FRESH {
             return;
         }
-        let Ok(_one) = self.usage_build.try_lock() else { return };
+        let Ok(_one) = self.usage_build.try_lock() else {
+            return;
+        };
         let ix = self.index.read().unwrap();
         let gen = self.gen.load(Ordering::Relaxed);
         let ru = ix.rollup();
         drop(ix);
-        *self.usage_cache.lock().unwrap() = Some(Arc::new(UsageCache { gen, at: Instant::now(), ru }));
+        *self.usage_cache.lock().unwrap() = Some(Arc::new(UsageCache {
+            gen,
+            at: Instant::now(),
+            ru,
+        }));
     }
 }
 
@@ -679,11 +830,22 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
     let ix = sh.index.read().unwrap();
     let ru = &c.ru;
     if path.trim().is_empty() {
-        let mut t = UsageTree { path: String::new(), size: 0, files: 0, folders: 0, entries: vec![], more: 0, more_size: 0, cats: vec![0; winseek_index::CATEGORIES] };
+        let mut t = UsageTree {
+            path: String::new(),
+            size: 0,
+            files: 0,
+            folders: 0,
+            entries: vec![],
+            more: 0,
+            more_size: 0,
+            cats: vec![0; winseek_index::CATEGORIES],
+        };
         for (letter, d) in ix.volume_dirs(ru) {
             let (bytes, files, folders) = ru.totals(d);
             let cats = ru.cats_of(d);
-            let kind = (0..cats.len()).max_by_key(|&k| (cats[k], std::cmp::Reverse(k))).unwrap_or(0) as u8;
+            let kind = (0..cats.len())
+                .max_by_key(|&k| (cats[k], std::cmp::Reverse(k)))
+                .unwrap_or(0) as u8;
             for (k, b) in cats.iter().enumerate() {
                 t.cats[k] += b;
             }
@@ -691,13 +853,28 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
             t.files += files;
             t.folders += folders;
             let name = drive_label(letter);
-            t.entries.push(UsageEntry { path: format!("{name}\\"), name, is_dir: true, kind, size: bytes, files, folders, mtime: None });
+            t.entries.push(UsageEntry {
+                path: format!("{name}\\"),
+                name,
+                is_dir: true,
+                kind,
+                size: bytes,
+                files,
+                folders,
+                mtime: None,
+            });
         }
         t.entries.sort_by(|a, b| a.name.cmp(&b.name));
         return Ok(t);
     }
-    let d = ix.resolve_dir(ru, path).ok_or_else(|| format!("{path} is not in the index."))?;
-    let cap = if limit == 0 { USAGE_ENTRIES } else { (limit as usize).min(5000) };
+    let d = ix
+        .resolve_dir(ru, path)
+        .ok_or_else(|| format!("{path} is not in the index."))?;
+    let cap = if limit == 0 {
+        USAGE_ENTRIES
+    } else {
+        (limit as usize).min(5000)
+    };
     let l = ix.list_dir(ru, d, cap);
     let entries = l
         .children
@@ -713,7 +890,16 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
             mtime: ix.mtime(ch.slot).and_then(filetime_to_unix_ms),
         })
         .collect();
-    Ok(UsageTree { path: ix.full_path(ix.dir_slot(ru, d)), size: l.bytes, files: l.files, folders: l.folders, entries, more: l.more, more_size: l.more_bytes, cats: l.cats.to_vec() })
+    Ok(UsageTree {
+        path: ix.full_path(ix.dir_slot(ru, d)),
+        size: l.bytes,
+        files: l.files,
+        folders: l.folders,
+        entries,
+        more: l.more,
+        more_size: l.more_bytes,
+        cats: l.cats.to_vec(),
+    })
 }
 
 /// File types and the biggest files under a folder (or under every drive for an empty path).
@@ -723,12 +909,18 @@ pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDeta
     let ru = &c.ru;
     let top = top_files.min(500) as usize;
     let (types, big) = if path.trim().is_empty() {
-        let mut all: std::collections::HashMap<String, UsageType> = std::collections::HashMap::new();
+        let mut all: std::collections::HashMap<String, UsageType> =
+            std::collections::HashMap::new();
         let mut big: Vec<(u32, u64)> = Vec::new();
         for (_, d) in ix.volume_dirs(ru) {
             let (t, b) = ix.type_detail(ru, d, top);
             for x in t {
-                let e = all.entry(x.ext.clone()).or_insert(UsageType { ext: x.ext, kind: x.kind, bytes: 0, files: 0 });
+                let e = all.entry(x.ext.clone()).or_insert(UsageType {
+                    ext: x.ext,
+                    kind: x.kind,
+                    bytes: 0,
+                    files: 0,
+                });
                 e.bytes += x.bytes;
                 e.files += x.files;
             }
@@ -740,9 +932,21 @@ pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDeta
         t.sort_by_key(|x| std::cmp::Reverse(x.bytes));
         (t, big)
     } else {
-        let d = ix.resolve_dir(ru, path).ok_or_else(|| format!("{path} is not in the index."))?;
+        let d = ix
+            .resolve_dir(ru, path)
+            .ok_or_else(|| format!("{path} is not in the index."))?;
         let (t, b) = ix.type_detail(ru, d, top);
-        (t.into_iter().map(|x| UsageType { ext: x.ext, kind: x.kind, bytes: x.bytes, files: x.files }).collect(), b)
+        (
+            t.into_iter()
+                .map(|x| UsageType {
+                    ext: x.ext,
+                    kind: x.kind,
+                    bytes: x.bytes,
+                    files: x.files,
+                })
+                .collect(),
+            b,
+        )
     };
     let biggest = big
         .iter()
@@ -752,7 +956,11 @@ pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDeta
             h
         })
         .collect();
-    Ok(UsageDetail { path: path.to_string(), types: types.into_iter().take(60).collect(), biggest })
+    Ok(UsageDetail {
+        path: path.to_string(),
+        types: types.into_iter().take(60).collect(),
+        biggest,
+    })
 }
 
 #[cfg(test)]
@@ -768,9 +976,19 @@ mod tests {
         Shared::new(b.finish(), &['C'])
     }
     fn create(frn: u128, parent: u128, name: &str) -> Change {
-        Change::Create(UsnRecord { frn, parent_frn: parent, usn: 0, reason: 0, attrs: 0x20, name: name.into() })
+        Change::Create(UsnRecord {
+            frn,
+            parent_frn: parent,
+            usn: 0,
+            reason: 0,
+            attrs: 0x20,
+            name: name.into(),
+        })
     }
-    const CUR: JournalCursor = JournalCursor { journal_id: 7, next_usn: 99 };
+    const CUR: JournalCursor = JournalCursor {
+        journal_id: 7,
+        next_usn: 99,
+    };
 
     #[test]
     fn usage_lists_children_and_volumes() {
@@ -779,7 +997,10 @@ mod tests {
         let u = usage(&sh, r"C:\Docs", 5).unwrap();
         assert!(u.entries.len() <= 1);
         let all = usage(&sh, "", 0).unwrap();
-        assert_eq!((all.entries[0].name.as_str(), all.entries[0].path.as_str()), ("C:", "C:\\"));
+        assert_eq!(
+            (all.entries[0].name.as_str(), all.entries[0].path.as_str()),
+            ("C:", "C:\\")
+        );
         assert!(usage(&sh, r"C:\nope", 0).is_err());
         let d = usage_detail(&sh, "", 5).unwrap();
         assert!(d.biggest.len() <= 1);
@@ -790,15 +1011,36 @@ mod tests {
         let sh = shared();
         let rx_docs = sh.subscribe(&["C:\\Docs".into()]);
         let rx_other = sh.subscribe(&["C:\\Other\\".into()]);
-        apply_batch(&sh, b'C', &[create(100, 10, "a.txt"), create(101, 10, "b.txt"), create(100, 10, "a.txt")], CUR);
+        apply_batch(
+            &sh,
+            b'C',
+            &[
+                create(100, 10, "a.txt"),
+                create(101, 10, "b.txt"),
+                create(100, 10, "a.txt"),
+            ],
+            CUR,
+        );
         let (total, hits, note) = search(&sh, "txt", 0, 10, Sort::NameDesc);
         assert_eq!((total, hits[0].name.as_str(), note), (2, "b.txt", None));
-        assert!(search(&sh, "txt", 0, 10, Sort::SizeDesc).2.is_none(), "size sort is real now");
+        assert!(
+            search(&sh, "txt", 0, 10, Sort::SizeDesc).2.is_none(),
+            "size sort is real now"
+        );
         let m = &sh.index.read().unwrap().volumes()[0].clone();
         assert_eq!((m.journal_id, m.next_usn), (7, 99));
         let r = recent(&sh, 10);
-        assert_eq!(r.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(), vec!["C:\\Docs\\a.txt", "C:\\Docs\\b.txt"]);
-        assert!(matches!(rx_docs.try_recv(), Ok(Response::Change { kind: ChangeKind::Created, .. })));
+        assert_eq!(
+            r.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
+            vec!["C:\\Docs\\a.txt", "C:\\Docs\\b.txt"]
+        );
+        assert!(matches!(
+            rx_docs.try_recv(),
+            Ok(Response::Change {
+                kind: ChangeKind::Created,
+                ..
+            })
+        ));
         assert!(rx_other.try_recv().is_err());
         let st = status(&sh);
         assert_eq!((st[0].files, st[0].folders), (2, 1));
@@ -817,17 +1059,41 @@ mod tests {
         replace(&sh, fresh);
         let rx = sh.subscribe(&[r"E:\Photos".into()]);
         let ops = vec![
-            PathOp::Upsert { rel: r"Photos\a.jpg".into(), is_dir: false, size: 7, mtime: 0 },
-            PathOp::Upsert { rel: r"Photos\b.jpg".into(), is_dir: false, size: 8, mtime: 0 },
-            PathOp::Remove { rel: r"Photos\b.jpg".into() },
+            PathOp::Upsert {
+                rel: r"Photos\a.jpg".into(),
+                is_dir: false,
+                size: 7,
+                mtime: 0,
+            },
+            PathOp::Upsert {
+                rel: r"Photos\b.jpg".into(),
+                is_dir: false,
+                size: 8,
+                mtime: 0,
+            },
+            PathOp::Remove {
+                rel: r"Photos\b.jpg".into(),
+            },
         ];
         apply_paths(&sh, b'E', &ops);
         let (total, hits, _) = search(&sh, "jpg", 0, 10, Sort::NameAsc);
-        assert_eq!((total, hits[0].path.as_str(), hits[0].size), (1, r"E:\Photos\a.jpg", Some(7)));
-        assert!(matches!(rx.try_recv(), Ok(Response::Change { kind: ChangeKind::Created, .. })));
+        assert_eq!(
+            (total, hits[0].path.as_str(), hits[0].size),
+            (1, r"E:\Photos\a.jpg", Some(7))
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(Response::Change {
+                kind: ChangeKind::Created,
+                ..
+            })
+        ));
         let st = status(&sh);
         let e = st.iter().find(|v| v.letter == 'E').unwrap();
-        assert_eq!((e.fs.as_str(), e.monitor, e.files, e.folders), ("exFAT", Monitor::FolderWatch, 1, 1));
+        assert_eq!(
+            (e.fs.as_str(), e.monitor, e.files, e.folders),
+            ("exFAT", Monitor::FolderWatch, 1, 1)
+        );
         assert_eq!(e.state, VolumeState::Live);
         // ops for a volume that is not indexed are ignored
         apply_paths(&sh, b'Z', &ops);
@@ -839,7 +1105,11 @@ mod tests {
         assert!(recent(&sh, 10).iter().all(|h| !h.path.starts_with("E:")));
         assert!(status(&sh).iter().all(|v| v.letter != 'E'));
         assert!(!sh.has_ctl('E'));
-        assert_eq!(search(&sh, "Docs", 0, 10, Sort::NameAsc).0, 1, "other volumes kept");
+        assert_eq!(
+            search(&sh, "Docs", 0, 10, Sort::NameAsc).0,
+            1,
+            "other volumes kept"
+        );
     }
 
     #[test]
@@ -851,9 +1121,24 @@ mod tests {
         let sh = Shared::new(b.finish(), &['R']);
         let dir = (3u128 << 64) | 9;
         let mk = |frn: u128, parent: u128, attrs: u32, name: &str| {
-            Change::Create(UsnRecord { frn, parent_frn: parent, usn: 0, reason: 0, attrs, name: name.into() })
+            Change::Create(UsnRecord {
+                frn,
+                parent_frn: parent,
+                usn: 0,
+                reason: 0,
+                attrs,
+                name: name.into(),
+            })
         };
-        apply_batch(&sh, b'R', &[mk(dir, 1 << 100, 0x10, "Big"), mk(dir + 1, dir, 0x20, "x.txt")], CUR);
+        apply_batch(
+            &sh,
+            b'R',
+            &[
+                mk(dir, 1 << 100, 0x10, "Big"),
+                mk(dir + 1, dir, 0x20, "x.txt"),
+            ],
+            CUR,
+        );
         let (_, hits, _) = search(&sh, "x.txt", 0, 10, Sort::NameAsc);
         assert_eq!(hits[0].path, r"R:\Big\x.txt");
     }
@@ -866,10 +1151,28 @@ mod tests {
         b.add_volume(b'E', 5);
         b.volume_mut(b'E').unwrap().kind = VolKind::Folder;
         replace(&sh, b.finish());
-        let up = |rel: &str, size: u64, mtime: i64| PathOp::Upsert { rel: rel.into(), is_dir: false, size, mtime };
-        apply_paths(&sh, b'E', &[up(r"Ph\a.txt", 10, 100), up(r"Ph\b.txt", 900, 500), up(r"Ph\c.txt", 500, 300), up(r"Ph\d.txt", 20, 400)]);
+        let up = |rel: &str, size: u64, mtime: i64| PathOp::Upsert {
+            rel: rel.into(),
+            is_dir: false,
+            size,
+            mtime,
+        };
+        apply_paths(
+            &sh,
+            b'E',
+            &[
+                up(r"Ph\a.txt", 10, 100),
+                up(r"Ph\b.txt", 900, 500),
+                up(r"Ph\c.txt", 500, 300),
+                up(r"Ph\d.txt", 20, 400),
+            ],
+        );
 
-        let names = |hits: Vec<Hit>| hits.iter().map(|h| h.name.as_str().to_string()).collect::<Vec<_>>();
+        let names = |hits: Vec<Hit>| {
+            hits.iter()
+                .map(|h| h.name.as_str().to_string())
+                .collect::<Vec<_>>()
+        };
         let (total, hits, note) = search(&sh, "txt", 0, 10, Sort::MtimeDesc);
         assert_eq!((total, note.is_none()), (4, true), "mtime sort is real now");
         assert_eq!(names(hits), ["b.txt", "d.txt", "c.txt", "a.txt"]);
@@ -903,13 +1206,22 @@ mod tests {
         assert_eq!(sh.qcache.lock().unwrap().map.len(), cached);
         // exact filters run in the engine: size bounds, date range (unix ms), both countable
         let (total, hits, _) = search(&sh, "txt size:>=500", 0, 10, Sort::NameAsc);
-        assert_eq!((total, names(hits)), (2, vec!["b.txt".to_string(), "c.txt".to_string()]));
+        assert_eq!(
+            (total, names(hits)),
+            (2, vec!["b.txt".to_string(), "c.txt".to_string()])
+        );
         assert_eq!(search(&sh, "txt size:<100", 0, 0, Sort::NameAsc).0, 3);
         // folders carry what they hold, and a size sort ranks them by it
         let (_, hits, _) = search(&sh, "Ph", 0, 10, Sort::NameAsc);
-        assert_eq!((hits[0].name.as_str(), hits[0].is_dir, hits[0].size), ("Ph", true, Some(10 + 900 + 500 + 20 + 1)));
+        assert_eq!(
+            (hits[0].name.as_str(), hits[0].is_dir, hits[0].size),
+            ("Ph", true, Some(10 + 900 + 500 + 20 + 1))
+        );
         let (_, hits, _) = search(&sh, "", 0, 3, Sort::SizeDesc);
-        assert!(hits.iter().any(|h| h.name == "Ph" && h.size == Some(1431)), "{hits:?}");
+        assert!(
+            hits.iter().any(|h| h.name == "Ph" && h.size == Some(1431)),
+            "{hits:?}"
+        );
         // a new file shows up in the folder's size once the table is refreshed
         apply_paths(&sh, b'E', &[up(r"Ph\f.txt", 69, 1)]);
         let (_, hits, _) = search(&sh, "folder:Ph", 0, 10, Sort::SizeDesc); // a size sort recomputes
@@ -922,17 +1234,70 @@ mod tests {
     #[test]
     fn status_counts_follow_live_changes() {
         let sh = shared();
-        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (0, 1)); // primes the cache
-        apply_batch(&sh, b'C', &[create(100, 10, "a.txt"), Change::Create(UsnRecord { frn: 20, parent_frn: 10, usn: 0, reason: 0, attrs: 0x10, name: "Sub".into() }), create(101, 20, "b.txt")], CUR);
-        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (2, 2));
+        assert_eq!(
+            {
+                let s = status(&sh);
+                (s[0].files, s[0].folders)
+            },
+            (0, 1)
+        ); // primes the cache
+        apply_batch(
+            &sh,
+            b'C',
+            &[
+                create(100, 10, "a.txt"),
+                Change::Create(UsnRecord {
+                    frn: 20,
+                    parent_frn: 10,
+                    usn: 0,
+                    reason: 0,
+                    attrs: 0x10,
+                    name: "Sub".into(),
+                }),
+                create(101, 20, "b.txt"),
+            ],
+            CUR,
+        );
+        assert_eq!(
+            {
+                let s = status(&sh);
+                (s[0].files, s[0].folders)
+            },
+            (2, 2)
+        );
         // rename: no change
-        let ren = Change::Rename { frn: 100, old_parent: 10, old_name: "a.txt".into(), new_parent: 10, new_name: "c.txt".into() };
+        let ren = Change::Rename {
+            frn: 100,
+            old_parent: 10,
+            old_name: "a.txt".into(),
+            new_parent: 10,
+            new_name: "c.txt".into(),
+        };
         apply_batch(&sh, b'C', &[ren], CUR);
-        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (2, 2));
+        assert_eq!(
+            {
+                let s = status(&sh);
+                (s[0].files, s[0].folders)
+            },
+            (2, 2)
+        );
         // recursive folder delete removes the folder and its child
-        let del = Change::Delete(UsnRecord { frn: 20, parent_frn: 10, usn: 0, reason: 0, attrs: 0x10, name: "Sub".into() });
+        let del = Change::Delete(UsnRecord {
+            frn: 20,
+            parent_frn: 10,
+            usn: 0,
+            reason: 0,
+            attrs: 0x10,
+            name: "Sub".into(),
+        });
         apply_batch(&sh, b'C', &[del], CUR);
-        assert_eq!({ let s = status(&sh); (s[0].files, s[0].folders) }, (1, 1));
+        assert_eq!(
+            {
+                let s = status(&sh);
+                (s[0].files, s[0].folders)
+            },
+            (1, 1)
+        );
     }
 
     #[test]

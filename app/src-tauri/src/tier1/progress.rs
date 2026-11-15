@@ -36,7 +36,11 @@ impl Throughput {
             return;
         }
         self.events.push_back((start, end, n));
-        while self.events.front().is_some_and(|e| end.saturating_duration_since(e.1) > WINDOW) {
+        while self
+            .events
+            .front()
+            .is_some_and(|e| end.saturating_duration_since(e.1) > WINDOW)
+        {
             self.events.pop_front();
         }
     }

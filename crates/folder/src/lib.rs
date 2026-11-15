@@ -46,7 +46,8 @@ pub(crate) mod testutil {
 
     impl TempDir {
         pub fn new(name: &str) -> TempDir {
-            let p = std::env::temp_dir().join(format!("winseek-folder-{name}-{}", std::process::id()));
+            let p =
+                std::env::temp_dir().join(format!("winseek-folder-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             TempDir(p)

@@ -13,8 +13,8 @@ mod pairer;
 mod parse;
 
 pub use monitor::{
-    query_journal, read_journal, run_monitor, JournalCursor, JournalInfo, MonitorConfig, RecordVersion,
-    MonitorError, MonitorExit, ReadOutcome, DEFAULT_BUF, FSCTL_QUERY_USN_JOURNAL,
+    query_journal, read_journal, run_monitor, JournalCursor, JournalInfo, MonitorConfig,
+    MonitorError, MonitorExit, ReadOutcome, RecordVersion, DEFAULT_BUF, FSCTL_QUERY_USN_JOURNAL,
     FSCTL_READ_USN_JOURNAL,
 };
 pub use pairer::{Change, RenamePairer};

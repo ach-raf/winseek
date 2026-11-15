@@ -21,7 +21,11 @@ fn main() {
         read_message(&mut c).expect("receive")
     };
     if query == "--rescan" {
-        let volume = args.next().and_then(|s| s.chars().next()).unwrap_or('C').to_ascii_uppercase();
+        let volume = args
+            .next()
+            .and_then(|s| s.chars().next())
+            .unwrap_or('C')
+            .to_ascii_uppercase();
         println!("{:?}", call(Request::Rescan { id: 1, volume }));
         return;
     }
@@ -30,7 +34,10 @@ fn main() {
         "--status" => {
             if let Response::StatusResult { volumes, .. } = call(Request::Status { id: 1 }) {
                 for v in volumes {
-                    println!("STATUS {} {} {} {:?}", v.letter, v.files, v.folders, v.state);
+                    println!(
+                        "STATUS {} {} {} {:?}",
+                        v.letter, v.files, v.folders, v.state
+                    );
                 }
             }
             return;
@@ -40,7 +47,13 @@ fn main() {
             let mut offset = 0u32;
             loop {
                 let lim = if query == "--count" { 1 } else { 10_000 };
-                match call(Request::Search { id: 2, query: q.clone(), offset, limit: lim, sort: Sort::NameAsc }) {
+                match call(Request::Search {
+                    id: 2,
+                    query: q.clone(),
+                    offset,
+                    limit: lim,
+                    sort: Sort::NameAsc,
+                }) {
                     Response::SearchResult { total: t, hits, .. } => {
                         if query == "--count" {
                             println!("COUNT {t}");
@@ -66,16 +79,36 @@ fn main() {
     }
     // Only the plain `<query> [limit]` form takes a limit; script modes above consume their own args.
     let limit: u32 = args.next().and_then(|s| s.parse().ok()).unwrap_or(10);
-    if let Response::StatusResult { volumes, uptime_s, .. } = call(Request::Status { id: 1 }) {
+    if let Response::StatusResult {
+        volumes, uptime_s, ..
+    } = call(Request::Status { id: 1 })
+    {
         println!("uptime {uptime_s}s");
         for v in volumes {
-            println!("  {}: {} files, {} folders, {:?}", v.letter, v.files, v.folders, v.state);
+            println!(
+                "  {}: {} files, {} folders, {:?}",
+                v.letter, v.files, v.folders, v.state
+            );
         }
     }
     let t = Instant::now();
-    match call(Request::Search { id: 2, query: query.clone(), offset: 0, limit, sort: Sort::NameAsc }) {
-        Response::SearchResult { total, hits, elapsed_us, .. } => {
-            println!("query {query:?}: {total} matches (server {elapsed_us} us, round trip {:.2?})", t.elapsed());
+    match call(Request::Search {
+        id: 2,
+        query: query.clone(),
+        offset: 0,
+        limit,
+        sort: Sort::NameAsc,
+    }) {
+        Response::SearchResult {
+            total,
+            hits,
+            elapsed_us,
+            ..
+        } => {
+            println!(
+                "query {query:?}: {total} matches (server {elapsed_us} us, round trip {:.2?})",
+                t.elapsed()
+            );
             for h in hits.iter().take(10) {
                 println!("  {}{}", h.path, if h.is_dir { "\\" } else { "" });
             }

@@ -74,7 +74,14 @@ fn selftest() -> i32 {
     }
     match backend.list() {
         Ok(tools) => {
-            let names: Vec<String> = tools.as_array().map(|a| a.iter().filter_map(|t| t["name"].as_str().map(String::from)).collect()).unwrap_or_default();
+            let names: Vec<String> = tools
+                .as_array()
+                .map(|a| {
+                    a.iter()
+                        .filter_map(|t| t["name"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default();
             println!("tools ({}): {}", names.len(), names.join(", "));
         }
         Err(e) => {
@@ -84,7 +91,10 @@ fn selftest() -> i32 {
     }
     match backend.call("selftest", "index_status", serde_json::json!({})) {
         Ok(v) => {
-            println!("index_status: {}", serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string()));
+            println!(
+                "index_status: {}",
+                serde_json::to_string_pretty(&v).unwrap_or_else(|_| v.to_string())
+            );
             0
         }
         Err(e) => {

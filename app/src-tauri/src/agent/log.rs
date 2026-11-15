@@ -43,7 +43,11 @@ pub fn truncate_args(v: &Value) -> Value {
             Value::String(s.chars().take(MAX_ARG_CHARS).collect::<String>() + ELLIPSIS)
         }
         Value::Array(a) => Value::Array(a.iter().map(truncate_args).collect()),
-        Value::Object(o) => Value::Object(o.iter().map(|(k, v)| (k.clone(), truncate_args(v))).collect()),
+        Value::Object(o) => Value::Object(
+            o.iter()
+                .map(|(k, v)| (k.clone(), truncate_args(v)))
+                .collect(),
+        ),
         other => other.clone(),
     }
 }
@@ -60,7 +64,10 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl Log {
     pub fn new(root: &Path) -> Self {
-        Log { path: path(root), lock: Mutex::new(()) }
+        Log {
+            path: path(root),
+            lock: Mutex::new(()),
+        }
     }
 
     /// Append one entry. A failed write must not fail the tool call it describes; the error is
@@ -75,7 +82,12 @@ impl Log {
         };
         let _g = lock(&self.lock);
         let r = std::fs::create_dir_all(self.path.parent().unwrap_or(Path::new(".")))
-            .and_then(|_| OpenOptions::new().create(true).append(true).open(&self.path))
+            .and_then(|_| {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&self.path)
+            })
             .and_then(|mut f| writeln!(f, "{line}"));
         if let Err(err) = r {
             eprintln!("winseek: agent log: append failed: {err}");
@@ -85,7 +97,14 @@ impl Log {
     /// The last `n` entries, newest last.
     pub fn tail(&self, n: usize) -> Vec<Entry> {
         let _g = lock(&self.lock);
-        read_all(&self.path).into_iter().rev().take(n).collect::<Vec<_>>().into_iter().rev().collect()
+        read_all(&self.path)
+            .into_iter()
+            .rev()
+            .take(n)
+            .collect::<Vec<_>>()
+            .into_iter()
+            .rev()
+            .collect()
     }
 
     pub fn clear(&self) -> Result<(), String> {
@@ -95,7 +114,9 @@ impl Log {
 }
 
 fn read_all(path: &Path) -> Vec<Entry> {
-    let Ok(f) = std::fs::File::open(path) else { return vec![] };
+    let Ok(f) = std::fs::File::open(path) else {
+        return vec![];
+    };
     std::io::BufReader::new(f)
         .lines()
         .map_while(Result::ok)
@@ -124,7 +145,16 @@ mod tests {
     use serde_json::json;
 
     fn entry(tool: &str, args: Value) -> Entry {
-        Entry { ts_ms: 1, client: "tester".into(), tool: tool.into(), args, ok: true, count: None, error: None, ms: 1 }
+        Entry {
+            ts_ms: 1,
+            client: "tester".into(),
+            tool: tool.into(),
+            args,
+            ok: true,
+            count: None,
+            error: None,
+            ms: 1,
+        }
     }
 
     #[test]
@@ -135,7 +165,10 @@ mod tests {
         assert_eq!(s.chars().count(), MAX_ARG_CHARS + 1); // + the ellipsis
         assert!(s.ends_with('…'));
         assert_eq!(t["path"], r"C:\short.txt");
-        assert_eq!(t["deep"][0].as_str().unwrap().chars().count(), MAX_ARG_CHARS + 1);
+        assert_eq!(
+            t["deep"][0].as_str().unwrap().chars().count(),
+            MAX_ARG_CHARS + 1
+        );
         assert_eq!(t["n"], 5);
         // short strings pass through unchanged
         let small = truncate_args(&json!("tiny"));
@@ -165,12 +198,20 @@ mod tests {
         {
             let mut f = std::fs::File::create(&p).unwrap();
             for i in 0..10 {
-                writeln!(f, "{}", serde_json::to_string(&entry(&format!("t{i}"), json!({}))).unwrap()).unwrap();
+                writeln!(
+                    f,
+                    "{}",
+                    serde_json::to_string(&entry(&format!("t{i}"), json!({}))).unwrap()
+                )
+                .unwrap();
             }
         }
         trim(&p, 3).unwrap();
         let kept = read_all(&p);
-        assert_eq!(kept.iter().map(|e| e.tool.as_str()).collect::<Vec<_>>(), ["t7", "t8", "t9"]);
+        assert_eq!(
+            kept.iter().map(|e| e.tool.as_str()).collect::<Vec<_>>(),
+            ["t7", "t8", "t9"]
+        );
         // A partially written last line is dropped, not fatal.
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
         writeln!(f, "{{broken").unwrap();

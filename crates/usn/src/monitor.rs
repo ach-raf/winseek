@@ -103,10 +103,17 @@ pub enum RecordVersion {
 
 /// READ_USN_JOURNAL_DATA_V0 (0x28 bytes) or _V1 (0x30 bytes).
 fn read_request(cursor: &JournalCursor, version: RecordVersion) -> Vec<u8> {
-    let mut r = vec![0u8; if version == RecordVersion::V3 { 0x30 } else { 0x28 }];
+    let mut r = vec![
+        0u8;
+        if version == RecordVersion::V3 {
+            0x30
+        } else {
+            0x28
+        }
+    ];
     r[0..8].copy_from_slice(&cursor.next_usn.to_le_bytes());
     r[8..12].copy_from_slice(&0xFFFF_FFFFu32.to_le_bytes()); // ReasonMask: all
-    // ReturnOnlyOnClose = 0, Timeout = 0, BytesToWaitFor = 0 (non-blocking)
+                                                             // ReturnOnlyOnClose = 0, Timeout = 0, BytesToWaitFor = 0 (non-blocking)
     r[32..40].copy_from_slice(&cursor.journal_id.to_le_bytes());
     if version == RecordVersion::V3 {
         r[40..42].copy_from_slice(&3u16.to_le_bytes()); // MinMajorVersion
@@ -116,13 +123,22 @@ fn read_request(cursor: &JournalCursor, version: RecordVersion) -> Vec<u8> {
 }
 
 /// One FSCTL_READ_USN_JOURNAL call into `buf` (use >= 4 KiB; `DEFAULT_BUF`).
-pub fn read_journal(handle: &Handle, cursor: JournalCursor, version: RecordVersion, buf: &mut [u8]) -> ReadOutcome {
+pub fn read_journal(
+    handle: &Handle,
+    cursor: JournalCursor,
+    version: RecordVersion,
+    buf: &mut [u8],
+) -> ReadOutcome {
     let req = read_request(&cursor, version);
     match handle.ioctl(FSCTL_READ_USN_JOURNAL, &req, buf) {
         Ok(n) => match parse_usn_buffer(&buf[..n]) {
-            Ok((next, recs)) => {
-                ReadOutcome::Records(recs, JournalCursor { journal_id: cursor.journal_id, next_usn: next })
-            }
+            Ok((next, recs)) => ReadOutcome::Records(
+                recs,
+                JournalCursor {
+                    journal_id: cursor.journal_id,
+                    next_usn: next,
+                },
+            ),
             Err(e) => ReadOutcome::Error(MonitorError::Parse(e)),
         },
         Err(e) => match e.raw_os_error() {
@@ -225,7 +241,10 @@ pub fn run_monitor(
             ReadOutcome::Error(_) => {
                 sleep_stoppable(cfg.retry_delay, stop);
                 match query_journal(handle) {
-                    Ok(info) if info.journal_id != cursor.journal_id || cursor.next_usn < info.lowest_valid_usn => {
+                    Ok(info)
+                        if info.journal_id != cursor.journal_id
+                            || cursor.next_usn < info.lowest_valid_usn =>
+                    {
                         return MonitorExit::JournalReset;
                     }
                     _ => {} // transient; loop retries
@@ -241,7 +260,10 @@ mod tests {
 
     #[test]
     fn read_request_layout() {
-        let cur = JournalCursor { journal_id: 0x1122_3344_5566_7788, next_usn: 4096 };
+        let cur = JournalCursor {
+            journal_id: 0x1122_3344_5566_7788,
+            next_usn: 4096,
+        };
         let r = read_request(&cur, RecordVersion::V2);
         assert_eq!(r.len(), 0x28);
         assert_eq!(&r[0..8], &4096i64.to_le_bytes());

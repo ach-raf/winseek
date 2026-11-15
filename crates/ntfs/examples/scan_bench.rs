@@ -18,9 +18,17 @@ use std::time::{Duration, Instant};
 use winseek_ntfs::{scan_volume_with, ScanOptions, ScanStats};
 
 fn parse_mode(s: &str) -> Option<ScanOptions> {
-    let mut o = ScanOptions { no_buffering: false, queue_depth: 1, batch_bytes: 2 << 20 };
+    let mut o = ScanOptions {
+        no_buffering: false,
+        queue_depth: 1,
+        batch_bytes: 2 << 20,
+    };
     let mut have_buf = false;
-    for tok in s.to_ascii_lowercase().split(['-', ':', ',']).filter(|t| !t.is_empty()) {
+    for tok in s
+        .to_ascii_lowercase()
+        .split(['-', ':', ','])
+        .filter(|t| !t.is_empty())
+    {
         match tok {
             "nobuf" => (o.no_buffering, have_buf) = (true, true),
             "cached" => (o.no_buffering, have_buf) = (false, true),
@@ -45,7 +53,11 @@ fn secs(d: Duration) -> f64 {
 
 fn main() {
     let mut args = std::env::args().skip(1);
-    let letter = args.next().and_then(|a| a.chars().next()).unwrap_or('C').to_ascii_uppercase();
+    let letter = args
+        .next()
+        .and_then(|a| a.chars().next())
+        .unwrap_or('C')
+        .to_ascii_uppercase();
     let mut modes: Vec<ScanOptions> = Vec::new();
     for a in args {
         match parse_mode(&a) {
@@ -54,18 +66,28 @@ fn main() {
         }
     }
     if modes.is_empty() {
-        let nb = |qd, mib: usize| ScanOptions { no_buffering: true, queue_depth: qd, batch_bytes: mib << 20 };
+        let nb = |qd, mib: usize| ScanOptions {
+            no_buffering: true,
+            queue_depth: qd,
+            batch_bytes: mib << 20,
+        };
         modes = vec![
             nb(1, 1),
             nb(4, 1),
             nb(8, 1),
             nb(16, 1),
             nb(8, 4),
-            ScanOptions { no_buffering: false, queue_depth: 1, batch_bytes: 2 << 20 },
+            ScanOptions {
+                no_buffering: false,
+                queue_depth: 1,
+                batch_bytes: 2 << 20,
+            },
         ];
     }
 
-    let path = std::env::current_dir().unwrap_or_default().join("scan_bench.txt");
+    let path = std::env::current_dir()
+        .unwrap_or_default()
+        .join("scan_bench.txt");
     let mut file = File::create(&path).ok();
     let mut say = |s: String| {
         println!("{s}");
@@ -75,7 +97,15 @@ fn main() {
         }
     };
     say(format!("scan_bench {letter}: -> {}", path.display()));
-    say(format!("{} modes: {}", modes.len(), modes.iter().map(|m| m.label()).collect::<Vec<_>>().join(", ")));
+    say(format!(
+        "{} modes: {}",
+        modes.len(),
+        modes
+            .iter()
+            .map(|m| m.label())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
 
     struct Row {
         label: String,
@@ -101,11 +131,19 @@ fn main() {
                     st.bytes_read as f64 / 1e6, st.extents, st.reads, st.avg_read_bytes() / 1024,
                     st.mft_records, entries
                 ));
-                rows.push(Row { label: m.label(), stats: Some((st, entries)), err: None });
+                rows.push(Row {
+                    label: m.label(),
+                    stats: Some((st, entries)),
+                    err: None,
+                });
             }
             Err(e) => {
                 say(format!("    FAILED: {e}"));
-                rows.push(Row { label: m.label(), stats: None, err: Some(e.to_string()) });
+                rows.push(Row {
+                    label: m.label(),
+                    stats: None,
+                    err: Some(e.to_string()),
+                });
             }
         }
     }
@@ -121,14 +159,28 @@ fn main() {
                 let e = secs(st.elapsed);
                 say(format!(
                     "{:<18} {:>7.2}s {:>8.0} {:>8.2}s {:>8} {:>7} {:>7} {:>8.2}s {:>10}",
-                    r.label, e, st.bytes_read as f64 / 1e6 / e.max(1e-9), secs(st.read_time), st.extents,
-                    st.reads, st.avg_read_bytes() / 1024, secs(st.decode_time), entries
+                    r.label,
+                    e,
+                    st.bytes_read as f64 / 1e6 / e.max(1e-9),
+                    secs(st.read_time),
+                    st.extents,
+                    st.reads,
+                    st.avg_read_bytes() / 1024,
+                    secs(st.decode_time),
+                    entries
                 ));
             }
-            None => say(format!("{:<18} FAILED: {}", r.label, r.err.as_deref().unwrap_or("?"))),
+            None => say(format!(
+                "{:<18} FAILED: {}",
+                r.label,
+                r.err.as_deref().unwrap_or("?")
+            )),
         }
     }
-    let counts: Vec<u64> = rows.iter().filter_map(|r| r.stats.as_ref().map(|s| s.1)).collect();
+    let counts: Vec<u64> = rows
+        .iter()
+        .filter_map(|r| r.stats.as_ref().map(|s| s.1))
+        .collect();
     if counts.windows(2).any(|w| w[0] != w[1]) {
         say("WARNING: entry counts differ between modes (read path bug?)".into());
     }

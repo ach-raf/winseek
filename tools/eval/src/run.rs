@@ -13,7 +13,7 @@ use winseek_llama::server::{build_args, Role, SpawnConfig};
 use winseek_llama::{sha256_file, sha256_hex, EmbedClient, LlamaServer, Manifest, ModelProfile};
 use winseek_store::{ChunkVec, FileKey, IndexMeta, Store, VecKind};
 
-use crate::corpus::{CorpusIndex, load_index};
+use crate::corpus::{load_index, CorpusIndex};
 use crate::metrics::{rank_of, Case, CaseResult, Report};
 
 /// Must match the app (`app/src-tauri/src/tier1/embedder.rs`).
@@ -49,7 +49,9 @@ impl Embed for EmbedClient {
 }
 
 pub fn finish(raw: Vec<Vec<f32>>) -> Result<Vec<Vec<f32>>, String> {
-    raw.iter().map(|v| truncate_normalize(v, DIMS).map_err(|e| e.to_string())).collect()
+    raw.iter()
+        .map(|v| truncate_normalize(v, DIMS).map_err(|e| e.to_string()))
+        .collect()
 }
 
 pub fn index_meta(llama_build: &str) -> IndexMeta {
@@ -81,11 +83,24 @@ pub fn build_store(
         let bytes = std::fs::read(&path).map_err(|e| format!("{}: {e}", path.display()))?;
         let hash = sha256_hex(&bytes);
         let id = store
-            .upsert_file(&FileKey { vol_guid: "{eval}".into(), frn: i as u64 }, &path.to_string_lossy(), bytes.len() as u64, 0, &f.kind)
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "{eval}".into(),
+                    frn: i as u64,
+                },
+                &path.to_string_lossy(),
+                bytes.len() as u64,
+                0,
+                &f.kind,
+            )
             .map_err(|e| e.to_string())?;
         ids.push((id, hash.clone()));
         match f.kind.as_str() {
-            "image" => images.push((i, prepare_jpeg(&bytes).map_err(|e| format!("{}: {e}", f.name))?, hash)),
+            "image" => images.push((
+                i,
+                prepare_jpeg(&bytes).map_err(|e| format!("{}: {e}", f.name))?,
+                hash,
+            )),
             "text" => texts.push((i, String::from_utf8_lossy(&bytes).into_owned(), hash)),
             other => return Err(format!("{}: unknown kind {other}", f.name)),
         }
@@ -94,45 +109,83 @@ pub fn build_store(
         let refs: Vec<&[u8]> = batch.iter().map(|(_, j, _)| j.as_slice()).collect();
         let vecs = finish(emb.images(&refs)?)?;
         if vecs.len() != batch.len() {
-            return Err(format!("expected {} image vectors, got {}", batch.len(), vecs.len()));
+            return Err(format!(
+                "expected {} image vectors, got {}",
+                batch.len(),
+                vecs.len()
+            ));
         }
         for ((i, _, hash), vec) in batch.iter().zip(vecs) {
-            let chunk = ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec };
-            store.complete(ids[*i].0, hash, &[chunk], &[]).map_err(|e| e.to_string())?;
+            let chunk = ChunkVec {
+                chunk: 0,
+                kind: VecKind::Image,
+                locator: None,
+                vec,
+            };
+            store
+                .complete(ids[*i].0, hash, &[chunk], &[])
+                .map_err(|e| e.to_string())?;
         }
     }
     for batch in texts.chunks(IMAGE_BATCH) {
         let vecs = if titles {
-            let refs: Vec<(&str, &str)> =
-                batch.iter().map(|(i, t, _)| (corpus.files[*i].name.as_str(), t.as_str())).collect();
+            let refs: Vec<(&str, &str)> = batch
+                .iter()
+                .map(|(i, t, _)| (corpus.files[*i].name.as_str(), t.as_str()))
+                .collect();
             finish(emb.documents_titled(&refs)?)?
         } else {
             let refs: Vec<&str> = batch.iter().map(|(_, t, _)| t.as_str()).collect();
             finish(emb.documents(&refs)?)?
         };
         if vecs.len() != batch.len() {
-            return Err(format!("expected {} text vectors, got {}", batch.len(), vecs.len()));
+            return Err(format!(
+                "expected {} text vectors, got {}",
+                batch.len(),
+                vecs.len()
+            ));
         }
         for ((i, body, hash), vec) in batch.iter().zip(vecs) {
-            let chunk = ChunkVec { chunk: 0, kind: VecKind::Text, locator: None, vec };
-            store.complete(ids[*i].0, hash, &[chunk], &[(0, body.clone())]).map_err(|e| e.to_string())?;
+            let chunk = ChunkVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: None,
+                vec,
+            };
+            store
+                .complete(ids[*i].0, hash, &[chunk], &[(0, body.clone())])
+                .map_err(|e| e.to_string())?;
         }
     }
     Ok(store)
 }
 
 fn file_name_of(path: &str) -> String {
-    Path::new(path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+    Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default()
 }
 
 /// Run every case against the store (query -> embed -> `search_vectors` over all files).
 ///
 /// `hybrid` ranks like the app does: the vector list fused with the exact-word (FTS) hits.
-pub fn run_cases(store: &Store, cases: &[Case], emb: &mut dyn Embed, n_files: usize, hybrid: bool) -> Result<Vec<CaseResult>, String> {
+pub fn run_cases(
+    store: &Store,
+    cases: &[Case],
+    emb: &mut dyn Embed,
+    n_files: usize,
+    hybrid: bool,
+) -> Result<Vec<CaseResult>, String> {
     let mut out = Vec::with_capacity(cases.len());
     for c in cases {
-        let q = finish(emb.queries(&[c.q.as_str()])?)?.into_iter().next().ok_or("empty query embedding")?;
-        let hits = store.search_vectors(&q, n_files.max(5), None).map_err(|e| e.to_string())?;
+        let q = finish(emb.queries(&[c.q.as_str()])?)?
+            .into_iter()
+            .next()
+            .ok_or("empty query embedding")?;
+        let hits = store
+            .search_vectors(&q, n_files.max(5), None)
+            .map_err(|e| e.to_string())?;
         let mut ranked: Vec<String> = hits.iter().map(|h| file_name_of(&h.path)).collect();
         if hybrid {
             let text: Vec<String> = store
@@ -142,7 +195,11 @@ pub fn run_cases(store: &Store, cases: &[Case], emb: &mut dyn Embed, n_files: us
                 .filter(|t| t.snippet.contains('['))
                 .map(|t| file_name_of(&t.path))
                 .collect();
-            ranked = winseek_store::fuse::fuse_order(&ranked, &text, winseek_store::fuse::exact_lean(&c.q));
+            ranked = winseek_store::fuse::fuse_order(
+                &ranked,
+                &text,
+                winseek_store::fuse::exact_lean(&c.q),
+            );
         }
         out.push(CaseResult {
             q: c.q.clone(),
@@ -158,7 +215,9 @@ pub fn run_cases(store: &Store, cases: &[Case], emb: &mut dyn Embed, n_files: us
 /// Embedding-model file names from the pinned manifest (same entry the app loads).
 pub fn model_files(models_dir: &Path) -> Result<(PathBuf, PathBuf), String> {
     let man = Manifest::embedded();
-    let entry = man.model(MODEL_ID, ModelProfile::Default).ok_or("manifest has no embeddinggemma-2 entry")?;
+    let entry = man
+        .model(MODEL_ID, ModelProfile::Default)
+        .ok_or("manifest has no embeddinggemma-2 entry")?;
     let pick = |role: ModelRole| {
         entry
             .files
@@ -188,7 +247,14 @@ fn version_of(exe: &Path) -> String {
         .arg("--version")
         .current_dir(exe.parent().unwrap_or(Path::new(".")))
         .output()
-        .map(|o| String::from_utf8_lossy(&[o.stdout, o.stderr].concat()).lines().find(|l| l.contains("version")).unwrap_or("").trim().to_string())
+        .map(|o| {
+            String::from_utf8_lossy(&[o.stdout, o.stderr].concat())
+                .lines()
+                .find(|l| l.contains("version"))
+                .unwrap_or("")
+                .trim()
+                .to_string()
+        })
         .unwrap_or_default()
 }
 
@@ -214,14 +280,28 @@ pub fn connect(opts: &RunOptions, meta: &mut serde_json::Value) -> Result<Connec
                     return Err(format!("model file missing: {}", p.display()));
                 }
             }
-            let exe = find_server_exe(&opts.llama).ok_or_else(|| format!("no llama-server under {}", opts.llama.display()))?;
+            let exe = find_server_exe(&opts.llama)
+                .ok_or_else(|| format!("no llama-server under {}", opts.llama.display()))?;
             eprintln!("hashing model files...");
             let log = std::env::temp_dir().join("winseek-eval-llama.log");
-            let cfg = SpawnConfig { role: Role::EmbedIndex, log_file: Some(log.clone()), ..Default::default() };
+            let cfg = SpawnConfig {
+                role: Role::EmbedIndex,
+                log_file: Some(log.clone()),
+                ..Default::default()
+            };
             eprintln!("spawning {} (log: {})", exe.display(), log.display());
-            let server = LlamaServer::spawn_with(&exe, &model, Some(&mmproj), &[], &cfg).map_err(|e| e.to_string())?;
+            let server = LlamaServer::spawn_with(&exe, &model, Some(&mmproj), &[], &cfg)
+                .map_err(|e| e.to_string())?;
             // The exact argument list the preset produced, with the throwaway key redacted.
-            let args = build_args(&model, Some(&mmproj), server.port(), "***", Role::EmbedIndex, Default::default(), &[]);
+            let args = build_args(
+                &model,
+                Some(&mmproj),
+                server.port(),
+                "***",
+                Role::EmbedIndex,
+                Default::default(),
+                &[],
+            );
             meta["server"] = json!({
                 "spawned": true,
                 "exe": exe.display().to_string(),
@@ -236,7 +316,10 @@ pub fn connect(opts: &RunOptions, meta: &mut serde_json::Value) -> Result<Connec
             out
         }
     };
-    meta["unix_time"] = json!(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0));
+    meta["unix_time"] = json!(std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0));
     meta["titles"] = json!(opts.titles);
 
     let client = EmbedClient::new(&base_url, &key);
@@ -250,7 +333,8 @@ pub fn connect(opts: &RunOptions, meta: &mut serde_json::Value) -> Result<Connec
 /// Full live run. Spawns llama-server (unless `url` is given) and drops it at the end.
 pub fn run(opts: &RunOptions) -> Result<Report, String> {
     let corpus = load_index(&opts.corpus)?;
-    let cases_text = std::fs::read_to_string(&opts.cases).map_err(|e| format!("{}: {e}", opts.cases.display()))?;
+    let cases_text = std::fs::read_to_string(&opts.cases)
+        .map_err(|e| format!("{}: {e}", opts.cases.display()))?;
     let cases = crate::metrics::parse_cases(&cases_text)?;
     let manifest = Manifest::embedded();
     let mut meta = json!({
@@ -266,7 +350,13 @@ pub fn run(opts: &RunOptions) -> Result<Report, String> {
     let client = &mut conn.client;
     let started = std::time::Instant::now();
     eprintln!("embedding {} corpus files...", corpus.files.len());
-    let store = build_store(&opts.corpus, &corpus, client, &manifest.llama.build, opts.titles)?;
+    let store = build_store(
+        &opts.corpus,
+        &corpus,
+        client,
+        &manifest.llama.build,
+        opts.titles,
+    )?;
     meta["index_secs"] = json!((started.elapsed().as_secs_f64() * 100.0).round() / 100.0);
     eprintln!("running {} cases...", cases.len());
     let results = run_cases(&store, &cases, client, corpus.files.len(), opts.hybrid)?;
@@ -294,22 +384,31 @@ mod tests {
         fn images(&mut self, jpegs: &[&[u8]]) -> Result<Vec<Vec<f32>>, String> {
             // prepare_jpeg output must really be a JPEG, as the server expects
             assert!(jpegs.iter().all(|j| j.starts_with(&[0xff, 0xd8, 0xff])));
-            Ok(jpegs.iter().map(|_| {
-                self.next += 1;
-                onehot(self.next - 1)
-            }).collect())
+            Ok(jpegs
+                .iter()
+                .map(|_| {
+                    self.next += 1;
+                    onehot(self.next - 1)
+                })
+                .collect())
         }
         fn documents(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>, String> {
-            Ok(texts.iter().map(|_| {
-                self.next += 1;
-                onehot(self.next - 1)
-            }).collect())
+            Ok(texts
+                .iter()
+                .map(|_| {
+                    self.next += 1;
+                    onehot(self.next - 1)
+                })
+                .collect())
         }
         fn documents_titled(&mut self, docs: &[(&str, &str)]) -> Result<Vec<Vec<f32>>, String> {
             self.documents(docs.iter().map(|(_, t)| *t).collect::<Vec<_>>().as_slice())
         }
         fn queries(&mut self, queries: &[&str]) -> Result<Vec<Vec<f32>>, String> {
-            Ok(queries.iter().map(|q| onehot(q.strip_prefix("k:").unwrap().parse().unwrap())).collect())
+            Ok(queries
+                .iter()
+                .map(|q| onehot(q.strip_prefix("k:").unwrap().parse().unwrap()))
+                .collect())
         }
     }
 
@@ -324,11 +423,29 @@ mod tests {
         assert_eq!(store.stats().unwrap().done as usize, n);
 
         // Images come first in arrival order (all images, then all notes); map vector -> file.
-        let order: Vec<&str> = idx.files.iter().filter(|f| f.kind == "image").chain(idx.files.iter().filter(|f| f.kind == "text")).map(|f| f.name.as_str()).collect();
+        let order: Vec<&str> = idx
+            .files
+            .iter()
+            .filter(|f| f.kind == "image")
+            .chain(idx.files.iter().filter(|f| f.kind == "text"))
+            .map(|f| f.name.as_str())
+            .collect();
         let cases = vec![
-            Case { q: "k:0".into(), expect: vec![order[0].into()], tag: "a".into() },
-            Case { q: format!("k:{}", n - 1), expect: vec![order[n - 1].into()], tag: "b".into() },
-            Case { q: "k:3".into(), expect: vec!["nope*".into()], tag: "c".into() },
+            Case {
+                q: "k:0".into(),
+                expect: vec![order[0].into()],
+                tag: "a".into(),
+            },
+            Case {
+                q: format!("k:{}", n - 1),
+                expect: vec![order[n - 1].into()],
+                tag: "b".into(),
+            },
+            Case {
+                q: "k:3".into(),
+                expect: vec!["nope*".into()],
+                tag: "c".into(),
+            },
         ];
         let res = run_cases(&store, &cases, &mut fake, n, false).unwrap();
         assert_eq!(res[0].rank, Some(1));
@@ -347,6 +464,14 @@ mod tests {
     #[test]
     fn meta_matches_app_constants() {
         let m = index_meta("b1");
-        assert_eq!((m.model_id.as_str(), m.quant.as_str(), m.image_budget, m.dims), ("embeddinggemma-2", "Q8_0", 280, 768));
+        assert_eq!(
+            (
+                m.model_id.as_str(),
+                m.quant.as_str(),
+                m.image_budget,
+                m.dims
+            ),
+            ("embeddinggemma-2", "Q8_0", 280, 768)
+        );
     }
 }

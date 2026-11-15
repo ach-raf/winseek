@@ -144,7 +144,12 @@ mod tests {
         assert_eq!(parse_notify(&[]).unwrap(), vec![]);
         let one = chain(&[(1, "a.txt")]);
         assert_eq!(parse_notify(&one).unwrap(), vec![(1, "a.txt".to_string())]);
-        let many = chain(&[(1, "new.txt"), (3, "\u{fc}n\u{ef}-\u{65e5}\u{672c}"), (2, "a\\b.txt"), (4, "x")]);
+        let many = chain(&[
+            (1, "new.txt"),
+            (3, "\u{fc}n\u{ef}-\u{65e5}\u{672c}"),
+            (2, "a\\b.txt"),
+            (4, "x"),
+        ]);
         let p = parse_notify(&many).unwrap();
         assert_eq!(p.len(), 4);
         assert_eq!(p[1], (3, "\u{fc}n\u{ef}-\u{65e5}\u{672c}".to_string()));
@@ -157,26 +162,47 @@ mod tests {
         let mut two = chain(&[(1, "ab"), (1, "cd")]);
         // next < 12
         two[0..4].copy_from_slice(&8u32.to_le_bytes());
-        assert_eq!(parse_notify(&two), Err(NotifyError::BadNextOffset { offset: 0 }));
+        assert_eq!(
+            parse_notify(&two),
+            Err(NotifyError::BadNextOffset { offset: 0 })
+        );
         // unaligned
         two[0..4].copy_from_slice(&17u32.to_le_bytes());
-        assert_eq!(parse_notify(&two), Err(NotifyError::BadNextOffset { offset: 0 }));
+        assert_eq!(
+            parse_notify(&two),
+            Err(NotifyError::BadNextOffset { offset: 0 })
+        );
         // past the end
         two[0..4].copy_from_slice(&4000u32.to_le_bytes());
-        assert_eq!(parse_notify(&two), Err(NotifyError::BadNextOffset { offset: 0 }));
+        assert_eq!(
+            parse_notify(&two),
+            Err(NotifyError::BadNextOffset { offset: 0 })
+        );
         // next entry would have no room for a header
         let n = two.len() as u32;
         two[0..4].copy_from_slice(&(n - 4).to_le_bytes());
-        assert!(matches!(parse_notify(&two), Err(NotifyError::BadNextOffset { .. })));
+        assert!(matches!(
+            parse_notify(&two),
+            Err(NotifyError::BadNextOffset { .. })
+        ));
         // odd name length
         let mut one = chain(&[(1, "ab")]);
         one[8..12].copy_from_slice(&3u32.to_le_bytes());
-        assert_eq!(parse_notify(&one), Err(NotifyError::BadNameLength { offset: 0 }));
+        assert_eq!(
+            parse_notify(&one),
+            Err(NotifyError::BadNameLength { offset: 0 })
+        );
         // oversize name length
         one[8..12].copy_from_slice(&200u32.to_le_bytes());
-        assert_eq!(parse_notify(&one), Err(NotifyError::BadNameLength { offset: 0 }));
+        assert_eq!(
+            parse_notify(&one),
+            Err(NotifyError::BadNameLength { offset: 0 })
+        );
         one[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
-        assert_eq!(parse_notify(&one), Err(NotifyError::BadNameLength { offset: 0 }));
+        assert_eq!(
+            parse_notify(&one),
+            Err(NotifyError::BadNameLength { offset: 0 })
+        );
         // shorter than a header
         assert!(parse_notify(&[1, 2, 3]).is_err());
     }
@@ -205,8 +231,17 @@ mod tests {
     fn pairer_rename_and_added() {
         let mut p = NotifyPairer::new();
         assert_eq!(p.push(4, "old".into()), None);
-        assert_eq!(p.push(5, "new".into()), Some(PathEvent::Renamed { old: "old".into(), new: "new".into() }));
-        assert_eq!(p.push(5, "alone".into()), Some(PathEvent::Added("alone".into())));
+        assert_eq!(
+            p.push(5, "new".into()),
+            Some(PathEvent::Renamed {
+                old: "old".into(),
+                new: "new".into()
+            })
+        );
+        assert_eq!(
+            p.push(5, "alone".into()),
+            Some(PathEvent::Added("alone".into()))
+        );
         assert_eq!(p.push(99, "x".into()), None);
         assert_eq!(p.take_parked(), None);
     }
@@ -215,7 +250,10 @@ mod tests {
     fn pairer_old_twice_and_take_parked() {
         let mut p = NotifyPairer::new();
         assert_eq!(p.push(4, "o1".into()), None);
-        assert_eq!(p.push(4, "o2".into()), Some(PathEvent::Removed("o1".into())));
+        assert_eq!(
+            p.push(4, "o2".into()),
+            Some(PathEvent::Removed("o1".into()))
+        );
         assert_eq!(p.take_parked(), Some(PathEvent::Removed("o2".into())));
         assert_eq!(p.take_parked(), None);
     }
@@ -243,7 +281,10 @@ mod tests {
                 PathEvent::Modified("a".into()),
                 PathEvent::Added("c".into()),
                 PathEvent::Modified("a".into()),
-                PathEvent::Renamed { old: "o".into(), new: "n".into() },
+                PathEvent::Renamed {
+                    old: "o".into(),
+                    new: "n".into()
+                },
             ]
         );
     }

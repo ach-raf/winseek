@@ -79,14 +79,27 @@ pub struct Projection {
 /// Turn counts + measurements into a time. Pure.
 pub fn project(c: &Counts, per: &PerFile, observed: Option<f64>) -> Projection {
     if c.files() == 0 {
-        return Projection { secs: Some(0.0), lower_bound: false, basis: "none" };
+        return Projection {
+            secs: Some(0.0),
+            lower_bound: false,
+            basis: "none",
+        };
     }
     if let Some(r) = observed.filter(|r| r.is_finite() && *r > 0.0) {
-        return Projection { secs: Some(c.files() as f64 / r), lower_bound: false, basis: "observed" };
+        return Projection {
+            secs: Some(c.files() as f64 / r),
+            lower_bound: false,
+            basis: "observed",
+        };
     }
     let mut total = 0.0;
     let mut known = false;
-    for (n, p) in [(c.images, per.image), (c.pdfs, per.pdf), (c.docs, per.doc), (c.code, per.code)] {
+    for (n, p) in [
+        (c.images, per.image),
+        (c.pdfs, per.pdf),
+        (c.docs, per.doc),
+        (c.code, per.code),
+    ] {
         if n == 0 {
             continue;
         }
@@ -96,7 +109,11 @@ pub fn project(c: &Counts, per: &PerFile, observed: Option<f64>) -> Projection {
         }
     }
     // Embedding is not part of a reading-only measurement, so this is always a floor.
-    Projection { secs: known.then_some(total), lower_bound: true, basis: if known { "sampled" } else { "none" } }
+    Projection {
+        secs: known.then_some(total),
+        lower_bound: true,
+        basis: if known { "sampled" } else { "none" },
+    }
 }
 
 #[derive(Debug, Default)]
@@ -126,15 +143,27 @@ impl Samples {
 }
 
 /// Count what the crawler would queue under `root`, and keep a few files of each kind to time.
-fn walk(root: &Path, scopes: &Scopes, ignore: &winseek_store::Ignore, index_code: bool, deadline: Instant) -> (Counts, Samples, bool) {
+fn walk(
+    root: &Path,
+    scopes: &Scopes,
+    ignore: &winseek_store::Ignore,
+    index_code: bool,
+    deadline: Instant,
+) -> (Counts, Samples, bool) {
     use std::os::windows::fs::MetadataExt;
     let mut counts = Counts::default();
     let mut samples = Samples::default();
     let mut stack: Vec<(PathBuf, Chain)> = vec![(root.to_path_buf(), Chain::default())];
     let mut seen = 0u32;
     while let Some((dir, parent)) = stack.pop() {
-        let chain = if index_code { parent.descend(&dir) } else { parent };
-        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        let chain = if index_code {
+            parent.descend(&dir)
+        } else {
+            parent
+        };
+        let Ok(rd) = std::fs::read_dir(&dir) else {
+            continue;
+        };
         for entry in rd.flatten() {
             seen += 1;
             if seen.is_multiple_of(256) && Instant::now() >= deadline {
@@ -153,8 +182,12 @@ fn walk(root: &Path, scopes: &Scopes, ignore: &winseek_store::Ignore, index_code
                 }
                 continue;
             }
-            let Some(kind) = kind_of(&ps, index_code) else { continue };
-            if !in_scope_with(scopes, ignore, &ps) || (kind == KIND_CODE && chain.ignored(&ps, false)) {
+            let Some(kind) = kind_of(&ps, index_code) else {
+                continue;
+            };
+            if !in_scope_with(scopes, ignore, &ps)
+                || (kind == KIND_CODE && chain.ignored(&ps, false))
+            {
                 continue;
             }
             counts.add(kind, md.len());
@@ -183,11 +216,16 @@ fn time_each(files: &[PathBuf], deadline: Instant, one: impl Fn(&Path) -> bool) 
 
 /// Read + extract text from a file, the way the worker does.
 fn extract_ok(p: &Path) -> bool {
-    std::fs::read(p).ok().is_some_and(|bytes| extract_file(&p.to_string_lossy(), &bytes).is_ok())
+    std::fs::read(p)
+        .ok()
+        .is_some_and(|bytes| extract_file(&p.to_string_lossy(), &bytes).is_ok())
 }
 
 fn decode_ok(p: &Path) -> bool {
-    image::ImageReader::open(p).ok().and_then(|r| r.with_guessed_format().ok()).is_some_and(|r| r.decode().is_ok())
+    image::ImageReader::open(p)
+        .ok()
+        .and_then(|r| r.with_guessed_format().ok())
+        .is_some_and(|r| r.decode().is_ok())
 }
 
 fn measure(s: &Samples) -> PerFile {
@@ -239,13 +277,27 @@ impl Tier1 {
     /// Walk `path`, time a sample of its files, and project the first pass. Blocking (up to ~11 s).
     pub fn estimate_folder(&self, path: &str) -> Result<FolderEstimate, String> {
         let root = super::scopes::normalize_root(path);
-        let dir = PathBuf::from(if root.len() == 2 && root.ends_with(':') { format!("{root}\\") } else { root.clone() });
+        let dir = PathBuf::from(if root.len() == 2 && root.ends_with(':') {
+            format!("{root}\\")
+        } else {
+            root.clone()
+        });
         if !dir.is_dir() {
             return Err(format!("{root}: not a folder"));
         }
         let snap = self.snapshot();
-        let scopes = Scopes { include: vec![root.clone()], exclude: snap.scopes.exclude.clone(), configured: true };
-        let (counts, samples, capped) = walk(&dir, &scopes, &snap.ignore, snap.index_code, Instant::now() + WALK_BUDGET);
+        let scopes = Scopes {
+            include: vec![root.clone()],
+            exclude: snap.scopes.exclude.clone(),
+            configured: true,
+        };
+        let (counts, samples, capped) = walk(
+            &dir,
+            &scopes,
+            &snap.ignore,
+            snap.index_code,
+            Instant::now() + WALK_BUDGET,
+        );
         let observed = self.rate().or_else(|| self.remembered_rate());
         let proj = project(&counts, &measure(&samples), observed);
         Ok(FolderEstimate {
@@ -260,14 +312,21 @@ impl Tier1 {
             lower_bound: proj.lower_bound || capped,
             capped,
             basis: proj.basis.into(),
-            rate: if proj.basis == "observed" { observed } else { None },
+            rate: if proj.basis == "observed" {
+                observed
+            } else {
+                None
+            },
         })
     }
 }
 
 /// Measure a folder's first-pass time before adding it to the indexed folders.
 #[tauri::command]
-pub async fn tier1_estimate(h: tauri::State<'_, Handle>, path: String) -> Result<FolderEstimate, String> {
+pub async fn tier1_estimate(
+    h: tauri::State<'_, Handle>,
+    path: String,
+) -> Result<FolderEstimate, String> {
     let t = h.get()?;
     crate::commands::blocking(move || t.estimate_folder(&path)).await?
 }
@@ -277,13 +336,22 @@ mod tests {
     use super::*;
 
     fn c(images: u64, pdfs: u64, docs: u64, code: u64) -> Counts {
-        Counts { images, pdfs, docs, code, bytes: 0 }
+        Counts {
+            images,
+            pdfs,
+            docs,
+            code,
+            bytes: 0,
+        }
     }
 
     #[test]
     fn observed_speed_wins() {
         let p = project(&c(100, 0, 50, 0), &PerFile::default(), Some(5.0));
-        assert_eq!((p.secs, p.lower_bound, p.basis), (Some(30.0), false, "observed"));
+        assert_eq!(
+            (p.secs, p.lower_bound, p.basis),
+            (Some(30.0), false, "observed")
+        );
         // a nonsense speed is ignored
         let p = project(&c(10, 0, 0, 0), &PerFile::default(), Some(f64::NAN));
         assert_eq!(p.basis, "none");
@@ -291,7 +359,11 @@ mod tests {
 
     #[test]
     fn sampled_reading_is_a_floor_and_unmeasured_kinds_add_nothing() {
-        let per = PerFile { doc: Some(0.02), image: Some(0.05), ..PerFile::default() };
+        let per = PerFile {
+            doc: Some(0.02),
+            image: Some(0.05),
+            ..PerFile::default()
+        };
         let p = project(&c(10, 400, 100, 0), &per, None);
         assert!((p.secs.unwrap() - (0.5 + 2.0)).abs() < 1e-9);
         assert!(p.lower_bound);
@@ -313,16 +385,33 @@ mod tests {
         let sub = d.path().join("sub");
         std::fs::create_dir(&sub).unwrap();
         for i in 0..5 {
-            std::fs::write(d.path().join(format!("n{i}.txt")), "hello world ".repeat(200)).unwrap();
+            std::fs::write(
+                d.path().join(format!("n{i}.txt")),
+                "hello world ".repeat(200),
+            )
+            .unwrap();
         }
         std::fs::write(sub.join("p.pdf"), b"%PDF-1.4").unwrap();
         std::fs::write(sub.join("skip.xyz"), b"x").unwrap();
         let root = d.path().to_string_lossy().into_owned();
-        let scopes = Scopes { include: vec![root], exclude: vec![], configured: true };
+        let scopes = Scopes {
+            include: vec![root],
+            exclude: vec![],
+            configured: true,
+        };
         let ignore = winseek_store::Ignore::default();
-        let (counts, samples, capped) = walk(d.path(), &scopes, &ignore, false, Instant::now() + Duration::from_secs(5));
+        let (counts, samples, capped) = walk(
+            d.path(),
+            &scopes,
+            &ignore,
+            false,
+            Instant::now() + Duration::from_secs(5),
+        );
         assert!(!capped);
-        assert_eq!((counts.docs, counts.pdfs, counts.images, counts.code), (5, 1, 0, 0));
+        assert_eq!(
+            (counts.docs, counts.pdfs, counts.images, counts.code),
+            (5, 1, 0, 0)
+        );
         assert_eq!(counts.bytes, 5 * 2400 + 8);
         let per = measure(&samples);
         assert!(per.doc.is_some_and(|s| s >= 0.0));
@@ -335,8 +424,18 @@ mod tests {
         for i in 0..600 {
             std::fs::write(d.path().join(format!("n{i}.txt")), "x").unwrap();
         }
-        let scopes = Scopes { include: vec![d.path().to_string_lossy().into_owned()], exclude: vec![], configured: true };
-        let (counts, _, capped) = walk(d.path(), &scopes, &winseek_store::Ignore::default(), false, Instant::now());
+        let scopes = Scopes {
+            include: vec![d.path().to_string_lossy().into_owned()],
+            exclude: vec![],
+            configured: true,
+        };
+        let (counts, _, capped) = walk(
+            d.path(),
+            &scopes,
+            &winseek_store::Ignore::default(),
+            false,
+            Instant::now(),
+        );
         assert!(capped);
         assert!(counts.files() < 600);
     }

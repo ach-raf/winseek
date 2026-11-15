@@ -27,7 +27,15 @@ pub enum Recovery {
 
 /// Tables copied by [`Store::salvage`], in order. `texts` is read from its content table
 /// (`texts_content`) and indexed afresh, so a damaged FTS index does not lose any text.
-const TABLES: &[&str] = &["settings", "files", "content", "vectors", "texts", "pending_vecs", "parse_queue"];
+const TABLES: &[&str] = &[
+    "settings",
+    "files",
+    "content",
+    "vectors",
+    "texts",
+    "pending_vecs",
+    "parse_queue",
+];
 
 /// Shadow tables of the FTS index that `INSERT INTO texts(texts) VALUES('rebuild')` rewrites.
 const FTS_INDEX: &[&str] = &["texts_data", "texts_idx", "texts_docsize"];
@@ -76,7 +84,11 @@ fn damage(conn: &Connection) -> Damage {
         d.unmapped = true;
         return d;
     };
-    let indexes: Vec<&str> = objects.iter().filter(|(_, ty)| ty == "index").map(|(n, _)| n.as_str()).collect();
+    let indexes: Vec<&str> = objects
+        .iter()
+        .filter(|(_, ty)| ty == "index")
+        .map(|(n, _)| n.as_str())
+        .collect();
     for (table, _) in objects.iter().filter(|(_, ty)| ty == "table") {
         match check(conn, Some(table)) {
             Err(_) => {
@@ -116,8 +128,13 @@ fn check(conn: &Connection, table: Option<&str>) -> rusqlite::Result<Vec<String>
         None => "PRAGMA integrity_check(100)".to_string(),
     };
     let mut st = conn.prepare(&sql)?;
-    let msgs = st.query_map([], |r| r.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(msgs.into_iter().filter(|m| m != "ok" && !m.starts_with("*** in database")).collect())
+    let msgs = st
+        .query_map([], |r| r.get::<_, String>(0))?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(msgs
+        .into_iter()
+        .filter(|m| m != "ok" && !m.starts_with("*** in database"))
+        .collect())
 }
 
 impl Store {
@@ -128,7 +145,10 @@ impl Store {
 
     /// The database file (`None` for an in-memory store).
     pub fn path(&self) -> Option<PathBuf> {
-        self.conn.path().filter(|p| !p.is_empty()).map(PathBuf::from)
+        self.conn
+            .path()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from)
     }
 
     /// Check the file and repair what is damaged (see the module docs). Consumes the store
@@ -139,16 +159,20 @@ impl Store {
             return Ok((self, Recovery::Healthy));
         }
         let in_place = !d.unmapped
-            && d.objects.iter().all(|o| FTS_INDEX.contains(&o.as_str()) || is_index(&self.conn, o));
+            && d.objects
+                .iter()
+                .all(|o| FTS_INDEX.contains(&o.as_str()) || is_index(&self.conn, o));
         if in_place && self.repair_in_place().is_ok() && damage(&self.conn).is_empty() {
             return Ok((self, Recovery::Repaired));
         }
         let path = match self.path() {
             Some(p) => p,
-            None => return Err(Error::Sqlite(rusqlite::Error::SqliteFailure(
-                rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
-                Some("in-memory store is damaged and cannot be salvaged".into()),
-            ))),
+            None => {
+                return Err(Error::Sqlite(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+                    Some("in-memory store is damaged and cannot be salvaged".into()),
+                )))
+            }
         };
         let meta = self.meta.clone();
         // Unmapped damage: nothing is known to be good, so every table is read and judged by
@@ -165,7 +189,11 @@ impl Store {
         let path = self.path().expect("file-backed store");
         let old = std::mem::replace(self, Store::open_in_memory(meta)?);
         drop(old); // close the file before it is replaced
-        let derived = TABLES.iter().filter(|t| !matches!(**t, "settings" | "files")).map(|t| t.to_string()).collect();
+        let derived = TABLES
+            .iter()
+            .filter(|t| !matches!(**t, "settings" | "files"))
+            .map(|t| t.to_string())
+            .collect();
         let (s, _, _) = Store::salvage(&path, meta, &derived)?;
         *self = s;
         Ok(())
@@ -173,7 +201,8 @@ impl Store {
 
     fn repair_in_place(&self) -> Result<()> {
         self.conn.execute_batch("REINDEX;")?;
-        self.conn.execute("INSERT INTO texts(texts) VALUES('rebuild')", [])?;
+        self.conn
+            .execute("INSERT INTO texts(texts) VALUES('rebuild')", [])?;
         Ok(())
     }
 
@@ -185,7 +214,11 @@ impl Store {
     /// The new store is built beside the old one (`<path>.new`) and closed in rollback-journal
     /// mode, so it has no -wal/-shm. It only moves in once the old -wal/-shm are gone: SQLite
     /// would replay a stale -wal into a new file of the same name.
-    pub fn salvage(path: &Path, meta: &IndexMeta, damaged: &BTreeSet<String>) -> Result<(Store, PathBuf, Vec<String>)> {
+    pub fn salvage(
+        path: &Path,
+        meta: &IndexMeta,
+        damaged: &BTreeSet<String>,
+    ) -> Result<(Store, PathBuf, Vec<String>)> {
         let fresh = with_suffix(path, ".new");
         let backup = with_suffix(path, ".corrupt");
         for sfx in ["", "-wal", "-shm", "-journal"] {
@@ -208,7 +241,10 @@ impl Store {
         for sfx in ["", "-wal", "-shm"] {
             let left = with_suffix(path, sfx);
             if left.exists() {
-                return Err(io_error(&left, std::io::Error::other("still present after it was moved aside")));
+                return Err(io_error(
+                    &left,
+                    std::io::Error::other("still present after it was moved aside"),
+                ));
             }
         }
         std::fs::rename(&fresh, path).map_err(|e| io_error(&fresh, e))?;
@@ -218,13 +254,21 @@ impl Store {
     /// Copy every readable table from the file at `old`; returns the tables left behind.
     fn copy_from(&mut self, old: &Path, damaged: &BTreeSet<String>) -> Vec<String> {
         let mut lost = Vec::new();
-        if self.conn.execute("ATTACH DATABASE ?1 AS old", [old.to_string_lossy()]).is_err() {
+        if self
+            .conn
+            .execute("ATTACH DATABASE ?1 AS old", [old.to_string_lossy()])
+            .is_err()
+        {
             return TABLES.iter().map(|t| t.to_string()).collect();
         }
         for &table in TABLES {
             // `texts` is judged by its content table; settings are worth an attempt even when
             // flagged (a partial read beats losing the user's folders).
-            let source = if table == "texts" { "texts_content" } else { table };
+            let source = if table == "texts" {
+                "texts_content"
+            } else {
+                table
+            };
             if table != "settings" && damaged.contains(source) {
                 lost.push(table.to_string());
                 continue;
@@ -281,7 +325,8 @@ impl Store {
         }
         if lost("parse_queue") {
             // The route pass queues images again from the start.
-            self.conn.execute("DELETE FROM settings WHERE key = 'parse_route_cursor'", [])?;
+            self.conn
+                .execute("DELETE FROM settings WHERE key = 'parse_route_cursor'", [])?;
         }
         self.gc()?;
         Ok(())
@@ -307,8 +352,12 @@ fn io_error(p: &Path, e: std::io::Error) -> Error {
 }
 
 fn is_index(conn: &Connection, name: &str) -> bool {
-    conn.query_row("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1", [name], |_| Ok(()))
-        .is_ok()
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?1",
+        [name],
+        |_| Ok(()),
+    )
+    .is_ok()
 }
 
 #[cfg(test)]
@@ -316,30 +365,65 @@ mod tests {
     use super::*;
 
     fn meta() -> IndexMeta {
-        IndexMeta { model_id: "m".into(), llama_build: "b1".into(), quant: "Q8_0".into(), image_budget: 280, dims: 4 }
+        IndexMeta {
+            model_id: "m".into(),
+            llama_build: "b1".into(),
+            quant: "Q8_0".into(),
+            image_budget: 280,
+            dims: 4,
+        }
     }
 
     fn key(n: u64) -> FileKey {
-        FileKey { vol_guid: "{vol}".into(), frn: n }
+        FileKey {
+            vol_guid: "{vol}".into(),
+            frn: n,
+        }
     }
 
     /// One embedded image, one text-only document, a scope setting.
     fn populate(p: &Path) {
         let mut s = Store::open(p, &meta()).unwrap();
-        s.set_scopes(&Scopes { include: vec![r"C:\docs".into()], exclude: vec![], ..Default::default() }).unwrap();
-        let a = s.upsert_file(&key(1), r"C:\docs\a.jpg", 10, 1, "image").unwrap();
-        let v = ChunkVec { chunk: 0, kind: VecKind::Image, locator: None, vec: vec![1., 0., 0., 0.] };
-        s.complete(a, "ha", &[v], &[(0, "sunset over the harbour".into())]).unwrap();
-        let b = s.upsert_file(&key(2), r"C:\docs\b.txt", 10, 2, "document").unwrap();
-        let pend = [PendingVec { chunk: 0, kind: VecKind::Text, locator: None }];
-        s.complete_text_only(b, "hb", &pend, &[(0, "quarterly invoice".into())]).unwrap();
+        s.set_scopes(&Scopes {
+            include: vec![r"C:\docs".into()],
+            exclude: vec![],
+            ..Default::default()
+        })
+        .unwrap();
+        let a = s
+            .upsert_file(&key(1), r"C:\docs\a.jpg", 10, 1, "image")
+            .unwrap();
+        let v = ChunkVec {
+            chunk: 0,
+            kind: VecKind::Image,
+            locator: None,
+            vec: vec![1., 0., 0., 0.],
+        };
+        s.complete(a, "ha", &[v], &[(0, "sunset over the harbour".into())])
+            .unwrap();
+        let b = s
+            .upsert_file(&key(2), r"C:\docs\b.txt", 10, 2, "document")
+            .unwrap();
+        let pend = [PendingVec {
+            chunk: 0,
+            kind: VecKind::Text,
+            locator: None,
+        }];
+        s.complete_text_only(b, "hb", &pend, &[(0, "quarterly invoice".into())])
+            .unwrap();
     } // dropped: checkpointed, WAL gone
 
     /// Overwrite the root page of `table` with garbage, as a lost WAL frame would leave it.
     fn smash(p: &Path, table: &str) {
         let (root, size): (i64, i64) = {
             let c = Connection::open(p).unwrap();
-            let root = c.query_row("SELECT rootpage FROM sqlite_master WHERE name = ?1", [table], |r| r.get(0)).unwrap();
+            let root = c
+                .query_row(
+                    "SELECT rootpage FROM sqlite_master WHERE name = ?1",
+                    [table],
+                    |r| r.get(0),
+                )
+                .unwrap();
             let size = c.query_row("PRAGMA page_size", [], |r| r.get(0)).unwrap();
             (root, size)
         };
@@ -350,18 +434,28 @@ mod tests {
     }
 
     fn state_of(s: &Store, path: &str) -> i64 {
-        s.conn.query_row("SELECT state FROM files WHERE path = ?1", [path], |r| r.get(0)).unwrap()
+        s.conn
+            .query_row("SELECT state FROM files WHERE path = ?1", [path], |r| {
+                r.get(0)
+            })
+            .unwrap()
     }
 
     fn count(s: &Store, table: &str) -> i64 {
-        s.conn.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0)).unwrap()
+        s.conn
+            .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
+            .unwrap()
     }
 
     /// The bundled SQLite must carry the WAL-reset fix (3.51.3): with it missing, a checkpoint
     /// racing a write on a second connection silently lost pages and corrupted the live store.
     #[test]
     fn bundled_sqlite_has_wal_reset_fix() {
-        assert!(rusqlite::version_number() >= 3_051_003, "SQLite {} has the WAL-reset bug", rusqlite::version());
+        assert!(
+            rusqlite::version_number() >= 3_051_003,
+            "SQLite {} has the WAL-reset bug",
+            rusqlite::version()
+        );
     }
 
     #[test]
@@ -380,7 +474,11 @@ mod tests {
         populate(&p);
         smash(&p, "texts_data");
         let (s, r) = Store::open(&p, &meta()).unwrap().recover().unwrap();
-        assert!(matches!(&r, Recovery::Repaired) || matches!(&r, Recovery::Salvaged { lost, .. } if lost.is_empty()), "{r:?}");
+        assert!(
+            matches!(&r, Recovery::Repaired)
+                || matches!(&r, Recovery::Salvaged { lost, .. } if lost.is_empty()),
+            "{r:?}"
+        );
         assert_eq!(s.search_text("harbour", 5).unwrap().len(), 1);
         assert_eq!(s.search_text("invoice", 5).unwrap().len(), 1);
         assert_eq!(count(&s, "vectors"), 1);
@@ -397,14 +495,22 @@ mod tests {
         smash(&p, "pending_vecs");
         let s = Store::open(&p, &meta()).unwrap();
         let e = s.pending_vecs("hb").unwrap_err();
-        assert!(e.is_corruption() && is_corruption_message(&e.to_string()), "{e}");
+        assert!(
+            e.is_corruption() && is_corruption_message(&e.to_string()),
+            "{e}"
+        );
 
         let (mut s, r) = s.recover().unwrap();
-        let Recovery::Salvaged { backup, lost } = r else { panic!("{r:?}") };
+        let Recovery::Salvaged { backup, lost } = r else {
+            panic!("{r:?}")
+        };
         assert_eq!(lost, vec!["pending_vecs".to_string()]);
         assert!(backup.exists());
         assert!(damage(&s.conn).is_empty());
-        assert_eq!(s.get_scopes().unwrap().include, vec![r"C:\docs".to_string()]);
+        assert_eq!(
+            s.get_scopes().unwrap().include,
+            vec![r"C:\docs".to_string()]
+        );
         assert_eq!(state_of(&s, r"C:\docs\a.jpg"), STATE_DONE);
         assert_eq!(count(&s, "vectors"), 1);
         // The text-only document goes back to pending; its orphaned text is collected.
@@ -426,8 +532,14 @@ mod tests {
         populate(&p);
         smash(&p, "vectors");
         let (s, r) = Store::open(&p, &meta()).unwrap().recover().unwrap();
-        assert!(matches!(&r, Recovery::Salvaged { lost, .. } if lost.contains(&"vectors".to_string())), "{r:?}");
-        assert_eq!(count(&s, "vectors") + count(&s, "content") + count(&s, "pending_vecs"), 0);
+        assert!(
+            matches!(&r, Recovery::Salvaged { lost, .. } if lost.contains(&"vectors".to_string())),
+            "{r:?}"
+        );
+        assert_eq!(
+            count(&s, "vectors") + count(&s, "content") + count(&s, "pending_vecs"),
+            0
+        );
         assert_eq!(count(&s, "files"), 2);
         assert_eq!(state_of(&s, r"C:\docs\a.jpg"), STATE_PENDING);
         assert_eq!(s.get_scopes().unwrap().include.len(), 1);
@@ -445,7 +557,10 @@ mod tests {
         s.reset_in_place(&meta()).unwrap();
         assert!(damage(&s.conn).is_empty());
         assert_eq!(count(&s, "vectors") + count(&s, "texts"), 0);
-        assert_eq!((count(&s, "files"), state_of(&s, r"C:\docs\a.jpg")), (2, STATE_PENDING));
+        assert_eq!(
+            (count(&s, "files"), state_of(&s, r"C:\docs\a.jpg")),
+            (2, STATE_PENDING)
+        );
         assert_eq!(s.get_scopes().unwrap().include.len(), 1);
     }
 
@@ -460,19 +575,26 @@ mod tests {
         s.set_setting("late", Some("in the wal")).unwrap();
         let p = dir.path().join("s.db");
         for sfx in ["", "-wal", "-shm"] {
-            std::fs::copy(with_suffix(&live, sfx), with_suffix(&p, sfx)).unwrap(); // "crashed" copy
+            std::fs::copy(with_suffix(&live, sfx), with_suffix(&p, sfx)).unwrap();
+            // "crashed" copy
         }
         drop(s);
         let damaged: BTreeSet<String> = ["vectors".to_string()].into();
         let (s, backup, lost) = Store::salvage(&p, &meta(), &damaged).unwrap();
         assert_eq!(lost, vec!["vectors".to_string()]);
-        assert_eq!(s.get_setting("late").unwrap().as_deref(), Some("in the wal"));
+        assert_eq!(
+            s.get_setting("late").unwrap().as_deref(),
+            Some("in the wal")
+        );
         assert_eq!(count(&s, "content") + count(&s, "vectors"), 0);
         assert_eq!(count(&s, "files"), 2);
         assert!(damage(&s.conn).is_empty());
         assert!(backup.exists() && !with_suffix(&p, ".new").exists());
         drop(s);
-        assert!(!with_suffix(&p, "-wal").exists() || std::fs::metadata(with_suffix(&p, "-wal")).unwrap().len() == 0);
+        assert!(
+            !with_suffix(&p, "-wal").exists()
+                || std::fs::metadata(with_suffix(&p, "-wal")).unwrap().len() == 0
+        );
     }
 
     #[test]

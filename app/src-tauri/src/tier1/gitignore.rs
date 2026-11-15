@@ -98,7 +98,9 @@ fn match_segs(p: &[Seg], s: &[String]) -> bool {
             (0..=s.len()).any(|k| match_segs(rest, &s[k..]))
         }
         Some((Seg::Glob(g), rest)) => {
-            let Some((first, tail)) = s.split_first() else { return false };
+            let Some((first, tail)) = s.split_first() else {
+                return false;
+            };
             let t: Vec<char> = first.chars().collect();
             glob_match(g, &t) && match_segs(rest, tail)
         }
@@ -146,7 +148,11 @@ impl Gitignore {
             if segs.is_empty() {
                 continue;
             }
-            patterns.push(Pattern { segs, negate, dir_only });
+            patterns.push(Pattern {
+                segs,
+                negate,
+                dir_only,
+            });
         }
         Gitignore { patterns }
     }
@@ -158,7 +164,11 @@ impl Gitignore {
     /// Verdict for `rel` (lower-cased segments relative to this file's folder): `Some(true)` =
     /// ignored, `Some(false)` = re-included by a `!` rule, `None` = no rule matches.
     fn verdict(&self, rel: &[String], is_dir: bool) -> Option<bool> {
-        self.patterns.iter().rev().find(|p| (is_dir || !p.dir_only) && match_segs(&p.segs, rel)).map(|p| !p.negate)
+        self.patterns
+            .iter()
+            .rev()
+            .find(|p| (is_dir || !p.dir_only) && match_segs(&p.segs, rel))
+            .map(|p| !p.negate)
     }
 }
 
@@ -177,7 +187,10 @@ pub struct Chain {
 
 /// Lower-cased path segments (drive included), separators `\` or `/`.
 pub fn segments(path: &str) -> Vec<String> {
-    path.split(['\\', '/']).filter(|s| !s.is_empty()).map(str::to_lowercase).collect()
+    path.split(['\\', '/'])
+        .filter(|s| !s.is_empty())
+        .map(str::to_lowercase)
+        .collect()
 }
 
 impl Chain {
@@ -188,13 +201,18 @@ impl Chain {
 
     /// This chain extended with the `.gitignore` found in `dir` (if any).
     pub fn descend(&self, dir: &Path) -> Chain {
-        let Ok(text) = std::fs::read(dir.join(".gitignore")) else { return self.clone() };
+        let Ok(text) = std::fs::read(dir.join(".gitignore")) else {
+            return self.clone();
+        };
         let gi = Gitignore::parse(&String::from_utf8_lossy(&text));
         if gi.is_empty() {
             return self.clone();
         }
         let mut c = self.clone();
-        c.levels.push(Level { dir: segments(&dir.to_string_lossy()), gi: Arc::new(gi) });
+        c.levels.push(Level {
+            dir: segments(&dir.to_string_lossy()),
+            gi: Arc::new(gi),
+        });
         c
     }
 
@@ -231,7 +249,9 @@ impl Chain {
             .map(|r| (segments(r), r))
             .filter(|(rs, _)| segs.len() > rs.len() && segs[..rs.len()] == rs[..])
             .max_by_key(|(rs, _)| rs.len());
-        let Some((rs, root)) = best else { return Chain::default() };
+        let Some((rs, root)) = best else {
+            return Chain::default();
+        };
         // Walk the original-case path so the filesystem lookups are exact.
         let parts: Vec<&str> = path.split(['\\', '/']).filter(|s| !s.is_empty()).collect();
         let mut dir = std::path::PathBuf::from(root.trim_end_matches(['\\', '/']));
@@ -258,12 +278,17 @@ mod tests {
     use std::fs;
 
     fn lvl(dir: &str, rules: &str) -> Level {
-        Level { dir: segments(dir), gi: Arc::new(Gitignore::parse(rules)) }
+        Level {
+            dir: segments(dir),
+            gi: Arc::new(Gitignore::parse(rules)),
+        }
     }
 
     fn ign(rules: &str, path: &str, is_dir: bool) -> bool {
         // rules live in C:\p
-        let c = Chain { levels: vec![lvl("C:/p", rules)] };
+        let c = Chain {
+            levels: vec![lvl("C:/p", rules)],
+        };
         c.ignored(&format!(r"C:\p\{path}"), is_dir)
     }
 
@@ -282,7 +307,10 @@ mod tests {
     fn directory_only_and_ancestors() {
         let r = "build/\n";
         assert!(ign(r, "build", true));
-        assert!(!ign(r, "build", false), "a file called build is not a directory");
+        assert!(
+            !ign(r, "build", false),
+            "a file called build is not a directory"
+        );
         assert!(ign(r, r"build\out.o", false));
         assert!(ign(r, r"sub\build\deep\x.rs", false));
         assert!(!ign(r, r"buildx\x.rs", false));
@@ -294,7 +322,10 @@ mod tests {
         assert!(ign(r, "top.rs", false));
         assert!(!ign(r, r"sub\top.rs", false), "leading slash anchors");
         assert!(ign(r, r"docs\gen", false));
-        assert!(!ign(r, r"x\docs\gen", false), "a slash in the middle anchors");
+        assert!(
+            !ign(r, r"x\docs\gen", false),
+            "a slash in the middle anchors"
+        );
     }
 
     #[test]
@@ -324,7 +355,10 @@ mod tests {
         assert!(ign("a/**/z.txt", r"a\b\c\z.txt", false));
         assert!(!ign("a/**/z.txt", r"b\z.txt", false));
         assert!(ign("logs/**", r"logs\a.txt", false));
-        assert!(!ign("logs/**", "logs", true), "trailing /** keeps the folder itself");
+        assert!(
+            !ign("logs/**", "logs", true),
+            "trailing /** keeps the folder itself"
+        );
         assert!(ign("*.min.*", "app.min.js", false));
         assert!(ign(r"\#hash", "#hash", false));
         assert!(ign(r"\!bang", "!bang", false));
@@ -334,12 +368,17 @@ mod tests {
     fn deeper_gitignore_overrides_shallower() {
         let root = lvl("C:/p", "*.gen\n");
         let sub = lvl("C:/p/sub", "!keep.gen\n/only-here.txt\n");
-        let c = Chain { levels: vec![root, sub] };
+        let c = Chain {
+            levels: vec![root, sub],
+        };
         assert!(c.ignored(r"C:\p\x.gen", false));
         assert!(!c.ignored(r"C:\p\sub\keep.gen", false));
         assert!(c.ignored(r"C:\p\sub\other.gen", false));
         assert!(c.ignored(r"C:\p\sub\only-here.txt", false));
-        assert!(!c.ignored(r"C:\p\only-here.txt", false), "sub rules do not apply outside sub");
+        assert!(
+            !c.ignored(r"C:\p\only-here.txt", false),
+            "sub rules do not apply outside sub"
+        );
         assert!(!c.ignored(r"C:\p\other\only-here.txt", false));
     }
 

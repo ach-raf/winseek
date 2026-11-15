@@ -37,7 +37,11 @@ impl IdleReaper<SystemClock> {
 impl<C: Clock> IdleReaper<C> {
     pub fn with_clock(clock: C, timeout: Duration) -> Self {
         let last = clock.now();
-        IdleReaper { clock, timeout, last }
+        IdleReaper {
+            clock,
+            timeout,
+            last,
+        }
     }
     pub fn touch(&mut self) {
         self.last = self.clock.now();
@@ -59,13 +63,19 @@ pub struct IdleSlot<T, C: Clock = SystemClock> {
 
 impl<T> IdleSlot<T, SystemClock> {
     pub fn new(timeout: Duration) -> Self {
-        IdleSlot { value: None, reaper: IdleReaper::new(timeout) }
+        IdleSlot {
+            value: None,
+            reaper: IdleReaper::new(timeout),
+        }
     }
 }
 
 impl<T, C: Clock> IdleSlot<T, C> {
     pub fn with_clock(clock: C, timeout: Duration) -> Self {
-        IdleSlot { value: None, reaper: IdleReaper::with_clock(clock, timeout) }
+        IdleSlot {
+            value: None,
+            reaper: IdleReaper::with_clock(clock, timeout),
+        }
     }
 
     pub fn get_or_init<E>(&mut self, init: impl FnOnce() -> Result<T, E>) -> Result<&mut T, E> {

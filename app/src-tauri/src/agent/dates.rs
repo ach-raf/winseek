@@ -17,11 +17,17 @@ pub fn date_range(spec: &str, now_ms: i64, tz_offset_min: i32) -> Result<(i64, i
         "last_week" => Ok((day_start(monday - 7), day_start(monday))),
         "this_month" => {
             let (y, m, _) = civil_from_days(today);
-            Ok((day_start(days_from_civil(y, m, 1)), day_start(days_from_civil(y, m + 1, 1))))
+            Ok((
+                day_start(days_from_civil(y, m, 1)),
+                day_start(days_from_civil(y, m + 1, 1)),
+            ))
         }
         "this_year" => {
             let (y, _, _) = civil_from_days(today);
-            Ok((day_start(days_from_civil(y, 1, 1)), day_start(days_from_civil(y + 1, 1, 1))))
+            Ok((
+                day_start(days_from_civil(y, 1, 1)),
+                day_start(days_from_civil(y + 1, 1, 1)),
+            ))
         }
         other => {
             let (y, m, d) = parse_ymd(other)?;
@@ -78,7 +84,9 @@ pub fn parse_size(v: &serde_json::Value) -> Result<u64, String> {
         serde_json::Value::String(s) => {
             let t = s.trim();
             let bad = || format!("bad size \"{s}\" (want bytes or \"10MB\")");
-            let split = t.char_indices().find(|(_, c)| !(c.is_ascii_digit() || *c == '.' || *c == ','));
+            let split = t
+                .char_indices()
+                .find(|(_, c)| !(c.is_ascii_digit() || *c == '.' || *c == ','));
             let (num, unit) = match split {
                 None => return t.replace(',', "").parse::<u64>().map_err(|_| bad()),
                 Some((i, _)) => t.split_at(i),
@@ -89,7 +97,11 @@ pub fn parse_size(v: &serde_json::Value) -> Result<u64, String> {
                 "M" | "m" => 1024.0 * 1024.0,
                 "G" | "g" => 1024.0 * 1024.0 * 1024.0,
                 "T" | "t" => 1024.0 * 1024.0 * 1024.0 * 1024.0,
-                other => return Err(format!("bad size unit \"{other}\" (want KB/MB/GB/TB or bytes)")),
+                other => {
+                    return Err(format!(
+                        "bad size unit \"{other}\" (want KB/MB/GB/TB or bytes)"
+                    ))
+                }
             };
             Ok((num * mult) as u64)
         }
@@ -112,7 +124,13 @@ mod tests {
     #[test]
     fn iso_date_range_is_the_local_day() {
         let (from, to) = date_range("2026-10-20", NOW, TZ).unwrap();
-        assert_eq!((from, to), (day_ms(2026, 10, 20) - 3_600_000, day_ms(2026, 10, 21) - 3_600_000));
+        assert_eq!(
+            (from, to),
+            (
+                day_ms(2026, 10, 20) - 3_600_000,
+                day_ms(2026, 10, 21) - 3_600_000
+            )
+        );
         assert!(date_range("2026-13-01", NOW, TZ).is_err());
         assert!(date_range("gibberish", NOW, TZ).is_err());
     }
@@ -121,13 +139,31 @@ mod tests {
     fn relative_words() {
         // Tuesday: this_week starts Monday 2026-10-19, last_week 2026-10-12.
         let (f, t) = date_range("today", NOW, TZ).unwrap();
-        assert_eq!((f, t), (day_ms(2026, 10, 20) - 3_600_000, day_ms(2026, 10, 21) - 3_600_000));
+        assert_eq!(
+            (f, t),
+            (
+                day_ms(2026, 10, 20) - 3_600_000,
+                day_ms(2026, 10, 21) - 3_600_000
+            )
+        );
         let (f, _) = date_range("yesterday", NOW, TZ).unwrap();
         assert_eq!(f, day_ms(2026, 10, 19) - 3_600_000);
         let (f, t) = date_range("this_week", NOW, TZ).unwrap();
-        assert_eq!((f, t), (day_ms(2026, 10, 19) - 3_600_000, day_ms(2026, 10, 21) - 3_600_000));
+        assert_eq!(
+            (f, t),
+            (
+                day_ms(2026, 10, 19) - 3_600_000,
+                day_ms(2026, 10, 21) - 3_600_000
+            )
+        );
         let (f, t) = date_range("last_week", NOW, TZ).unwrap();
-        assert_eq!((f, t), (day_ms(2026, 10, 12) - 3_600_000, day_ms(2026, 10, 19) - 3_600_000));
+        assert_eq!(
+            (f, t),
+            (
+                day_ms(2026, 10, 12) - 3_600_000,
+                day_ms(2026, 10, 19) - 3_600_000
+            )
+        );
         let (f, _) = date_range("this_month", NOW, TZ).unwrap();
         assert_eq!(f, day_ms(2026, 10, 1) - 3_600_000);
         let (f, _) = date_range("this_year", NOW, TZ).unwrap();
@@ -143,14 +179,26 @@ mod tests {
     fn negative_tz_moves_the_day_boundary() {
         // 2026-10-20T12:00Z at UTC-300 is still 2026-10-20 07:00 local; "today" starts there.
         let (f, t) = date_range("today", 1_792_473_600_000, -300).unwrap();
-        assert_eq!((f, t), (day_ms(2026, 10, 20) + 5 * 3_600_000, day_ms(2026, 10, 21) + 5 * 3_600_000));
+        assert_eq!(
+            (f, t),
+            (
+                day_ms(2026, 10, 20) + 5 * 3_600_000,
+                day_ms(2026, 10, 21) + 5 * 3_600_000
+            )
+        );
     }
 
     #[test]
     fn sizes() {
         assert_eq!(parse_size(&serde_json::json!(1024)).unwrap(), 1024);
-        assert_eq!(parse_size(&serde_json::json!("10MB")).unwrap(), 10 * 1024 * 1024);
-        assert_eq!(parse_size(&serde_json::json!("1.5 GB")).unwrap(), (1.5 * 1024.0 * 1024.0 * 1024.0) as u64);
+        assert_eq!(
+            parse_size(&serde_json::json!("10MB")).unwrap(),
+            10 * 1024 * 1024
+        );
+        assert_eq!(
+            parse_size(&serde_json::json!("1.5 GB")).unwrap(),
+            (1.5 * 1024.0 * 1024.0 * 1024.0) as u64
+        );
         assert_eq!(parse_size(&serde_json::json!("512")).unwrap(), 512);
         assert!(parse_size(&serde_json::json!("10 XB")).is_err());
         assert!(parse_size(&serde_json::json!(true)).is_err());

@@ -13,7 +13,9 @@ use tauri::{AppHandle, WebviewWindow};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::System::Com::{CoInitializeEx, CoUninitialize, COINIT_APARTMENTTHREADED};
-use windows::Win32::UI::Shell::{IShellItem, SHCreateItemFromParsingName, SHObjectProperties, SHOP_FILEPATH};
+use windows::Win32::UI::Shell::{
+    IShellItem, SHCreateItemFromParsingName, SHObjectProperties, SHOP_FILEPATH,
+};
 
 /// Per-thread COM STA init; uninitialises on drop only if this call initialised it.
 pub(crate) struct ComGuard(bool);
@@ -41,7 +43,8 @@ pub(crate) fn wide(s: &str) -> Vec<u16> {
 pub(crate) fn shell_item(path: &str) -> Result<IShellItem, String> {
     let w = wide(path);
     // SAFETY: `w` is NUL-terminated and outlives the call.
-    unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }.map_err(|e| format!("{path}: {e}"))
+    unsafe { SHCreateItemFromParsingName(PCWSTR(w.as_ptr()), None) }
+        .map_err(|e| format!("{path}: {e}"))
 }
 
 pub(crate) fn popup_hwnd(app: &AppHandle) -> Result<(HWND, WebviewWindow), String> {
@@ -70,7 +73,11 @@ pub(crate) fn on_main<T: Send + 'static>(
 }
 
 #[tauri::command]
-pub async fn copy_files(app: AppHandle, window: WebviewWindow, paths: Vec<String>) -> Result<(), String> {
+pub async fn copy_files(
+    app: AppHandle,
+    window: WebviewWindow,
+    paths: Vec<String>,
+) -> Result<(), String> {
     on_main(&app.clone(), move || {
         let hwnd = window_hwnd(&window)?;
         clipboard::copy_files(hwnd, &paths)
@@ -79,7 +86,12 @@ pub async fn copy_files(app: AppHandle, window: WebviewWindow, paths: Vec<String
 
 /// Text (and optionally an HTML twin, e.g. a table) to the clipboard.
 #[tauri::command]
-pub async fn copy_text_html(app: AppHandle, window: WebviewWindow, text: String, html: Option<String>) -> Result<(), String> {
+pub async fn copy_text_html(
+    app: AppHandle,
+    window: WebviewWindow,
+    text: String,
+    html: Option<String>,
+) -> Result<(), String> {
     on_main(&app.clone(), move || {
         let hwnd = window_hwnd(&window)?;
         clipboard::copy_text_html(hwnd, &text, html.as_deref())
@@ -87,7 +99,11 @@ pub async fn copy_text_html(app: AppHandle, window: WebviewWindow, text: String,
 }
 
 #[tauri::command]
-pub async fn recycle(app: AppHandle, window: WebviewWindow, paths: Vec<String>) -> Result<(), String> {
+pub async fn recycle(
+    app: AppHandle,
+    window: WebviewWindow,
+    paths: Vec<String>,
+) -> Result<(), String> {
     on_main(&app.clone(), move || {
         let hwnd = window_hwnd(&window)?;
         fileop::recycle(hwnd, &paths)
@@ -108,7 +124,13 @@ pub async fn rename_path(app: AppHandle, path: String, new_name: String) -> Resu
 }
 
 #[tauri::command]
-pub async fn show_context_menu(app: AppHandle, window: WebviewWindow, path: String, x: f64, y: f64) -> Result<String, String> {
+pub async fn show_context_menu(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+    x: f64,
+    y: f64,
+) -> Result<String, String> {
     on_main(&app.clone(), move || {
         let hwnd = window_hwnd(&window)?;
         let w = window;
@@ -136,12 +158,23 @@ pub fn clipboard_text(hwnd: HWND) -> Option<String> {
 }
 
 #[tauri::command]
-pub async fn show_properties(app: AppHandle, window: WebviewWindow, path: String) -> Result<(), String> {
+pub async fn show_properties(
+    app: AppHandle,
+    window: WebviewWindow,
+    path: String,
+) -> Result<(), String> {
     on_main(&app, move || {
         let hwnd = window_hwnd(&window)?;
         let w = crate::shell::wide(&path);
         // SAFETY: NUL-terminated name; the sheet stays up on this thread's message pump.
-        let ok = unsafe { SHObjectProperties(Some(hwnd), SHOP_FILEPATH, PCWSTR(w.as_ptr()), PCWSTR::null()) };
+        let ok = unsafe {
+            SHObjectProperties(
+                Some(hwnd),
+                SHOP_FILEPATH,
+                PCWSTR(w.as_ptr()),
+                PCWSTR::null(),
+            )
+        };
         if ok.as_bool() {
             Ok(())
         } else {

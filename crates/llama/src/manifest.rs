@@ -124,7 +124,10 @@ impl ModelFile {
 
     /// Same as [`urls`](Self::urls) with an explicit endpoint (pure).
     pub fn urls_with(&self, endpoint: Option<&str>) -> Vec<String> {
-        std::iter::once(&self.url).chain(self.mirrors.iter()).map(|u| crate::fetch::rewrite_hf(u, endpoint)).collect()
+        std::iter::once(&self.url)
+            .chain(self.mirrors.iter())
+            .map(|u| crate::fetch::rewrite_hf(u, endpoint))
+            .collect()
     }
 }
 
@@ -150,7 +153,9 @@ impl Manifest {
     }
 
     pub fn model(&self, id: &str, profile: ModelProfile) -> Option<&ModelEntry> {
-        self.models.iter().find(|m| m.id == id && m.profile == profile)
+        self.models
+            .iter()
+            .find(|m| m.id == id && m.profile == profile)
     }
 }
 
@@ -169,7 +174,11 @@ mod tests {
         assert!(m.llama.build.starts_with('b'));
         for b in [Backend::Cuda12, Backend::Vulkan, Backend::Cpu] {
             let a = m.asset(b).unwrap();
-            assert!(a.url.contains(&m.llama.build) && a.url.ends_with(".zip"), "{}", a.url);
+            assert!(
+                a.url.contains(&m.llama.build) && a.url.ends_with(".zip"),
+                "{}",
+                a.url
+            );
         }
         assert_eq!(m.asset(Backend::Cuda12).unwrap().extra.len(), 1);
         for a in &m.llama.assets {
@@ -178,11 +187,18 @@ mod tests {
                 assert!(e.size.is_some_and(|s| s > 0), "{} has no size", e.url);
             }
         }
-        let q4 = m.model("infinity-parser2-flash", ModelProfile::Default).unwrap();
+        let q4 = m
+            .model("infinity-parser2-flash", ModelProfile::Default)
+            .unwrap();
         assert_eq!(q4.files.len(), 2);
-        assert_eq!(q4.files[0].file_name(), "Infinity-Parser2-Flash.Q4_K_M.gguf");
+        assert_eq!(
+            q4.files[0].file_name(),
+            "Infinity-Parser2-Flash.Q4_K_M.gguf"
+        );
         assert_eq!(q4.files[1].role, ModelRole::Mmproj);
-        let q8 = m.model("infinity-parser2-flash", ModelProfile::Quality).unwrap();
+        let q8 = m
+            .model("infinity-parser2-flash", ModelProfile::Quality)
+            .unwrap();
         assert!(q8.files[0].url.ends_with("Q8_0.gguf"));
         assert!(m.model("embeddinggemma-2", ModelProfile::Default).is_some());
         assert!(m.model("nope", ModelProfile::Default).is_none());
@@ -196,9 +212,15 @@ mod tests {
             p.url,
             "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-win-x64.tgz"
         );
-        assert_eq!(p.sha256, "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08");
+        assert_eq!(
+            p.sha256,
+            "73cc0de638ac2095e7445bf56a38200a5b7c7ca0e9f4ba144598f2457377ac08"
+        );
         assert!(!is_unpinned(&p.sha256));
-        assert_eq!((p.size, p.member.as_str(), p.dll_name()), (3_733_154, "bin/pdfium.dll", "pdfium.dll"));
+        assert_eq!(
+            (p.size, p.member.as_str(), p.dll_name()),
+            (3_733_154, "bin/pdfium.dll", "pdfium.dll")
+        );
     }
 
     #[test]
@@ -206,7 +228,10 @@ mod tests {
         let m = Manifest::embedded();
         let f = m.ffmpeg.as_ref().expect("embedded manifest lists ffmpeg");
         assert_eq!(f.exe_name(), "ffmpeg.exe");
-        assert!(f.url.ends_with(".zip") && f.member.ends_with("/ffmpeg.exe"), "{f:?}");
+        assert!(
+            f.url.ends_with(".zip") && f.member.ends_with("/ffmpeg.exe"),
+            "{f:?}"
+        );
         // the minimal manifest below has none
         let j = r#"{"llama":{"build":"b1","assets":[]},"pdfium":{"build":"1","url":"u","sha256":"s","size":1,"member":"m"},"models":[]}"#;
         assert!(Manifest::parse(j).unwrap().ffmpeg.is_none());
@@ -224,7 +249,10 @@ mod tests {
     #[test]
     fn mirrors_optional_and_urls() {
         let m = Manifest::embedded();
-        let f = &m.model("embeddinggemma-2", ModelProfile::Default).unwrap().files[0];
+        let f = &m
+            .model("embeddinggemma-2", ModelProfile::Default)
+            .unwrap()
+            .files[0];
         assert!(f.mirrors.is_empty());
         assert_eq!(f.urls_with(None), vec![f.url.clone()]);
         let f2 = ModelFile {
@@ -232,7 +260,10 @@ mod tests {
             url: "https://huggingface.co/a/b/resolve/main/x.gguf".into(),
             sha256: "s".into(),
             size: 1,
-            mirrors: vec!["https://mirror.example/x.gguf".into(), "https://huggingface.co/c/x.gguf".into()],
+            mirrors: vec![
+                "https://mirror.example/x.gguf".into(),
+                "https://huggingface.co/c/x.gguf".into(),
+            ],
         };
         assert_eq!(
             f2.urls_with(Some("https://hf-mirror.com/")),
@@ -242,7 +273,10 @@ mod tests {
                 "https://hf-mirror.com/c/x.gguf"
             ]
         );
-        let j: ModelFile = serde_json::from_str(r#"{"role":"model","url":"u","sha256":"s","size":1,"mirrors":["m"]}"#).unwrap();
+        let j: ModelFile = serde_json::from_str(
+            r#"{"role":"model","url":"u","sha256":"s","size":1,"mirrors":["m"]}"#,
+        )
+        .unwrap();
         assert_eq!(j.mirrors, ["m"]);
     }
 

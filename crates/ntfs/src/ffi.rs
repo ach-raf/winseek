@@ -105,7 +105,10 @@ struct OVERLAPPED {
 
 /// NUL-terminated UTF-16 for Win32 calls.
 pub(crate) fn wide(s: &str) -> Vec<u16> {
-    OsStr::new(s).encode_wide().chain(std::iter::once(0)).collect()
+    OsStr::new(s)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect()
 }
 
 /// Owned Win32 HANDLE, closed on drop.
@@ -119,7 +122,11 @@ unsafe impl Sync for Handle {}
 impl Handle {
     /// Open `\\.\X:` with the given access and flags.
     pub(crate) fn open_volume(letter: char, access: DWORD, flags: DWORD) -> io::Result<Handle> {
-        Self::open_path(&format!("\\\\.\\{}:", letter.to_ascii_uppercase()), access, flags)
+        Self::open_path(
+            &format!("\\\\.\\{}:", letter.to_ascii_uppercase()),
+            access,
+            flags,
+        )
     }
 
     /// Open an arbitrary path (volume device or file) with the given access and flags.
@@ -159,9 +166,17 @@ impl Handle {
             DeviceIoControl(
                 self.0,
                 code,
-                if input.is_empty() { std::ptr::null_mut() } else { input.as_ptr() as *mut _ },
+                if input.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    input.as_ptr() as *mut _
+                },
                 input.len() as DWORD,
-                if output.is_empty() { std::ptr::null_mut() } else { output.as_mut_ptr().cast() },
+                if output.is_empty() {
+                    std::ptr::null_mut()
+                } else {
+                    output.as_mut_ptr().cast()
+                },
                 output.len() as DWORD,
                 &mut returned,
                 std::ptr::null_mut(),
@@ -177,19 +192,29 @@ impl Handle {
     /// Seek to an absolute offset and read once into `buf`.
     pub(crate) fn read_at(&self, buf: &mut [u8], offset: u64) -> io::Result<usize> {
         // SAFETY: valid handle; null out-pointer for the new position is allowed.
-        if unsafe { SetFilePointerEx(self.0, offset as i64, std::ptr::null_mut(), FILE_BEGIN) } == 0 {
+        if unsafe { SetFilePointerEx(self.0, offset as i64, std::ptr::null_mut(), FILE_BEGIN) } == 0
+        {
             return Err(io::Error::last_os_error());
         }
         let mut done: DWORD = 0;
         // SAFETY: buf is writable for buf.len() (<= u32::MAX by callers).
         let ok = unsafe {
-            ReadFile(self.0, buf.as_mut_ptr().cast(), buf.len() as DWORD, &mut done, std::ptr::null_mut())
+            ReadFile(
+                self.0,
+                buf.as_mut_ptr().cast(),
+                buf.len() as DWORD,
+                &mut done,
+                std::ptr::null_mut(),
+            )
         };
         if ok == 0 {
             return Err(io::Error::last_os_error());
         }
         if done == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "ReadFile returned 0 bytes"));
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "ReadFile returned 0 bytes",
+            ));
         }
         Ok(done as usize)
     }
@@ -217,7 +242,12 @@ pub(crate) struct AsyncRead {
 impl AsyncRead {
     /// Issue a read of `len` bytes at `offset` into the start of `buf`. `vol`
     /// must have been opened with `FILE_FLAG_OVERLAPPED` and outlive the read.
-    pub(crate) fn start(vol: &Handle, mut buf: AlignedBuf, len: usize, offset: u64) -> io::Result<AsyncRead> {
+    pub(crate) fn start(
+        vol: &Handle,
+        mut buf: AlignedBuf,
+        len: usize,
+        offset: u64,
+    ) -> io::Result<AsyncRead> {
         assert!(len <= buf.as_mut_slice().len() && len <= u32::MAX as usize);
         // SAFETY: plain event creation; manual-reset, unsignalled, unnamed.
         let ev = unsafe { CreateEventW(std::ptr::null_mut(), 1, 0, std::ptr::null()) };
@@ -231,7 +261,12 @@ impl AsyncRead {
             offset_high: (offset >> 32) as u32,
             h_event: ev,
         });
-        let mut r = AsyncRead { vol: vol.0, ov, pending: false, buf: None };
+        let mut r = AsyncRead {
+            vol: vol.0,
+            ov,
+            pending: false,
+            buf: None,
+        };
         let ptr = buf.as_mut_slice().as_mut_ptr();
         r.buf = Some(buf);
         // SAFETY: `ptr` is valid for `len` bytes and kept alive (and unmoved: heap)
@@ -262,7 +297,11 @@ impl AsyncRead {
         // SAFETY: the OVERLAPPED belongs to a request issued on `self.vol`.
         let ok = unsafe { GetOverlappedResult(self.vol, &mut *self.ov, &mut done, 1) };
         self.pending = false;
-        let res = if ok == 0 { Err(io::Error::last_os_error()) } else { Ok(done as usize) };
+        let res = if ok == 0 {
+            Err(io::Error::last_os_error())
+        } else {
+            Ok(done as usize)
+        };
         let buf = self.buf.take().expect("buffer present until finish");
         (res, buf)
     }
@@ -390,7 +429,8 @@ mod tests {
     /// collected out of issue order, must return the right bytes.
     #[test]
     fn async_reads_return_correct_bytes() {
-        let path = std::env::temp_dir().join(format!("winseek-ffi-async-{}.bin", std::process::id()));
+        let path =
+            std::env::temp_dir().join(format!("winseek-ffi-async-{}.bin", std::process::id()));
         let data: Vec<u8> = (0..(1usize << 20)).map(|i| (i * 31 % 251) as u8).collect();
         std::fs::write(&path, &data).unwrap();
         let h = Handle::open_path(
@@ -399,7 +439,12 @@ mod tests {
             FILE_FLAG_OVERLAPPED | FILE_FLAG_NO_BUFFERING,
         )
         .unwrap();
-        let reqs = [(0u64, 65536usize), (65536, 131072), (8192, 4096), ((1 << 20) - 4096, 4096)];
+        let reqs = [
+            (0u64, 65536usize),
+            (65536, 131072),
+            (8192, 4096),
+            ((1 << 20) - 4096, 4096),
+        ];
         let inflight: Vec<_> = reqs
             .iter()
             .map(|&(off, len)| AsyncRead::start(&h, AlignedBuf::new(len), len, off).unwrap())
@@ -407,7 +452,10 @@ mod tests {
         for (r, &(off, len)) in inflight.into_iter().zip(&reqs).rev() {
             let (res, mut buf) = r.finish();
             assert_eq!(res.unwrap(), len);
-            assert_eq!(&buf.as_mut_slice()[..len], &data[off as usize..off as usize + len]);
+            assert_eq!(
+                &buf.as_mut_slice()[..len],
+                &data[off as usize..off as usize + len]
+            );
         }
         // Dropping an uncollected request must not crash or leak a live buffer.
         let r = AsyncRead::start(&h, AlignedBuf::new(1 << 20), 1 << 20, 0).unwrap();

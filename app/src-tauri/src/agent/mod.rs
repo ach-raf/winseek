@@ -32,8 +32,15 @@ impl AgentState {
         if let Err(e) = log::trim(&log::path(&root), log::MAX_LINES) {
             eprintln!("winseek: agent log trim failed: {e}");
         }
-        eprintln!("winseek: agent access {}", if cfg.enabled { "on" } else { "off" });
-        AgentState { root, cfg: Mutex::new(cfg), log: l }
+        eprintln!(
+            "winseek: agent access {}",
+            if cfg.enabled { "on" } else { "off" }
+        );
+        AgentState {
+            root,
+            cfg: Mutex::new(cfg),
+            log: l,
+        }
     }
 
     /// Read per request, so flipping the toggle in Settings takes effect without a restart.
@@ -55,12 +62,17 @@ pub struct McpPath {
 }
 
 #[tauri::command]
-pub async fn agent_get_config(state: tauri::State<'_, Arc<AgentState>>) -> Result<AgentConfig, String> {
+pub async fn agent_get_config(
+    state: tauri::State<'_, Arc<AgentState>>,
+) -> Result<AgentConfig, String> {
     Ok(state.config())
 }
 
 #[tauri::command]
-pub async fn agent_set_config(state: tauri::State<'_, Arc<AgentState>>, cfg: AgentConfig) -> Result<AgentConfig, String> {
+pub async fn agent_set_config(
+    state: tauri::State<'_, Arc<AgentState>>,
+    cfg: AgentConfig,
+) -> Result<AgentConfig, String> {
     let st = Arc::clone(state.inner());
     crate::commands::blocking(move || st.set_config(cfg))
         .await
@@ -69,20 +81,32 @@ pub async fn agent_set_config(state: tauri::State<'_, Arc<AgentState>>, cfg: Age
 }
 
 #[tauri::command]
-pub async fn agent_log(state: tauri::State<'_, Arc<AgentState>>, limit: usize) -> Result<Vec<log::Entry>, String> {
+pub async fn agent_log(
+    state: tauri::State<'_, Arc<AgentState>>,
+    limit: usize,
+) -> Result<Vec<log::Entry>, String> {
     let log = state.log.clone();
-    crate::commands::blocking(move || log.tail(limit)).await.map_err(|e| e.to_string())
+    crate::commands::blocking(move || log.tail(limit))
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn agent_clear_log(state: tauri::State<'_, Arc<AgentState>>) -> Result<(), String> {
     let log = state.log.clone();
-    crate::commands::blocking(move || log.clear()).await.map_err(|e| e.to_string())?
+    crate::commands::blocking(move || log.clear())
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Where the shim lives next to the app (the Settings copy-ready snippets point at it).
 #[tauri::command]
 pub async fn agent_mcp_path() -> Result<McpPath, String> {
-    let p = std::env::current_exe().map_err(|e| e.to_string())?.with_file_name("winseek-mcp.exe");
-    Ok(McpPath { path: p.to_string_lossy().into_owned(), exists: p.exists() })
+    let p = std::env::current_exe()
+        .map_err(|e| e.to_string())?
+        .with_file_name("winseek-mcp.exe");
+    Ok(McpPath {
+        path: p.to_string_lossy().into_owned(),
+        exists: p.exists(),
+    })
 }

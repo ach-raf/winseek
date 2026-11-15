@@ -24,7 +24,11 @@ pub struct GpuPhase {
 
 impl GpuPhase {
     pub fn new(profile: Profile) -> Self {
-        GpuPhase { profile, index: false, parser: false }
+        GpuPhase {
+            profile,
+            index: false,
+            parser: false,
+        }
     }
 
     fn loaded(&self, g: Gpu) -> bool {

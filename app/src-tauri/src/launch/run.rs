@@ -5,7 +5,9 @@
 use std::process::Command;
 
 use windows::core::{HRESULT, PCWSTR};
-use windows::Win32::UI::Shell::{SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW, ShellExecuteExW};
+use windows::Win32::UI::Shell::{
+    ShellExecuteExW, SEE_MASK_FLAG_NO_UI, SEE_MASK_NOASYNC, SHELLEXECUTEINFOW,
+};
 use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
 
 use super::item::{LaunchItem, Target};
@@ -24,7 +26,11 @@ pub fn run_item(item: &LaunchItem, admin: bool) -> Result<(), String> {
             }
             shell_execute(&format!("shell:AppsFolder\\{aumid}"), "", None)
         }
-        Target::Path { path, args } => shell_execute(path, args.as_deref().unwrap_or(""), admin.then_some("runas")),
+        Target::Path { path, args } => shell_execute(
+            path,
+            args.as_deref().unwrap_or(""),
+            admin.then_some("runas"),
+        ),
         Target::Uri { uri } => shell_execute(uri, "", None),
         Target::Exec { exe, args } => Command::new(exe)
             .args(args)
@@ -42,9 +48,15 @@ fn shell_execute(file: &str, params: &str, verb: Option<&str>) -> Result<(), Str
     let mut sei = SHELLEXECUTEINFOW {
         cbSize: std::mem::size_of::<SHELLEXECUTEINFOW>() as u32,
         fMask: SEE_MASK_NOASYNC | SEE_MASK_FLAG_NO_UI,
-        lpVerb: verb_w.as_ref().map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr())),
+        lpVerb: verb_w
+            .as_ref()
+            .map_or(PCWSTR::null(), |v| PCWSTR(v.as_ptr())),
         lpFile: PCWSTR(file_w.as_ptr()),
-        lpParameters: if params.is_empty() { PCWSTR::null() } else { PCWSTR(params_w.as_ptr()) },
+        lpParameters: if params.is_empty() {
+            PCWSTR::null()
+        } else {
+            PCWSTR(params_w.as_ptr())
+        },
         nShow: SW_SHOWNORMAL.0,
         ..Default::default()
     };
@@ -68,7 +80,10 @@ mod tests {
     #[test]
     fn aumid_shell_path() {
         let aumid = "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App";
-        assert_eq!(format!("shell:AppsFolder\\{aumid}"), "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App");
+        assert_eq!(
+            format!("shell:AppsFolder\\{aumid}"),
+            "shell:AppsFolder\\Microsoft.WindowsCalculator_8wekyb3d8bbwe!App"
+        );
     }
 
     /// Live check (manual): renders nothing, launches Calculator once.
@@ -81,7 +96,10 @@ mod tests {
             title: "Calculator".into(),
             subtitle: "test".into(),
             keywords: vec![],
-            target: Target::Aumid { aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(), path: None },
+            target: Target::Aumid {
+                aumid: "Microsoft.WindowsCalculator_8wekyb3d8bbwe!App".into(),
+                path: None,
+            },
             icon: None,
             admin_ok: false,
         };

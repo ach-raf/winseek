@@ -25,7 +25,11 @@ pub fn stat(path: &str) -> Option<Stat> {
     Some(Stat {
         is_dir,
         is_reparse: d.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
-        size: if is_dir { 0 } else { ((d.nFileSizeHigh as u64) << 32) | d.nFileSizeLow as u64 },
+        size: if is_dir {
+            0
+        } else {
+            ((d.nFileSizeHigh as u64) << 32) | d.nFileSizeLow as u64
+        },
         mtime: d.ftLastWriteTime.ticks(),
     })
 }

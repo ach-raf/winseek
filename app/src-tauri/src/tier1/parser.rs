@@ -13,8 +13,8 @@ use std::time::Duration;
 use winseek_llama::install::resolve_exe;
 use winseek_llama::manifest::{ModelEntry, ModelRole};
 use winseek_llama::{
-    detect_backend, fallback_chain, fallback_order, Backend, IdleReaper, LlamaServer, Manifest, ModelProfile, ParseClient, Parsed,
-    Profile, Role, SpawnConfig,
+    detect_backend, fallback_chain, fallback_order, Backend, IdleReaper, LlamaServer, Manifest,
+    ModelProfile, ParseClient, Parsed, Profile, Role, SpawnConfig,
 };
 
 use super::embedder::{models_dir, Embedder, RuntimeInfo};
@@ -93,7 +93,10 @@ pub fn parse_phased(
     };
     match lock(parser) {
         Err(ParseError::GpuBusy) => {
-            embedder.lock().unwrap_or_else(|e| e.into_inner()).release_gpu();
+            embedder
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .release_gpu();
             lock(parser)
         }
         r => r,
@@ -103,7 +106,13 @@ pub fn parse_phased(
 /// Model files of the default parser entry: `(model, mmproj)` paths under `models_dir`.
 pub fn model_paths(manifest: &Manifest, models_dir: &Path) -> Option<(PathBuf, PathBuf)> {
     let entry: &ModelEntry = manifest.model(MODEL_ID, ModelProfile::Default)?;
-    let file = |role: ModelRole| entry.files.iter().find(|f| f.role == role).map(|f| models_dir.join(f.file_name()));
+    let file = |role: ModelRole| {
+        entry
+            .files
+            .iter()
+            .find(|f| f.role == role)
+            .map(|f| models_dir.join(f.file_name()))
+    };
     Some((file(ModelRole::Model)?, file(ModelRole::Mmproj)?))
 }
 
@@ -130,8 +139,21 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
 
 impl LlamaParser {
     /// `root` is `%LOCALAPPDATA%\winseek`; `gpu` is the embedder's [`GpuPhase`].
-    pub fn new(root: PathBuf, manifest: Manifest, profile: Profile, gpu: Arc<Mutex<GpuPhase>>) -> Self {
-        LlamaParser { root, manifest, profile, gpu, running: None, reaper: IdleReaper::new(IDLE_UNLOAD), backend: None }
+    pub fn new(
+        root: PathBuf,
+        manifest: Manifest,
+        profile: Profile,
+        gpu: Arc<Mutex<GpuPhase>>,
+    ) -> Self {
+        LlamaParser {
+            root,
+            manifest,
+            profile,
+            gpu,
+            running: None,
+            reaper: IdleReaper::new(IDLE_UNLOAD),
+            backend: None,
+        }
     }
 
     fn files_present(&self) -> bool {
@@ -148,18 +170,33 @@ impl LlamaParser {
     }
 
     fn spawn(&mut self) -> Result<Running, ParseError> {
-        let (model, mmproj) = model_paths(&self.manifest, &models_dir(&self.root)).ok_or(ParseError::ModelsMissing)?;
+        let (model, mmproj) = model_paths(&self.manifest, &models_dir(&self.root))
+            .ok_or(ParseError::ModelsMissing)?;
         let start = *self.backend.get_or_insert_with(|| detect_backend().backend);
         let (root, manifest) = (&self.root, &self.manifest);
-        let cfg = SpawnConfig { role: Role::Parser, profile: self.profile, health_timeout: HEALTH_TIMEOUT, ..Default::default() };
+        let cfg = SpawnConfig {
+            role: Role::Parser,
+            profile: self.profile,
+            health_timeout: HEALTH_TIMEOUT,
+            ..Default::default()
+        };
         let (_, server) = fallback_chain(&fallback_order(start), |b| {
-            let exe = resolve_exe(root, manifest, b)
-                .ok_or_else(|| winseek_llama::Error::NotFound(format!("llama-server for {}", b.dir_name())))?;
+            let exe = resolve_exe(root, manifest, b).ok_or_else(|| {
+                winseek_llama::Error::NotFound(format!("llama-server for {}", b.dir_name()))
+            })?;
             LlamaServer::spawn_with(&exe, &model, Some(&mmproj), &[], &cfg)
         })
         .map_err(|e| ParseError::Other(e.to_string()))?;
-        eprintln!("winseek: parser server on port {} ({} slot(s), {})", server.port(), winseek_llama::server::parser_slots(self.profile), self.profile.as_str());
-        Ok(Running { client: ParseClient::new(&server.base_url(), server.api_key()), server })
+        eprintln!(
+            "winseek: parser server on port {} ({} slot(s), {})",
+            server.port(),
+            winseek_llama::server::parser_slots(self.profile),
+            self.profile.as_str()
+        );
+        Ok(Running {
+            client: ParseClient::new(&server.base_url(), server.api_key()),
+            server,
+        })
     }
 
     /// Make sure a live server exists (loading it, behind the GPU phase gate, if needed).
@@ -197,7 +234,13 @@ impl Parser for LlamaParser {
         }
         self.ensure()?;
         self.reaper.touch();
-        let r = self.running.as_ref().expect("started").client.parse_image_jpeg(jpeg).map_err(classify);
+        let r = self
+            .running
+            .as_ref()
+            .expect("started")
+            .client
+            .parse_image_jpeg(jpeg)
+            .map_err(classify);
         self.reaper.touch(); // a 2.5 s page must not count as idle time
         r
     }
@@ -208,10 +251,17 @@ impl Parser for LlamaParser {
         }
         if let Err(e) = self.ensure() {
             let msg = e.to_string();
-            return (0..jpegs.len()).map(|_| Err(ParseError::Other(msg.clone()))).collect();
+            return (0..jpegs.len())
+                .map(|_| Err(ParseError::Other(msg.clone())))
+                .collect();
         }
         self.reaper.touch();
-        let out = self.running.as_ref().expect("started").client.parse_image_jpegs(jpegs);
+        let out = self
+            .running
+            .as_ref()
+            .expect("started")
+            .client
+            .parse_image_jpegs(jpegs);
         self.reaper.touch();
         out.into_iter().map(|r| r.map_err(classify)).collect()
     }
@@ -276,14 +326,22 @@ mod tests {
 
     fn llama(root: &str) -> LlamaParser {
         let gpu = Arc::new(Mutex::new(GpuPhase::new(Profile::Balanced)));
-        LlamaParser::new(PathBuf::from(root), Manifest::embedded(), Profile::Balanced, gpu)
+        LlamaParser::new(
+            PathBuf::from(root),
+            Manifest::embedded(),
+            Profile::Balanced,
+            gpu,
+        )
     }
 
     #[test]
     fn model_paths_use_manifest_file_names() {
         let (m, p) = model_paths(&Manifest::embedded(), Path::new(r"C:\m")).unwrap();
         assert_eq!(m, Path::new(r"C:\m\Infinity-Parser2-Flash.Q4_K_M.gguf"));
-        assert_eq!(p, Path::new(r"C:\m\Infinity-Parser2-Flash.mmproj-q8_0.gguf"));
+        assert_eq!(
+            p,
+            Path::new(r"C:\m\Infinity-Parser2-Flash.mmproj-q8_0.gguf")
+        );
     }
 
     #[test]
@@ -303,7 +361,12 @@ mod tests {
         let (m, p) = model_paths(&man, &models).unwrap();
         std::fs::write(m, b"x").unwrap();
         std::fs::write(p, b"x").unwrap();
-        let parser = LlamaParser::new(d.path().to_path_buf(), man, Profile::Balanced, Arc::new(Mutex::new(GpuPhase::new(Profile::Balanced))));
+        let parser = LlamaParser::new(
+            d.path().to_path_buf(),
+            man,
+            Profile::Balanced,
+            Arc::new(Mutex::new(GpuPhase::new(Profile::Balanced))),
+        );
         assert!(!parser.present());
     }
 
@@ -342,7 +405,11 @@ mod tests {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             if self.released.load(std::sync::atomic::Ordering::SeqCst) {
                 Ok(Parsed {
-                    elements: vec![Element { bbox: None, category: "text".into(), text: "ok".into() }],
+                    elements: vec![Element {
+                        bbox: None,
+                        category: "text".into(),
+                        text: "ok".into(),
+                    }],
                     prompt_version: "v".into(),
                 })
             } else {
@@ -372,21 +439,34 @@ mod tests {
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
         let released = Arc::new(AtomicBool::new(false));
         let calls = Arc::new(AtomicUsize::new(0));
-        let parser: Mutex<Box<dyn Parser + Send>> = Mutex::new(Box::new(Gated { released: released.clone(), calls: calls.clone() }));
-        let embedder: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(Index(released.clone())));
+        let parser: Mutex<Box<dyn Parser + Send>> = Mutex::new(Box::new(Gated {
+            released: released.clone(),
+            calls: calls.clone(),
+        }));
+        let embedder: Mutex<Box<dyn Embedder + Send>> =
+            Mutex::new(Box::new(Index(released.clone())));
         let r = parse_phased(&parser, &embedder, b"jpg").unwrap();
         assert_eq!(r.elements[0].text, "ok");
-        assert_eq!(calls.load(Ordering::SeqCst), 2, "one busy answer, one retry");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            2,
+            "one busy answer, one retry"
+        );
         assert!(released.load(Ordering::SeqCst));
         // no retry when it worked the first time
         calls.store(0, Ordering::SeqCst);
         parse_phased(&parser, &embedder, b"jpg").unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         // a second busy answer is returned, not retried again
-        let stuck: Mutex<Box<dyn Parser + Send>> =
-            Mutex::new(Box::new(Gated { released: Arc::new(AtomicBool::new(false)), calls: calls.clone() }));
+        let stuck: Mutex<Box<dyn Parser + Send>> = Mutex::new(Box::new(Gated {
+            released: Arc::new(AtomicBool::new(false)),
+            calls: calls.clone(),
+        }));
         calls.store(0, Ordering::SeqCst);
-        assert_eq!(parse_phased(&stuck, &embedder, b"jpg").unwrap_err(), ParseError::GpuBusy);
+        assert_eq!(
+            parse_phased(&stuck, &embedder, b"jpg").unwrap_err(),
+            ParseError::GpuBusy
+        );
         assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }

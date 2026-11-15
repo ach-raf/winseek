@@ -21,18 +21,36 @@ use crate::store::*;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Cond {
     /// Substring; `needle` is folded. `ascii` = needle is pure ASCII (fast path).
-    Text { needle: String, ascii: bool, path: bool },
+    Text {
+        needle: String,
+        ascii: bool,
+        path: bool,
+    },
     /// Like `Text` on the name, but the match must begin a word. `needle` is folded.
-    Word { needle: String, chars: Vec<char>, ascii: bool },
+    Word {
+        needle: String,
+        chars: Vec<char>,
+        ascii: bool,
+    },
     /// Whole match with `*`/`?`; pattern is folded.
-    Glob { pat: Vec<char>, pat8: Option<Vec<u8>>, path: bool },
+    Glob {
+        pat: Vec<char>,
+        pat8: Option<Vec<u8>>,
+        path: bool,
+    },
     Ext(Vec<String>),
     File,
     Folder,
     /// File size in bytes, inclusive bounds (folders never match).
-    Size { min: u64, max: u64 },
+    Size {
+        min: u64,
+        max: u64,
+    },
     /// Modified time as stored (FILETIME), `[from, to)`.
-    Mtime { from: i64, to: i64 },
+    Mtime {
+        from: i64,
+        to: i64,
+    },
 }
 
 /// 1601 -> 1970 in 100 ns units (the store keeps raw FILETIMEs).
@@ -40,7 +58,9 @@ const FILETIME_UNIX_EPOCH: i64 = 116_444_736_000_000_000;
 
 fn parse_bytes(s: &str) -> Option<u64> {
     let s = s.trim().to_ascii_lowercase();
-    let cut = s.find(|c: char| !(c.is_ascii_digit() || c == '.')).unwrap_or(s.len());
+    let cut = s
+        .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+        .unwrap_or(s.len());
     let (num, unit) = s.split_at(cut);
     let mul: u64 = match unit {
         "" | "b" => 1,
@@ -68,7 +88,14 @@ fn parse_size(text: &str) -> Option<Cond> {
         if a.is_empty() && b.is_empty() {
             return None;
         }
-        (if a.is_empty() { 0 } else { parse_bytes(a)? }, if b.is_empty() { u64::MAX } else { parse_bytes(b)? })
+        (
+            if a.is_empty() { 0 } else { parse_bytes(a)? },
+            if b.is_empty() {
+                u64::MAX
+            } else {
+                parse_bytes(b)?
+            },
+        )
     } else {
         let v = parse_bytes(text)?;
         (v, v)
@@ -82,8 +109,16 @@ fn parse_mtime(text: &str) -> Option<Cond> {
     if a.is_empty() && b.is_empty() {
         return None;
     }
-    let ft = |ms: &str| ms.parse::<i64>().ok().map(|ms| ms.saturating_mul(10_000).saturating_add(FILETIME_UNIX_EPOCH));
-    Some(Cond::Mtime { from: if a.is_empty() { i64::MIN } else { ft(a)? }, to: if b.is_empty() { i64::MAX } else { ft(b)? } })
+    let ft = |ms: &str| {
+        ms.parse::<i64>().ok().map(|ms| {
+            ms.saturating_mul(10_000)
+                .saturating_add(FILETIME_UNIX_EPOCH)
+        })
+    };
+    Some(Cond::Mtime {
+        from: if a.is_empty() { i64::MIN } else { ft(a)? },
+        to: if b.is_empty() { i64::MAX } else { ft(b)? },
+    })
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -147,7 +182,12 @@ const BLOCK: usize = 8; // words per directory entry (512 ranks)
 
 impl RankSet {
     fn all(n: usize) -> Self {
-        RankSet { bits: None, dir: Vec::new(), n, total: n }
+        RankSet {
+            bits: None,
+            dir: Vec::new(),
+            n,
+            total: n,
+        }
     }
 
     fn from_bits(bits: Vec<u64>, n: usize) -> Self {
@@ -157,7 +197,12 @@ impl RankSet {
             dir.push(acc);
             acc += b.iter().map(|w| w.count_ones()).sum::<u32>();
         }
-        RankSet { bits: Some(bits), dir, n, total: acc as usize }
+        RankSet {
+            bits: Some(bits),
+            dir,
+            n,
+            total: acc as usize,
+        }
     }
 
     /// Number of matches.
@@ -226,7 +271,11 @@ pub struct SearchOptions {
 }
 impl Default for SearchOptions {
     fn default() -> Self {
-        SearchOptions { offset: 0, limit: usize::MAX, order: Order::NameAsc }
+        SearchOptions {
+            offset: 0,
+            limit: usize::MAX,
+            order: Order::NameAsc,
+        }
     }
 }
 
@@ -243,13 +292,25 @@ fn text_term(text: &str, negate: bool) -> Option<Term> {
         return None;
     }
     let path = text.contains('\\') || text.contains('/');
-    let text = if path { text.replace('/', "\\") } else { text.to_string() };
+    let text = if path {
+        text.replace('/', "\\")
+    } else {
+        text.to_string()
+    };
     let folded = fold_string(&text);
     let cond = if folded.contains('*') || folded.contains('?') {
-        Cond::Glob { pat8: folded.is_ascii().then(|| folded.as_bytes().to_vec()), pat: folded.chars().collect(), path }
+        Cond::Glob {
+            pat8: folded.is_ascii().then(|| folded.as_bytes().to_vec()),
+            pat: folded.chars().collect(),
+            path,
+        }
     } else {
         let ascii = folded.is_ascii();
-        Cond::Text { needle: folded, ascii, path }
+        Cond::Text {
+            needle: folded,
+            ascii,
+            path,
+        }
     };
     Some(Term { cond, negate })
 }
@@ -310,7 +371,10 @@ impl Query {
                         .filter(|e| !e.is_empty())
                         .collect();
                     if !list.is_empty() {
-                        terms.push(Term { cond: Cond::Ext(list), negate });
+                        terms.push(Term {
+                            cond: Cond::Ext(list),
+                            negate,
+                        });
                     }
                 }
                 Some("ws") => {
@@ -320,23 +384,38 @@ impl Query {
                     } else if folded.contains(['\\', '/', '*', '?']) {
                         terms.extend(text_term(&text, negate));
                     } else {
-                        let cond = Cond::Word { ascii: folded.is_ascii(), chars: folded.chars().collect(), needle: folded };
+                        let cond = Cond::Word {
+                            ascii: folded.is_ascii(),
+                            chars: folded.chars().collect(),
+                            needle: folded,
+                        };
                         terms.push(Term { cond, negate });
                     }
                 }
                 Some(p @ ("size" | "dm")) => {
                     // A value that does not parse is ordinary text ("size:huge" finds that name).
-                    match if p == "size" { parse_size(&text) } else { parse_mtime(&text) } {
+                    match if p == "size" {
+                        parse_size(&text)
+                    } else {
+                        parse_mtime(&text)
+                    } {
                         Some(cond) => terms.push(Term { cond, negate }),
                         None => terms.extend(text_term(&format!("{p}:{text}"), negate)),
                     }
                 }
                 Some(p) => {
-                    let cond = if p == "file" { Cond::File } else { Cond::Folder };
+                    let cond = if p == "file" {
+                        Cond::File
+                    } else {
+                        Cond::Folder
+                    };
                     if text.is_empty() {
                         terms.push(Term { cond, negate });
                     } else {
-                        terms.push(Term { cond, negate: false });
+                        terms.push(Term {
+                            cond,
+                            negate: false,
+                        });
                         terms.extend(text_term(&text, negate));
                     }
                 }
@@ -347,7 +426,12 @@ impl Query {
         terms.sort_by_key(|t| match &t.cond {
             Cond::File | Cond::Folder | Cond::Size { .. } | Cond::Mtime { .. } => 0,
             Cond::Ext(_) => 1,
-            Cond::Text { ascii: true, path: false, .. } | Cond::Word { ascii: true, .. } => 2,
+            Cond::Text {
+                ascii: true,
+                path: false,
+                ..
+            }
+            | Cond::Word { ascii: true, .. } => 2,
             Cond::Text { path: false, .. } | Cond::Word { .. } => 3,
             Cond::Glob { path: false, .. } => 4,
             Cond::Text { .. } => 5,
@@ -375,7 +459,9 @@ impl Index {
         let m = match &t.cond {
             Cond::File => !self.is_dir(i),
             Cond::Folder => self.is_dir(i),
-            Cond::Size { min, max } => !self.is_dir(i) && self.size(i).is_some_and(|s| s >= *min && s <= *max),
+            Cond::Size { min, max } => {
+                !self.is_dir(i) && self.size(i).is_some_and(|s| s >= *min && s <= *max)
+            }
             Cond::Mtime { from, to } => self.mtime(i).is_some_and(|m| m >= *from && m < *to),
             Cond::Ext(list) => {
                 !self.is_dir(i)
@@ -389,7 +475,11 @@ impl Index {
                         })
                     })
             }
-            Cond::Text { needle, ascii, path } => {
+            Cond::Text {
+                needle,
+                ascii,
+                path,
+            } => {
                 let hay: &[u8] = if *path {
                     self.write_path(i, &mut sc.path);
                     &sc.path
@@ -410,13 +500,18 @@ impl Index {
                     }
                 }
             }
-            Cond::Word { needle, chars, ascii } => {
+            Cond::Word {
+                needle,
+                chars,
+                ascii,
+            } => {
                 let hay = self.name_bytes(i);
                 if hay.is_ascii() {
                     *ascii && find_word_ascii_ci(hay, needle.as_bytes())
                 } else {
                     sc.chars.clear();
-                    sc.chars.extend(std::str::from_utf8(hay).unwrap_or("").chars());
+                    sc.chars
+                        .extend(std::str::from_utf8(hay).unwrap_or("").chars());
                     find_word(&sc.chars, chars)
                 }
             }
@@ -431,7 +526,12 @@ impl Index {
                     Some(p8) if hay.is_ascii() => glob_match_ascii_ci(p8, hay),
                     _ => {
                         sc.chars.clear();
-                        sc.chars.extend(std::str::from_utf8(hay).unwrap_or("").chars().map(fold_char));
+                        sc.chars.extend(
+                            std::str::from_utf8(hay)
+                                .unwrap_or("")
+                                .chars()
+                                .map(fold_char),
+                        );
                         glob_match(pat, &sc.chars)
                     }
                 }
@@ -441,7 +541,14 @@ impl Index {
     }
 
     /// Scan storage slots `lo..hi` sequentially and hand every match to `hit(slot, rank)`.
-    fn scan_each(&self, q: &Query, rank: &[u32], lo: usize, hi: usize, mut hit: impl FnMut(u32, u32)) {
+    fn scan_each(
+        &self,
+        q: &Query,
+        rank: &[u32],
+        lo: usize,
+        hi: usize,
+        mut hit: impl FnMut(u32, u32),
+    ) {
         let mut sc = Scratch::default();
         for (i, &r) in rank.iter().enumerate().take(hi).skip(lo) {
             if r != NONE && q.terms.iter().all(|t| self.eval(t, i as u32, &mut sc)) {
@@ -452,8 +559,14 @@ impl Index {
 
     /// Split `0..slots` into `available_parallelism` chunks and run `scan` over them; the
     /// per-chunk results come back in slot order.
-    fn parallel_scan<T: Send>(&self, slots: usize, scan: impl Fn(usize, usize) -> T + Send + Sync) -> Vec<T> {
-        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+    fn parallel_scan<T: Send>(
+        &self,
+        slots: usize,
+        scan: impl Fn(usize, usize) -> T + Send + Sync,
+    ) -> Vec<T> {
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
         const MIN_CHUNK: usize = 8192;
         let nt = hw.min(slots / MIN_CHUNK).max(1);
         if nt == 1 {
@@ -463,9 +576,13 @@ impl Index {
         let scan = &scan;
         std::thread::scope(|s| {
             let hs: Vec<_> = (0..nt)
-                .map(|k| s.spawn(move || scan((k * chunk).min(slots), ((k + 1) * chunk).min(slots))))
+                .map(|k| {
+                    s.spawn(move || scan((k * chunk).min(slots), ((k + 1) * chunk).min(slots)))
+                })
                 .collect();
-            hs.into_iter().map(|h| h.join().expect("scan thread")).collect()
+            hs.into_iter()
+                .map(|h| h.join().expect("scan thread"))
+                .collect()
         })
     }
 
@@ -518,8 +635,15 @@ impl Index {
     /// Record indices of one window of a [`RankSet`] built on this same index state.
     pub fn name_page(&self, set: &RankSet, offset: usize, limit: usize, desc: bool) -> Vec<u32> {
         let order_arr = self.clean_order();
-        debug_assert_eq!(order_arr.len(), set.n, "RankSet used on a different index state");
-        set.window(offset, limit, desc).into_iter().filter_map(|r| order_arr.get(r as usize).copied()).collect()
+        debug_assert_eq!(
+            order_arr.len(),
+            set.n,
+            "RankSet used on a different index state"
+        );
+        set.window(offset, limit, desc)
+            .into_iter()
+            .filter_map(|r| order_arr.get(r as usize).copied())
+            .collect()
     }
 
     /// Every matching record index, in storage order (input for the meta orders).
@@ -528,7 +652,9 @@ impl Index {
         let rank = self.rank_view(&order_arr);
         let rank = &rank[..];
         if q.terms.is_empty() {
-            return (0..rank.len() as u32).filter(|&i| rank[i as usize] != NONE).collect();
+            return (0..rank.len() as u32)
+                .filter(|&i| rank[i as usize] != NONE)
+                .collect();
         }
         let parts = self.parallel_scan(rank.len(), |lo, hi| {
             let mut out = Vec::new();
@@ -548,7 +674,9 @@ impl Index {
         match key {
             MetaKey::Mtime => self.mtime(i).unwrap_or(i64::MIN),
             MetaKey::Size => match dirs {
-                Some(t) if self.is_dir(i) => t.get(i as usize).copied().unwrap_or(0).min(i64::MAX as u64) as i64,
+                Some(t) if self.is_dir(i) => {
+                    t.get(i as usize).copied().unwrap_or(0).min(i64::MAX as u64) as i64
+                }
                 _ => self.size(i).unwrap_or(0).min(i64::MAX as u64) as i64,
             },
             // `Ext` needs the name ranks; `sort_keys` builds those itself.
@@ -561,7 +689,10 @@ impl Index {
     /// lead), then the name rank, packed into 63 bits.
     fn sort_keys(&self, slots: &[u32], key: MetaKey, dirs: Option<&[u64]>) -> Vec<(i64, u32)> {
         if key != MetaKey::Ext {
-            return slots.iter().map(|&i| (self.meta_key(key, i, dirs), i)).collect();
+            return slots
+                .iter()
+                .map(|&i| (self.meta_key(key, i, dirs), i))
+                .collect();
         }
         let order_arr = self.clean_order();
         let rank = self.rank_view(&order_arr);
@@ -651,7 +782,9 @@ impl Index {
     pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey, dirs: Option<&[u64]>) -> Vec<u32> {
         let mut pairs = self.sort_keys(&slots, key, dirs);
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
-        let hw = std::thread::available_parallelism().map(|x| x.get()).unwrap_or(1);
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
         let nt = hw.min(pairs.len() / 65536).max(1);
         if nt > 1 {
             let chunk = pairs.len().div_ceil(nt);
@@ -668,7 +801,13 @@ impl Index {
     }
 
     /// The first `k` rows of [`Index::sort_slots`] without sorting the rest.
-    pub fn top_slots(&self, slots: &[u32], key: MetaKey, k: usize, dirs: Option<&[u64]>) -> Vec<u32> {
+    pub fn top_slots(
+        &self,
+        slots: &[u32],
+        key: MetaKey,
+        k: usize,
+        dirs: Option<&[u64]>,
+    ) -> Vec<u32> {
         let mut pairs = self.sort_keys(slots, key, dirs);
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let k = k.min(pairs.len());
@@ -693,7 +832,10 @@ impl Index {
             Order::NameAsc | Order::NameDesc => {
                 let set = self.name_matches(q);
                 let items = self.name_page(&set, o.offset, o.limit, o.order == Order::NameDesc);
-                return SearchResult { total: set.total(), items };
+                return SearchResult {
+                    total: set.total(),
+                    items,
+                };
             }
             Order::MtimeDesc => (MetaKey::Mtime, false),
             Order::MtimeAsc => (MetaKey::Mtime, true),

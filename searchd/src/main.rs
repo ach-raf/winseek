@@ -74,8 +74,15 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
                 let v = val("--volumes")?;
                 let mut l = Vec::new();
                 for p in v.split(',').map(str::trim).filter(|p| !p.is_empty()) {
-                    let c = p.trim_end_matches([':', '\\']).chars().next().filter(|c| c.is_ascii_alphabetic());
-                    l.push(c.ok_or_else(|| format!("bad volume '{p}'"))?.to_ascii_uppercase());
+                    let c = p
+                        .trim_end_matches([':', '\\'])
+                        .chars()
+                        .next()
+                        .filter(|c| c.is_ascii_alphabetic());
+                    l.push(
+                        c.ok_or_else(|| format!("bad volume '{p}'"))?
+                            .to_ascii_uppercase(),
+                    );
                 }
                 volumes = Some(l);
             }
@@ -83,9 +90,17 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
         }
     }
     let mode = match modes.as_slice() {
-        [] => return Err("exactly one of --console, --service, --install, --uninstall is required".into()),
+        [] => {
+            return Err(
+                "exactly one of --console, --service, --install, --uninstall is required".into(),
+            )
+        }
         [m] => *m,
-        _ => return Err("--console, --service, --install and --uninstall are mutually exclusive".into()),
+        _ => {
+            return Err(
+                "--console, --service, --install and --uninstall are mutually exclusive".into(),
+            )
+        }
     };
     let allowed = |opt: bool, name: &str| {
         if opt && matches!(mode, Mode::Install | Mode::Uninstall) {
@@ -101,11 +116,17 @@ fn parse_args(mut it: impl Iterator<Item = String>) -> Result<Args, String> {
     }
     let data = data.unwrap_or_else(default_data_dir);
     let log = log.unwrap_or_else(|| data.join("searchd.log"));
-    Ok(Args { mode, data, volumes, log })
+    Ok(Args {
+        mode,
+        data,
+        volumes,
+        log,
+    })
 }
 
 fn default_data_dir() -> PathBuf {
-    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into())).join("winseek")
+    PathBuf::from(std::env::var_os("ProgramData").unwrap_or_else(|| r"C:\ProgramData".into()))
+        .join("winseek")
 }
 
 /// The one stop flag: set by console Ctrl+C or by the service control handler.
@@ -125,8 +146,10 @@ fn main() {
     let args = match parse_args(std::env::args().skip(1)) {
         Ok(a) => a,
         Err(e) => {
-            eprintln!("searchd: {e}
-{USAGE}");
+            eprintln!(
+                "searchd: {e}
+{USAGE}"
+            );
             std::process::exit(2);
         }
     };
@@ -148,13 +171,20 @@ fn main() {
 /// Run the daemon until `stop` is set. `ready` is called once the pipe is bound and the
 /// workers are running (the service reports RUNNING from it). Returns the process exit code.
 fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
-    info!("searchd starting (data dir {}, log {})", args.data.display(), args.log.display());
+    info!(
+        "searchd starting (data dir {}, log {})",
+        args.data.display(),
+        args.log.display()
+    );
     let _ = std::fs::create_dir_all(&args.data);
     // Volumes to index: NTFS, FAT/FAT32/exFAT, ReFS on fixed and removable drives.
     let want = args.volumes.as_deref();
     let vols = detect_volumes(want, &[]);
     if let Some(want) = want {
-        for w in want.iter().filter(|w| !vols.iter().any(|v| v.letter == **w)) {
+        for w in want
+            .iter()
+            .filter(|w| !vols.iter().any(|v| v.letter == **w))
+        {
             warn!("{w}: is not a supported volume (NTFS, FAT32, exFAT, ReFS); skipped");
         }
         if vols.is_empty() {
@@ -172,7 +202,9 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     // Fail fast without administrator rights (raw $MFT / USN access needs them).
     if let Some(v) = vols.iter().find(|v| v.kind != VolKind::Folder) {
         if let Err(e) = open_volume_for_usn(v.letter) {
-            error!("searchd needs administrator to read $MFT / the USN journal; run elevated ({e})");
+            error!(
+                "searchd needs administrator to read $MFT / the USN journal; run elevated ({e})"
+            );
             return 1;
         }
     }
@@ -209,7 +241,10 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     for (v, cur) in vols.into_iter().zip(cursors) {
         match (v.kind, cur) {
             (VolKind::Folder, _) => info!("{}: folder-watch volume; scanning", v.letter),
-            (_, Some(c)) => info!("{}: snapshot valid, catching up from USN {}", v.letter, c.next_usn),
+            (_, Some(c)) => info!(
+                "{}: snapshot valid, catching up from USN {}",
+                v.letter, c.next_usn
+            ),
             (_, None) => info!("{}: no usable snapshot; full scan", v.letter),
         }
         if cur.is_some() {
@@ -225,7 +260,12 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     let _arrivals = {
         let flag = drives_changed.clone();
         watch_volume_interfaces(Box::new(move || flag.store(true, Ordering::SeqCst)))
-            .map_err(|e| warn!("no volume arrival notifications ({e}); polling every {}s", VOLUME_POLL.as_secs()))
+            .map_err(|e| {
+                warn!(
+                    "no volume arrival notifications ({e}); polling every {}s",
+                    VOLUME_POLL.as_secs()
+                )
+            })
             .ok()
     };
     info!("ready; serving {PIPE_NAME} (Ctrl+C to stop)");
@@ -246,7 +286,11 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
         if notified || last_poll.elapsed() >= VOLUME_POLL {
             reconcile_volumes(&sh, &tx, want, &mut workers);
             // after a notification, look again shortly: the letter may not be mounted yet
-            last_poll = if notified { Instant::now() - VOLUME_POLL + Duration::from_secs(2) } else { Instant::now() };
+            last_poll = if notified {
+                Instant::now() - VOLUME_POLL + Duration::from_secs(2)
+            } else {
+                Instant::now()
+            };
         }
     }
 
@@ -265,7 +309,12 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     0
 }
 
-fn spawn_worker(sh: &Arc<Shared>, tx: &Sender<Msg>, v: Vol, cur: Option<JournalCursor>) -> JoinHandle<()> {
+fn spawn_worker(
+    sh: &Arc<Shared>,
+    tx: &Sender<Msg>,
+    v: Vol,
+    cur: Option<JournalCursor>,
+) -> JoinHandle<()> {
     let (sh, tx) = (sh.clone(), tx.clone());
     std::thread::spawn(move || match v.kind {
         VolKind::Folder => folder_worker::run(sh, tx, v),
@@ -274,7 +323,12 @@ fn spawn_worker(sh: &Arc<Shared>, tx: &Sender<Msg>, v: Vol, cur: Option<JournalC
 }
 
 /// Index a newly mounted volume; make the worker of a vanished one drop it.
-fn reconcile_volumes(sh: &Arc<Shared>, tx: &Sender<Msg>, want: Option<&[char]>, workers: &mut BTreeMap<char, JoinHandle<()>>) {
+fn reconcile_volumes(
+    sh: &Arc<Shared>,
+    tx: &Sender<Msg>,
+    want: Option<&[char]>,
+    workers: &mut BTreeMap<char, JoinHandle<()>>,
+) {
     workers.retain(|_, h| !h.is_finished());
     for &l in workers.keys() {
         if !worker::present(l) {
@@ -288,7 +342,10 @@ fn reconcile_volumes(sh: &Arc<Shared>, tx: &Sender<Msg>, want: Option<&[char]>, 
     let running: Vec<char> = workers.keys().copied().collect();
     for v in detect_volumes(want, &running) {
         info!("{}: new {} volume ({:?}); indexing", v.letter, v.fs, v.kind);
-        sh.set_state(v.letter, winseek_ipc::VolumeState::Scanning { done: 0, total: 0 });
+        sh.set_state(
+            v.letter,
+            winseek_ipc::VolumeState::Scanning { done: 0, total: 0 },
+        );
         workers.insert(v.letter, spawn_worker(sh, tx, v, None));
     }
 }
@@ -299,14 +356,25 @@ fn detect_volumes(want: Option<&[char]>, skip: &[char]) -> Vec<Vol> {
         .into_iter()
         .filter(|d| !skip.contains(&d.letter) && want.is_none_or(|w| w.contains(&d.letter)))
         .collect();
-    let ntfs = if descs.iter().any(|d| d.fs.eq_ignore_ascii_case("NTFS")) { list_ntfs_volumes() } else { Vec::new() };
-    descs.into_iter().filter_map(|d| classify(d, &ntfs, refs_has_journal)).collect()
+    let ntfs = if descs.iter().any(|d| d.fs.eq_ignore_ascii_case("NTFS")) {
+        list_ntfs_volumes()
+    } else {
+        Vec::new()
+    };
+    descs
+        .into_iter()
+        .filter_map(|d| classify(d, &ntfs, refs_has_journal))
+        .collect()
 }
 
 /// Pick the volume kind from the filesystem name (Everything's volume types: NTFS / FAT
 /// folder index / ReFS; ReFS without a usable journal runs as a folder index, like
 /// Everything's RDC mode).
-fn classify(d: VolumeDesc, ntfs: &[VolumeInfo], refs_journal: impl Fn(char) -> bool) -> Option<Vol> {
+fn classify(
+    d: VolumeDesc,
+    ntfs: &[VolumeInfo],
+    refs_journal: impl Fn(char) -> bool,
+) -> Option<Vol> {
     let kind = match d.fs.to_ascii_uppercase().as_str() {
         "NTFS" => VolKind::Ntfs,
         "FAT" | "FAT12" | "FAT16" | "FAT32" | "EXFAT" => VolKind::Folder,
@@ -319,11 +387,20 @@ fn classify(d: VolumeDesc, ntfs: &[VolumeInfo], refs_journal: impl Fn(char) -> b
         return None;
     }
     let serial = info.as_ref().map_or(d.serial as u64, |i| i.serial);
-    Some(Vol { letter: d.letter, fs: d.fs, serial, kind, ntfs: info })
+    Some(Vol {
+        letter: d.letter,
+        fs: d.fs,
+        serial,
+        kind,
+        ntfs: info,
+    })
 }
 
 fn refs_has_journal(letter: char) -> bool {
-    match open_volume_for_usn(letter).map_err(|e| e.to_string()).and_then(|h| query_journal(&h).map_err(|e| e.to_string())) {
+    match open_volume_for_usn(letter)
+        .map_err(|e| e.to_string())
+        .and_then(|h| query_journal(&h).map_err(|e| e.to_string()))
+    {
         Ok(_) => true,
         Err(e) => {
             warn!("{letter}: ReFS USN journal unavailable ({e}); using folder watch");
@@ -341,11 +418,16 @@ fn load_snapshot(path: &std::path::Path, vols: &[Vol]) -> Index {
             Ok(ix) => {
                 let matches = |m: &winseek_index::VolumeMeta| {
                     vols.iter().any(|v| {
-                        v.letter as u8 == m.letter && v.kind == m.kind && (m.serial == 0 || v.serial == 0 || m.serial == v.serial)
+                        v.letter as u8 == m.letter
+                            && v.kind == m.kind
+                            && (m.serial == 0 || v.serial == 0 || m.serial == v.serial)
                     })
                 };
                 for m in ix.volumes().iter().filter(|m| !matches(m)) {
-                    warn!("{}: snapshot volume ({:?}) is not mounted or changed; dropping it", m.letter as char, m.kind);
+                    warn!(
+                        "{}: snapshot volume ({:?}) is not mounted or changed; dropping it",
+                        m.letter as char, m.kind
+                    );
                 }
                 let ix = index_ops::retain_volumes(ix, matches);
                 info!("loaded snapshot: {} records", ix.live_count());
@@ -366,7 +448,11 @@ fn save_snapshot(sh: &Shared, path: &std::path::Path) {
     }
     let t = Instant::now();
     match ix.save(path) {
-        Ok(()) => info!("snapshot saved ({} records, {:.1?})", ix.live_count(), t.elapsed()),
+        Ok(()) => info!(
+            "snapshot saved ({} records, {:.1?})",
+            ix.live_count(),
+            t.elapsed()
+        ),
         Err(e) => error!("snapshot save failed: {e}"),
     }
 }
@@ -393,28 +479,71 @@ mod tests {
 
     #[test]
     fn classify_volume_kinds() {
-        let d = |l: char, fs: &str| VolumeDesc { letter: l, fs: fs.into(), serial: 0xABCD, removable: true };
-        let ntfs = [VolumeInfo { letter: 'C', serial: 0x1122_3344_5566, bytes_per_cluster: 4096, record_size: 1024 }];
+        let d = |l: char, fs: &str| VolumeDesc {
+            letter: l,
+            fs: fs.into(),
+            serial: 0xABCD,
+            removable: true,
+        };
+        let ntfs = [VolumeInfo {
+            letter: 'C',
+            serial: 0x1122_3344_5566,
+            bytes_per_cluster: 4096,
+            record_size: 1024,
+        }];
         let k = |v: Option<Vol>| v.map(|v| (v.kind, v.serial));
-        assert_eq!(k(classify(d('C', "NTFS"), &ntfs, |_| true)), Some((VolKind::Ntfs, 0x1122_3344_5566)));
-        assert_eq!(k(classify(d('N', "NTFS"), &ntfs, |_| true)), None, "NTFS without geometry is skipped");
+        assert_eq!(
+            k(classify(d('C', "NTFS"), &ntfs, |_| true)),
+            Some((VolKind::Ntfs, 0x1122_3344_5566))
+        );
+        assert_eq!(
+            k(classify(d('N', "NTFS"), &ntfs, |_| true)),
+            None,
+            "NTFS without geometry is skipped"
+        );
         for fs in ["FAT32", "exFAT", "FAT"] {
-            assert_eq!(k(classify(d('E', fs), &ntfs, |_| true)), Some((VolKind::Folder, 0xABCD)), "{fs}");
+            assert_eq!(
+                k(classify(d('E', fs), &ntfs, |_| true)),
+                Some((VolKind::Folder, 0xABCD)),
+                "{fs}"
+            );
         }
-        assert_eq!(k(classify(d('R', "ReFS"), &ntfs, |_| true)), Some((VolKind::Refs, 0xABCD)));
-        assert_eq!(k(classify(d('R', "ReFS"), &ntfs, |_| false)), Some((VolKind::Folder, 0xABCD)), "RDC fallback");
+        assert_eq!(
+            k(classify(d('R', "ReFS"), &ntfs, |_| true)),
+            Some((VolKind::Refs, 0xABCD))
+        );
+        assert_eq!(
+            k(classify(d('R', "ReFS"), &ntfs, |_| false)),
+            Some((VolKind::Folder, 0xABCD)),
+            "RDC fallback"
+        );
         assert_eq!(k(classify(d('U', "UDF"), &ntfs, |_| true)), None);
         let v = classify(d('E', "exFAT"), &ntfs, |_| true).unwrap();
-        assert_eq!((v.monitor(), v.root().as_str()), (winseek_ipc::Monitor::FolderWatch, r"E:\"));
+        assert_eq!(
+            (v.monitor(), v.root().as_str()),
+            (winseek_ipc::Monitor::FolderWatch, r"E:\")
+        );
     }
 
     #[test]
     fn modes() {
         assert_eq!(p(&["--service"]).unwrap().mode, Mode::Service);
-        let s = p(&["--service", "--data", "D:\\x", "--log", "L.txt", "--volumes", "C"]).unwrap();
+        let s = p(&[
+            "--service",
+            "--data",
+            "D:\\x",
+            "--log",
+            "L.txt",
+            "--volumes",
+            "C",
+        ])
+        .unwrap();
         assert_eq!(s.log, PathBuf::from("L.txt"));
         assert_eq!(p(&["--install"]).unwrap().mode, Mode::Install);
-        assert_eq!(p(&["--install", "--volumes", "c,d"]).unwrap().volumes, Some(vec!['C', 'D']));
+        assert_eq!(
+            p(&["--install", "--volumes", "c,d"]).unwrap().volumes,
+            Some(vec!['C', 'D'])
+        );
         assert_eq!(p(&["--uninstall"]).unwrap().mode, Mode::Uninstall);
         // mutual exclusion
         for pair in [

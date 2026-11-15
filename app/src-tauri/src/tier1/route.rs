@@ -78,14 +78,25 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn best(protos: &[Vec<f32>], v: &[f32]) -> f32 {
-    protos.iter().map(|p| dot(p, v)).fold(f32::NEG_INFINITY, f32::max)
+    protos
+        .iter()
+        .map(|p| dot(p, v))
+        .fold(f32::NEG_INFINITY, f32::max)
 }
 
 impl Prototypes {
     /// Embed the prompts once (the caller caches the result for the session).
     pub fn embed(e: &mut dyn Embedder) -> Result<Prototypes, EmbedError> {
-        let mut all = |prompts: &[&str]| prompts.iter().map(|p| e.embed_query(p)).collect::<Result<Vec<_>, _>>();
-        Ok(Prototypes { doc: all(&DOC_PROMPTS)?, other: all(&OTHER_PROMPTS)? })
+        let mut all = |prompts: &[&str]| {
+            prompts
+                .iter()
+                .map(|p| e.embed_query(p))
+                .collect::<Result<Vec<_>, _>>()
+        };
+        Ok(Prototypes {
+            doc: all(&DOC_PROMPTS)?,
+            other: all(&OTHER_PROMPTS)?,
+        })
     }
 
     /// Document-like image vector (pure cosine against the prototypes).
@@ -102,12 +113,19 @@ mod tests {
     #[test]
     fn quality_gate_is_script_agnostic() {
         // 220 chars of clean text, Arabic first: the parser is not needed, whatever the script.
-        let arabic = "هذه فاتورة صادرة عن الشركة المغربية الشرقية بتاريخ أمس بطاقة إلكترونية ".repeat(4);
+        let arabic =
+            "هذه فاتورة صادرة عن الشركة المغربية الشرقية بتاريخ أمس بطاقة إلكترونية ".repeat(4);
         assert!(arabic.chars().count() >= MIN_OCR_CHARS);
         assert!(!ocr_looks_poor(&arabic), "clean Arabic reads fine");
-        assert!(ocr_looks_poor("مرحبا بالعالم"), "sparse text goes to the parser");
+        assert!(
+            ocr_looks_poor("مرحبا بالعالم"),
+            "sparse text goes to the parser"
+        );
         assert!(ocr_looks_poor(""), "no text at all: let the parser try");
-        assert!(ocr_looks_poor(&"·-\\|/ *_—".repeat(40)), "symbol junk goes to the parser");
+        assert!(
+            ocr_looks_poor(&"·-\\|/ *_—".repeat(40)),
+            "symbol junk goes to the parser"
+        );
         let clean = "Invoice number 4711 for the customer, total due 1,869.00 EUR, payable within 30 days of the invoice date. ".repeat(2);
         assert!(!ocr_looks_poor(&clean), "clean Latin is kept");
         // digits count as content: a mostly-numbers page (forms, IDs) still reads fine
@@ -118,12 +136,24 @@ mod tests {
     #[test]
     fn screenshots_want_the_parser_only_for_poor_text() {
         let clean = "word ".repeat(40);
-        assert!(!screenshot_wants_parser(&clean), "cleanly read: nothing to add");
-        assert!(!screenshot_wants_parser(&"word ".repeat(20)), "short capture stays with Windows OCR");
+        assert!(
+            !screenshot_wants_parser(&clean),
+            "cleanly read: nothing to add"
+        );
+        assert!(
+            !screenshot_wants_parser(&"word ".repeat(20)),
+            "short capture stays with Windows OCR"
+        );
         let junk = "·-\\|/ *_—".repeat(30);
-        assert!(screenshot_wants_parser(&junk), "plenty of chars but garbage: parse it");
+        assert!(
+            screenshot_wants_parser(&junk),
+            "plenty of chars but garbage: parse it"
+        );
         let arabic = "بسم الله الرحمن الرحيم هذه فاتورة ".repeat(8);
-        assert!(!screenshot_wants_parser(&arabic), "clean Arabic stays, like clean Latin");
+        assert!(
+            !screenshot_wants_parser(&arabic),
+            "clean Arabic stays, like clean Latin"
+        );
     }
 
     fn unit(i: usize) -> Vec<f32> {
@@ -134,7 +164,10 @@ mod tests {
 
     /// Prototypes on axes 0 (documents) and 1 (everything else).
     fn protos() -> Prototypes {
-        Prototypes { doc: vec![unit(0), vec![0.6, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0]], other: vec![unit(1)] }
+        Prototypes {
+            doc: vec![unit(0), vec![0.6, 0.0, 0.8, 0.0, 0.0, 0.0, 0.0, 0.0]],
+            other: vec![unit(1)],
+        }
     }
 
     fn mix(doc: f32, other: f32) -> Vec<f32> {
@@ -202,6 +235,9 @@ mod tests {
         assert_eq!((p.doc.len(), p.other.len()), (6, 6));
         assert!(p.doc.iter().all(|v| *v == unit(0)) && p.other.iter().all(|v| *v == unit(1)));
         assert!(p.is_doc(&unit(0)) && !p.is_doc(&unit(1)));
-        assert!(matches!(Prototypes::embed(&mut Down), Err(EmbedError::Other(_))));
+        assert!(matches!(
+            Prototypes::embed(&mut Down),
+            Err(EmbedError::Other(_))
+        ));
     }
 }

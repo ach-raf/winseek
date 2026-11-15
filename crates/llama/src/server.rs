@@ -83,7 +83,12 @@ pub struct SpawnConfig {
 
 impl Default for SpawnConfig {
     fn default() -> Self {
-        SpawnConfig { role: Role::Parser, profile: Profile::Balanced, health_timeout: Duration::from_secs(120), log_file: None }
+        SpawnConfig {
+            role: Role::Parser,
+            profile: Profile::Balanced,
+            health_timeout: Duration::from_secs(120),
+            log_file: None,
+        }
     }
 }
 
@@ -100,20 +105,62 @@ pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
     let low = profile.low_vram();
     let statics: &[&str] = match role {
         Role::EmbedQuery => &[
-            "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device",
-            "none", "-t", "4", "-tb", "4",
+            "--embeddings",
+            "--pooling",
+            "mean",
+            "-np",
+            "1",
+            "-c",
+            "512",
+            "-b",
+            "512",
+            "-ub",
+            "512",
+            "-ngl",
+            "0",
+            "--device",
+            "none",
+            "-t",
+            "4",
+            "-tb",
+            "4",
         ],
         Role::EmbedIndex => &[
-            "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
-            "1024", "-b", "1024", "-ub", "1024", "-ngl", if low { "0" } else { "99" },
+            "--embeddings",
+            "--pooling",
+            "mean",
+            "--image-min-tokens",
+            "280",
+            "--image-max-tokens",
+            "280",
+            "-np",
+            "1",
+            "-c",
+            "1024",
+            "-b",
+            "1024",
+            "-ub",
+            "1024",
+            "-ngl",
+            if low { "0" } else { "99" },
         ],
         // The numbers below are per-profile, so they are built as strings after the static flags.
         Role::Parser => {
             let slots = parser_slots(profile);
             let mut p: Vec<String> = [
-                "--jinja".into(), "--reasoning-budget".into(), "0".into(), "-np".into(), slots.to_string(),
-                "-c".into(), (PARSER_CTX_PER_SLOT * slots).to_string(), "-ctk".into(), "q8_0".into(), "-ctv".into(),
-                "q8_0".into(), "-ngl".into(), "99".into(),
+                "--jinja".into(),
+                "--reasoning-budget".into(),
+                "0".into(),
+                "-np".into(),
+                slots.to_string(),
+                "-c".into(),
+                (PARSER_CTX_PER_SLOT * slots).to_string(),
+                "-ctk".into(),
+                "q8_0".into(),
+                "-ctv".into(),
+                "q8_0".into(),
+                "-ngl".into(),
+                "99".into(),
             ]
             .into();
             // Low: keep the projector off the GPU too (otherwise it still occupies ~650 MB).
@@ -146,7 +193,12 @@ pub fn build_args(
         a.push("--mmproj".into());
         a.push(m.display().to_string());
     }
-    a.extend(["--host".into(), "127.0.0.1".into(), "--port".into(), port.to_string()]);
+    a.extend([
+        "--host".into(),
+        "127.0.0.1".into(),
+        "--port".into(),
+        port.to_string(),
+    ]);
     a.extend(["--api-key".into(), api_key.to_string()]);
     a.extend(role_args(role, profile));
     a.extend(extra.iter().cloned());
@@ -225,7 +277,12 @@ mod job {
     #[link(name = "kernel32")]
     extern "system" {
         fn CreateJobObjectW(attrs: *mut c_void, name: *const u16) -> *mut c_void;
-        fn SetInformationJobObject(job: *mut c_void, class: i32, info: *mut c_void, len: u32) -> i32;
+        fn SetInformationJobObject(
+            job: *mut c_void,
+            class: i32,
+            info: *mut c_void,
+            len: u32,
+        ) -> i32;
         fn AssignProcessToJobObject(job: *mut c_void, process: *mut c_void) -> i32;
     }
 
@@ -279,10 +336,14 @@ pub fn wait_healthy(
     alive: &mut dyn FnMut() -> bool,
 ) -> Result<()> {
     let deadline = Instant::now() + timeout;
-    let agent = ureq::AgentBuilder::new().timeout(Duration::from_secs(2)).build();
+    let agent = ureq::AgentBuilder::new()
+        .timeout(Duration::from_secs(2))
+        .build();
     loop {
         if !alive() {
-            return Err(Error::Spawn("llama-server exited before becoming healthy".into()));
+            return Err(Error::Spawn(
+                "llama-server exited before becoming healthy".into(),
+            ));
         }
         let r = agent
             .get(&format!("{base_url}/health"))
@@ -302,7 +363,12 @@ pub fn wait_healthy(
 
 impl LlamaServer {
     /// Spawn a parser server (`Role::Parser`, default config).
-    pub fn spawn(exe: &Path, model: &Path, mmproj: Option<&Path>, extra_args: &[String]) -> Result<LlamaServer> {
+    pub fn spawn(
+        exe: &Path,
+        model: &Path,
+        mmproj: Option<&Path>,
+        extra_args: &[String],
+    ) -> Result<LlamaServer> {
         Self::spawn_with(exe, model, mmproj, extra_args, &SpawnConfig::default())
     }
 
@@ -314,11 +380,21 @@ impl LlamaServer {
         cfg: &SpawnConfig,
     ) -> Result<LlamaServer> {
         if cfg.role == Role::EmbedIndex && mmproj.is_none() {
-            return Err(Error::Spawn("the embedding index server needs the mmproj".into()));
+            return Err(Error::Spawn(
+                "the embedding index server needs the mmproj".into(),
+            ));
         }
         let port = free_port()?;
         let api_key = random_key()?;
-        let args = build_args(model, mmproj, port, &api_key, cfg.role, cfg.profile, extra_args);
+        let args = build_args(
+            model,
+            mmproj,
+            port,
+            &api_key,
+            cfg.role,
+            cfg.profile,
+            extra_args,
+        );
         let mut cmd = Command::new(exe);
         cmd.args(&args).stdin(Stdio::null());
         if let Some(dir) = exe.parent() {
@@ -338,16 +414,24 @@ impl LlamaServer {
             use std::os::windows::process::CommandExt;
             cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
         }
-        let child = cmd.spawn().map_err(|e| Error::Spawn(format!("{}: {e}", exe.display())))?;
+        let child = cmd
+            .spawn()
+            .map_err(|e| Error::Spawn(format!("{}: {e}", exe.display())))?;
         // Drop-kills the child on every error path below.
-        let mut srv = LlamaServer { child, port, api_key };
+        let mut srv = LlamaServer {
+            child,
+            port,
+            api_key,
+        };
         if !job::assign(&srv.child) {
             // Non-fatal (e.g. already inside a restrictive job); Drop still kills.
         }
         let base = srv.base_url();
         let key = srv.api_key.clone();
         let child = &mut srv.child;
-        wait_healthy(&base, &key, cfg.health_timeout, &mut || matches!(child.try_wait(), Ok(None)))?;
+        wait_healthy(&base, &key, cfg.health_timeout, &mut || {
+            matches!(child.try_wait(), Ok(None))
+        })?;
         Ok(srv)
     }
 
@@ -402,7 +486,10 @@ pub fn fallback_chain<T>(
             Err(e) => errs.push(format!("{}: {e}", b.dir_name())),
         }
     }
-    Err(Error::Spawn(format!("all backends failed [{}]", errs.join("; "))))
+    Err(Error::Spawn(format!(
+        "all backends failed [{}]",
+        errs.join("; ")
+    )))
 }
 
 #[cfg(test)]
@@ -413,7 +500,15 @@ mod tests {
     const ALL: [Profile; 3] = [Profile::Low, Profile::Balanced, Profile::Fast];
 
     fn args(role: Role, profile: Profile, mmproj: bool) -> Vec<String> {
-        build_args(Path::new("m.gguf"), mmproj.then(|| Path::new("p.gguf")), 5555, "KEY", role, profile, &[])
+        build_args(
+            Path::new("m.gguf"),
+            mmproj.then(|| Path::new("p.gguf")),
+            5555,
+            "KEY",
+            role,
+            profile,
+            &[],
+        )
     }
 
     /// Expected full list: model, optional mmproj, fixed host/port/key, then `tail`.
@@ -430,8 +525,25 @@ mod tests {
     #[test]
     fn embed_query_is_text_only_cpu() {
         let tail = [
-            "--embeddings", "--pooling", "mean", "-np", "1", "-c", "512", "-b", "512", "-ub", "512", "-ngl", "0", "--device", "none", "-t",
-            "4", "-tb", "4",
+            "--embeddings",
+            "--pooling",
+            "mean",
+            "-np",
+            "1",
+            "-c",
+            "512",
+            "-b",
+            "512",
+            "-ub",
+            "512",
+            "-ngl",
+            "0",
+            "--device",
+            "none",
+            "-t",
+            "4",
+            "-tb",
+            "4",
         ];
         // An mmproj is ignored, in every profile.
         for p in ALL {
@@ -444,8 +556,23 @@ mod tests {
     fn embed_index_gpu_and_low_cpu() {
         let tail = |ngl: &'static str| {
             vec![
-                "--embeddings", "--pooling", "mean", "--image-min-tokens", "280", "--image-max-tokens", "280", "-np", "1", "-c",
-                "1024", "-b", "1024", "-ub", "1024", "-ngl", ngl,
+                "--embeddings",
+                "--pooling",
+                "mean",
+                "--image-min-tokens",
+                "280",
+                "--image-max-tokens",
+                "280",
+                "-np",
+                "1",
+                "-c",
+                "1024",
+                "-b",
+                "1024",
+                "-ub",
+                "1024",
+                "-ngl",
+                ngl,
             ]
         };
         for p in [Profile::Balanced, Profile::Fast] {
@@ -458,31 +585,68 @@ mod tests {
 
     #[test]
     fn parser_args_scale_slots_with_the_profile() {
-        for (profile, slots) in [(Profile::Low, 1u32), (Profile::Balanced, 2), (Profile::Fast, 4)] {
+        for (profile, slots) in [
+            (Profile::Low, 1u32),
+            (Profile::Balanced, 2),
+            (Profile::Fast, 4),
+        ] {
             let (np, ctx) = (slots.to_string(), (PARSER_CTX_PER_SLOT * slots).to_string());
-            let mut tail: Vec<&str> =
-                vec!["--jinja", "--reasoning-budget", "0", "-np", &np, "-c", &ctx, "-ctk", "q8_0", "-ctv", "q8_0", "-ngl", "99"];
+            let mut tail: Vec<&str> = vec![
+                "--jinja",
+                "--reasoning-budget",
+                "0",
+                "-np",
+                &np,
+                "-c",
+                &ctx,
+                "-ctk",
+                "q8_0",
+                "-ctv",
+                "q8_0",
+                "-ngl",
+                "99",
+            ];
             if profile.low_vram() {
                 tail.push("--no-mmproj-offload");
             }
-            assert_eq!(args(Role::Parser, profile, true), want(true, &tail), "{profile:?}");
+            assert_eq!(
+                args(Role::Parser, profile, true),
+                want(true, &tail),
+                "{profile:?}"
+            );
         }
     }
 
     #[test]
     fn extra_args_come_last() {
-        let e = build_args(Path::new("m"), None, 1, "K", Role::EmbedIndex, Profile::Balanced, &["-ngl".into(), "0".into()]);
+        let e = build_args(
+            Path::new("m"),
+            None,
+            1,
+            "K",
+            Role::EmbedIndex,
+            Profile::Balanced,
+            &["-ngl".into(), "0".into()],
+        );
         assert_eq!(&e[e.len() - 2..], ["-ngl", "0"]);
     }
 
     #[test]
     fn embedding_roles_pin_one_slot_and_context_and_index_ubatch_holds_the_image() {
-        let val = |a: &[String], flag: &str| -> Option<String> { a.iter().position(|x| x == flag).and_then(|i| a.get(i + 1)).cloned() };
+        let val = |a: &[String], flag: &str| -> Option<String> {
+            a.iter()
+                .position(|x| x == flag)
+                .and_then(|i| a.get(i + 1))
+                .cloned()
+        };
         for role in [Role::EmbedQuery, Role::EmbedIndex] {
             for p in ALL {
                 let a = args(role, p, true);
                 assert_eq!(val(&a, "-np").as_deref(), Some("1"), "{role:?} {p:?}");
-                assert!(val(&a, "-c").and_then(|c| c.parse::<u32>().ok()).is_some(), "{role:?} {p:?} has no -c");
+                assert!(
+                    val(&a, "-c").and_then(|c| c.parse::<u32>().ok()).is_some(),
+                    "{role:?} {p:?} has no -c"
+                );
                 assert!(val(&a, "-ngl").is_some(), "{role:?} {p:?} has no -ngl");
             }
         }
@@ -490,14 +654,28 @@ mod tests {
             let a = args(Role::EmbedIndex, p, true);
             let n = |f: &str| val(&a, f).unwrap().parse::<u32>().unwrap();
             let (ub, b, c) = (n("-ub"), n("-b"), n("-c"));
-            assert!(ub >= 768 && b >= ub && c >= ub, "{p:?}: -c {c} -b {b} -ub {ub}");
+            assert!(
+                ub >= 768 && b >= ub && c >= ub,
+                "{p:?}: -c {c} -b {b} -ub {ub}"
+            );
         }
     }
 
     #[test]
     fn embed_index_without_mmproj_is_refused_before_spawning() {
-        let cfg = SpawnConfig { role: Role::EmbedIndex, ..Default::default() };
-        let e = LlamaServer::spawn_with(Path::new("does-not-exist.exe"), Path::new("m.gguf"), None, &[], &cfg).err().unwrap();
+        let cfg = SpawnConfig {
+            role: Role::EmbedIndex,
+            ..Default::default()
+        };
+        let e = LlamaServer::spawn_with(
+            Path::new("does-not-exist.exe"),
+            Path::new("m.gguf"),
+            None,
+            &[],
+            &cfg,
+        )
+        .err()
+        .unwrap();
         assert!(e.to_string().contains("mmproj"), "{e}");
     }
 
@@ -522,7 +700,10 @@ mod tests {
 
     #[test]
     fn fallback_orders() {
-        assert_eq!(fallback_order(Backend::Cuda12), [Backend::Cuda12, Backend::Vulkan, Backend::Cpu]);
+        assert_eq!(
+            fallback_order(Backend::Cuda12),
+            [Backend::Cuda12, Backend::Vulkan, Backend::Cpu]
+        );
         assert_eq!(fallback_order(Backend::Cpu), [Backend::Cpu]);
     }
 
@@ -540,7 +721,8 @@ mod tests {
         .unwrap();
         assert_eq!(r, (Backend::Cpu, 42));
         assert_eq!(tried, [Backend::Cuda12, Backend::Vulkan, Backend::Cpu]);
-        let e = fallback_chain::<()>(&[Backend::Vulkan], |_| Err(Error::HealthTimeout)).unwrap_err();
+        let e =
+            fallback_chain::<()>(&[Backend::Vulkan], |_| Err(Error::HealthTimeout)).unwrap_err();
         assert!(e.to_string().contains("vulkan"));
     }
 
@@ -563,8 +745,16 @@ mod tests {
                         break;
                     }
                 }
-                let status = if i < 2 { "503 Service Unavailable" } else { "200 OK" };
-                s.write_all(format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").as_bytes()).unwrap();
+                let status = if i < 2 {
+                    "503 Service Unavailable"
+                } else {
+                    "200 OK"
+                };
+                s.write_all(
+                    format!("HTTP/1.1 {status}\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                        .as_bytes(),
+                )
+                .unwrap();
             }
             auth_ok
         });
@@ -574,9 +764,21 @@ mod tests {
 
     #[test]
     fn health_stops_when_child_dies_or_times_out() {
-        let e = wait_healthy("http://127.0.0.1:1", "k", Duration::from_secs(5), &mut || false).unwrap_err();
+        let e = wait_healthy(
+            "http://127.0.0.1:1",
+            "k",
+            Duration::from_secs(5),
+            &mut || false,
+        )
+        .unwrap_err();
         assert!(matches!(e, Error::Spawn(_)));
-        let e = wait_healthy("http://127.0.0.1:1", "k", Duration::from_millis(300), &mut || true).unwrap_err();
+        let e = wait_healthy(
+            "http://127.0.0.1:1",
+            "k",
+            Duration::from_millis(300),
+            &mut || true,
+        )
+        .unwrap_err();
         assert!(matches!(e, Error::HealthTimeout));
     }
 
@@ -585,8 +787,13 @@ mod tests {
     fn child_that_exits_is_reported() {
         // cmd.exe given llama-style args with stdin=null exits at once.
         let exe = PathBuf::from(r"C:\Windows\System32\cmd.exe");
-        let cfg = SpawnConfig { health_timeout: Duration::from_secs(10), ..Default::default() };
-        let e = LlamaServer::spawn_with(&exe, Path::new("m.gguf"), None, &[], &cfg).err().unwrap();
+        let cfg = SpawnConfig {
+            health_timeout: Duration::from_secs(10),
+            ..Default::default()
+        };
+        let e = LlamaServer::spawn_with(&exe, Path::new("m.gguf"), None, &[], &cfg)
+            .err()
+            .unwrap();
         assert!(matches!(e, Error::Spawn(_)), "{e}");
     }
 

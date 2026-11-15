@@ -6,13 +6,22 @@ pub fn decode_text(bytes: &[u8], truncated: bool) -> Option<(String, &'static st
     if let Some(rest) = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
         return Some((utf8_prefix(rest, truncated).0, "UTF-8 BOM"));
     }
-    for (bom, le, name) in [([0xFF, 0xFE], true, "UTF-16 LE"), ([0xFE, 0xFF], false, "UTF-16 BE")] {
+    for (bom, le, name) in [
+        ([0xFF, 0xFE], true, "UTF-16 LE"),
+        ([0xFE, 0xFF], false, "UTF-16 BE"),
+    ] {
         if let Some(rest) = bytes.strip_prefix(&bom) {
             let units: Vec<u16> = rest
                 .as_chunks::<2>()
                 .0
                 .iter()
-                .map(|c| if le { u16::from_le_bytes(*c) } else { u16::from_be_bytes(*c) })
+                .map(|c| {
+                    if le {
+                        u16::from_le_bytes(*c)
+                    } else {
+                        u16::from_be_bytes(*c)
+                    }
+                })
                 .collect();
             return Some((String::from_utf16_lossy(&units), name));
         }
@@ -32,9 +41,10 @@ pub fn decode_text(bytes: &[u8], truncated: bool) -> Option<(String, &'static st
 fn utf8_prefix(bytes: &[u8], truncated: bool) -> (String, bool) {
     match std::str::from_utf8(bytes) {
         Ok(s) => (s.to_owned(), true),
-        Err(e) if truncated && e.error_len().is_none() => {
-            (String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned(), true)
-        }
+        Err(e) if truncated && e.error_len().is_none() => (
+            String::from_utf8_lossy(&bytes[..e.valid_up_to()]).into_owned(),
+            true,
+        ),
         Err(_) => (String::from_utf8_lossy(bytes).into_owned(), false),
     }
 }
@@ -45,12 +55,27 @@ mod tests {
 
     #[test]
     fn decodes_boms_and_fallbacks() {
-        assert_eq!(decode_text(b"\xEF\xBB\xBFhi", false), Some(("hi".into(), "UTF-8 BOM")));
-        assert_eq!(decode_text(b"\xFF\xFEh\0i\0", false), Some(("hi".into(), "UTF-16 LE")));
-        assert_eq!(decode_text(b"\xFE\xFF\0h\0i", false), Some(("hi".into(), "UTF-16 BE")));
-        assert_eq!(decode_text("h\u{e9}llo".as_bytes(), false), Some(("h\u{e9}llo".into(), "UTF-8")));
+        assert_eq!(
+            decode_text(b"\xEF\xBB\xBFhi", false),
+            Some(("hi".into(), "UTF-8 BOM"))
+        );
+        assert_eq!(
+            decode_text(b"\xFF\xFEh\0i\0", false),
+            Some(("hi".into(), "UTF-16 LE"))
+        );
+        assert_eq!(
+            decode_text(b"\xFE\xFF\0h\0i", false),
+            Some(("hi".into(), "UTF-16 BE"))
+        );
+        assert_eq!(
+            decode_text("h\u{e9}llo".as_bytes(), false),
+            Some(("h\u{e9}llo".into(), "UTF-8"))
+        );
         // invalid UTF-8 -> Latin-1
-        assert_eq!(decode_text(b"caf\xE9", false), Some(("caf\u{e9}".into(), "Latin-1")));
+        assert_eq!(
+            decode_text(b"caf\xE9", false),
+            Some(("caf\u{e9}".into(), "Latin-1"))
+        );
         // binary
         assert_eq!(decode_text(b"MZ\0\0\x03", false), None);
         // a character cut by the read cap is dropped when truncated, an error otherwise

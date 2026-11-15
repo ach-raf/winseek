@@ -35,10 +35,22 @@ pub const OTHER_PROMPTS: [&str; 6] = [
 /// Default smart collections (`app/src-tauri/src/tier1/library.rs`): name, query, and the set
 /// categories that count as members.
 pub const COLLECTIONS: [(&str, &str, &[&str]); 4] = [
-    ("Receipts", "a photo of a paper receipt or invoice", &["receipt", "invoice"]),
-    ("Whiteboards", "a whiteboard with handwritten notes and diagrams", &["whiteboard"]),
+    (
+        "Receipts",
+        "a photo of a paper receipt or invoice",
+        &["receipt", "invoice"],
+    ),
+    (
+        "Whiteboards",
+        "a whiteboard with handwritten notes and diagrams",
+        &["whiteboard"],
+    ),
     ("Memes", "a meme: an image with a funny caption", &["meme"]),
-    ("Documents to sign", "a contract or form with a signature line to sign", &["contract", "form"]),
+    (
+        "Documents to sign",
+        "a contract or form with a signature line to sign",
+        &["contract", "form"],
+    ),
 ];
 
 const BATCH: usize = 8;
@@ -67,13 +79,25 @@ pub struct Confusion {
 
 impl Confusion {
     pub fn precision(&self) -> f32 {
-        if self.tp + self.fp == 0 { 1.0 } else { self.tp as f32 / (self.tp + self.fp) as f32 }
+        if self.tp + self.fp == 0 {
+            1.0
+        } else {
+            self.tp as f32 / (self.tp + self.fp) as f32
+        }
     }
     pub fn recall(&self) -> f32 {
-        if self.tp + self.fn_ == 0 { 1.0 } else { self.tp as f32 / (self.tp + self.fn_) as f32 }
+        if self.tp + self.fn_ == 0 {
+            1.0
+        } else {
+            self.tp as f32 / (self.tp + self.fn_) as f32
+        }
     }
     pub fn fp_rate(&self) -> f32 {
-        if self.fp + self.tn == 0 { 0.0 } else { self.fp as f32 / (self.fp + self.tn) as f32 }
+        if self.fp + self.tn == 0 {
+            0.0
+        } else {
+            self.fp as f32 / (self.fp + self.tn) as f32
+        }
     }
 }
 
@@ -83,7 +107,14 @@ pub fn is_doc(s: &Scored, doc_min: f32, margin: f32) -> bool {
 }
 
 pub fn confusion(set: &[Scored], doc_min: f32, margin: f32) -> Confusion {
-    let mut c = Confusion { doc_min, margin, tp: 0, fp: 0, fn_: 0, tn: 0 };
+    let mut c = Confusion {
+        doc_min,
+        margin,
+        tp: 0,
+        fp: 0,
+        fn_: 0,
+        tn: 0,
+    };
     for s in set {
         match (s.doc, is_doc(s, doc_min, margin)) {
             (true, true) => c.tp += 1,
@@ -97,7 +128,9 @@ pub fn confusion(set: &[Scored], doc_min: f32, margin: f32) -> Confusion {
 
 fn grid(lo: f32, hi: f32, step: f32) -> Vec<f32> {
     let n = ((hi - lo) / step).round() as usize;
-    (0..=n).map(|i| ((lo + i as f32 * step) * 1000.0).round() / 1000.0).collect()
+    (0..=n)
+        .map(|i| ((lo + i as f32 * step) * 1000.0).round() / 1000.0)
+        .collect()
 }
 
 /// Every (doc_min, margin) pair on the grid. EmbeddingGemma-2 image/query cosines live in about
@@ -115,9 +148,15 @@ pub fn sweep(set: &[Scored]) -> Vec<Confusion> {
 /// Highest recall with a false-positive rate at most `max_fp_rate`; ties go to the stricter pair
 /// (larger margin, then larger minimum), which is the cheaper mistake.
 pub fn pick(sweep: &[Confusion], max_fp_rate: f32) -> Option<Confusion> {
-    sweep.iter().filter(|c| c.fp_rate() <= max_fp_rate).copied().max_by(|a, b| {
-        a.tp.cmp(&b.tp).then(a.margin.total_cmp(&b.margin)).then(a.doc_min.total_cmp(&b.doc_min))
-    })
+    sweep
+        .iter()
+        .filter(|c| c.fp_rate() <= max_fp_rate)
+        .copied()
+        .max_by(|a, b| {
+            a.tp.cmp(&b.tp)
+                .then(a.margin.total_cmp(&b.margin))
+                .then(a.doc_min.total_cmp(&b.doc_min))
+        })
 }
 
 /// Per collection: the score threshold with the best F1 over the set, plus that F1's P/R. On a set
@@ -127,16 +166,31 @@ pub fn collection_best(set: &[Scored], i: usize, members: &[&str]) -> (f32, f32,
     for t in grid(0.30, 0.90, 0.005) {
         let (mut tp, mut fp, mut fn_) = (0usize, 0usize, 0usize);
         for s in set {
-            match (members.contains(&s.category.as_str()), s.collections[i] >= t) {
+            match (
+                members.contains(&s.category.as_str()),
+                s.collections[i] >= t,
+            ) {
                 (true, true) => tp += 1,
                 (false, true) => fp += 1,
                 (true, false) => fn_ += 1,
                 _ => {}
             }
         }
-        let p = if tp + fp == 0 { 1.0 } else { tp as f32 / (tp + fp) as f32 };
-        let r = if tp + fn_ == 0 { 1.0 } else { tp as f32 / (tp + fn_) as f32 };
-        let f1 = if p + r == 0.0 { 0.0 } else { 2.0 * p * r / (p + r) };
+        let p = if tp + fp == 0 {
+            1.0
+        } else {
+            tp as f32 / (tp + fp) as f32
+        };
+        let r = if tp + fn_ == 0 {
+            1.0
+        } else {
+            tp as f32 / (tp + fn_) as f32
+        };
+        let f1 = if p + r == 0.0 {
+            0.0
+        } else {
+            2.0 * p * r / (p + r)
+        };
         if f1 > best.1 {
             best = (t, f1, p, r);
         }
@@ -148,8 +202,16 @@ pub fn collection_best(set: &[Scored], i: usize, members: &[&str]) -> (f32, f32,
 /// (a photo in a collection is the visible mistake) and the members' 10th percentile, to 0.01.
 /// `None` without members or photos.
 pub fn midpoint(set: &[Scored], i: usize, members: &[&str]) -> Option<f32> {
-    let photo_max = set.iter().filter(|x| !x.doc && !members.contains(&x.category.as_str())).map(|x| x.collections[i]).reduce(f32::max)?;
-    let mut pos: Vec<f32> = set.iter().filter(|x| members.contains(&x.category.as_str())).map(|x| x.collections[i]).collect();
+    let photo_max = set
+        .iter()
+        .filter(|x| !x.doc && !members.contains(&x.category.as_str()))
+        .map(|x| x.collections[i])
+        .reduce(f32::max)?;
+    let mut pos: Vec<f32> = set
+        .iter()
+        .filter(|x| members.contains(&x.category.as_str()))
+        .map(|x| x.collections[i])
+        .collect();
     if pos.is_empty() {
         return None;
     }
@@ -163,7 +225,10 @@ fn dot(a: &[f32], b: &[f32]) -> f32 {
 }
 
 fn best(protos: &[Vec<f32>], v: &[f32]) -> f32 {
-    protos.iter().map(|p| dot(p, v)).fold(f32::NEG_INFINITY, f32::max)
+    protos
+        .iter()
+        .map(|p| dot(p, v))
+        .fold(f32::NEG_INFINITY, f32::max)
 }
 
 /// `(path, is doc, category)` for every image under `<dir>/{doc,other}/<category>/`.
@@ -171,14 +236,22 @@ pub fn list_set(dir: &Path) -> Result<Vec<(PathBuf, bool, String)>, String> {
     let mut out = Vec::new();
     for (kind, doc) in [("doc", true), ("other", false)] {
         let root = dir.join(kind);
-        let mut cats: Vec<_> = std::fs::read_dir(&root).map_err(|e| format!("{}: {e}", root.display()))?.flatten().filter(|e| e.path().is_dir()).collect();
+        let mut cats: Vec<_> = std::fs::read_dir(&root)
+            .map_err(|e| format!("{}: {e}", root.display()))?
+            .flatten()
+            .filter(|e| e.path().is_dir())
+            .collect();
         cats.sort_by_key(|e| e.file_name());
         for cat in cats {
             let mut files: Vec<PathBuf> = std::fs::read_dir(cat.path())
                 .map_err(|e| e.to_string())?
                 .flatten()
                 .map(|e| e.path())
-                .filter(|p| p.extension().and_then(|x| x.to_str()).is_some_and(|x| matches!(x.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")))
+                .filter(|p| {
+                    p.extension().and_then(|x| x.to_str()).is_some_and(|x| {
+                        matches!(x.to_ascii_lowercase().as_str(), "jpg" | "jpeg" | "png")
+                    })
+                })
                 .collect();
             files.sort();
             let name = cat.file_name().to_string_lossy().into_owned();
@@ -198,7 +271,12 @@ pub fn score(set: &[(PathBuf, bool, String)], emb: &mut dyn Embed) -> Result<Vec
     for (k, batch) in set.chunks(BATCH).enumerate() {
         let jpegs = batch
             .iter()
-            .map(|(p, _, _)| std::fs::read(p).map_err(|e| e.to_string()).and_then(|b| prepare_jpeg(&b)).map_err(|e| format!("{}: {e}", p.display())))
+            .map(|(p, _, _)| {
+                std::fs::read(p)
+                    .map_err(|e| e.to_string())
+                    .and_then(|b| prepare_jpeg(&b))
+                    .map_err(|e| format!("{}: {e}", p.display()))
+            })
             .collect::<Result<Vec<_>, _>>()?;
         let refs: Vec<&[u8]> = jpegs.iter().map(Vec::as_slice).collect();
         let vecs = finish(emb.images(&refs)?)?;
@@ -221,28 +299,57 @@ pub fn score(set: &[(PathBuf, bool, String)], emb: &mut dyn Embed) -> Result<Vec
 fn stats(xs: &mut [f32]) -> String {
     xs.sort_by(f32::total_cmp);
     let q = |f: f32| xs[((xs.len() - 1) as f32 * f).round() as usize];
-    format!("min {:.3}  p10 {:.3}  med {:.3}  p90 {:.3}  max {:.3}", q(0.0), q(0.1), q(0.5), q(0.9), q(1.0))
+    format!(
+        "min {:.3}  p10 {:.3}  med {:.3}  p90 {:.3}  max {:.3}",
+        q(0.0),
+        q(0.1),
+        q(0.5),
+        q(0.9),
+        q(1.0)
+    )
 }
 
 /// Human-readable report of a scored set.
 pub fn report(set: &[Scored], set_dir: &Path, max_fp_rate: f32, current: (f32, f32)) -> String {
     let root = set_dir.to_string_lossy().into_owned();
-    let short = |p: &str| p.strip_prefix(root.as_str()).unwrap_or(p).trim_start_matches(['/', '\\']).to_string();
+    let short = |p: &str| {
+        p.strip_prefix(root.as_str())
+            .unwrap_or(p)
+            .trim_start_matches(['/', '\\'])
+            .to_string()
+    };
     let mut s = String::new();
     let mut cats: Vec<(bool, &str)> = set.iter().map(|x| (x.doc, x.category.as_str())).collect();
     cats.dedup();
     s += "per category: best_doc | best_doc - best_other\n";
     for (doc, cat) in &cats {
-        let of: Vec<&Scored> = set.iter().filter(|x| x.category == *cat && x.doc == *doc).collect();
+        let of: Vec<&Scored> = set
+            .iter()
+            .filter(|x| x.category == *cat && x.doc == *doc)
+            .collect();
         let mut d: Vec<f32> = of.iter().map(|x| x.best_doc).collect();
         let mut m: Vec<f32> = of.iter().map(|x| x.best_doc - x.best_other).collect();
-        s += &format!("  {:5} {:12} n={:3}  doc {}\n  {:24}margin {}\n", if *doc { "doc" } else { "other" }, cat, of.len(), stats(&mut d), "", stats(&mut m));
+        s += &format!(
+            "  {:5} {:12} n={:3}  doc {}\n  {:24}margin {}\n",
+            if *doc { "doc" } else { "other" },
+            cat,
+            of.len(),
+            stats(&mut d),
+            "",
+            stats(&mut m)
+        );
     }
     let sw = sweep(set);
     let line = |c: &Confusion| {
         format!(
             "  min {:.2} margin {:+.2}: P {:.3} R {:.3} FP {} ({:.1}%) FN {}\n",
-            c.doc_min, c.margin, c.precision(), c.recall(), c.fp, c.fp_rate() * 100.0, c.fn_
+            c.doc_min,
+            c.margin,
+            c.precision(),
+            c.recall(),
+            c.fp,
+            c.fp_rate() * 100.0,
+            c.fn_
         )
     };
     s += "current:\n";
@@ -257,25 +364,48 @@ pub fn report(set: &[Scored], set_dir: &Path, max_fp_rate: f32, current: (f32, f
     if let Some(c) = pick(&sw, max_fp_rate) {
         s += &format!("pick (FP rate <= {:.1}%):\n", max_fp_rate * 100.0);
         s += &line(&c);
-        let flagged: Vec<&Scored> = set.iter().filter(|x| !x.doc && is_doc(x, c.doc_min, c.margin)).collect();
+        let flagged: Vec<&Scored> = set
+            .iter()
+            .filter(|x| !x.doc && is_doc(x, c.doc_min, c.margin))
+            .collect();
         for x in flagged {
-            s += &format!("    FP {} (doc {:.3}, other {:.3})\n", short(&x.path), x.best_doc, x.best_other);
+            s += &format!(
+                "    FP {} (doc {:.3}, other {:.3})\n",
+                short(&x.path),
+                x.best_doc,
+                x.best_other
+            );
         }
     }
     s += "collections (midpoint rule; F1-best threshold over the set for comparison):\n";
     for (i, (name, _, members)) in COLLECTIONS.iter().enumerate() {
         let (t, f1, p, r) = collection_best(set, i, members);
         let member = |x: &Scored| members.contains(&x.category.as_str());
-        let of = |f: &dyn Fn(&Scored) -> bool| set.iter().filter(|x| f(x)).map(|x| x.collections[i]).collect::<Vec<f32>>();
+        let of = |f: &dyn Fn(&Scored) -> bool| {
+            set.iter()
+                .filter(|x| f(x))
+                .map(|x| x.collections[i])
+                .collect::<Vec<f32>>()
+        };
         let mut pos = of(&|x| member(x));
         let mut docs = of(&|x| x.doc && !member(x));
         let mut photos = of(&|x| !x.doc && !member(x));
         if let Some(m) = midpoint(set, i, members) {
             let n = |v: &[f32]| v.iter().filter(|&&x| x >= m).count();
-            s += &format!("  {name:18} midpoint {m:.2}: members {}/{}  other docs {}  non-docs {}\n", n(&pos), pos.len(), n(&docs), n(&photos));
+            s += &format!(
+                "  {name:18} midpoint {m:.2}: members {}/{}  other docs {}  non-docs {}\n",
+                n(&pos),
+                pos.len(),
+                n(&docs),
+                n(&photos)
+            );
         }
         s += &format!("  {:18} F1-best {t:.3}: F1 {f1:.3} P {p:.3} R {r:.3}\n", "");
-        for (k, v) in [("members", &mut pos), ("other docs", &mut docs), ("non-docs", &mut photos)] {
+        for (k, v) in [
+            ("members", &mut pos),
+            ("other docs", &mut docs),
+            ("non-docs", &mut photos),
+        ] {
             if !v.is_empty() {
                 s += &format!("    {k:10} {}\n", stats(v));
             }
@@ -285,7 +415,13 @@ pub fn report(set: &[Scored], set_dir: &Path, max_fp_rate: f32, current: (f32, f
 }
 
 /// Live run: connect / spawn, score the set, write the JSON (meta, current, pick, every image).
-pub fn run(opts: &RunOptions, set_dir: &Path, max_fp_rate: f32, current: (f32, f32), out: Option<&Path>) -> Result<String, String> {
+pub fn run(
+    opts: &RunOptions,
+    set_dir: &Path,
+    max_fp_rate: f32,
+    current: (f32, f32),
+    out: Option<&Path>,
+) -> Result<String, String> {
     let set = list_set(set_dir)?;
     if set.is_empty() {
         return Err(format!("no images under {}", set_dir.display()));
@@ -313,24 +449,42 @@ mod tests {
     use super::*;
 
     fn sc(doc: bool, cat: &str, d: f32, o: f32) -> Scored {
-        Scored { path: String::new(), doc, category: cat.into(), best_doc: d, best_other: o, collections: vec![d; 4] }
+        Scored {
+            path: String::new(),
+            doc,
+            category: cat.into(),
+            best_doc: d,
+            best_other: o,
+            collections: vec![d; 4],
+        }
     }
 
     #[test]
     fn prompts_match_the_app() {
         let route = include_str!("../../../app/src-tauri/src/tier1/route.rs");
         for p in DOC_PROMPTS.iter().chain(&OTHER_PROMPTS) {
-            assert!(route.contains(&format!("\"{p}\",")), "{p} not in the app's route.rs");
+            assert!(
+                route.contains(&format!("\"{p}\",")),
+                "{p} not in the app's route.rs"
+            );
         }
         let lib = include_str!("../../../app/src-tauri/src/tier1/library.rs");
         for (name, query, _) in COLLECTIONS {
-            assert!(lib.contains(&format!("c(\"{name}\", \"{query}\"")), "{name} not in the app's default collections");
+            assert!(
+                lib.contains(&format!("c(\"{name}\", \"{query}\"")),
+                "{name} not in the app's default collections"
+            );
         }
     }
 
     #[test]
     fn confusion_counts_and_rates() {
-        let set = [sc(true, "a", 0.3, 0.1), sc(true, "a", 0.1, 0.0), sc(false, "b", 0.3, 0.29), sc(false, "b", 0.0, 0.3)];
+        let set = [
+            sc(true, "a", 0.3, 0.1),
+            sc(true, "a", 0.1, 0.0),
+            sc(false, "b", 0.3, 0.29),
+            sc(false, "b", 0.0, 0.3),
+        ];
         let c = confusion(&set, 0.12, 0.03);
         assert_eq!((c.tp, c.fn_, c.fp, c.tn), (1, 1, 0, 2));
         assert_eq!((c.precision(), c.recall(), c.fp_rate()), (1.0, 0.5, 0.0));
@@ -340,7 +494,11 @@ mod tests {
 
     #[test]
     fn pick_maximises_recall_under_the_fp_limit_and_prefers_strict() {
-        let set = [sc(true, "a", 0.70, 0.60), sc(true, "a", 0.65, 0.605), sc(false, "b", 0.66, 0.63)];
+        let set = [
+            sc(true, "a", 0.70, 0.60),
+            sc(true, "a", 0.65, 0.605),
+            sc(false, "b", 0.66, 0.63),
+        ];
         let p = pick(&sweep(&set), 0.0).unwrap();
         // the photo has margin 0.03: catching doc #2 (margin 0.045) needs margin 0.04, min <= 0.65
         assert_eq!((p.tp, p.fp), (2, 0));
@@ -350,7 +508,12 @@ mod tests {
 
     #[test]
     fn collection_threshold_separates_members() {
-        let set = [sc(true, "receipt", 0.7, 0.0), sc(true, "invoice", 0.65, 0.0), sc(false, "photo", 0.5, 0.0), sc(true, "book", 0.66, 0.0)];
+        let set = [
+            sc(true, "receipt", 0.7, 0.0),
+            sc(true, "invoice", 0.65, 0.0),
+            sc(false, "photo", 0.5, 0.0),
+            sc(true, "book", 0.66, 0.0),
+        ];
         let (t, f1, p, r) = collection_best(&set, 0, &["receipt", "invoice"]);
         assert!(t > 0.5 && t <= 0.65, "{t}");
         assert_eq!(r, 1.0);
@@ -363,7 +526,11 @@ mod tests {
     #[test]
     fn set_layout_is_doc_and_other_by_category() {
         let d = tempfile::tempdir().unwrap();
-        for (k, c, f) in [("doc", "receipt", "a.jpg"), ("doc", "receipt", "b.txt"), ("other", "photo", "c.PNG")] {
+        for (k, c, f) in [
+            ("doc", "receipt", "a.jpg"),
+            ("doc", "receipt", "b.txt"),
+            ("other", "photo", "c.PNG"),
+        ] {
             std::fs::create_dir_all(d.path().join(k).join(c)).unwrap();
             std::fs::write(d.path().join(k).join(c).join(f), b"x").unwrap();
         }

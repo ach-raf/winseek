@@ -129,19 +129,35 @@ impl Launcher {
             .ok()
             .and_then(|b| serde_json::from_slice::<Vec<LaunchItem>>(&b).ok())
             .map(|cached| {
-                eprintln!("winseek: launch catalog: {} apps restored from cache", cached.len());
+                eprintln!(
+                    "winseek: launch catalog: {} apps restored from cache",
+                    cached.len()
+                );
                 cached.into_iter().filter(|i| i.kind == Kind::App).collect()
             })
             .unwrap_or_default();
-        let (s, c) = (settings::catalog(settings::os_build()), syscmd::catalog(syscmd::hibernate_available()));
-        eprintln!("winseek: launch catalog starts with {} apps + {} settings + {} commands", items.len(), s.len(), c.len());
+        let (s, c) = (
+            settings::catalog(settings::os_build()),
+            syscmd::catalog(syscmd::hibernate_available()),
+        );
+        eprintln!(
+            "winseek: launch catalog starts with {} apps + {} settings + {} commands",
+            items.len(),
+            s.len(),
+            c.len()
+        );
         aliases::apply(&mut items, &cfg.aliases);
         items.extend(s);
         items.extend(c);
         let portable_cache_path = dir.join("launch_portable.json");
-        let portable_raw: Vec<LaunchItem> =
-            std::fs::read(&portable_cache_path).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
-        eprintln!("winseek: launch catalog: {} portable programs restored from cache", portable_raw.len());
+        let portable_raw: Vec<LaunchItem> = std::fs::read(&portable_cache_path)
+            .ok()
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_default();
+        eprintln!(
+            "winseek: launch catalog: {} portable programs restored from cache",
+            portable_raw.len()
+        );
         let launcher = Launcher {
             cat: RwLock::new(Arc::new(items)),
             hist: Mutex::new(hist),
@@ -177,13 +193,27 @@ impl Launcher {
     /// Search copy of the portable list: drops what a catalog app already covers (same exe),
     /// applies aliases. Cheap; runs after every catalog or portable change.
     fn refresh_portable(&self) {
-        let raw = self.portable_raw.lock().unwrap_or_else(|e| e.into_inner()).clone();
+        let raw = self
+            .portable_raw
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let cat = self.cat.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let aliases = self.cfg.read().unwrap_or_else(|e| e.into_inner()).aliases.clone();
-        let covered: HashSet<String> =
-            cat.iter().filter(|i| i.kind == Kind::App).filter_map(appsrules::dedupe_key).collect();
-        let mut keep: Vec<LaunchItem> =
-            raw.into_iter().filter(|i| appsrules::dedupe_key(i).is_none_or(|k| !covered.contains(&k))).collect();
+        let aliases = self
+            .cfg
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .aliases
+            .clone();
+        let covered: HashSet<String> = cat
+            .iter()
+            .filter(|i| i.kind == Kind::App)
+            .filter_map(appsrules::dedupe_key)
+            .collect();
+        let mut keep: Vec<LaunchItem> = raw
+            .into_iter()
+            .filter(|i| appsrules::dedupe_key(i).is_none_or(|k| !covered.contains(&k)))
+            .collect();
         aliases::apply(&mut keep, &aliases);
         *self.portable.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(keep);
     }
@@ -228,11 +258,20 @@ impl Launcher {
         let cat = self.cat.read().unwrap_or_else(|e| e.into_inner()).clone();
         let cfg = self.cfg.read().unwrap_or_else(|e| e.into_inner()).clone();
         let port: Arc<Vec<LaunchItem>> = if cfg.portable && cfg.apps {
-            self.portable.read().unwrap_or_else(|e| e.into_inner()).clone()
+            self.portable
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone()
         } else {
             Arc::default()
         };
-        let item_at = |idx: usize| if idx < cat.len() { &cat[idx] } else { &port[idx - cat.len()] };
+        let item_at = |idx: usize| {
+            if idx < cat.len() {
+                &cat[idx]
+            } else {
+                &port[idx - cat.len()]
+            }
+        };
         let hist = self.hist.lock().unwrap_or_else(|e| e.into_inner());
         let qtext = q.to_string();
         let q = matcher::prepare(q);
@@ -261,7 +300,9 @@ impl Launcher {
             if !enabled || cfg.hidden.iter().any(|h| h == &item.id) {
                 continue;
             }
-            let Some(mut m) = matcher::score_item_with(&mut scorer, &q, item) else { continue };
+            let Some(mut m) = matcher::score_item_with(&mut scorer, &q, item) else {
+                continue;
+            };
             let raw = m.score;
             let boost = hist.boost(&qtext, &item.id);
             let portable = item.kind == Kind::App && item.subtitle.starts_with("Portable");
@@ -280,8 +321,18 @@ impl Launcher {
             }
             let base = m.score;
             m.score = m.score.saturating_add(boost);
-            let confirm = matches!(item.target, Target::Cmd { .. }) && syscmd::needs_confirm(&item.id);
-            scored.push(Scored { raw, base, boost, portable, score: m.score, ranges: m.ranges, confirm, idx });
+            let confirm =
+                matches!(item.target, Target::Cmd { .. }) && syscmd::needs_confirm(&item.id);
+            scored.push(Scored {
+                raw,
+                base,
+                boost,
+                portable,
+                score: m.score,
+                ranges: m.ranges,
+                confirm,
+                idx,
+            });
         }
         // A portable copy never outranks a Start-menu app whose match is equal or better (the
         // history boost still counts: a copy you keep picking can win).
@@ -292,24 +343,43 @@ impl Launcher {
             .max()
         {
             for s in scored.iter_mut().filter(|s| s.portable && s.raw <= raw) {
-                s.score = s.base.min(base_final.saturating_sub(1)).saturating_add(s.boost);
+                s.score = s
+                    .base
+                    .min(base_final.saturating_sub(1))
+                    .saturating_add(s.boost);
             }
         }
-        scored.sort_by(|a, b| b.score.cmp(&a.score).then_with(|| item_at(a.idx).title.cmp(&item_at(b.idx).title)));
+        scored.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| item_at(a.idx).title.cmp(&item_at(b.idx).title))
+        });
         scored.truncate(limit);
         if started.elapsed() > Duration::from_millis(2) {
-            eprintln!("winseek: launch search '{qtext}' took {:.1?} over {} items", started.elapsed(), cat.len() + port.len());
+            eprintln!(
+                "winseek: launch search '{qtext}' took {:.1?} over {} items",
+                started.elapsed(),
+                cat.len() + port.len()
+            );
         }
         scored
             .into_iter()
-            .map(|h| LaunchHit { item: item_at(h.idx).clone(), score: h.score, ranges: h.ranges, confirm: h.confirm })
+            .map(|h| LaunchHit {
+                item: item_at(h.idx).clone(),
+                score: h.score,
+                ranges: h.ranges,
+                confirm: h.confirm,
+            })
             .collect()
     }
 
     pub fn counts(&self) -> LaunchCounts {
         let cat = self.cat.read().unwrap_or_else(|e| e.into_inner());
         let portable = if self.cfg.read().unwrap_or_else(|e| e.into_inner()).portable {
-            self.portable.read().unwrap_or_else(|e| e.into_inner()).len()
+            self.portable
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .len()
         } else {
             0
         };
@@ -321,10 +391,21 @@ impl Launcher {
     }
 
     pub fn get_item(&self, id: &str) -> Option<LaunchItem> {
-        if let Some(i) = self.cat.read().unwrap_or_else(|e| e.into_inner()).iter().find(|i| i.id == id) {
+        if let Some(i) = self
+            .cat
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|i| i.id == id)
+        {
             return Some(i.clone());
         }
-        self.portable.read().unwrap_or_else(|e| e.into_inner()).iter().find(|i| i.id == id).cloned()
+        self.portable
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .find(|i| i.id == id)
+            .cloned()
     }
 
     pub fn get_config(&self) -> LaunchCfg {
@@ -370,7 +451,10 @@ impl Launcher {
     }
 
     pub fn record(&self, query: &str, id: &str) {
-        self.hist.lock().unwrap_or_else(|e| e.into_inner()).record(query, id);
+        self.hist
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .record(query, id);
         self.hist_dirty.store(true, Ordering::Relaxed);
     }
 
@@ -396,12 +480,20 @@ impl Launcher {
     /// the new one is complete, so searching continues against the old one meanwhile.
     fn rebuild_blocking(&self) {
         let cfg = self.cfg.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let opts = AppOpts { hide_uninstallers: cfg.hide_uninstallers, folders: cfg.folders.clone(), path: cfg.path };
+        let opts = AppOpts {
+            hide_uninstallers: cfg.hide_uninstallers,
+            folders: cfg.folders.clone(),
+            path: cfg.path,
+        };
         let mut items = apps::enumerate(&opts);
         aliases::apply(&mut items, &cfg.aliases);
         items.extend(settings::catalog(settings::os_build()));
         items.extend(syscmd::catalog(syscmd::hibernate_available()));
-        let cache: Vec<LaunchItem> = items.iter().filter(|i| i.kind == Kind::App).cloned().collect();
+        let cache: Vec<LaunchItem> = items
+            .iter()
+            .filter(|i| i.kind == Kind::App)
+            .cloned()
+            .collect();
         *self.cat.write().unwrap_or_else(|e| e.into_inner()) = Arc::new(items);
         self.refresh_portable(); // a portable exe that just got a Start-menu entry stops showing twice
         match serde_json::to_vec(&cache) {
@@ -454,7 +546,10 @@ pub fn spawn_rebuild(app: &AppHandle) {
             let st = app.state::<Launcher>();
             st.rebuild_blocking();
             st.rebuilding.store(false, Ordering::SeqCst);
-            eprintln!("winseek: launch catalog rebuilt in {:.1?}", started.elapsed());
+            eprintln!(
+                "winseek: launch catalog rebuilt in {:.1?}",
+                started.elapsed()
+            );
             let _ = app.emit("launch-catalog-changed", ());
         })
         .map_err(|e| eprintln!("winseek: spawning launch rebuild: {e}"))
@@ -479,8 +574,8 @@ fn watch_start_menu_dir(dir: String, app: AppHandle) {
     use windows::Win32::Storage::FileSystem::{
         CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
         FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
-        FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE, FILE_SHARE_READ,
-        FILE_SHARE_WRITE, OPEN_EXISTING,
+        FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
     };
     loop {
         let w = crate::shell::wide(&dir);
@@ -543,15 +638,26 @@ fn watch_start_menu_dir(dir: String, app: AppHandle) {
 // ---------- Tauri commands ----------
 
 #[tauri::command]
-pub fn launch_search(state: tauri::State<'_, Launcher>, query: String, limit: usize) -> Vec<LaunchHit> {
+pub fn launch_search(
+    state: tauri::State<'_, Launcher>,
+    query: String,
+    limit: usize,
+) -> Vec<LaunchHit> {
     state.search(&query, limit)
 }
 
 #[tauri::command]
-pub async fn launch_run(app: AppHandle, id: String, query: String, admin: bool) -> Result<(), String> {
+pub async fn launch_run(
+    app: AppHandle,
+    id: String,
+    query: String,
+    admin: bool,
+) -> Result<(), String> {
     crate::commands::blocking(move || {
         let st = app.state::<Launcher>();
-        let item = st.get_item(&id).ok_or_else(|| format!("unknown launch id {id}"))?;
+        let item = st
+            .get_item(&id)
+            .ok_or_else(|| format!("unknown launch id {id}"))?;
         // A refused UAC comes back as Ok with nothing launched; recording the attempt is what
         // Flow does too (the user did ask for it), so any Ok records the selection.
         let launched = run::run_item(&item, admin);
@@ -572,7 +678,9 @@ pub fn launch_record(state: tauri::State<'_, Launcher>, id: String, query: Strin
 
 #[tauri::command]
 pub fn launch_reindex(app: AppHandle) {
-    app.state::<Launcher>().portable_wake.store(true, Ordering::Relaxed);
+    app.state::<Launcher>()
+        .portable_wake
+        .store(true, Ordering::Relaxed);
     spawn_rebuild(&app);
 }
 
@@ -622,7 +730,9 @@ pub fn launch_counts(state: tauri::State<'_, Launcher>) -> LaunchCounts {
 pub async fn launch_copy(app: AppHandle, id: String) -> Result<(), String> {
     crate::commands::blocking(move || {
         let st = app.state::<Launcher>();
-        let item = st.get_item(&id).ok_or_else(|| format!("unknown launch id {id}"))?;
+        let item = st
+            .get_item(&id)
+            .ok_or_else(|| format!("unknown launch id {id}"))?;
         let target = match &item.target {
             Target::Aumid { aumid, path } => path.clone().unwrap_or_else(|| aumid.clone()),
             Target::Path { path, .. } => path.clone(),
@@ -648,7 +758,9 @@ pub async fn launch_copy(app: AppHandle, id: String) -> Result<(), String> {
 pub async fn launch_reveal(app: AppHandle, id: String) -> Result<(), String> {
     crate::commands::blocking(move || {
         let st = app.state::<Launcher>();
-        let item = st.get_item(&id).ok_or_else(|| format!("unknown launch id {id}"))?;
+        let item = st
+            .get_item(&id)
+            .ok_or_else(|| format!("unknown launch id {id}"))?;
         let target = match &item.target {
             Target::Aumid { path, .. } => path.clone(),
             Target::Path { path, .. } => Some(path.clone()),
@@ -673,7 +785,10 @@ mod tests {
             title: title.into(),
             subtitle: "test".into(),
             keywords: keywords.iter().map(|k| k.to_string()).collect(),
-            target: Target::Path { path: format!("C:\\{id}.exe"), args: None },
+            target: Target::Path {
+                path: format!("C:\\{id}.exe"),
+                args: None,
+            },
             icon: None,
             admin_ok: true,
         }
@@ -705,17 +820,26 @@ mod tests {
             item("app:hidden", Kind::App, "mpv exact hidden", &[]),
             item("app:disabled", Kind::Command, "mpv command disabled", &[]),
         ];
-        let cfg = LaunchCfg { commands: false, hidden: vec!["app:hidden".into()], ..Default::default() };
+        let cfg = LaunchCfg {
+            commands: false,
+            hidden: vec!["app:hidden".into()],
+            ..Default::default()
+        };
         let l = launcher_with(items, cfg);
         let hits = l.search("mpv", 10);
         assert_eq!(hits.first().map(|h| h.item.id.as_str()), Some("app:mpv"));
-        assert!(hits.iter().all(|h| h.item.id != "app:hidden" && h.item.id != "app:disabled"));
+        assert!(hits
+            .iter()
+            .all(|h| h.item.id != "app:hidden" && h.item.id != "app:disabled"));
         assert!(hits.windows(2).all(|w| w[0].score >= w[1].score));
     }
 
     #[test]
     fn history_boost_lifts_a_picked_item() {
-        let items = vec![item("app:a", Kind::App, "alpha", &[]), item("app:b", Kind::App, "alphanumeric tool", &[])];
+        let items = vec![
+            item("app:a", Kind::App, "alpha", &[]),
+            item("app:b", Kind::App, "alphanumeric tool", &[]),
+        ];
         let l = launcher_with(items, LaunchCfg::default());
         l.record("al", "app:b");
         l.record("al", "app:b");
@@ -727,7 +851,9 @@ mod tests {
     fn confirm_flag_follows_the_command() {
         use crate::launch::item::Target;
         let mut shutdown = item("cmd:shutdown", Kind::Command, "Shut down", &[]);
-        shutdown.target = Target::Cmd { name: "shutdown".into() };
+        shutdown.target = Target::Cmd {
+            name: "shutdown".into(),
+        };
         let l = launcher_with(vec![shutdown], LaunchCfg::default());
         let hits = l.search("shut", 10);
         assert_eq!(hits.len(), 1);
@@ -738,21 +864,38 @@ mod tests {
     fn portable_items_are_searchable_and_deduped_against_the_catalog() {
         let mut portable_foo = item(r"app:d:\tools\foo.exe", Kind::App, "Foo", &[]);
         portable_foo.subtitle = r"Portable · D:\Tools".into();
-        portable_foo.target = Target::Path { path: r"D:\Tools\foo.exe".into(), args: None };
+        portable_foo.target = Target::Path {
+            path: r"D:\Tools\foo.exe".into(),
+            args: None,
+        };
         let mut dup = item("app:dup", Kind::App, "Foo Start Menu", &[]);
-        dup.target = Target::Path { path: r"D:\Tools\foo.exe".into(), args: None };
+        dup.target = Target::Path {
+            path: r"D:\Tools\foo.exe".into(),
+            args: None,
+        };
         let l = launcher_with(vec![dup], LaunchCfg::default());
         *l.portable_raw.lock().unwrap() = vec![portable_foo.clone()];
         l.refresh_portable();
-        assert!(l.search("foo", 10).iter().all(|h| h.item.id != portable_foo.id), "covered exe must not show twice");
+        assert!(
+            l.search("foo", 10)
+                .iter()
+                .all(|h| h.item.id != portable_foo.id),
+            "covered exe must not show twice"
+        );
 
         let l = launcher_with(vec![], LaunchCfg::default());
         *l.portable_raw.lock().unwrap() = vec![portable_foo.clone()];
         l.refresh_portable();
-        assert_eq!(l.search("foo", 10).first().map(|h| h.item.id.clone()), Some(portable_foo.id.clone()));
+        assert_eq!(
+            l.search("foo", 10).first().map(|h| h.item.id.clone()),
+            Some(portable_foo.id.clone())
+        );
         assert!(l.get_item(&portable_foo.id).is_some());
         // The settings toggle turns the whole source off.
-        let off = LaunchCfg { portable: false, ..Default::default() };
+        let off = LaunchCfg {
+            portable: false,
+            ..Default::default()
+        };
         *l.cfg.write().unwrap() = off;
         assert!(l.search("foo", 10).is_empty());
     }
@@ -769,7 +912,12 @@ mod tests {
             item("app:term", Kind::App, "Windows Terminal", &["wt"]),
             item("app:macro", Kind::App, "Macro Buttons", &[]),
             item("app:mpc", Kind::App, "Media Player Classic", &["mpc-hc64"]),
-            item("set:hide", Kind::Setting, "Auto hide the taskbar", &["taskbar"]),
+            item(
+                "set:hide",
+                Kind::Setting,
+                "Auto hide the taskbar",
+                &["taskbar"],
+            ),
         ];
         aliases::apply(&mut items, &Default::default());
         let l = launcher_with(items, LaunchCfg::default());
@@ -791,12 +939,21 @@ mod tests {
     fn portable_never_tops_start_menu_app() {
         let mut junk = item("app:d:msbuild", Kind::App, "MsPdbCmf", &["MsPdbCmf"]);
         junk.subtitle = r"Portable · E:\vs_studio\Msbuild\AppxPackage\x86\MsPdbCmf.exe".into();
-        junk.target = Target::Path { path: r"E:\vs_studio\Msbuild\AppxPackage\x86\MsPdbCmf.exe".into(), args: None };
+        junk.target = Target::Path {
+            path: r"E:\vs_studio\Msbuild\AppxPackage\x86\MsPdbCmf.exe".into(),
+            args: None,
+        };
         let mut copy = item("app:d:mpv", Kind::App, "Mpv", &[]);
         copy.subtitle = r"Portable · D:\t\mpv\mpv.exe".into();
-        copy.target = Target::Path { path: r"D:\t\mpv\mpv.exe".into(), args: None };
+        copy.target = Target::Path {
+            path: r"D:\t\mpv\mpv.exe".into(),
+            args: None,
+        };
         let menu = item("app:mpv", Kind::App, "mpv", &["mpv"]);
-        let l = launcher_with(vec![item("app:mpc", Kind::App, "Media Player Classic", &[])], LaunchCfg::default());
+        let l = launcher_with(
+            vec![item("app:mpc", Kind::App, "Media Player Classic", &[])],
+            LaunchCfg::default(),
+        );
         *l.portable_raw.lock().unwrap() = vec![junk, copy.clone()];
         l.refresh_portable();
         let hits = l.search("mpc", 5);
@@ -811,9 +968,15 @@ mod tests {
 
     #[test]
     fn apps_win_ties_over_settings() {
-        let items = vec![item("set:display", Kind::Setting, "Display", &[]), item("app:display", Kind::App, "Display", &[])];
+        let items = vec![
+            item("set:display", Kind::Setting, "Display", &[]),
+            item("app:display", Kind::App, "Display", &[]),
+        ];
         let l = launcher_with(items, LaunchCfg::default());
-        assert_eq!(l.search("display", 10).first().map(|h| h.item.id.as_str()), Some("app:display"));
+        assert_eq!(
+            l.search("display", 10).first().map(|h| h.item.id.as_str()),
+            Some("app:display")
+        );
     }
 
     /// The p99 budget: 1000 searches over a 1500-item catalog must stay well under 2 s.
@@ -821,9 +984,24 @@ mod tests {
     fn search_is_fast_over_a_realistic_catalog() {
         let mut items = Vec::new();
         for i in 0..500 {
-            items.push(item(&format!("app:a{i}"), Kind::App, &format!("App Number {i}"), &["shortcut"]));
-            items.push(item(&format!("set:s{i}"), Kind::Setting, &format!("Setting Page {i}"), &["area", "keywords"]));
-            items.push(item(&format!("cmd:c{i}"), Kind::Command, &format!("Command {i}"), &["power", "action"]));
+            items.push(item(
+                &format!("app:a{i}"),
+                Kind::App,
+                &format!("App Number {i}"),
+                &["shortcut"],
+            ));
+            items.push(item(
+                &format!("set:s{i}"),
+                Kind::Setting,
+                &format!("Setting Page {i}"),
+                &["area", "keywords"],
+            ));
+            items.push(item(
+                &format!("cmd:c{i}"),
+                Kind::Command,
+                &format!("Command {i}"),
+                &["power", "action"],
+            ));
         }
         let l = launcher_with(items, LaunchCfg::default());
         // Wall-clock under `cargo test` is noisy (other tests run in parallel), so take the
@@ -841,7 +1019,11 @@ mod tests {
         // The PRD budget (< 2 ms p99) applies to the shipped release build. Debug builds run
         // ~5x slower and share the CPU with the rest of the suite, so the debug gate is
         // looser — a real regression (e.g. an accidental O(n^2)) blows far past it anyway.
-        let budget = if cfg!(debug_assertions) { Duration::from_secs(6) } else { Duration::from_secs(2) };
+        let budget = if cfg!(debug_assertions) {
+            Duration::from_secs(6)
+        } else {
+            Duration::from_secs(2)
+        };
         assert!(best < budget, "searches took {best:?}");
     }
 }

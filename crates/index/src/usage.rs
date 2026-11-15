@@ -28,7 +28,9 @@ const CATEGORY_EXTS: [(&str, u8); 7] = [
 
 /// Lower-case extension (up to 8 bytes) packed into a `u64`; 0 = none.
 pub fn ext_key(name: &[u8]) -> u64 {
-    let Some(dot) = name.iter().rposition(|&b| b == b'.') else { return 0 };
+    let Some(dot) = name.iter().rposition(|&b| b == b'.') else {
+        return 0;
+    };
     let e = &name[dot + 1..];
     if e.is_empty() || e.len() > EXT_MAX {
         return 0;
@@ -41,7 +43,11 @@ pub fn ext_key(name: &[u8]) -> u64 {
 }
 
 pub fn unpack_ext(k: u64) -> String {
-    (0..EXT_MAX).map(|j| ((k >> (8 * j)) & 0xFF) as u8).take_while(|&b| b != 0).map(|b| b as char).collect()
+    (0..EXT_MAX)
+        .map(|j| ((k >> (8 * j)) & 0xFF) as u8)
+        .take_while(|&b| b != 0)
+        .map(|b| b as char)
+        .collect()
 }
 
 fn cat_table() -> &'static Fx<u64, u8> {
@@ -142,7 +148,11 @@ impl Rollup {
     }
     /// `(bytes, files, folders)` of a folder.
     pub fn totals(&self, d: u32) -> (u64, u64, u64) {
-        (self.bytes[d as usize], self.files[d as usize] as u64, self.folders[d as usize] as u64)
+        (
+            self.bytes[d as usize],
+            self.files[d as usize] as u64,
+            self.folders[d as usize] as u64,
+        )
     }
     pub fn cats_of(&self, d: u32) -> [u64; CATEGORIES] {
         self.cats_bytes(d)
@@ -233,10 +243,14 @@ impl Index {
         }
         // Fold folders into their parents: pre-order from the roots, then in reverse.
         let mut order: Vec<u32> = Vec::with_capacity(nd);
-        let mut stack: Vec<u32> = (0..nd as u32).filter(|&d| parent_dir[d as usize] == NONE).collect();
+        let mut stack: Vec<u32> = (0..nd as u32)
+            .filter(|&d| parent_dir[d as usize] == NONE)
+            .collect();
         while let Some(d) = stack.pop() {
             order.push(d);
-            stack.extend_from_slice(&kd[kd_start[d as usize] as usize..kd_start[d as usize + 1] as usize]);
+            stack.extend_from_slice(
+                &kd[kd_start[d as usize] as usize..kd_start[d as usize + 1] as usize],
+            );
         }
         for &d in order.iter().rev() {
             let p = parent_dir[d as usize];
@@ -252,7 +266,17 @@ impl Index {
                 cats[p][k] = cats[p][k].saturating_add(cd[k]);
             }
         }
-        Rollup { dirs, bytes, files, folders, cats, kd_start, kd, kf_start, kf }
+        Rollup {
+            dirs,
+            bytes,
+            files,
+            folders,
+            cats,
+            kd_start,
+            kd,
+            kf_start,
+            kf,
+        }
     }
 
     /// Resolve `C:\a\b` to a folder id of `ru` (case-insensitive); `C:` / `C:\` is the volume root.
@@ -304,7 +328,8 @@ impl Index {
             }
         }
         for &s in &ru.kf[ru.kf_start[du] as usize..ru.kf_start[du + 1] as usize] {
-            if (s as usize) < n && !self.is_deleted(s) && self.parent(s) == slot && !self.is_dir(s) {
+            if (s as usize) < n && !self.is_deleted(s) && self.parent(s) == slot && !self.is_dir(s)
+            {
                 all.push((self.size(s).unwrap_or(0), s, NONE));
             }
         }
@@ -322,10 +347,24 @@ impl Index {
             .into_iter()
             .map(|(bytes, s, k)| {
                 if k == NONE {
-                    ChildUsage { slot: s, is_dir: false, bytes, files: 1, folders: 0, kind: category_of_key(ext_key(self.name_bytes(s))) }
+                    ChildUsage {
+                        slot: s,
+                        is_dir: false,
+                        bytes,
+                        files: 1,
+                        folders: 0,
+                        kind: category_of_key(ext_key(self.name_bytes(s))),
+                    }
                 } else {
                     let ku = k as usize;
-                    ChildUsage { slot: s, is_dir: true, bytes, files: ru.files[ku] as u64, folders: ru.folders[ku] as u64, kind: argmax(&ru.cats[ku]) }
+                    ChildUsage {
+                        slot: s,
+                        is_dir: true,
+                        bytes,
+                        files: ru.files[ku] as u64,
+                        folders: ru.folders[ku] as u64,
+                        kind: argmax(&ru.cats[ku]),
+                    }
                 }
             })
             .collect();
@@ -333,7 +372,12 @@ impl Index {
     }
 
     /// File types and the biggest files under a folder (walks the subtree).
-    pub fn type_detail(&self, ru: &Rollup, d: u32, top_files: usize) -> (Vec<TypeUsage>, Vec<(u32, u64)>) {
+    pub fn type_detail(
+        &self,
+        ru: &Rollup,
+        d: u32,
+        top_files: usize,
+    ) -> (Vec<TypeUsage>, Vec<(u32, u64)>) {
         let n = self.slots();
         let mut types: Fx<u64, (u64, u64)> = HashMap::default();
         let mut heap: BinaryHeap<Reverse<(u64, u32)>> = BinaryHeap::new();
@@ -349,7 +393,10 @@ impl Index {
                 let t = types.entry(ext_key(self.name_bytes(s))).or_default();
                 t.0 = t.0.saturating_add(sz);
                 t.1 += 1;
-                if top_files > 0 && sz > 0 && (heap.len() < top_files || heap.peek().is_some_and(|r| sz > r.0 .0)) {
+                if top_files > 0
+                    && sz > 0
+                    && (heap.len() < top_files || heap.peek().is_some_and(|r| sz > r.0 .0))
+                {
                     if heap.len() == top_files {
                         heap.pop();
                     }
@@ -359,7 +406,12 @@ impl Index {
         }
         let mut tv: Vec<TypeUsage> = types
             .into_iter()
-            .map(|(k, (bytes, files))| TypeUsage { ext: unpack_ext(k), kind: category_of_key(k), bytes, files })
+            .map(|(k, (bytes, files))| TypeUsage {
+                ext: unpack_ext(k),
+                kind: category_of_key(k),
+                bytes,
+                files,
+            })
             .collect();
         tv.sort_unstable_by(|a, b| b.bytes.cmp(&a.bytes).then(a.ext.cmp(&b.ext)));
         let mut bf: Vec<(u32, u64)> = heap.into_iter().map(|Reverse((sz, s))| (s, sz)).collect();
@@ -369,7 +421,10 @@ impl Index {
 
     /// `(volume letter, folder id)` of every volume root in the roll-up.
     pub fn volume_dirs(&self, ru: &Rollup) -> Vec<(u8, u32)> {
-        self.volumes().iter().filter_map(|v| ru.dir_of_slot(v.root).map(|d| (v.letter, d))).collect()
+        self.volumes()
+            .iter()
+            .filter_map(|v| ru.dir_of_slot(v.root).map(|d| (v.letter, d)))
+            .collect()
     }
 }
 
@@ -397,7 +452,11 @@ mod tests {
         let users = ix.resolve_dir(&ru, r"c:\users").unwrap();
         let l = ix.list_dir(&ru, users, 10);
         assert_eq!((l.bytes, l.files, l.folders), (550, 3, 2));
-        let names: Vec<_> = l.children.iter().map(|c| (ix.name(c.slot).to_string(), c.bytes, c.files, c.folders)).collect();
+        let names: Vec<_> = l
+            .children
+            .iter()
+            .map(|c| (ix.name(c.slot).to_string(), c.bytes, c.files, c.folders))
+            .collect();
         assert_eq!(names[0], ("Pics".into(), 500, 2, 0));
         assert_eq!(names[1], ("notes.txt".into(), 50, 1, 0));
         assert!(names.iter().any(|n| n.0 == "Empty" && n.1 == 0));
@@ -439,7 +498,15 @@ mod tests {
         let ru = ix.rollup();
         let users = ix.resolve_dir(&ru, r"C:\Users").unwrap();
         let (t, big) = ix.type_detail(&ru, users, 5);
-        assert_eq!(t[0], TypeUsage { ext: "jpg".into(), kind: 1, bytes: 500, files: 2 });
+        assert_eq!(
+            t[0],
+            TypeUsage {
+                ext: "jpg".into(),
+                kind: 1,
+                bytes: 500,
+                files: 2
+            }
+        );
         assert_eq!(ix.name(big[0].0), "a.JPG");
         assert_eq!(category("mp4"), 2);
         assert_eq!(category("zzz"), 0);
@@ -468,18 +535,40 @@ mod tests {
         for i in 0..5_000_000u64 {
             frn += 1;
             let p = dirs[(i * 40503 % dirs.len() as u64) as usize];
-            b.push(b'C', frn, p, &format!("file{i}.{}", ["jpg", "mp4", "dll", "txt"][(i % 4) as usize]), false, 1000 + i % 90000, 0);
+            b.push(
+                b'C',
+                frn,
+                p,
+                &format!("file{i}.{}", ["jpg", "mp4", "dll", "txt"][(i % 4) as usize]),
+                false,
+                1000 + i % 90000,
+                0,
+            );
         }
         let ix = b.finish();
         let t = std::time::Instant::now();
         let ru = ix.rollup();
-        println!("rollup of {} records: {:?} ({} MB)", ix.slots(), t.elapsed(), ru.mem_bytes() >> 20);
+        println!(
+            "rollup of {} records: {:?} ({} MB)",
+            ix.slots(),
+            t.elapsed(),
+            ru.mem_bytes() >> 20
+        );
         let t = std::time::Instant::now();
         let root = ix.resolve_dir(&ru, "C:\\").unwrap();
         let l = ix.list_dir(&ru, root, 400);
-        println!("resolve + list root ({} kids): {:?}", l.children.len(), t.elapsed());
+        println!(
+            "resolve + list root ({} kids): {:?}",
+            l.children.len(),
+            t.elapsed()
+        );
         let t = std::time::Instant::now();
         let (ty, big) = ix.type_detail(&ru, root, 100);
-        println!("type detail: {:?} ({} types, {} big)", t.elapsed(), ty.len(), big.len());
+        println!(
+            "type detail: {:?} ({} types, {} big)",
+            t.elapsed(),
+            ty.len(),
+            big.len()
+        );
     }
 }

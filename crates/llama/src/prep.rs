@@ -84,9 +84,12 @@ pub fn sniff(bytes: &[u8]) -> Sniff {
         Sniff::Picture(Format::Bmp)
     } else if head.len() >= 12 && &head[..4] == b"RIFF" && &head[8..12] == b"WEBP" {
         Sniff::Picture(Format::Webp)
-    } else if head.starts_with(&[b'I', b'I', 42, 0]) || head.starts_with(&[b'M', b'M', 0, 42]) || head.starts_with(&[0, 0, 1, 0]) || head.starts_with(&[0x49, 0x49, 0xBC]) {
-        Sniff::OsPicture
-    } else if head.len() >= 12 && &head[4..8] == b"ftyp" && [&b"heic"[..], b"heix", b"hevc", b"mif1", b"msf1", b"avif", b"avis"].contains(&&head[8..12]) {
+    } else if head.starts_with(&[b'I', b'I', 42, 0])
+        || head.starts_with(&[b'M', b'M', 0, 42])
+        || head.starts_with(&[0, 0, 1, 0])
+        || head.starts_with(&[0x49, 0x49, 0xBC])
+        || heic_brand(head)
+    {
         Sniff::OsPicture
     } else if looks_like_text(head) {
         Sniff::Text
@@ -99,6 +102,22 @@ fn plain(t: &str) -> bool {
     !t.chars().any(|c| c.is_control() && !c.is_whitespace())
 }
 
+/// ISO base-media brands (HEIC family) travel in the ftyp box at offset 4.
+fn heic_brand(head: &[u8]) -> bool {
+    head.len() >= 12
+        && &head[4..8] == b"ftyp"
+        && [
+            &b"heic"[..],
+            b"heix",
+            b"hevc",
+            b"mif1",
+            b"msf1",
+            b"avif",
+            b"avis",
+        ]
+        .contains(&&head[8..12])
+}
+
 /// Markup or prose: a UTF-8 (or UTF-16 BOM) head without control bytes.
 fn looks_like_text(head: &[u8]) -> bool {
     let body = head.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(head);
@@ -108,7 +127,10 @@ fn looks_like_text(head: &[u8]) -> bool {
     match std::str::from_utf8(body) {
         Ok(t) => plain(t),
         // a multi-byte character cut at the end of the head is still text
-        Err(e) => e.error_len().is_none() && std::str::from_utf8(&body[..e.valid_up_to()]).is_ok_and(plain),
+        Err(e) => {
+            e.error_len().is_none()
+                && std::str::from_utf8(&body[..e.valid_up_to()]).is_ok_and(plain)
+        }
     }
 }
 
@@ -118,7 +140,11 @@ pub fn embedded_picture_offset(bytes: &[u8]) -> Option<usize> {
     let head = &bytes[..bytes.len().min(80)];
     (1..64.min(head.len())).find(|&i| {
         let t = &head[i..];
-        t.starts_with(&[0xFF, 0xD8, 0xFF, 0xE0]) || t.starts_with(&[0xFF, 0xD8, 0xFF, 0xE1]) || t.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A]) || t.starts_with(b"GIF89a") || t.starts_with(b"GIF87a")
+        t.starts_with(&[0xFF, 0xD8, 0xFF, 0xE0])
+            || t.starts_with(&[0xFF, 0xD8, 0xFF, 0xE1])
+            || t.starts_with(&[0x89, b'P', b'N', b'G', 0x0D, 0x0A, 0x1A, 0x0A])
+            || t.starts_with(b"GIF89a")
+            || t.starts_with(b"GIF87a")
     })
 }
 
@@ -129,14 +155,22 @@ pub enum PrepError {
     NotPicture(&'static str),
     /// The `image` crate could not decode it. `sniff` says what the bytes claim to be; the caller may
     /// try the OS codecs. `too_big` = the decoder hit its memory limit (decode it scaled down instead).
-    Undecodable { sniff: Sniff, detail: String, too_big: bool },
+    Undecodable {
+        sniff: Sniff,
+        detail: String,
+        too_big: bool,
+    },
 }
 
 /// Only the first frame of a GIF, ignoring whatever follows (or breaks later in the stream).
 fn gif_first_frame(bytes: &[u8]) -> Result<DynamicImage, String> {
     use image::AnimationDecoder;
     let dec = image::codecs::gif::GifDecoder::new(Cursor::new(bytes)).map_err(|e| e.to_string())?;
-    let frame = dec.into_frames().next().ok_or_else(|| "no frame".to_string())?.map_err(|e| e.to_string())?;
+    let frame = dec
+        .into_frames()
+        .next()
+        .ok_or_else(|| "no frame".to_string())?
+        .map_err(|e| e.to_string())?;
     Ok(DynamicImage::ImageRgba8(frame.into_buffer()))
 }
 
@@ -163,13 +197,23 @@ pub fn prepare_jpeg_checked(bytes: &[u8], long_side: u32) -> Result<Vec<u8>, Pre
                 if let Ok(img) = gif_first_frame(bytes) {
                     let img = canonicalise_to(img, long_side);
                     let mut out = Vec::new();
-                    if image::codecs::jpeg::JpegEncoder::new_with_quality(Cursor::new(&mut out), JPEG_QUALITY).encode_image(&to_rgb_on_white(&img)).is_ok() {
+                    if image::codecs::jpeg::JpegEncoder::new_with_quality(
+                        Cursor::new(&mut out),
+                        JPEG_QUALITY,
+                    )
+                    .encode_image(&to_rgb_on_white(&img))
+                    .is_ok()
+                    {
                         return Ok(out);
                     }
                 }
             }
             let l = first.to_ascii_lowercase();
-            Err(PrepError::Undecodable { sniff: kind, too_big: l.contains("memory limit") || l.contains("limits"), detail: first })
+            Err(PrepError::Undecodable {
+                sniff: kind,
+                too_big: l.contains("memory limit") || l.contains("limits"),
+                detail: first,
+            })
         }
     }
 }
@@ -191,37 +235,71 @@ mod tests {
     use super::*;
 
     fn png(w: u32, h: u32, seed: u8) -> Vec<u8> {
-        let img = RgbImage::from_fn(w, h, |x, y| image::Rgb([seed, (x % 251) as u8, (y % 251) as u8]));
+        let img = RgbImage::from_fn(w, h, |x, y| {
+            image::Rgb([seed, (x % 251) as u8, (y % 251) as u8])
+        });
         let mut out = Vec::new();
-        DynamicImage::ImageRgb8(img).write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        DynamicImage::ImageRgb8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Png)
+            .unwrap();
         out
     }
 
     #[test]
     fn sniffing_reads_content_not_names() {
         assert_eq!(sniff(&png(4, 4, 1)), Sniff::Picture(Format::Png));
-        assert_eq!(sniff(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]), Sniff::Picture(Format::Jpeg));
+        assert_eq!(
+            sniff(&[0xFF, 0xD8, 0xFF, 0xE0, 0, 0x10]),
+            Sniff::Picture(Format::Jpeg)
+        );
         assert_eq!(sniff(b"GIF89a\x01\x00"), Sniff::Picture(Format::Gif));
-        assert_eq!(sniff(b"RIFF\x10\0\0\0WEBPVP8 "), Sniff::Picture(Format::Webp));
+        assert_eq!(
+            sniff(b"RIFF\x10\0\0\0WEBPVP8 "),
+            Sniff::Picture(Format::Webp)
+        );
         assert_eq!(sniff(b"II*\0\x08\0\0\0"), Sniff::OsPicture);
         assert_eq!(sniff(b"\0\0\0\x18ftypheic\0\0\0\0"), Sniff::OsPicture);
         assert_eq!(sniff(b""), Sniff::Empty);
         assert_eq!(sniff(&[0u8; 5000]), Sniff::Empty);
-        assert_eq!(sniff(b"<!DOCTYPE html><html><body>404</body></html>"), Sniff::Text);
+        assert_eq!(
+            sniff(b"<!DOCTYPE html><html><body>404</body></html>"),
+            Sniff::Text
+        );
         assert_eq!(sniff(b"\xEF\xBB\xBF<?xml version=\"1.0\"?>"), Sniff::Text);
-        assert_eq!(sniff(&[0x13, 0x37, 0xFF, 0x01, 0x02, 0x80, 0x90]), Sniff::Unknown);
+        assert_eq!(
+            sniff(&[0x13, 0x37, 0xFF, 0x01, 0x02, 0x80, 0x90]),
+            Sniff::Unknown
+        );
     }
 
     #[test]
     fn non_pictures_are_not_failures() {
-        assert_eq!(prepare_jpeg_checked(b"", 768), Err(PrepError::NotPicture("empty_file")));
-        assert_eq!(prepare_jpeg_checked(b"<html>Not found</html>", 768), Err(PrepError::NotPicture("not_an_image")));
+        assert_eq!(
+            prepare_jpeg_checked(b"", 768),
+            Err(PrepError::NotPicture("empty_file"))
+        );
+        assert_eq!(
+            prepare_jpeg_checked(b"<html>Not found</html>", 768),
+            Err(PrepError::NotPicture("not_an_image"))
+        );
         assert!(prepare_jpeg_checked(&png(40, 30, 3), 768).is_ok());
         // a picture cut short is undecodable, not "not a picture"
         let cut = &png(300, 300, 3)[..60];
-        assert!(matches!(prepare_jpeg_checked(cut, 768), Err(PrepError::Undecodable { sniff: Sniff::Picture(Format::Png), .. })));
+        assert!(matches!(
+            prepare_jpeg_checked(cut, 768),
+            Err(PrepError::Undecodable {
+                sniff: Sniff::Picture(Format::Png),
+                ..
+            })
+        ));
         // unknown signature: handed back so the OS codecs get a try
-        assert!(matches!(prepare_jpeg_checked(&[0x13, 0x37, 0xFF, 1, 2, 0x80, 0x90], 768), Err(PrepError::Undecodable { sniff: Sniff::Unknown, .. })));
+        assert!(matches!(
+            prepare_jpeg_checked(&[0x13, 0x37, 0xFF, 1, 2, 0x80, 0x90], 768),
+            Err(PrepError::Undecodable {
+                sniff: Sniff::Unknown,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -232,13 +310,23 @@ mod tests {
         assert_eq!(embedded_picture_offset(&wrapped), Some(16));
         let j = prepare_jpeg_checked(&wrapped, 768).expect("decodes from the signature");
         assert_eq!(image::load_from_memory(&j).unwrap().dimensions(), (30, 20));
-        assert_eq!(embedded_picture_offset(&png(4, 4, 1)), None, "offset 0 is not a wrapper");
+        assert_eq!(
+            embedded_picture_offset(&png(4, 4, 1)),
+            None,
+            "offset 0 is not a wrapper"
+        );
     }
 
     #[test]
     fn a_gif_with_a_broken_tail_still_gives_its_first_frame() {
         use image::codecs::gif::GifEncoder;
-        let frame = |c: u8| image::Frame::new(image::RgbaImage::from_pixel(8, 6, image::Rgba([c, 10, 200, 255])));
+        let frame = |c: u8| {
+            image::Frame::new(image::RgbaImage::from_pixel(
+                8,
+                6,
+                image::Rgba([c, 10, 200, 255]),
+            ))
+        };
         let mut gif = Vec::new();
         {
             let mut enc = GifEncoder::new(&mut gif);
@@ -268,9 +356,11 @@ mod tests {
 
     #[test]
     fn long_side_is_a_parameter() {
-        let back = image::load_from_memory(&prepare_jpeg_long(&png(3000, 1500, 2), 1024).unwrap()).unwrap();
+        let back = image::load_from_memory(&prepare_jpeg_long(&png(3000, 1500, 2), 1024).unwrap())
+            .unwrap();
         assert_eq!(back.dimensions(), (1024, 512));
-        let small = image::load_from_memory(&prepare_jpeg_long(&png(600, 300, 2), 1024).unwrap()).unwrap();
+        let small =
+            image::load_from_memory(&prepare_jpeg_long(&png(600, 300, 2), 1024).unwrap()).unwrap();
         assert_eq!(small.dimensions(), (600, 300), "never upscale");
     }
 
@@ -283,8 +373,12 @@ mod tests {
         // alpha PNG is flattened onto white
         let rgba = image::RgbaImage::from_pixel(4, 4, image::Rgba([0, 0, 0, 0]));
         let mut b = Vec::new();
-        DynamicImage::ImageRgba8(rgba).write_to(&mut Cursor::new(&mut b), image::ImageFormat::Png).unwrap();
-        let flat = image::load_from_memory(&prepare_jpeg(&b).unwrap()).unwrap().to_rgb8();
+        DynamicImage::ImageRgba8(rgba)
+            .write_to(&mut Cursor::new(&mut b), image::ImageFormat::Png)
+            .unwrap();
+        let flat = image::load_from_memory(&prepare_jpeg(&b).unwrap())
+            .unwrap()
+            .to_rgb8();
         assert!(flat.get_pixel(1, 1).0.iter().all(|&c| c > 240));
     }
 }

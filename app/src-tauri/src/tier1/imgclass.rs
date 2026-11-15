@@ -61,20 +61,38 @@ fn norm(path: &str) -> String {
 fn floor_len(path: &str, roots: &[String]) -> usize {
     let best = roots
         .iter()
-        .filter(|r| path.len() > r.len() && path.starts_with(r.as_str()) && path.as_bytes()[r.len()] == b'\\')
+        .filter(|r| {
+            path.len() > r.len()
+                && path.starts_with(r.as_str())
+                && path.as_bytes()[r.len()] == b'\\'
+        })
         .map(|r| r.len())
         .max();
-    best.unwrap_or_else(|| path.match_indices('\\').nth(1).map_or(path.len(), |(i, _)| i))
+    best.unwrap_or_else(|| {
+        path.match_indices('\\')
+            .nth(1)
+            .map_or(path.len(), |(i, _)| i)
+    })
 }
 
 /// The folders above `path` that may be judged: every ancestor strictly below the floor.
 fn ancestors(path: &str, floor: usize) -> impl Iterator<Item = &str> {
-    path.match_indices('\\').map(|(i, _)| i).filter(move |i| *i > floor).map(move |i| &path[..i])
+    path.match_indices('\\')
+        .map(|(i, _)| i)
+        .filter(move |i| *i > floor)
+        .map(move |i| &path[..i])
 }
 
 /// One class per item, in order. `roots` are the indexed folders (the scopes' include list).
-pub fn classify(items: &[(&str, Option<(u32, u32)>)], roots: &[String], screenshots_dir: Option<&str>) -> Vec<ImgClass> {
-    let roots: Vec<String> = roots.iter().map(|r| norm(r).trim_end_matches('\\').to_string()).collect();
+pub fn classify(
+    items: &[(&str, Option<(u32, u32)>)],
+    roots: &[String],
+    screenshots_dir: Option<&str>,
+) -> Vec<ImgClass> {
+    let roots: Vec<String> = roots
+        .iter()
+        .map(|r| norm(r).trim_end_matches('\\').to_string())
+        .collect();
     let paths: Vec<String> = items.iter().map(|(p, _)| norm(p)).collect();
     let floors: Vec<usize> = paths.iter().map(|p| floor_len(p, &roots)).collect();
 
@@ -88,7 +106,10 @@ pub fn classify(items: &[(&str, Option<(u32, u32)>)], roots: &[String], screensh
             e.1 += small;
         }
     }
-    let asset = |d: &str| dirs.get(d).is_some_and(|(n, s)| *n >= ASSET_DIR_MIN && s * ASSET_DIR_DEN >= n * ASSET_DIR_NUM);
+    let asset = |d: &str| {
+        dirs.get(d)
+            .is_some_and(|(n, s)| *n >= ASSET_DIR_MIN && s * ASSET_DIR_DEN >= n * ASSET_DIR_NUM)
+    };
 
     items
         .iter()
@@ -110,7 +131,10 @@ mod tests {
     use super::*;
 
     fn roots() -> Vec<String> {
-        vec![r"C:\Users\Me\Documents".into(), r"C:\Users\Me\Pictures".into()]
+        vec![
+            r"C:\Users\Me\Documents".into(),
+            r"C:\Users\Me\Pictures".into(),
+        ]
     }
 
     #[test]
@@ -120,7 +144,10 @@ mod tests {
         assert!(is_small(Some((1600, 120))), "a banner");
         assert!(!is_small(Some((450, 747))), "a phone capture of a document");
         assert!(!is_small(Some((287, 1600))), "a long chat screenshot");
-        assert!(!is_small(Some((0, 0))) && !is_small(None), "unknown is not small");
+        assert!(
+            !is_small(Some((0, 0))) && !is_small(None),
+            "unknown is not small"
+        );
     }
 
     #[test]
@@ -128,39 +155,94 @@ mod tests {
         let items = [
             (r"C:\Users\Me\Pictures\cat.jpg", Some((4000, 3000))),
             (r"C:\Users\Me\Pictures\logo.png", Some((64, 64))),
-            (r"C:\Users\Me\Pictures\Screenshots\Screenshot (3).png", Some((1920, 1080))),
+            (
+                r"C:\Users\Me\Pictures\Screenshots\Screenshot (3).png",
+                Some((1920, 1080)),
+            ),
             (r"C:\Users\Me\Pictures\gone.jpg", None),
         ];
         let c = classify(&items, &roots(), None);
-        assert_eq!(c, [ImgClass::Photo, ImgClass::Graphic, ImgClass::Screenshot, ImgClass::Photo]);
+        assert_eq!(
+            c,
+            [
+                ImgClass::Photo,
+                ImgClass::Graphic,
+                ImgClass::Screenshot,
+                ImgClass::Photo
+            ]
+        );
     }
 
     #[test]
     fn an_asset_folder_takes_its_big_images_with_it() {
-        let mut owned: Vec<(String, Option<(u32, u32)>)> =
-            (0..20).map(|i| (format!(r"C:\Users\Me\Documents\Game\graphics\logos\{i}.png"), Some((180, 180)))).collect();
-        owned.push((r"C:\Users\Me\Documents\Game\graphics\backgrounds\stadium.png".into(), Some((1920, 1080))));
+        let mut owned: Vec<(String, Option<(u32, u32)>)> = (0..20)
+            .map(|i| {
+                (
+                    format!(r"C:\Users\Me\Documents\Game\graphics\logos\{i}.png"),
+                    Some((180, 180)),
+                )
+            })
+            .collect();
+        owned.push((
+            r"C:\Users\Me\Documents\Game\graphics\backgrounds\stadium.png".into(),
+            Some((1920, 1080)),
+        ));
         owned.push((r"C:\Users\Me\Documents\scan.jpg".into(), Some((2480, 3508))));
-        let items: Vec<(&str, Option<(u32, u32)>)> = owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let items: Vec<(&str, Option<(u32, u32)>)> =
+            owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
         let c = classify(&items, &roots(), None);
         assert!(c[..20].iter().all(|x| *x == ImgClass::Graphic));
-        assert_eq!(c[20], ImgClass::Graphic, "a screen-sized background inside a graphics pack is not a screenshot");
-        assert_eq!(c[21], ImgClass::Photo, "the indexed root itself is never judged as one folder");
+        assert_eq!(
+            c[20],
+            ImgClass::Graphic,
+            "a screen-sized background inside a graphics pack is not a screenshot"
+        );
+        assert_eq!(
+            c[21],
+            ImgClass::Photo,
+            "the indexed root itself is never judged as one folder"
+        );
     }
 
     #[test]
     fn a_few_small_files_do_not_condemn_a_folder() {
-        let mut owned: Vec<(String, Option<(u32, u32)>)> =
-            (0..5).map(|i| (format!(r"C:\Users\Me\Pictures\Trip\thumb{i}.png"), Some((100, 100)))).collect();
-        owned.push((r"C:\Users\Me\Pictures\Trip\beach.jpg".into(), Some((4000, 3000))));
-        let items: Vec<(&str, Option<(u32, u32)>)> = owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let mut owned: Vec<(String, Option<(u32, u32)>)> = (0..5)
+            .map(|i| {
+                (
+                    format!(r"C:\Users\Me\Pictures\Trip\thumb{i}.png"),
+                    Some((100, 100)),
+                )
+            })
+            .collect();
+        owned.push((
+            r"C:\Users\Me\Pictures\Trip\beach.jpg".into(),
+            Some((4000, 3000)),
+        ));
+        let items: Vec<(&str, Option<(u32, u32)>)> =
+            owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
         let c = classify(&items, &roots(), None);
-        assert_eq!(c[5], ImgClass::Photo, "below ASSET_DIR_MIN images the folder mix is not trusted");
+        assert_eq!(
+            c[5],
+            ImgClass::Photo,
+            "below ASSET_DIR_MIN images the folder mix is not trusted"
+        );
         // mostly big pictures: the folder stays personal however many there are
-        let mut owned: Vec<(String, Option<(u32, u32)>)> =
-            (0..30).map(|i| (format!(r"C:\Users\Me\Pictures\Trip\p{i}.jpg"), Some((4000, 3000)))).collect();
-        owned.extend((0..10).map(|i| (format!(r"C:\Users\Me\Pictures\Trip\t{i}.png"), Some((100, 100)))));
-        let items: Vec<(&str, Option<(u32, u32)>)> = owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let mut owned: Vec<(String, Option<(u32, u32)>)> = (0..30)
+            .map(|i| {
+                (
+                    format!(r"C:\Users\Me\Pictures\Trip\p{i}.jpg"),
+                    Some((4000, 3000)),
+                )
+            })
+            .collect();
+        owned.extend((0..10).map(|i| {
+            (
+                format!(r"C:\Users\Me\Pictures\Trip\t{i}.png"),
+                Some((100, 100)),
+            )
+        }));
+        let items: Vec<(&str, Option<(u32, u32)>)> =
+            owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
         let c = classify(&items, &roots(), None);
         assert!(c[..30].iter().all(|x| *x == ImgClass::Photo));
         assert!(c[30..].iter().all(|x| *x == ImgClass::Graphic));
@@ -168,10 +250,17 @@ mod tests {
 
     #[test]
     fn outside_every_root_the_first_two_components_are_the_floor() {
-        let owned: Vec<(String, Option<(u32, u32)>)> =
-            (0..20).map(|i| (format!(r"D:\Stuff\{i}.png"), Some((16, 16)))).chain([(r"D:\Stuff\big.jpg".to_string(), Some((3000, 2000)))]).collect();
-        let items: Vec<(&str, Option<(u32, u32)>)> = owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
+        let owned: Vec<(String, Option<(u32, u32)>)> = (0..20)
+            .map(|i| (format!(r"D:\Stuff\{i}.png"), Some((16, 16))))
+            .chain([(r"D:\Stuff\big.jpg".to_string(), Some((3000, 2000)))])
+            .collect();
+        let items: Vec<(&str, Option<(u32, u32)>)> =
+            owned.iter().map(|(p, d)| (p.as_str(), *d)).collect();
         let c = classify(&items, &roots(), None);
-        assert_eq!(c[20], ImgClass::Photo, r"D:\Stuff is the floor, not a judged folder");
+        assert_eq!(
+            c[20],
+            ImgClass::Photo,
+            r"D:\Stuff is the floor, not a judged folder"
+        );
     }
 }

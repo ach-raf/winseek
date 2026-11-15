@@ -19,7 +19,10 @@ pub const PROBE_MIN_COS: f32 = 0.999;
 impl IndexMeta {
     /// Everything except the llama.cpp build matches: the vectors *should* be the same.
     pub fn same_but_build(&self, other: &IndexMeta) -> bool {
-        self.model_id == other.model_id && self.quant == other.quant && self.image_budget == other.image_budget && self.dims == other.dims
+        self.model_id == other.model_id
+            && self.quant == other.quant
+            && self.image_budget == other.image_budget
+            && self.dims == other.dims
     }
 }
 
@@ -35,7 +38,10 @@ pub fn drift(stored: &[Vec<f32>], fresh: &[Vec<f32>]) -> Option<f32> {
             return None;
         }
         let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
-        let (na, nb) = (a.iter().map(|x| x * x).sum::<f32>().sqrt(), b.iter().map(|x| x * x).sum::<f32>().sqrt());
+        let (na, nb) = (
+            a.iter().map(|x| x * x).sum::<f32>().sqrt(),
+            b.iter().map(|x| x * x).sum::<f32>().sqrt(),
+        );
         if na < 1e-9 || nb < 1e-9 {
             return None;
         }
@@ -75,7 +81,10 @@ impl Store {
         tx.execute("DELETE FROM ref_vectors", [])?;
         for (i, v) in vecs.iter().enumerate() {
             let blob: Vec<u8> = v.iter().flat_map(|x| x.to_le_bytes()).collect();
-            tx.execute("INSERT INTO ref_vectors(idx, build, vec) VALUES (?1, ?2, ?3)", params![i as i64, build, blob])?;
+            tx.execute(
+                "INSERT INTO ref_vectors(idx, build, vec) VALUES (?1, ?2, ?3)",
+                params![i as i64, build, blob],
+            )?;
         }
         tx.commit()?;
         Ok(())
@@ -83,14 +92,24 @@ impl Store {
 
     /// The reference vectors in probe order (empty when none were stored) and the build that made them.
     pub fn ref_vectors(&self) -> Result<(Option<String>, Vec<Vec<f32>>)> {
-        let mut st = self.conn.prepare_cached("SELECT build, vec FROM ref_vectors ORDER BY idx")?;
-        let rows = st.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?)))?;
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT build, vec FROM ref_vectors ORDER BY idx")?;
+        let rows = st.query_map([], |r| {
+            Ok((r.get::<_, String>(0)?, r.get::<_, Vec<u8>>(1)?))
+        })?;
         let mut build = None;
         let mut out = Vec::new();
         for r in rows {
             let (b, blob) = r?;
             build.get_or_insert(b);
-            out.push(blob.as_chunks::<4>().0.iter().map(|b| f32::from_le_bytes(*b)).collect());
+            out.push(
+                blob.as_chunks::<4>()
+                    .0
+                    .iter()
+                    .map(|b| f32::from_le_bytes(*b))
+                    .collect(),
+            );
         }
         Ok((build, out))
     }
@@ -101,7 +120,10 @@ impl Store {
         if !self.meta.same_but_build(meta) {
             return Ok(false);
         }
-        self.conn.execute("UPDATE index_meta SET llama_build = ?1 WHERE id = 1", [&meta.llama_build])?;
+        self.conn.execute(
+            "UPDATE index_meta SET llama_build = ?1 WHERE id = 1",
+            [&meta.llama_build],
+        )?;
         self.meta = meta.clone();
         Ok(true)
     }
@@ -112,7 +134,13 @@ mod tests {
     use super::*;
 
     fn meta(build: &str) -> IndexMeta {
-        IndexMeta { model_id: "m".into(), llama_build: build.into(), quant: "q".into(), image_budget: 280, dims: 4 }
+        IndexMeta {
+            model_id: "m".into(),
+            llama_build: build.into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        }
     }
 
     #[test]
@@ -131,7 +159,10 @@ mod tests {
     fn verdict_keeps_tiny_noise_and_flags_real_movement() {
         let a = vec![vec![1., 0., 0., 0.]];
         assert!(matches!(verdict(&a, &[vec![1., 0.0001, 0., 0.]]), Verdict::Keep(c) if c > 0.9999));
-        assert!(matches!(verdict(&a, &[vec![0.95, 0.31, 0., 0.]]), Verdict::Moved(_)));
+        assert!(matches!(
+            verdict(&a, &[vec![0.95, 0.31, 0., 0.]]),
+            Verdict::Moved(_)
+        ));
         assert_eq!(verdict(&[], &a), Verdict::NoBaseline);
     }
 
@@ -142,16 +173,33 @@ mod tests {
         {
             let mut s = Store::open(&p, &meta("b1")).unwrap();
             assert_eq!(s.ref_vectors().unwrap(), (None, vec![]));
-            s.set_ref_vectors("b1", &[vec![1., 0., 0., 0.], vec![0., 1., 0., 0.]]).unwrap();
+            s.set_ref_vectors("b1", &[vec![1., 0., 0., 0.], vec![0., 1., 0., 0.]])
+                .unwrap();
             assert!(s.restamp_build(&meta("b2")).unwrap());
             assert_eq!(s.stamp().llama_build, "b2");
-            let other_model = IndexMeta { model_id: "other".into(), ..meta("b3") };
-            assert!(!s.restamp_build(&other_model).unwrap(), "a different model is never a restamp");
+            let other_model = IndexMeta {
+                model_id: "other".into(),
+                ..meta("b3")
+            };
+            assert!(
+                !s.restamp_build(&other_model).unwrap(),
+                "a different model is never a restamp"
+            );
         }
-        assert!(matches!(Store::open(&p, &meta("b1")), Err(crate::Error::MetaMismatch { .. })), "old stamp no longer opens");
+        assert!(
+            matches!(
+                Store::open(&p, &meta("b1")),
+                Err(crate::Error::MetaMismatch { .. })
+            ),
+            "old stamp no longer opens"
+        );
         let s = Store::open(&p, &meta("b2")).unwrap();
         let (build, v) = s.ref_vectors().unwrap();
-        assert_eq!((build.as_deref(), v.len()), (Some("b1"), 2), "the baseline keeps the build that made it");
+        assert_eq!(
+            (build.as_deref(), v.len()),
+            (Some("b1"), 2),
+            "the baseline keeps the build that made it"
+        );
         assert!(meta("b1").same_but_build(&meta("b9")));
     }
 }

@@ -70,7 +70,11 @@ pub fn apply(items: &mut [LaunchItem], user: &BTreeMap<String, String>) {
         }
         for (alias, needle) in user {
             let (alias, needle) = (alias.trim(), needle.trim().to_lowercase());
-            if !alias.is_empty() && !needle.is_empty() && (hay.contains(&needle) || item.id.to_lowercase() == needle) && !has(item, alias) {
+            if !alias.is_empty()
+                && !needle.is_empty()
+                && (hay.contains(&needle) || item.id.to_lowercase() == needle)
+                && !has(item, alias)
+            {
                 item.keywords.push(alias.to_string());
             }
         }
@@ -107,7 +111,10 @@ mod tests {
             title: title.into(),
             subtitle: "Start menu".into(),
             keywords: vec![],
-            target: Target::Path { path: path.into(), args: None },
+            target: Target::Path {
+                path: path.into(),
+                args: None,
+            },
             icon: None,
             admin_ok: true,
         }
@@ -115,7 +122,10 @@ mod tests {
 
     #[test]
     fn builtin_and_user_aliases() {
-        let mut items = vec![app("Adobe Photoshop 2025", r"C:\A\Photoshop.exe"), app("Word", r"C:\O\WINWORD.EXE")];
+        let mut items = vec![
+            app("Adobe Photoshop 2025", r"C:\A\Photoshop.exe"),
+            app("Word", r"C:\O\WINWORD.EXE"),
+        ];
         let mut user = BTreeMap::new();
         user.insert("photo".to_string(), "photoshop".to_string());
         apply(&mut items, &user);

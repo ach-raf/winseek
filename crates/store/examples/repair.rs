@@ -6,12 +6,24 @@
 use winseek_store::{IndexMeta, Store};
 
 fn main() {
-    let path = std::env::args().nth(1).expect("usage: repair <tier1.sqlite>");
+    let path = std::env::args()
+        .nth(1)
+        .expect("usage: repair <tier1.sqlite>");
     let meta = {
         let c = rusqlite::Connection::open(&path).expect("open");
-        c.query_row("SELECT model_id, llama_build, quant, image_budget, dims FROM index_meta WHERE id = 1", [], |r| {
-            Ok(IndexMeta { model_id: r.get(0)?, llama_build: r.get(1)?, quant: r.get(2)?, image_budget: r.get(3)?, dims: r.get(4)? })
-        })
+        c.query_row(
+            "SELECT model_id, llama_build, quant, image_budget, dims FROM index_meta WHERE id = 1",
+            [],
+            |r| {
+                Ok(IndexMeta {
+                    model_id: r.get(0)?,
+                    llama_build: r.get(1)?,
+                    quant: r.get(2)?,
+                    image_budget: r.get(3)?,
+                    dims: r.get(4)?,
+                })
+            },
+        )
         .expect("read index_meta")
     };
     let store = Store::open(&path, &meta).expect("open store");

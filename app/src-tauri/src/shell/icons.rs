@@ -3,9 +3,9 @@
 use super::{shell_item, wide, ComGuard};
 use std::borrow::Cow;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::ffi::c_void;
 use std::path::Path;
-use std::collections::VecDeque;
 use std::path::PathBuf;
 use std::sync::{Arc, Condvar, Mutex, OnceLock};
 use tauri::http::{Request, Response};
@@ -13,13 +13,14 @@ use tauri::UriSchemeResponder;
 use windows::core::{Interface, PCWSTR};
 use windows::Win32::Foundation::SIZE;
 use windows::Win32::Graphics::Gdi::{
-    DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER, BI_RGB,
-    DIB_RGB_COLORS, HBITMAP,
+    DeleteObject, GetDC, GetDIBits, GetObjectW, ReleaseDC, BITMAP, BITMAPINFO, BITMAPINFOHEADER,
+    BI_RGB, DIB_RGB_COLORS, HBITMAP,
 };
 use windows::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_NORMAL};
 use windows::Win32::UI::Shell::{
-    IShellItemImageFactory, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON, SHGFI_SMALLICON,
-    SHGFI_USEFILEATTRIBUTES, SIIGBF_ICONONLY, SIIGBF_RESIZETOFIT, SIIGBF_THUMBNAILONLY,
+    IShellItemImageFactory, SHGetFileInfoW, SHFILEINFOW, SHGFI_ICON, SHGFI_LARGEICON,
+    SHGFI_SMALLICON, SHGFI_USEFILEATTRIBUTES, SIIGBF_ICONONLY, SIIGBF_RESIZETOFIT,
+    SIIGBF_THUMBNAILONLY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{DestroyIcon, GetIconInfo, HICON, ICONINFO};
 
@@ -53,7 +54,11 @@ static CACHE: Mutex<Option<HashMap<String, Arc<Vec<u8>>>>> = Mutex::new(None);
 
 /// Decode workers: cores - 1 (the UI keeps one), between 3 and 8.
 fn workers() -> usize {
-    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(1).clamp(WORKERS, 8)
+    std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(4)
+        .saturating_sub(1)
+        .clamp(WORKERS, 8)
 }
 
 fn next_job(q: &Queue) -> Option<Job> {
@@ -68,19 +73,24 @@ fn next_job(q: &Queue) -> Option<Job> {
 
 fn pool() -> &'static Arc<Queue> {
     POOL.get_or_init(|| {
-        let q = Arc::new(Queue { jobs: Mutex::new(VecDeque::new()), cv: Condvar::new() });
+        let q = Arc::new(Queue {
+            jobs: Mutex::new(VecDeque::new()),
+            cv: Condvar::new(),
+        });
         for i in 0..workers() {
             let q = q.clone();
-            let _ = std::thread::Builder::new().name(format!("wsicon-{i}")).spawn(move || {
-                let _com = ComGuard::init();
-                while let Some(job) = next_job(&q) {
-                    let png = match &job.aumid {
-                        Some(aumid) => render_aumid(aumid, job.size),
-                        None => render(&job.path, job.is_dir, job.size, job.thumb),
-                    };
-                    job.responder.respond(response(png));
-                }
-            });
+            let _ = std::thread::Builder::new()
+                .name(format!("wsicon-{i}"))
+                .spawn(move || {
+                    let _com = ComGuard::init();
+                    while let Some(job) = next_job(&q) {
+                        let png = match &job.aumid {
+                            Some(aumid) => render_aumid(aumid, job.size),
+                            None => render(&job.path, job.is_dir, job.size, job.thumb),
+                        };
+                        job.responder.respond(response(png));
+                    }
+                });
         }
         q
     })
@@ -119,7 +129,14 @@ fn response(png: Option<Arc<Vec<u8>>>) -> Response<Cow<'static, [u8]>> {
     match png {
         Some(p) => b
             .status(200)
-            .header("Content-Type", if p.starts_with(&[0xFF, 0xD8]) { "image/jpeg" } else { "image/png" })
+            .header(
+                "Content-Type",
+                if p.starts_with(&[0xFF, 0xD8]) {
+                    "image/jpeg"
+                } else {
+                    "image/png"
+                },
+            )
             .header("Cache-Control", "max-age=3600")
             .body(Cow::Owned(p.as_ref().clone())),
         None => b.status(404).body(Cow::Borrowed(&[][..])),
@@ -155,13 +172,30 @@ pub(crate) fn query_param(q: &str, key: &str) -> Option<String> {
 
 pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
     let q = req.uri().query().unwrap_or("");
-    let size = query_param(q, "s").and_then(|s| s.parse::<u32>().ok()).unwrap_or(32).clamp(16, 1024);
+    let size = query_param(q, "s")
+        .and_then(|s| s.parse::<u32>().ok())
+        .unwrap_or(32)
+        .clamp(16, 1024);
     let job = if let Some(aumid) = query_param(q, "a").filter(|a| !a.is_empty()) {
-        Job { path: String::new(), aumid: Some(aumid), is_dir: false, size, thumb: false, responder }
+        Job {
+            path: String::new(),
+            aumid: Some(aumid),
+            is_dir: false,
+            size,
+            thumb: false,
+            responder,
+        }
     } else if let Some(path) = query_param(q, "p").filter(|p| !p.is_empty()) {
         let is_dir = query_param(q, "d").as_deref() == Some("1");
         let thumb = query_param(q, "t").as_deref() == Some("1");
-        Job { path, aumid: None, is_dir, size, thumb, responder }
+        Job {
+            path,
+            aumid: None,
+            is_dir,
+            size,
+            thumb,
+            responder,
+        }
     } else {
         return responder.respond(response(None));
     };
@@ -169,7 +203,10 @@ pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
 }
 
 fn ext_of(path: &str) -> String {
-    Path::new(path).extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
+    Path::new(path)
+        .extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default()
 }
 
 /// Cached PNG for a path (generic by extension, or per path for exe/lnk/thumbnails).
@@ -212,7 +249,11 @@ pub(super) fn render_aumid(aumid: &str, size: u32) -> Option<Arc<Vec<u8>>> {
     if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.get(&key)) {
         return Some(hit.clone());
     }
-    let png = Arc::new(path_icon_png(&format!("shell:AppsFolder\\{aumid}"), size, false)?);
+    let png = Arc::new(path_icon_png(
+        &format!("shell:AppsFolder\\{aumid}"),
+        size,
+        false,
+    )?);
     if size > 256 {
         return Some(png);
     }
@@ -232,8 +273,16 @@ pub(super) fn generic_icon_png(ext: &str, is_dir: bool, size: u32) -> Option<Vec
         (false, true) => "file".to_string(),
         (false, false) => format!("file.{ext}"),
     };
-    let attrs = if is_dir { FILE_ATTRIBUTE_DIRECTORY } else { FILE_ATTRIBUTE_NORMAL };
-    let sz = if size <= 16 { SHGFI_SMALLICON } else { SHGFI_LARGEICON };
+    let attrs = if is_dir {
+        FILE_ATTRIBUTE_DIRECTORY
+    } else {
+        FILE_ATTRIBUTE_NORMAL
+    };
+    let sz = if size <= 16 {
+        SHGFI_SMALLICON
+    } else {
+        SHGFI_LARGEICON
+    };
     let w = wide(&name);
     let mut sfi = SHFILEINFOW::default();
     // SAFETY: `w` is NUL-terminated; `sfi` is a valid out struct of the stated size.
@@ -264,11 +313,15 @@ pub(super) fn path_icon_png(path: &str, size: u32, thumb: bool) -> Option<Vec<u8
 fn path_icon_px(path: &str, size: u32, thumb: bool) -> Option<(u32, u32, Vec<u8>)> {
     let item = shell_item(path).ok()?;
     let f: IShellItemImageFactory = item.cast().ok()?;
-    let sz = SIZE { cx: size as i32, cy: size as i32 };
+    let sz = SIZE {
+        cx: size as i32,
+        cy: size as i32,
+    };
     // SAFETY: GetImage returns an owned HBITMAP that BitmapGuard deletes.
     let get = || unsafe {
         if thumb {
-            f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY).or_else(|_| f.GetImage(sz, SIIGBF_RESIZETOFIT))
+            f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY)
+                .or_else(|_| f.GetImage(sz, SIIGBF_RESIZETOFIT))
         } else {
             f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_ICONONLY)
         }
@@ -293,7 +346,10 @@ fn path_icon_px(path: &str, size: u32, thumb: bool) -> Option<(u32, u32, Vec<u8>
         any |= p[3] != 0;
     }
     if !any {
-        px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255);
+        px.as_chunks_mut::<4>()
+            .0
+            .iter_mut()
+            .for_each(|p| p[3] = 255);
     } else {
         // Un-premultiply.
         for p in px.as_chunks_mut::<4>().0.iter_mut() {
@@ -334,7 +390,11 @@ fn bitmap_bgra(hbm: HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     let mut bm = BITMAP::default();
     // SAFETY: `bm` is a BITMAP of the size passed.
     let n = unsafe {
-        GetObjectW(hbm.into(), std::mem::size_of::<BITMAP>() as i32, Some(&mut bm as *mut _ as *mut c_void))
+        GetObjectW(
+            hbm.into(),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bm as *mut _ as *mut c_void),
+        )
     };
     if n == 0 || bm.bmWidth <= 0 || bm.bmHeight == 0 {
         return None;
@@ -356,7 +416,15 @@ fn bitmap_bgra(hbm: HBITMAP) -> Option<(u32, u32, Vec<u8>)> {
     // SAFETY: `buf` holds w*h*4 bytes as required for a top-down 32bpp DIB; the DC is released.
     let lines = unsafe {
         let dc = GetDC(None);
-        let l = GetDIBits(dc, hbm, 0, h, Some(buf.as_mut_ptr() as *mut c_void), &mut bi, DIB_RGB_COLORS);
+        let l = GetDIBits(
+            dc,
+            hbm,
+            0,
+            h,
+            Some(buf.as_mut_ptr() as *mut c_void),
+            &mut bi,
+            DIB_RGB_COLORS,
+        );
         ReleaseDC(None, dc);
         l
     };
@@ -378,13 +446,26 @@ fn icon_rgba(icon: HICON) -> Option<(u32, u32, Vec<u8>)> {
     let mask = (!ii.hbmMask.is_invalid()).then(|| BitmapGuard(ii.hbmMask));
     let (w, h, mut px) = bitmap_bgra(color.as_ref()?.0)?;
     if px.as_chunks::<4>().0.iter().all(|p| p[3] == 0) {
-        match mask.as_ref().and_then(|m| bitmap_bgra(m.0)).filter(|m| m.0 == w && m.1 == h) {
+        match mask
+            .as_ref()
+            .and_then(|m| bitmap_bgra(m.0))
+            .filter(|m| m.0 == w && m.1 == h)
+        {
             Some((_, _, m)) => {
-                for (p, mp) in px.as_chunks_mut::<4>().0.iter_mut().zip(m.as_chunks::<4>().0.iter()) {
+                for (p, mp) in px
+                    .as_chunks_mut::<4>()
+                    .0
+                    .iter_mut()
+                    .zip(m.as_chunks::<4>().0.iter())
+                {
                     p[3] = if mp[0] == 0 { 255 } else { 0 };
                 }
             }
-            None => px.as_chunks_mut::<4>().0.iter_mut().for_each(|p| p[3] = 255),
+            None => px
+                .as_chunks_mut::<4>()
+                .0
+                .iter_mut()
+                .for_each(|p| p[3] = 255),
         }
     }
     bgra_to_rgba(&mut px);
@@ -402,10 +483,14 @@ const DISK_CAP_BYTES: u64 = 600 * 1024 * 1024;
 fn thumb_dir() -> Option<&'static PathBuf> {
     static DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
     DIR.get_or_init(|| {
-        let d = PathBuf::from(std::env::var_os("LOCALAPPDATA")?).join("winseek").join("thumbs");
+        let d = PathBuf::from(std::env::var_os("LOCALAPPDATA")?)
+            .join("winseek")
+            .join("thumbs");
         std::fs::create_dir_all(&d).ok()?;
         let t = d.clone();
-        let _ = std::thread::Builder::new().name("wsicon-trim".into()).spawn(move || trim_dir(&t, DISK_CAP_BYTES));
+        let _ = std::thread::Builder::new()
+            .name("wsicon-trim".into())
+            .spawn(move || trim_dir(&t, DISK_CAP_BYTES));
         Some(d)
     })
     .as_ref()
@@ -413,14 +498,20 @@ fn thumb_dir() -> Option<&'static PathBuf> {
 
 fn thumb_key(path: &str, mtime_ns: u128, len: u64, size: u32) -> String {
     use sha2::{Digest, Sha256};
-    let h = Sha256::digest(format!("v1|{}|{mtime_ns}|{len}|{size}", path.to_lowercase()).as_bytes());
+    let h =
+        Sha256::digest(format!("v1|{}|{mtime_ns}|{len}|{size}", path.to_lowercase()).as_bytes());
     format!("{h:x}")
 }
 
 fn thumb_bytes(path: &str, size: u32) -> Option<Vec<u8>> {
     let file = (|| {
         let meta = std::fs::metadata(path).ok()?;
-        let ns = meta.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
+        let ns = meta
+            .modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_nanos();
         let key = thumb_key(path, ns, meta.len(), size);
         Some(thumb_dir()?.join(&key[..2]).join(format!("{key}.img")))
     })();
@@ -447,7 +538,12 @@ fn thumb_bytes(path: &str, size: u32) -> Option<Vec<u8>> {
 
 /// Fallback when the shell has no picture: decode with the `image` crate and downscale.
 fn decode_small(path: &str, size: u32) -> Option<(u32, u32, Vec<u8>)> {
-    let img = image::ImageReader::open(path).ok()?.with_guessed_format().ok()?.decode().ok()?;
+    let img = image::ImageReader::open(path)
+        .ok()?
+        .with_guessed_format()
+        .ok()?
+        .decode()
+        .ok()?;
     let t = img.thumbnail(size, size).to_rgba8();
     Some((t.width(), t.height(), t.into_raw()))
 }
@@ -471,12 +567,20 @@ fn encode_thumb(w: u32, h: u32, rgba: &[u8]) -> Option<Vec<u8>> {
 /// Keep the cache under `cap` bytes: delete the oldest files first (down to 80%).
 fn trim_dir(dir: &Path, cap: u64) {
     let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
-    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
     for sub in rd.flatten() {
-        let Ok(inner) = std::fs::read_dir(sub.path()) else { continue };
+        let Ok(inner) = std::fs::read_dir(sub.path()) else {
+            continue;
+        };
         for f in inner.flatten() {
             if let Ok(m) = f.metadata() {
-                files.push((m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), f.path()));
+                files.push((
+                    m.modified().unwrap_or(std::time::UNIX_EPOCH),
+                    m.len(),
+                    f.path(),
+                ));
             }
         }
     }
@@ -517,7 +621,11 @@ mod tests {
         let mut buf = vec![0; r.output_buffer_size()];
         let info = r.next_frame(&mut buf).expect("frame");
         assert_eq!(info.color_type, png::ColorType::Rgba);
-        let any = buf[..info.buffer_size()].as_chunks::<4>().0.iter().any(|p| p[3] != 0);
+        let any = buf[..info.buffer_size()]
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .any(|p| p[3] != 0);
         (info.width, info.height, any)
     }
 
@@ -579,7 +687,11 @@ mod tests {
             std::fs::write(sub.join(format!("{i}.img")), vec![0u8; 100]).unwrap();
         }
         trim_dir(&dir, 500);
-        let left: u64 = std::fs::read_dir(&sub).unwrap().flatten().map(|f| f.metadata().unwrap().len()).sum();
+        let left: u64 = std::fs::read_dir(&sub)
+            .unwrap()
+            .flatten()
+            .map(|f| f.metadata().unwrap().len())
+            .sum();
         assert!(left <= 500, "left {left}");
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -611,7 +723,8 @@ mod tests {
         let png = render_aumid("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", 32).expect("icon");
         let (w, h, alpha) = check_png(&png);
         assert!(w >= 16 && h >= 16 && alpha);
-        let cached = render_aumid("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", 32).expect("cached");
+        let cached =
+            render_aumid("Microsoft.WindowsCalculator_8wekyb3d8bbwe!App", 32).expect("cached");
         assert_eq!(png, cached);
     }
 }

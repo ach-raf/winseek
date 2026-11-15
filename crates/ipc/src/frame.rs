@@ -8,7 +8,10 @@ use serde::{de::DeserializeOwned, Serialize};
 pub const MAX_FRAME: usize = 16 * 1024 * 1024;
 
 fn too_big(n: usize) -> io::Error {
-    io::Error::new(io::ErrorKind::InvalidData, format!("frame of {n} bytes exceeds {MAX_FRAME}"))
+    io::Error::new(
+        io::ErrorKind::InvalidData,
+        format!("frame of {n} bytes exceeds {MAX_FRAME}"),
+    )
 }
 
 /// Write one frame (`u32` LE length + body) and flush.
@@ -58,15 +61,27 @@ mod tests {
         let mut c = io::Cursor::new(buf);
         assert_eq!(read_frame(&mut c).unwrap(), b"hello");
         assert_eq!(read_frame(&mut c).unwrap(), b"");
-        assert_eq!(read_frame(&mut c).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            read_frame(&mut c).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[test]
     fn message_roundtrip() {
-        let m = Request::Search { id: 9, query: "x".into(), offset: 1, limit: 2, sort: Sort::NameAsc };
+        let m = Request::Search {
+            id: 9,
+            query: "x".into(),
+            offset: 1,
+            limit: 2,
+            sort: Sort::NameAsc,
+        };
         let mut buf = Vec::new();
         write_message(&mut buf, &m).unwrap();
-        assert_eq!(read_message::<_, Request>(&mut io::Cursor::new(buf)).unwrap(), m);
+        assert_eq!(
+            read_message::<_, Request>(&mut io::Cursor::new(buf)).unwrap(),
+            m
+        );
     }
 
     #[test]
@@ -76,11 +91,17 @@ mod tests {
         let e = read_frame(&mut io::Cursor::new(buf)).unwrap_err();
         assert_eq!(e.kind(), io::ErrorKind::InvalidData);
         let big = vec![0u8; MAX_FRAME + 1];
-        assert_eq!(write_frame(&mut Vec::new(), &big).unwrap_err().kind(), io::ErrorKind::InvalidData);
+        assert_eq!(
+            write_frame(&mut Vec::new(), &big).unwrap_err().kind(),
+            io::ErrorKind::InvalidData
+        );
         let ok = vec![1u8; MAX_FRAME];
         let mut out = Vec::new();
         write_frame(&mut out, &ok).unwrap();
-        assert_eq!(read_frame(&mut io::Cursor::new(out)).unwrap().len(), MAX_FRAME);
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(out)).unwrap().len(),
+            MAX_FRAME
+        );
     }
 
     #[test]
@@ -88,8 +109,16 @@ mod tests {
         let mut buf = Vec::new();
         write_frame(&mut buf, b"abcdef").unwrap();
         buf.truncate(buf.len() - 2);
-        assert_eq!(read_frame(&mut io::Cursor::new(buf)).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
-        assert_eq!(read_frame(&mut io::Cursor::new(vec![1u8, 0])).unwrap_err().kind(), io::ErrorKind::UnexpectedEof);
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(buf)).unwrap_err().kind(),
+            io::ErrorKind::UnexpectedEof
+        );
+        assert_eq!(
+            read_frame(&mut io::Cursor::new(vec![1u8, 0]))
+                .unwrap_err()
+                .kind(),
+            io::ErrorKind::UnexpectedEof
+        );
     }
 
     #[test]

@@ -98,7 +98,13 @@ unsafe fn free_handle(p: *mut c_void) {
     drop(unsafe { Box::from_raw(p as *mut HandleFn) });
 }
 
-extern "system" fn iface_cb(_h: isize, ctx: *mut c_void, action: u32, _data: *const c_void, _size: u32) -> u32 {
+extern "system" fn iface_cb(
+    _h: isize,
+    ctx: *mut c_void,
+    action: u32,
+    _data: *const c_void,
+    _size: u32,
+) -> u32 {
     if ctx.is_null() {
         return 0;
     }
@@ -110,7 +116,13 @@ extern "system" fn iface_cb(_h: isize, ctx: *mut c_void, action: u32, _data: *co
     0 // ERROR_SUCCESS
 }
 
-extern "system" fn handle_cb(_h: isize, ctx: *mut c_void, action: u32, _data: *const c_void, _size: u32) -> u32 {
+extern "system" fn handle_cb(
+    _h: isize,
+    ctx: *mut c_void,
+    action: u32,
+    _data: *const c_void,
+    _size: u32,
+) -> u32 {
     if ctx.is_null() {
         return 0;
     }
@@ -127,7 +139,12 @@ extern "system" fn handle_cb(_h: isize, ctx: *mut c_void, action: u32, _data: *c
     0 // ERROR_SUCCESS: allow the removal
 }
 
-fn register(filter: &CmNotifyFilter, ctx: *mut c_void, cb: CmCallback, free: unsafe fn(*mut c_void)) -> io::Result<Registration> {
+fn register(
+    filter: &CmNotifyFilter,
+    ctx: *mut c_void,
+    cb: CmCallback,
+    free: unsafe fn(*mut c_void),
+) -> io::Result<Registration> {
     let mut h: isize = 0;
     // SAFETY: `filter` is a fully initialised 416-byte CM_NOTIFY_FILTER; `ctx` stays valid until
     // the Registration is dropped; `h` receives the notification handle.
@@ -135,9 +152,15 @@ fn register(filter: &CmNotifyFilter, ctx: *mut c_void, cb: CmCallback, free: uns
     if cr != 0 {
         // SAFETY: registration failed so no callback can reference `ctx`; free it now.
         unsafe { free(ctx) };
-        return Err(io::Error::other(format!("CM_Register_Notification CR {cr}")));
+        return Err(io::Error::other(format!(
+            "CM_Register_Notification CR {cr}"
+        )));
     }
-    Ok(Registration { handle: h, ctx, free })
+    Ok(Registration {
+        handle: h,
+        ctx,
+        free,
+    })
 }
 
 /// Volume interface arrival/removal; calls `on_change` for each.
@@ -157,7 +180,10 @@ pub fn watch_volume_interfaces(on_change: Box<dyn Fn() + Send + Sync>) -> io::Re
 
 /// Events for one raw handle (`CM_NOTIFY_FILTER_TYPE_DEVICEHANDLE`). The callback must return
 /// quickly; for `QueryRemove` it may block (bounded) while the owner closes the handle.
-pub fn watch_handle(raw: HANDLE, on_event: Box<dyn Fn(HandleEvent) + Send + Sync>) -> io::Result<Registration> {
+pub fn watch_handle(
+    raw: HANDLE,
+    on_event: Box<dyn Fn(HandleEvent) + Send + Sync>,
+) -> io::Result<Registration> {
     let mut f = CmNotifyFilter {
         cb_size: std::mem::size_of::<CmNotifyFilter>() as u32,
         flags: 0,

@@ -39,7 +39,11 @@ fn sample() -> Index {
 }
 
 fn names(ix: &Index, q: &str) -> Vec<String> {
-    ix.search_str(q, &SearchOptions::default()).items.iter().map(|&i| ix.full_path(i)).collect()
+    ix.search_str(q, &SearchOptions::default())
+        .items
+        .iter()
+        .map(|&i| ix.full_path(i))
+        .collect()
 }
 
 #[test]
@@ -63,7 +67,10 @@ fn lazy_stub_for_unknown_parent() {
     assert!(o.starts_with("C:\\<3e7>\\"), "{o}");
     // real folder arrives later via USN: stub filled in place, child path fixed
     ix.insert(C, 999, 5, "Real", true, 0, 0);
-    assert_eq!(names(&ix, "orphan"), vec!["C:\\Real\\orphan.txt".to_string()]);
+    assert_eq!(
+        names(&ix, "orphan"),
+        vec!["C:\\Real\\orphan.txt".to_string()]
+    );
     assert_eq!(names(&ix, "real").len(), 1);
     // insert under unknown parent
     let f = ix.insert(C, 60, 777, "x.bin", false, 0, 0);
@@ -97,7 +104,10 @@ fn insert_remove_rename() {
     let alice = ix.folder_idx(C, 11).unwrap();
     assert!(ix.rename(f, alice, "Renamed.RS"));
     assert_eq!(names(&ix, "new_file").len(), 0);
-    assert_eq!(names(&ix, "renamed"), vec!["C:\\Users\\Alice\\Renamed.RS".to_string()]);
+    assert_eq!(
+        names(&ix, "renamed"),
+        vec!["C:\\Users\\Alice\\Renamed.RS".to_string()]
+    );
     ix.refresh();
     assert_eq!(names(&ix, "renamed").len(), 1);
     assert_eq!(ix.find_file(C, 11, "Renamed.RS"), Some(f));
@@ -112,7 +122,10 @@ fn insert_remove_rename() {
     // recursive folder delete: Users + Alice + 3 files + Bob + 2 files = 8 records
     assert_eq!(ix.remove_folder(C, 10), 8);
     ix.refresh();
-    assert_eq!(names(&ix, "report"), vec!["C:\\Windows\\System32\\report.txt".to_string()]);
+    assert_eq!(
+        names(&ix, "report"),
+        vec!["C:\\Windows\\System32\\report.txt".to_string()]
+    );
     assert!(ix.folder_idx(C, 11).is_none());
     // slots are recycled
     let slots = ix.slots();
@@ -130,7 +143,10 @@ fn folder_rename_updates_paths_and_rejects_cycles() {
     let users = ix.folder_idx(C, 10).unwrap();
     let win = ix.folder_idx(C, 20).unwrap();
     assert!(ix.rename(users, win, "UsersMoved"));
-    assert_eq!(names(&ix, "photo"), vec!["C:\\Windows\\UsersMoved\\Alice\\photo.jpg".to_string()]);
+    assert_eq!(
+        names(&ix, "photo"),
+        vec!["C:\\Windows\\UsersMoved\\Alice\\photo.jpg".to_string()]
+    );
     let alice = ix.folder_idx(C, 11).unwrap();
     assert!(!ix.rename(users, alice, "loop")); // into own descendant
     assert!(!ix.rename(ix.root_of(C).unwrap(), win, "x"));
@@ -149,7 +165,10 @@ fn query_features() {
     assert_eq!(names(&ix, "\"report txt\"").len(), 0);
     // negation
     assert_eq!(names(&ix, "report !txt").len(), 1);
-    assert_eq!(names(&ix, "report !\"report.txt\""), vec!["C:\\Users\\Alice\\report.PDF".to_string()]);
+    assert_eq!(
+        names(&ix, "report !\"report.txt\""),
+        vec!["C:\\Users\\Alice\\report.PDF".to_string()]
+    );
     // wildcards: whole-name
     assert_eq!(names(&ix, "*.txt").len(), 4); // Été, report x2, مرحبا
     assert_eq!(names(&ix, "report.t?t").len(), 2);
@@ -166,7 +185,10 @@ fn query_features() {
     let folders = names(&ix, "folder:").len();
     assert_eq!(folders, 5); // Users Alice Bob Windows System32
     assert_eq!(names(&ix, "file:").len(), all - folders);
-    assert_eq!(names(&ix, "folder:alice"), vec!["C:\\Users\\Alice".to_string()]);
+    assert_eq!(
+        names(&ix, "folder:alice"),
+        vec!["C:\\Users\\Alice".to_string()]
+    );
     assert_eq!(names(&ix, "!folder: bob").len(), 0);
     assert_eq!(names(&ix, "file:report").len(), 3);
     assert_eq!(names(&ix, "folder:\"system32\"").len(), 1);
@@ -184,28 +206,71 @@ fn word_start_term() {
     let mut b = IndexBuilder::new(false);
     b.add_volume(C, 5);
     let files = [
-        "cat.jpg", "my cat 2021.png", "cat_food.png", "Cats.png", "myCat.png", "IMG2021cat.jpg", "black-cat.gif",
-        "intricate details.png", "location.jpg", "education.png", "Çatı.png", "kırmızı çatı.png", "açatı.png", "日本語.png",
+        "cat.jpg",
+        "my cat 2021.png",
+        "cat_food.png",
+        "Cats.png",
+        "myCat.png",
+        "IMG2021cat.jpg",
+        "black-cat.gif",
+        "intricate details.png",
+        "location.jpg",
+        "education.png",
+        "Çatı.png",
+        "kırmızı çatı.png",
+        "açatı.png",
+        "日本語.png",
     ];
     for (i, name) in files.iter().enumerate() {
         b.push(C, 100 + i as u64, 5, name, false, 0, 0);
     }
     let ix = b.finish();
-    let base = |q: &str| -> Vec<String> { names(&ix, q).iter().map(|p| p.rsplit('\\').next().unwrap().to_string()).collect() };
-    assert_eq!(base("cat").len(), 10, "the plain term finds every name with the letters");
+    let base = |q: &str| -> Vec<String> {
+        names(&ix, q)
+            .iter()
+            .map(|p| p.rsplit('\\').next().unwrap().to_string())
+            .collect()
+    };
+    assert_eq!(
+        base("cat").len(),
+        10,
+        "the plain term finds every name with the letters"
+    );
     let mut words = base("ws:cat");
     words.sort();
-    assert_eq!(words, ["Cats.png", "IMG2021cat.jpg", "black-cat.gif", "cat.jpg", "cat_food.png", "my cat 2021.png", "myCat.png"]);
-    assert!(base("ws:CAT").len() == 7 && base("WS:cat").len() == 7, "case does not matter");
+    assert_eq!(
+        words,
+        [
+            "Cats.png",
+            "IMG2021cat.jpg",
+            "black-cat.gif",
+            "cat.jpg",
+            "cat_food.png",
+            "my cat 2021.png",
+            "myCat.png"
+        ]
+    );
+    assert!(
+        base("ws:CAT").len() == 7 && base("WS:cat").len() == 7,
+        "case does not matter"
+    );
     // every term is its own condition; a word term combines with the others
     assert_eq!(base("ws:cat ws:food"), ["cat_food.png"]);
     assert_eq!(base("ws:cat ext:jpg").len(), 2);
-    assert_eq!(base("cat !ws:cat").len(), 3, "intricate, location, education");
+    assert_eq!(
+        base("cat !ws:cat").len(),
+        3,
+        "intricate, location, education"
+    );
     // beyond ASCII: folded, and a word starts after a space
     let mut tr = base("ws:çatı");
     tr.sort();
     assert_eq!(tr, ["kırmızı çatı.png", "Çatı.png"]);
-    assert_eq!(base("ws:本"), ["日本語.png"], "no spaces in this script: any letter starts a word");
+    assert_eq!(
+        base("ws:本"),
+        ["日本語.png"],
+        "no spaces in this script: any letter starts a word"
+    );
     // nothing to start a word with: an ordinary term
     assert_eq!(base("ws:c?t.jpg"), ["cat.jpg"]);
     assert_eq!(base("ws:").len(), files.len());
@@ -214,7 +279,10 @@ fn word_start_term() {
 #[test]
 fn case_insensitive_unicode() {
     let ix = sample();
-    assert_eq!(names(&ix, "ÉTÉ"), vec!["C:\\Users\\Alice\\Été.txt".to_string()]);
+    assert_eq!(
+        names(&ix, "ÉTÉ"),
+        vec!["C:\\Users\\Alice\\Été.txt".to_string()]
+    );
     assert_eq!(names(&ix, "été").len(), 1);
     assert_eq!(names(&ix, "ÉTÉ.TXT").len(), 1);
     assert_eq!(names(&ix, "*té.t?t").len(), 1);
@@ -232,7 +300,12 @@ fn sort_order_offset_limit() {
     b.add_volume(C, 5);
     b.push(C, 10, 5, "b", true, 0, 0);
     b.push(C, 11, 5, "a", true, 0, 0);
-    for (i, n) in ["delta", "Alpha", "charlie", "Bravo", "echo", "ÉCLAIR", "zulu"].iter().enumerate() {
+    for (i, n) in [
+        "delta", "Alpha", "charlie", "Bravo", "echo", "ÉCLAIR", "zulu",
+    ]
+    .iter()
+    .enumerate()
+    {
         b.push(C, 100 + i as u64, 5, n, false, 0, 0);
     }
     // equal names -> tie by path (a\x before b\x)
@@ -240,14 +313,33 @@ fn sort_order_offset_limit() {
     b.push(C, 201, 11, "same", false, 0, 0);
     let mut ix = b.finish();
     let o = |ix: &Index, q: &str, off, lim, order| {
-        let r = ix.search_str(q, &SearchOptions { offset: off, limit: lim, order });
-        (r.total, r.items.iter().map(|&i| ix.name(i).to_string()).collect::<Vec<_>>())
+        let r = ix.search_str(
+            q,
+            &SearchOptions {
+                offset: off,
+                limit: lim,
+                order,
+            },
+        );
+        (
+            r.total,
+            r.items
+                .iter()
+                .map(|&i| ix.name(i).to_string())
+                .collect::<Vec<_>>(),
+        )
     };
     let (t, all) = o(&ix, "file:", 0, usize::MAX, Order::NameAsc);
-    assert_eq!(all, ["Alpha", "Bravo", "charlie", "delta", "echo", "same", "same", "zulu", "ÉCLAIR"]);
+    assert_eq!(
+        all,
+        ["Alpha", "Bravo", "charlie", "delta", "echo", "same", "same", "zulu", "ÉCLAIR"]
+    );
     assert_eq!(t, 9);
     let (t, page) = o(&ix, "file:", 2, 3, Order::NameAsc);
-    assert_eq!((t, page), (9, vec!["charlie".into(), "delta".into(), "echo".into()]));
+    assert_eq!(
+        (t, page),
+        (9, vec!["charlie".into(), "delta".into(), "echo".into()])
+    );
     let (t, rev) = o(&ix, "file:", 0, usize::MAX, Order::NameDesc);
     assert_eq!(t, 9);
     let mut exp = all.clone();
@@ -291,34 +383,89 @@ fn meta_orders_sort_and_page() {
     let mut ix = b.finish();
     let q = "file:";
     let get = |ix: &Index, off: usize, lim: usize, order: Order| -> Vec<(String, u64, i64)> {
-        ix.search_str(q, &SearchOptions { offset: off, limit: lim, order })
-            .items
-            .iter()
-            .map(|&i| (ix.name(i).to_string(), ix.size(i).unwrap(), ix.mtime(i).unwrap()))
-            .collect()
+        ix.search_str(
+            q,
+            &SearchOptions {
+                offset: off,
+                limit: lim,
+                order,
+            },
+        )
+        .items
+        .iter()
+        .map(|&i| {
+            (
+                ix.name(i).to_string(),
+                ix.size(i).unwrap(),
+                ix.mtime(i).unwrap(),
+            )
+        })
+        .collect()
     };
 
     // newest first; the equal-mtime pair keeps slot order (same_a before same_b) on every page
     let by_date = get(&ix, 0, usize::MAX, Order::MtimeDesc);
     assert_eq!(
         by_date.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
-        ["new_big.txt", "same_a.txt", "same_b.txt", "mid.txt", "old_big.txt", "old_small.txt"]
+        [
+            "new_big.txt",
+            "same_a.txt",
+            "same_b.txt",
+            "mid.txt",
+            "old_big.txt",
+            "old_small.txt"
+        ]
     );
     let p0 = get(&ix, 0, 2, Order::MtimeDesc);
     let p1 = get(&ix, 2, 2, Order::MtimeDesc);
     let p2 = get(&ix, 4, 2, Order::MtimeDesc);
-    assert_eq!([p0, p1, p2].concat(), by_date, "pages must tile the full order exactly");
-    assert_eq!(ix.search_str(q, &SearchOptions { offset: 6, limit: 5, order: Order::MtimeDesc }).items, vec![]);
+    assert_eq!(
+        [p0, p1, p2].concat(),
+        by_date,
+        "pages must tile the full order exactly"
+    );
+    assert_eq!(
+        ix.search_str(
+            q,
+            &SearchOptions {
+                offset: 6,
+                limit: 5,
+                order: Order::MtimeDesc
+            }
+        )
+        .items,
+        vec![]
+    );
 
     // largest first
     let by_size = get(&ix, 0, usize::MAX, Order::SizeDesc);
     assert_eq!(
         by_size.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(),
-        ["new_big.txt", "old_big.txt", "mid.txt", "same_a.txt", "same_b.txt", "old_small.txt"]
+        [
+            "new_big.txt",
+            "old_big.txt",
+            "mid.txt",
+            "same_a.txt",
+            "same_b.txt",
+            "old_small.txt"
+        ]
     );
     let (_, page) = {
-        let r = ix.search_str(q, &SearchOptions { offset: 1, limit: 3, order: Order::SizeDesc });
-        (r.total, r.items.iter().map(|&i| ix.name(i).to_string()).collect::<Vec<_>>())
+        let r = ix.search_str(
+            q,
+            &SearchOptions {
+                offset: 1,
+                limit: 3,
+                order: Order::SizeDesc,
+            },
+        );
+        (
+            r.total,
+            r.items
+                .iter()
+                .map(|&i| ix.name(i).to_string())
+                .collect::<Vec<_>>(),
+        )
     };
     assert_eq!(page, ["old_big.txt", "mid.txt", "same_a.txt"]);
 
@@ -335,7 +482,14 @@ fn meta_orders_sort_and_page() {
     nb.add_volume(C, 5);
     nb.push(C, 200, 5, "x.txt", false, 3, 3);
     let no_meta = nb.finish();
-    let r = no_meta.search_str(q, &SearchOptions { offset: 0, limit: 10, order: Order::MtimeDesc });
+    let r = no_meta.search_str(
+        q,
+        &SearchOptions {
+            offset: 0,
+            limit: 10,
+            order: Order::MtimeDesc,
+        },
+    );
     assert_eq!(r.total, 1);
     assert_eq!(no_meta.name(r.items[0]), "x.txt");
 }
@@ -345,9 +499,21 @@ fn incremental_equals_full_rebuild() {
     let mut ix = sample();
     for k in 0..200u64 {
         let p = [5u64, 10, 11, 12, 20, 21][(k % 6) as usize];
-        ix.insert(C, 5000 + k, p, &format!("file{}", (k * 7919) % 97), k % 5 == 0, 0, 0);
+        ix.insert(
+            C,
+            5000 + k,
+            p,
+            &format!("file{}", (k * 7919) % 97),
+            k % 5 == 0,
+            0,
+            0,
+        );
         if k % 9 == 0 {
-            let f = ix.find_file(C, p, &format!("file{}", ((k.saturating_sub(3)) * 7919) % 97));
+            let f = ix.find_file(
+                C,
+                p,
+                &format!("file{}", ((k.saturating_sub(3)) * 7919) % 97),
+            );
             if let Some(f) = f {
                 ix.remove(f);
             }
@@ -378,10 +544,21 @@ fn snapshot_round_trip_and_corruption() {
     assert!(!dir.join("a.wsix.tmp").exists());
     let mut ld = Index::load(&p).unwrap();
     let v = &ld.volumes()[0];
-    assert_eq!((v.letter, v.serial, v.journal_id, v.next_usn), (C, 0xAABB, 77, -5));
+    assert_eq!(
+        (v.letter, v.serial, v.journal_id, v.next_usn),
+        (C, 0xAABB, 77, -5)
+    );
     ix.refresh();
-    let a: Vec<_> = ix.order.iter().map(|&i| (ix.full_path(i), ix.size(i), ix.frn(i))).collect();
-    let b: Vec<_> = ld.order.iter().map(|&i| (ld.full_path(i), ld.size(i), ld.frn(i))).collect();
+    let a: Vec<_> = ix
+        .order
+        .iter()
+        .map(|&i| (ix.full_path(i), ix.size(i), ix.frn(i)))
+        .collect();
+    let b: Vec<_> = ld
+        .order
+        .iter()
+        .map(|&i| (ld.full_path(i), ld.size(i), ld.frn(i)))
+        .collect();
     assert_eq!(a, b);
     assert_eq!(names(&ld, "ÉTÉ"), names(&ix, "ÉTÉ"));
     // loaded index is fully mutable
@@ -441,7 +618,8 @@ fn fuzz_garbage_never_panics() {
 fn recount(ix: &Index, vol: u8) -> (u64, u64) {
     let (mut files, mut folders) = (0, 0);
     for i in 0..ix.slots() as u32 {
-        if ix.is_deleted(i) || ix.is_stub(i) || ix.root_of(ix.vol(i)) == Some(i) || ix.vol(i) != vol {
+        if ix.is_deleted(i) || ix.is_stub(i) || ix.root_of(ix.vol(i)) == Some(i) || ix.vol(i) != vol
+        {
             continue;
         }
         if ix.is_dir(i) {
@@ -458,7 +636,9 @@ fn incremental_counts_match_recount() {
     let mut ix = sample();
     let mut seed = 0x9E37_79B9_7F4A_7C15u64;
     let mut rnd = move |m: u64| {
-        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
         (seed >> 33) % m
     };
     let mut dirs: Vec<u64> = vec![5];
@@ -476,12 +656,28 @@ fn incremental_counts_match_recount() {
             }
             3 => {
                 // orphan: unknown parent creates a stub, later possibly filled
-                ix.insert(C, next, 900_000 + rnd(5), &format!("o{}", rnd(10)), false, 0, 0);
+                ix.insert(
+                    C,
+                    next,
+                    900_000 + rnd(5),
+                    &format!("o{}", rnd(10)),
+                    false,
+                    0,
+                    0,
+                );
                 next += 1;
             }
             4 => {
                 // fill a stub (or no-op)
-                ix.insert(C, 900_000 + rnd(5), 5, &format!("filled{}", rnd(5)), true, 0, 0);
+                ix.insert(
+                    C,
+                    900_000 + rnd(5),
+                    5,
+                    &format!("filled{}", rnd(5)),
+                    true,
+                    0,
+                    0,
+                );
             }
             5 => {
                 let f = dirs[rnd(dirs.len() as u64) as usize];
@@ -493,7 +689,10 @@ fn incremental_counts_match_recount() {
             _ => {
                 let p = dirs[rnd(dirs.len() as u64) as usize];
                 ix.remove_file(C, p, &format!("n{}", rnd(60)));
-                if let (Some(&a), Some(&b)) = (dirs.get(rnd(dirs.len() as u64) as usize), dirs.get(rnd(dirs.len() as u64) as usize)) {
+                if let (Some(&a), Some(&b)) = (
+                    dirs.get(rnd(dirs.len() as u64) as usize),
+                    dirs.get(rnd(dirs.len() as u64) as usize),
+                ) {
                     if let (Some(ai), Some(bi)) = (ix.folder_idx(C, a), ix.folder_idx(C, b)) {
                         ix.rename(ai, bi, &format!("r{}", rnd(60)));
                     }
@@ -531,8 +730,15 @@ fn synthetic_ids_and_refs_interner() {
     let mut ix = b.finish();
     assert_eq!(ix.lookup128(b'R', root128), Some(5));
     assert_eq!(ix.lookup128(b'R', 12345), None);
-    assert_eq!(ix.intern128(b'R', 12345), gone + 1, "continues from next_id");
-    assert_eq!(ix.find_path(b'R', r"A\f.txt").map(|i| ix.full_path(i)), Some(r"R:\A\f.txt".into()));
+    assert_eq!(
+        ix.intern128(b'R', 12345),
+        gone + 1,
+        "continues from next_id"
+    );
+    assert_eq!(
+        ix.find_path(b'R', r"A\f.txt").map(|i| ix.full_path(i)),
+        Some(r"R:\A\f.txt".into())
+    );
     assert_eq!(ix.find_path(b'R', ""), ix.root_of(b'R'));
     assert_eq!(ix.find_path(b'R', r"A\nope"), None);
     // Folder volume: alloc_id adds the volume and never reuses ids
@@ -556,14 +762,28 @@ fn snapshot_v2_keeps_kinds_ids_and_live_interned_folders() {
     ix.alloc_id(b'F');
     ix.volume_mut(b'F').unwrap().kind = VolKind::Folder;
     let ld = Index::from_bytes(&ix.to_bytes()).unwrap();
-    let kinds: Vec<_> = ld.volumes().iter().map(|v| (v.letter, v.kind, v.next_id)).collect();
+    let kinds: Vec<_> = ld
+        .volumes()
+        .iter()
+        .map(|v| (v.letter, v.kind, v.next_id))
+        .collect();
     assert!(kinds.contains(&(C, VolKind::Ntfs, 0)));
     assert!(kinds.contains(&(b'R', VolKind::Refs, b2 + 1)));
     assert!(kinds.contains(&(b'F', VolKind::Folder, FIRST_SYNTHETIC_ID + 1)));
-    assert_eq!(ld.lookup128(b'R', 0xAAAA_0000_0000_0000_0000_0000_0000_0000), Some(a));
+    assert_eq!(
+        ld.lookup128(b'R', 0xAAAA_0000_0000_0000_0000_0000_0000_0000),
+        Some(a)
+    );
     assert_eq!(ld.lookup128(b'R', 1), Some(5), "root is a live folder");
-    assert_eq!(ld.lookup128(b'R', 0xBBBB), None, "dead folders are not persisted");
-    assert_eq!(ld.folder_idx(b'R', a).map(|i| ld.full_path(i)), Some(r"R:\kept".into()));
+    assert_eq!(
+        ld.lookup128(b'R', 0xBBBB),
+        None,
+        "dead folders are not persisted"
+    );
+    assert_eq!(
+        ld.folder_idx(b'R', a).map(|i| ld.full_path(i)),
+        Some(r"R:\kept".into())
+    );
 }
 
 #[test]
@@ -606,10 +826,26 @@ fn incremental_refresh_matches_full_rebuild() {
     let mut b = IndexBuilder::new(true);
     b.add_volume(C, 5);
     for d in 0..40u64 {
-        b.push(C, 1000 + d, if d < 5 { 5 } else { 1000 + d % 5 }, &format!("dir{}", d * 7 % 13), true, 0, 0);
+        b.push(
+            C,
+            1000 + d,
+            if d < 5 { 5 } else { 1000 + d % 5 },
+            &format!("dir{}", d * 7 % 13),
+            true,
+            0,
+            0,
+        );
     }
     for f in 0..2000u64 {
-        b.push(C, 10_000 + f, 1000 + f % 40, &format!("f{}.txt", f * 31 % 997), false, f, f as i64);
+        b.push(
+            C,
+            10_000 + f,
+            1000 + f % 40,
+            &format!("f{}.txt", f * 31 % 997),
+            false,
+            f,
+            f as i64,
+        );
     }
     let mut ix = b.finish();
     let mut next = 50_000u64;
@@ -619,7 +855,15 @@ fn incremental_refresh_matches_full_rebuild() {
             match rnd(3) {
                 0 => {
                     next += 1;
-                    ix.insert(C, next, 1000 + rnd(40), &format!("n{}.dat", rnd(500)), false, 1, 1);
+                    ix.insert(
+                        C,
+                        next,
+                        1000 + rnd(40),
+                        &format!("n{}.dat", rnd(500)),
+                        false,
+                        1,
+                        1,
+                    );
                 }
                 1 if !live.is_empty() => {
                     let i = live[rnd(live.len() as u64) as usize];
@@ -641,7 +885,9 @@ fn incremental_refresh_matches_full_rebuild() {
         let dirty = names(&ix, "");
         ix.refresh();
         let inc_order = ix.order.clone();
-        let inc_rank: Vec<u32> = (0..ix.parent.len()).map(|r| ix.rank.get(r).copied().unwrap_or(NONE)).collect();
+        let inc_rank: Vec<u32> = (0..ix.parent.len())
+            .map(|r| ix.rank.get(r).copied().unwrap_or(NONE))
+            .collect();
         assert_eq!(names(&ix, ""), dirty, "round {round}");
         ix.rebuild_order();
         assert_eq!(ix.order, inc_order, "round {round}: order");
@@ -658,7 +904,11 @@ fn match_sets_page_anywhere_and_reverse_exactly() {
     let n = 5000u64;
     for k in 0..n {
         let j = (k * 2654435761) % n; // scrambled
-        let name = if j.is_multiple_of(3) { format!("skip_{j:05}.bin") } else { format!("hit_{j:05}.txt") };
+        let name = if j.is_multiple_of(3) {
+            format!("skip_{j:05}.bin")
+        } else {
+            format!("hit_{j:05}.txt")
+        };
         b.push(C, 100 + k, 5, &name, false, j % 97, (j % 89) as i64);
     }
     let ix = b.finish();
@@ -673,26 +923,100 @@ fn match_sets_page_anywhere_and_reverse_exactly() {
     // name windows from one match set tile the full list, forwards and backwards
     let set = ix.name_matches(&q);
     assert_eq!(set.total(), all.total);
-    for (off, lim) in [(0, 1), (0, 400), (63, 2), (511, 3), (512, 700), (all.total - 5, 50), (all.total, 9), (all.total + 9, 9)] {
+    for (off, lim) in [
+        (0, 1),
+        (0, 400),
+        (63, 2),
+        (511, 3),
+        (512, 700),
+        (all.total - 5, 50),
+        (all.total, 9),
+        (all.total + 9, 9),
+    ] {
         let want: Vec<u32> = all.items.iter().skip(off).take(lim).copied().collect();
-        assert_eq!(ix.name_page(&set, off, lim, false), want, "asc window {off}+{lim}");
-        let want: Vec<u32> = all.items.iter().rev().skip(off).take(lim).copied().collect();
-        assert_eq!(ix.name_page(&set, off, lim, true), want, "desc window {off}+{lim}");
+        assert_eq!(
+            ix.name_page(&set, off, lim, false),
+            want,
+            "asc window {off}+{lim}"
+        );
+        let want: Vec<u32> = all
+            .items
+            .iter()
+            .rev()
+            .skip(off)
+            .take(lim)
+            .copied()
+            .collect();
+        assert_eq!(
+            ix.name_page(&set, off, lim, true),
+            want,
+            "desc window {off}+{lim}"
+        );
     }
     // the empty query pages straight off the order array
     let every = ix.name_matches(&Query::parse(""));
     assert_eq!(every.total(), ix.order_len());
-    assert_eq!(ix.name_page(&every, 4000, 3, false), ix.search_str("", &SearchOptions { offset: 4000, limit: 3, order: Order::NameAsc }).items);
+    assert_eq!(
+        ix.name_page(&every, 4000, 3, false),
+        ix.search_str(
+            "",
+            &SearchOptions {
+                offset: 4000,
+                limit: 3,
+                order: Order::NameAsc
+            }
+        )
+        .items
+    );
 
     // meta: the sorted list, its top-k prefix and the windowed search agree; asc is the exact reverse
-    for (key, desc, asc) in [(MetaKey::Mtime, Order::MtimeDesc, Order::MtimeAsc), (MetaKey::Size, Order::SizeDesc, Order::SizeAsc)] {
+    for (key, desc, asc) in [
+        (MetaKey::Mtime, Order::MtimeDesc, Order::MtimeAsc),
+        (MetaKey::Size, Order::SizeDesc, Order::SizeAsc),
+    ] {
         let sorted = ix.sort_slots(ix.match_slots(&q), key, None);
         assert_eq!(sorted.len(), all.total);
-        assert_eq!(ix.top_slots(&ix.match_slots(&q), key, 300, None), sorted[..300]);
-        assert_eq!(ix.search(&q, &SearchOptions { offset: 1000, limit: 40, order: desc }).items, sorted[1000..1040]);
+        assert_eq!(
+            ix.top_slots(&ix.match_slots(&q), key, 300, None),
+            sorted[..300]
+        );
+        assert_eq!(
+            ix.search(
+                &q,
+                &SearchOptions {
+                    offset: 1000,
+                    limit: 40,
+                    order: desc
+                }
+            )
+            .items,
+            sorted[1000..1040]
+        );
         let rev: Vec<u32> = sorted.iter().rev().copied().collect();
-        assert_eq!(ix.search(&q, &SearchOptions { offset: 0, limit: usize::MAX, order: asc }).items, rev);
-        assert_eq!(ix.search(&q, &SearchOptions { offset: 7, limit: 5, order: asc }).items, rev[7..12]);
+        assert_eq!(
+            ix.search(
+                &q,
+                &SearchOptions {
+                    offset: 0,
+                    limit: usize::MAX,
+                    order: asc
+                }
+            )
+            .items,
+            rev
+        );
+        assert_eq!(
+            ix.search(
+                &q,
+                &SearchOptions {
+                    offset: 7,
+                    limit: 5,
+                    order: asc
+                }
+            )
+            .items,
+            rev[7..12]
+        );
     }
 }
 
@@ -711,15 +1035,29 @@ fn size_and_date_filters_and_folder_totals() {
     b.push(C, 103, 5, "d.txt", false, 0, ft(8_000));
     b.push(C, 104, 5, "size:huge.txt", false, 2048, ft(9_000));
     let ix = b.finish();
-    let names = |q: &str| -> Vec<String> { ix.search_str(q, &SearchOptions::default()).items.iter().map(|&i| ix.name(i).to_string()).collect() };
+    let names = |q: &str| -> Vec<String> {
+        ix.search_str(q, &SearchOptions::default())
+            .items
+            .iter()
+            .map(|&i| ix.name(i).to_string())
+            .collect()
+    };
 
     assert_eq!(names("size:>1mb"), ["a.jpg"]);
     assert_eq!(names("size:>=1mb"), ["a.jpg", "b.jpg"]);
-    assert_eq!(names("size:<1kb"), ["c.jpg", "d.txt"], "folders never match a size filter");
+    assert_eq!(
+        names("size:<1kb"),
+        ["c.jpg", "d.txt"],
+        "folders never match a size filter"
+    );
     assert_eq!(names("size:0"), ["d.txt"]);
     assert_eq!(names("size:1kb..1.5mb"), ["b.jpg", "size:huge.txt"]);
     assert_eq!(names("jpg !size:>2mb"), ["b.jpg", "c.jpg"]);
-    assert_eq!(names("size:huge"), ["size:huge.txt"], "an unparsable value is plain text");
+    assert_eq!(
+        names("size:huge"),
+        ["size:huge.txt"],
+        "an unparsable value is plain text"
+    );
     // dates: [from, to) in unix ms, open ends allowed, folders included
     assert_eq!(names("dm:5000..7000"), ["a.jpg", "b.jpg"]);
     assert_eq!(names("dm:8000.."), ["d.txt", "size:huge.txt"]);
@@ -736,9 +1074,25 @@ fn size_and_date_filters_and_folder_totals() {
     assert_eq!(of("a.jpg"), 0);
     // with the totals a size sort ranks folders by what they hold
     let sorted = ix.sort_slots(ix.match_slots(&Query::parse("")), MetaKey::Size, Some(&tot));
-    let top: Vec<&str> = sorted.iter().map(|&i| ix.name(i)).filter(|n| !n.is_empty() && !n.ends_with(':')).take(4).collect();
-    assert!(top.contains(&"Photos") && top.contains(&"2024") && top.contains(&"a.jpg"), "{top:?}");
-    assert_eq!(ix.top_slots(&ix.match_slots(&Query::parse("")), MetaKey::Size, 3, Some(&tot)), sorted[..3]);
+    let top: Vec<&str> = sorted
+        .iter()
+        .map(|&i| ix.name(i))
+        .filter(|n| !n.is_empty() && !n.ends_with(':'))
+        .take(4)
+        .collect();
+    assert!(
+        top.contains(&"Photos") && top.contains(&"2024") && top.contains(&"a.jpg"),
+        "{top:?}"
+    );
+    assert_eq!(
+        ix.top_slots(
+            &ix.match_slots(&Query::parse("")),
+            MetaKey::Size,
+            3,
+            Some(&tot)
+        ),
+        sorted[..3]
+    );
 }
 
 #[test]
@@ -746,16 +1100,33 @@ fn type_order_groups_by_extension_then_name() {
     let mut b = IndexBuilder::new(true);
     b.add_volume(C, 5);
     b.push(C, 10, 5, "Docs.v2", true, 0, 0);
-    for (k, n) in ["b.TXT", "a.txt", "z.jpg", "noext", "m.JPG", "c.md"].iter().enumerate() {
+    for (k, n) in ["b.TXT", "a.txt", "z.jpg", "noext", "m.JPG", "c.md"]
+        .iter()
+        .enumerate()
+    {
         b.push(C, 100 + k as u64, 5, n, false, 1, 0);
     }
     let ix = b.finish();
     let q = Query::parse("");
     let names = |order| -> Vec<String> {
-        ix.search(&q, &SearchOptions { offset: 0, limit: 100, order }).items.iter().map(|&i| ix.name(i).to_string()).collect()
+        ix.search(
+            &q,
+            &SearchOptions {
+                offset: 0,
+                limit: 100,
+                order,
+            },
+        )
+        .items
+        .iter()
+        .map(|&i| ix.name(i).to_string())
+        .collect()
     };
     // folders lead (a dot in a folder name is not an extension), then no extension, then jpg < md < txt, names within a type
-    assert_eq!(names(Order::TypeAsc), ["Docs.v2", "noext", "m.JPG", "z.jpg", "c.md", "a.txt", "b.TXT"]);
+    assert_eq!(
+        names(Order::TypeAsc),
+        ["Docs.v2", "noext", "m.JPG", "z.jpg", "c.md", "a.txt", "b.TXT"]
+    );
     let mut rev = names(Order::TypeAsc);
     rev.reverse();
     assert_eq!(names(Order::TypeDesc), rev);

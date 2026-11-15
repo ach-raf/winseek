@@ -42,7 +42,12 @@ pub struct Prefs {
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { enabled: true, last_check: 0, latest: None, url: None }
+        Prefs {
+            enabled: true,
+            last_check: 0,
+            latest: None,
+            url: None,
+        }
     }
 }
 
@@ -51,7 +56,10 @@ fn path() -> Option<PathBuf> {
 }
 
 fn load() -> Prefs {
-    path().and_then(|p| std::fs::read_to_string(p).ok()).and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+    path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
 }
 
 fn save(p: &Prefs) -> Result<(), String> {
@@ -59,12 +67,20 @@ fn save(p: &Prefs) -> Result<(), String> {
     if let Some(d) = f.parent() {
         std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
     }
-    std::fs::write(f, serde_json::to_string_pretty(p).map_err(|e| e.to_string())?).map_err(|e| e.to_string())
+    std::fs::write(
+        f,
+        serde_json::to_string_pretty(p).map_err(|e| e.to_string())?,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// `v0.2.19`, `0.2.19-beta.1` -> (0, 2, 19). The pre-release suffix is ignored.
 pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let core = s.trim().trim_start_matches(['v', 'V']).split(['-', '+']).next()?;
+    let core = s
+        .trim()
+        .trim_start_matches(['v', 'V'])
+        .split(['-', '+'])
+        .next()?;
     let mut it = core.split('.');
     let a = it.next()?.parse().ok()?;
     let b = it.next().map_or(Some(0), |x| x.parse().ok())?;
@@ -98,9 +114,21 @@ struct GhRelease {
 /// when it points at this project; otherwise the generic releases page is used.
 pub fn pick_release(body: &str) -> Option<Release> {
     let list: Vec<GhRelease> = serde_json::from_str(body).ok()?;
-    let best = list.into_iter().filter(|r| !r.draft).filter_map(|r| parse_version(&r.tag_name).map(|v| (v, r))).max_by_key(|(v, _)| *v)?.1;
-    let url = if best.html_url.starts_with(PAGE_PREFIX) { best.html_url } else { RELEASES_PAGE.to_string() };
-    Some(Release { tag: best.tag_name, url })
+    let best = list
+        .into_iter()
+        .filter(|r| !r.draft)
+        .filter_map(|r| parse_version(&r.tag_name).map(|v| (v, r)))
+        .max_by_key(|(v, _)| *v)?
+        .1;
+    let url = if best.html_url.starts_with(PAGE_PREFIX) {
+        best.html_url
+    } else {
+        RELEASES_PAGE.to_string()
+    };
+    Some(Release {
+        tag: best.tag_name,
+        url,
+    })
 }
 
 pub fn due(last_check: u64, now: u64) -> bool {
@@ -108,7 +136,9 @@ pub fn due(last_check: u64, now: u64) -> bool {
 }
 
 fn now_secs() -> u64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_secs())
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs())
 }
 
 fn fetch() -> Result<Option<Release>, String> {
@@ -164,7 +194,10 @@ fn check(app: &AppHandle) -> Result<Prefs, String> {
 /// Open the release page of the known newer version (or the releases page).
 pub fn open_release_page(app: &AppHandle) {
     let p = load();
-    let url = p.url.filter(|u| u.starts_with(PAGE_PREFIX)).unwrap_or_else(|| RELEASES_PAGE.to_string());
+    let url = p
+        .url
+        .filter(|u| u.starts_with(PAGE_PREFIX))
+        .unwrap_or_else(|| RELEASES_PAGE.to_string());
     let _ = std::process::Command::new("explorer.exe").arg(url).spawn();
     let _ = app; // kept for symmetry with the tray handler
 }
@@ -215,7 +248,13 @@ pub struct UpdateState {
 }
 
 fn state(app: &AppHandle, p: Prefs) -> UpdateState {
-    UpdateState { enabled: p.enabled, current: app.package_info().version.to_string(), latest: p.latest, url: p.url, last_check: p.last_check }
+    UpdateState {
+        enabled: p.enabled,
+        current: app.package_info().version.to_string(),
+        latest: p.latest,
+        url: p.url,
+        last_check: p.last_check,
+    }
 }
 
 #[tauri::command]
@@ -272,7 +311,10 @@ mod tests {
         ]"#;
         let r = pick_release(body).unwrap();
         assert_eq!(r.tag, "v0.2.19");
-        assert_eq!(r.url, "https://github.com/ach-raf/winseek/releases/tag/v0.2.19");
+        assert_eq!(
+            r.url,
+            "https://github.com/ach-raf/winseek/releases/tag/v0.2.19"
+        );
     }
 
     #[test]
@@ -293,7 +335,10 @@ mod tests {
         let p: Prefs = serde_json::from_str(r#"{"enabled":false}"#).unwrap();
         assert!(!p.enabled && p.latest.is_none());
         assert_eq!(tray_label(&p), IDLE_LABEL);
-        let q = Prefs { latest: Some("v0.2.19".into()), ..Prefs::default() };
+        let q = Prefs {
+            latest: Some("v0.2.19".into()),
+            ..Prefs::default()
+        };
         assert!(tray_label(&q).contains("v0.2.19"));
     }
 }

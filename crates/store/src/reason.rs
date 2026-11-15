@@ -58,7 +58,13 @@ pub fn classify(msg: &str, kind: &str) -> &'static str {
         "file larger than 64 mb" => return "too_large",
         _ => {}
     }
-    let media = |damaged_video: &'static str| if kind == "audio" { "damaged_audio" } else { damaged_video };
+    let media = |damaged_video: &'static str| {
+        if kind == "audio" {
+            "damaged_audio"
+        } else {
+            damaged_video
+        }
+    };
     if l.starts_with("decode") || l.starts_with("encode") {
         if l.contains("memory limit") || (l.contains("dimension") && l.contains("limit")) {
             "too_large"
@@ -68,7 +74,11 @@ pub fn classify(msg: &str, kind: &str) -> &'static str {
     } else if l.starts_with("ffmpeg") || l.starts_with("audio:") {
         if l.contains("timed out") {
             "timed_out"
-        } else if l.contains("no such file") || l.contains("access is denied") || l.contains("permission denied") || l.contains("being used by another") {
+        } else if l.contains("no such file")
+            || l.contains("access is denied")
+            || l.contains("permission denied")
+            || l.contains("being used by another")
+        {
             "unreadable"
         } else {
             media("damaged_video")
@@ -77,7 +87,11 @@ pub fn classify(msg: &str, kind: &str) -> &'static str {
         "damaged_pdf"
     } else if l.starts_with("zip") || l.contains("eocd") || l.contains("invalid zip") {
         "damaged_archive"
-    } else if l.starts_with("not a docx") || l.starts_with("not an xlsx") || l.starts_with("not a pptx") || l.starts_with("not an opendocument") {
+    } else if l.starts_with("not a docx")
+        || l.starts_with("not an xlsx")
+        || l.starts_with("not a pptx")
+        || l.starts_with("not an opendocument")
+    {
         "damaged_document"
     } else if l.starts_with("read:") {
         "unreadable"
@@ -105,16 +119,37 @@ mod tests {
     #[test]
     fn the_quoted_reasons_map_to_codes() {
         let c = |m: &str, k: &str| classify(m, k);
-        assert_eq!(c("decode: The image format could not be determined", "image"), "damaged_image");
-        assert_eq!(c("decode: Format error decoding Gif: unknown block type encountered", "image"), "damaged_image");
-        assert_eq!(c("decode: Format error decoding Gif: invalid code in LZW stream", "image"), "damaged_image");
-        assert_eq!(c("zip: invalid Zip archive: Could not find EOCD", "doc"), "damaged_archive");
+        assert_eq!(
+            c("decode: The image format could not be determined", "image"),
+            "damaged_image"
+        );
+        assert_eq!(
+            c(
+                "decode: Format error decoding Gif: unknown block type encountered",
+                "image"
+            ),
+            "damaged_image"
+        );
+        assert_eq!(
+            c(
+                "decode: Format error decoding Gif: invalid code in LZW stream",
+                "image"
+            ),
+            "damaged_image"
+        );
+        assert_eq!(
+            c("zip: invalid Zip archive: Could not find EOCD", "doc"),
+            "damaged_archive"
+        );
         assert_eq!(c("decode failed", "image"), "damaged_image");
         assert_eq!(c("decode: Memory limit exceeded", "image"), "too_large");
         let ff = "ffmpeg: [in#0 @ 00000222cd15a800] Error opening input: Invalid data found when processing input | Error opening input file C:\\Users\\x\\v.mp4. | Error opening input files: Invalid data found when processing input";
         assert_eq!(c(ff, "video"), "damaged_video");
         assert_eq!(c(ff, "audio"), "damaged_audio");
-        assert_eq!(c("pdf: PdfiumLibraryInternalError(FormatError)", "pdf"), "damaged_pdf");
+        assert_eq!(
+            c("pdf: PdfiumLibraryInternalError(FormatError)", "pdf"),
+            "damaged_pdf"
+        );
     }
 
     #[test]
@@ -122,10 +157,16 @@ mod tests {
         assert_eq!(classify("encrypted", "pdf"), "password_protected");
         assert_eq!(classify("file larger than 64 MB", "image"), "too_large");
         assert_eq!(classify("cloud_only", "image"), "cloud_only");
-        assert_eq!(classify("read: Access is denied. (os error 5)", "doc"), "unreadable");
+        assert_eq!(
+            classify("read: Access is denied. (os error 5)", "doc"),
+            "unreadable"
+        );
         assert_eq!(classify("embed: server said no", "image"), "embed_failed");
         assert_eq!(classify("ffmpeg: timed out", "video"), "timed_out");
-        assert_eq!(classify("not a docx (no word/document.xml)", "doc"), "damaged_document");
+        assert_eq!(
+            classify("not a docx (no word/document.xml)", "doc"),
+            "damaged_document"
+        );
         assert_eq!(classify("something new", "doc"), "failed");
         assert_eq!(classify("", "doc"), "failed");
     }
@@ -133,7 +174,10 @@ mod tests {
     #[test]
     fn a_code_keeps_no_detail_and_text_keeps_it() {
         assert_eq!(split("too_large", "doc"), ("too_large", None));
-        assert_eq!(split("zip: bad", "doc"), ("damaged_archive", Some("zip: bad".to_string())));
+        assert_eq!(
+            split("zip: bad", "doc"),
+            ("damaged_archive", Some("zip: bad".to_string()))
+        );
     }
 
     #[test]

@@ -7,11 +7,16 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use winseek_folder::{file_id_128, logical_drive_mask, walk_file_ids, watch_handle, HandleEvent, Registration, WatchCanceller};
+use winseek_folder::{
+    file_id_128, logical_drive_mask, walk_file_ids, watch_handle, HandleEvent, Registration,
+    WatchCanceller,
+};
 use winseek_index::{Index, IndexBuilder, VolKind, VolumeMeta};
 use winseek_ipc::{Monitor, VolumeState};
 use winseek_ntfs::{open_volume_for_usn, scan_volume, VolumeInfo};
-use winseek_usn::{query_journal, run_monitor, JournalCursor, MonitorConfig, MonitorExit, RecordVersion};
+use winseek_usn::{
+    query_journal, run_monitor, JournalCursor, MonitorConfig, MonitorExit, RecordVersion,
+};
 
 use crate::log::{error, info, warn};
 use crate::state::{Msg, Shared, VolCtl};
@@ -61,7 +66,10 @@ pub fn stored_cursor(vol: &Vol, meta: &VolumeMeta) -> Option<JournalCursor> {
         return None;
     }
     if meta.serial != 0 && vol.serial != 0 && meta.serial != vol.serial {
-        warn!("{l}: volume serial changed ({:x} -> {:x}); full scan", meta.serial, vol.serial);
+        warn!(
+            "{l}: volume serial changed ({:x} -> {:x}); full scan",
+            meta.serial, vol.serial
+        );
         return None;
     }
     let h = open_volume_for_usn(l).map_err(|e| warn!("{l}: {e}")).ok()?;
@@ -70,10 +78,16 @@ pub fn stored_cursor(vol: &Vol, meta: &VolumeMeta) -> Option<JournalCursor> {
         warn!("{l}: journal id changed; full scan");
         None
     } else if meta.next_usn < j.lowest_valid_usn || meta.next_usn > j.next_usn {
-        warn!("{l}: stored USN {} outside journal [{}, {}]; full scan", meta.next_usn, j.lowest_valid_usn, j.next_usn);
+        warn!(
+            "{l}: stored USN {} outside journal [{}, {}]; full scan",
+            meta.next_usn, j.lowest_valid_usn, j.next_usn
+        );
         None
     } else {
-        Some(JournalCursor { journal_id: j.journal_id, next_usn: meta.next_usn })
+        Some(JournalCursor {
+            journal_id: j.journal_id,
+            next_usn: meta.next_usn,
+        })
     }
 }
 
@@ -84,7 +98,10 @@ fn scan(sh: &Shared, vol: &Vol, ctl: &VolCtl) -> Result<(Index, JournalCursor), 
     let l = vol.letter;
     let h = open_volume_for_usn(l).map_err(|e| e.to_string())?;
     let j = query_journal(&h).map_err(|e| format!("{e} (is the USN journal enabled?)"))?;
-    let cursor = JournalCursor { journal_id: j.journal_id, next_usn: j.next_usn };
+    let cursor = JournalCursor {
+        journal_id: j.journal_id,
+        next_usn: j.next_usn,
+    };
     drop(h);
     let mut ix = match vol.kind {
         VolKind::Refs => scan_refs(sh, vol, ctl)?,
@@ -131,10 +148,17 @@ fn scan_ntfs(sh: &Shared, vol: &Vol) -> Result<Index, String> {
         },
     )
     .map_err(|e| e.to_string())?;
-    info!("{l}: scanned {count} entries in {:.1?}; stats: {stats:?}", t.elapsed());
+    info!(
+        "{l}: scanned {count} entries in {:.1?}; stats: {stats:?}",
+        t.elapsed()
+    );
     let t_sort = Instant::now();
     let ix = b.finish();
-    info!("{l}: index sorted in {:.1?}; built (scan + sort) in {:.1?}", t_sort.elapsed(), t.elapsed());
+    info!(
+        "{l}: index sorted in {:.1?}; built (scan + sort) in {:.1?}",
+        t_sort.elapsed(),
+        t.elapsed()
+    );
     Ok(ix)
 }
 
@@ -157,12 +181,21 @@ fn scan_refs(sh: &Shared, vol: &Vol, ctl: &VolCtl) -> Result<Index, String> {
         let parent = b.intern128(v, e.parent);
         b.push(v, id, parent, e.name, e.is_dir, e.size, e.mtime);
         if last.elapsed() >= Duration::from_secs(1) {
-            sh.set_state(l, VolumeState::Scanning { done: count, total: 0 });
+            sh.set_state(
+                l,
+                VolumeState::Scanning {
+                    done: count,
+                    total: 0,
+                },
+            );
             last = Instant::now();
         }
     })
     .map_err(|e| format!("ReFS walk failed: {e}"))?;
-    info!("{l}: ReFS walk: {count} entries in {:.1?}; {stats:?}", t.elapsed());
+    info!(
+        "{l}: ReFS walk: {count} entries in {:.1?}; {stats:?}",
+        t.elapsed()
+    );
     Ok(b.finish())
 }
 
@@ -177,7 +210,12 @@ pub(crate) fn sleep_stoppable(sh: &Shared, d: Duration) {
 /// our stand-in for Everything's per-volume `RegisterDeviceNotification`). The callback asks
 /// the worker to stop (and cancels a pending folder watch), then waits until the worker has
 /// closed the handle so Windows can eject the drive.
-pub(crate) fn guard_removal(raw: isize, ctl: Arc<VolCtl>, cancel: Option<WatchCanceller>, letter: char) -> Option<Registration> {
+pub(crate) fn guard_removal(
+    raw: isize,
+    ctl: Arc<VolCtl>,
+    cancel: Option<WatchCanceller>,
+    letter: char,
+) -> Option<Registration> {
     let cb = move |ev: HandleEvent| match ev {
         HandleEvent::QueryRemove => {
             info!("{letter}: device removal requested; closing handles");
@@ -198,20 +236,31 @@ pub(crate) fn guard_removal(raw: isize, ctl: Arc<VolCtl>, cancel: Option<WatchCa
         }
         _ => {}
     };
-    watch_handle(raw, Box::new(cb)).map_err(|e| warn!("{letter}: no removal notifications: {e}")).ok()
+    watch_handle(raw, Box::new(cb))
+        .map_err(|e| warn!("{letter}: no removal notifications: {e}"))
+        .ok()
 }
 
 /// After the worker closed its handles because of a removal: wait for the drive to vanish
 /// (true: tell the writer to drop it) or for the removal to be cancelled / time out (false:
 /// carry on). `reg` stays registered meanwhile so a `QueryRemoveFailed` can arrive.
-pub(crate) fn settle_removal(sh: &Shared, tx: &Sender<Msg>, ctl: &VolCtl, letter: char, reg: Option<Registration>) -> bool {
+pub(crate) fn settle_removal(
+    sh: &Shared,
+    tx: &Sender<Msg>,
+    ctl: &VolCtl,
+    letter: char,
+    reg: Option<Registration>,
+) -> bool {
     ctl.released.store(true, Ordering::SeqCst);
     let end = Instant::now() + GONE_WAIT;
     let gone = loop {
         if !present(letter) {
             break true;
         }
-        if !ctl.removing.load(Ordering::SeqCst) || sh.shutdown.load(Ordering::Relaxed) || Instant::now() >= end {
+        if !ctl.removing.load(Ordering::SeqCst)
+            || sh.shutdown.load(Ordering::Relaxed)
+            || Instant::now() >= end
+        {
             break false;
         }
         std::thread::sleep(Duration::from_millis(200));
@@ -235,7 +284,11 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol, mut resume: Option<Journa
     let ctl = sh.ctl(l);
     sh.set_info(l, &vol.fs, vol.monitor());
     let cfg = MonitorConfig {
-        version: if vol.kind == VolKind::Refs { RecordVersion::V3 } else { RecordVersion::V2 },
+        version: if vol.kind == VolKind::Refs {
+            RecordVersion::V3
+        } else {
+            RecordVersion::V2
+        },
         ..MonitorConfig::default()
     };
     while !sh.shutdown.load(Ordering::Relaxed) {
@@ -246,7 +299,9 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol, mut resume: Option<Journa
             Some(c) => c,
             None => match scan(&sh, &vol, &ctl) {
                 Ok((fresh, c)) => {
-                    let _ = tx.send(Msg::Replace { fresh: Box::new(fresh) });
+                    let _ = tx.send(Msg::Replace {
+                        fresh: Box::new(fresh),
+                    });
                     c
                 }
                 Err(e) => {
@@ -284,11 +339,18 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol, mut resume: Option<Journa
             }
         };
         let reg = guard_removal(handle.raw(), ctl.clone(), None, l);
-        info!("{l}: following USN journal {:x} from {} ({:?})", cursor.journal_id, cursor.next_usn, cfg.version);
+        info!(
+            "{l}: following USN journal {:x} from {} ({:?})",
+            cursor.journal_id, cursor.next_usn, cfg.version
+        );
         let mut last = cursor;
         let exit = run_monitor(&handle, cursor, &cfg, &ctl.stop, &mut |changes, cursor| {
             last = cursor;
-            let _ = tx.send(Msg::Changes { vol: v, changes, cursor });
+            let _ = tx.send(Msg::Changes {
+                vol: v,
+                changes,
+                cursor,
+            });
         });
         drop(handle);
         if ctl.removing.load(Ordering::SeqCst) {

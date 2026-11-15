@@ -76,7 +76,11 @@ struct Rd<'a> {
 }
 impl<'a> Rd<'a> {
     fn take(&mut self, n: usize) -> Result<&'a [u8], SnapshotError> {
-        let end = self.p.checked_add(n).filter(|&e| e <= self.d.len()).ok_or(SnapshotError::Corrupt("truncated"))?;
+        let end = self
+            .p
+            .checked_add(n)
+            .filter(|&e| e <= self.d.len())
+            .ok_or(SnapshotError::Corrupt("truncated"))?;
         let s = &self.d[self.p..end];
         self.p = end;
         Ok(s)
@@ -108,13 +112,15 @@ impl<'a> Rd<'a> {
         }
     }
     fn u32s(&mut self, n: usize) -> Result<Vec<u32>, SnapshotError> {
-        Ok(self.take(n.checked_mul(4).ok_or(SnapshotError::Corrupt("len"))?)?
+        Ok(self
+            .take(n.checked_mul(4).ok_or(SnapshotError::Corrupt("len"))?)?
             .chunks_exact(4)
             .map(|c| u32::from_le_bytes(c.try_into().unwrap()))
             .collect())
     }
     fn u64s(&mut self, n: usize) -> Result<Vec<u64>, SnapshotError> {
-        Ok(self.take(n.checked_mul(8).ok_or(SnapshotError::Corrupt("len"))?)?
+        Ok(self
+            .take(n.checked_mul(8).ok_or(SnapshotError::Corrupt("len"))?)?
             .chunks_exact(8)
             .map(|c| u64::from_le_bytes(c.try_into().unwrap()))
             .collect())
@@ -231,7 +237,11 @@ impl Index {
         let n = r.u32()? as usize;
         let norder = r.u32()? as usize;
         let per = 4 + 1 + 1 + 8 + if with_meta { 16 } else { 0 };
-        if nvols > 256 || norder > n || n >= (u32::MAX - 2) as usize || n.saturating_mul(per) > body.len() {
+        if nvols > 256
+            || norder > n
+            || n >= (u32::MAX - 2) as usize
+            || n.saturating_mul(per) > body.len()
+        {
             return Err(c("counts"));
         }
         let mut vols = Vec::with_capacity(nvols);
@@ -249,19 +259,33 @@ impl Index {
             } else {
                 (VolKind::Ntfs, 0)
             };
-            vols.push(VolumeMeta { letter, serial, journal_id, next_usn, root, kind, next_id });
+            vols.push(VolumeMeta {
+                letter,
+                serial,
+                journal_id,
+                next_usn,
+                root,
+                kind,
+                next_id,
+            });
         }
         let parent = r.u32s(n)?;
         let vol = r.take(n)?.to_vec();
         let mut flags = r.take(n)?.to_vec();
         let frn = r.u64s(n)?;
         let (size, mtime) = if with_meta {
-            (r.u64s(n)?, r.u64s(n)?.into_iter().map(|x| x as i64).collect())
+            (
+                r.u64s(n)?,
+                r.u64s(n)?.into_iter().map(|x| x as i64).collect(),
+            )
         } else {
             (Vec::new(), Vec::new())
         };
         let names_len = r.u64()? as usize;
-        let mut nr = Rd { d: r.take(names_len)?, p: 0 };
+        let mut nr = Rd {
+            d: r.take(names_len)?,
+            p: 0,
+        };
         let mut arena: Vec<u8> = Vec::with_capacity(names_len);
         let mut name_off = Vec::with_capacity(n);
         let mut name_len = Vec::with_capacity(n);
@@ -317,7 +341,10 @@ impl Index {
                     return Err(c("root"));
                 }
             } else {
-                if p as usize >= n || flags[p as usize] & (F_DIR | F_DELETED) != F_DIR || p as usize == i {
+                if p as usize >= n
+                    || flags[p as usize] & (F_DIR | F_DELETED) != F_DIR
+                    || p as usize == i
+                {
                     return Err(c("parent"));
                 }
             }
@@ -329,7 +356,10 @@ impl Index {
         }
         for &o in &order {
             let ou = o as usize;
-            if ou >= n || flags[ou] & (F_DELETED | F_ROOT | F_STUB) != 0 || flags[ou] & F_INORDER != 0 {
+            if ou >= n
+                || flags[ou] & (F_DELETED | F_ROOT | F_STUB) != 0
+                || flags[ou] & F_INORDER != 0
+            {
                 return Err(c("order"));
             }
             flags[ou] |= F_INORDER;
