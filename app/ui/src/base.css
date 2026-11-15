@@ -15,7 +15,15 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #d6dbe3; --bg2: #e7eaf0; --bg3: #c7cdd8; --line: #a7afbd;
+  /* Window transparency (Settings › General): transparency.ts sets --win-alpha inline when the
+     user dials below 100%; the canvas/surface tokens of both themes mix themselves toward
+     transparent with it, so the desktop shows through while text and hairlines stay opaque.
+     The -0 variables are the solid palette; the derived --paper reading surface stays opaque. */
+  --win-alpha: 1;
+  --bg-0: #d6dbe3; --bg2-0: #e7eaf0; --bg3-0: #c7cdd8; --line: #a7afbd;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
   --fg: #11141b; --fg2: #454d5c; --fg3: #6f7889;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
@@ -41,12 +49,16 @@
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
   /* Library-window sidebar surfaces: both themes get a rail with its own identity, distinct
      from the canvas — light a flat cool grey one step off the canvas, dark a lifted graphite. */
-  --side: #cdd3dd;
+  --side-0: #cdd3dd;
+  --side: color-mix(in srgb, var(--side-0) calc(var(--win-alpha) * 100%), transparent);
   --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --bg: #1b1c21; --bg2: #151619; --bg3: #282a31; --line: #2d2f37;
+  --bg-0: #1b1c21; --bg2-0: #151619; --bg3-0: #282a31; --line: #2d2f37;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
   --fg: #f3f4f6; --fg2: #b3b7c1; --fg3: #7b808c;
   --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
@@ -55,8 +67,9 @@
   --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
   --card-border: 1px solid transparent; --card-shadow: none;
   --pop-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 14px 34px -8px rgba(0,0,0,.55);
-  --side: color-mix(in oklab, var(--acc) 5%, #23252c);
-  --side-card: color-mix(in oklab, var(--acc) 6%, #2f323b);
+  --side-0: #23252c; --side-card-0: #2f323b;
+  --side: color-mix(in srgb, color-mix(in oklab, var(--acc) 5%, var(--side-0)) calc(var(--win-alpha) * 100%), transparent);
+  --side-card: color-mix(in srgb, color-mix(in oklab, var(--acc) 6%, var(--side-card-0)) calc(var(--win-alpha) * 100%), transparent);
 }
 /* Legacy names still used by not-yet-ported rules; they alias the v4 tokens. Do not add new uses. */
 :root {

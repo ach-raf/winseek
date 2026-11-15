@@ -13,6 +13,7 @@ import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import { filterSections, type SettingsSection } from "./settingsNav";
 import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./accent";
+import { OPACITY_MAX, OPACITY_MIN, applyOpacity, loadOpacity, saveOpacity } from "./transparency";
 import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
@@ -181,6 +182,26 @@ function AccentRow() {
                   title={a.label} className={"acc-sw" + (id === a.id ? " on" : "")}
                   style={{ background: a.hex }} onClick={() => change(a.id)} />
         ))}
+      </div>
+    </Row>
+  );
+}
+
+/** Window transparency slider (Settings › General). Applies at once and is remembered; the
+ *  other window follows through the storage event (main.tsx). 40% floor keeps text readable. */
+function TransparencyRow() {
+  const [pct, setPct] = useState<number>(() => loadOpacity());
+  const change = (next: number) => {
+    setPct(next);
+    applyOpacity(next);
+    saveOpacity(next);
+  };
+  return (
+    <Row title="Window transparency" desc="How much of the desktop shows through winseek's windows.">
+      <div className="op-row">
+        <input type="range" min={OPACITY_MIN} max={OPACITY_MAX} step={5} value={pct} aria-label="Window transparency"
+               onChange={(e) => change(Number(e.target.value))} />
+        <span className="op-val">{pct}%</span>
       </div>
     </Row>
   );
@@ -832,6 +853,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
               <Grp title="General">
                 <ThemeRow />
                 <AccentRow />
+                <TransparencyRow />
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
                 <UpdatesRow backend={backend} onError={onError} />

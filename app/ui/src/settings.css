@@ -351,3 +351,7 @@ dialog.confirm::backdrop {
 .acc-sw:hover { transform: scale(1.12); }
 .acc-sw.on { outline: 2px solid var(--fg); outline-offset: 2.5px; }
 .acc-sw:focus-visible { outline: 2px solid var(--acc); outline-offset: 2.5px; }
+/* Window transparency slider: same recipe as the collections strictness dial (library.css). */
+.op-row { display: inline-flex; align-items: center; gap: 10px; flex: none; }
+.op-row input[type=range] { accent-color: var(--acc); width: 150px; }
+.op-val { min-width: 40px; text-align: right; font: 500 12.5px/1 var(--mono); color: var(--fg2); }
