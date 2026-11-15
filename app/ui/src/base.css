@@ -3,7 +3,7 @@
    by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
    palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink).
    Light is "Porcelain" (user-judged variant, design-mockups/light-variant-porcelain.html): the
-   iOS/macOS grouped-list recipe on a cool grey canvas (--bg) that near-white surfaces (--bg2)
+   iOS/macOS grouped-list recipe on a cool grey canvas (--bg) that off-white surfaces (--bg2)
    float on, lifted by --card-shadow; dark is layered graphite with recessed cards, so the same
    rules read as raised in light and inset in dark — that asymmetry is the point. Light surfaces
    are cool-neutral and hairlines sit one step crisper so edges survive the lighter canvas;
@@ -15,7 +15,7 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #e8e9ec; --bg2: #fdfdfe; --bg3: #dcdde1; --line: #cfd2d8;
+  --bg: #e8e9ec; --bg2: #f3f4f7; --bg3: #dcdde1; --line: #c7cbd2;
   --fg: #16181d; --fg2: #585d68; --fg3: #9096a2;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
@@ -25,9 +25,10 @@
   /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
      are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
      popovers, floating labels — softer than the window's --shadow, present in both themes.
-     Light's shadow ink is the same cool slate as the text, so shade reads neutral on porcelain. */
-  --card-shadow: 0 0 0 1px rgba(24,28,36,.14), 0 1px 2px rgba(24,28,36,.07), 0 8px 18px -10px rgba(24,28,36,.22);
-  --pop-shadow: 0 0 0 1px rgba(24,28,36,.06), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
+     Light's ring is a real hairline (var(--line)), not translucent ink: cards here are the
+     page's containers, and a faint ring reads as missing edges on the light canvas. */
+  --card-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(24,28,36,.08), 0 8px 18px -10px rgba(24,28,36,.25);
+  --pop-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 10px; --radius-lg: 16px;
   /* Spacing scale — the only horizontal rhythm. Micro paddings (0-3px) stay literal; anything
