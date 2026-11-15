@@ -734,7 +734,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
       if (at >= 0) {
         e.preventDefault();
         e.stopPropagation();
-        onSection(NAV[at].id);
+        onSection(NAV[at]!.id);
         requestAnimationFrame(() => {
           const h = bodyRef.current?.querySelector<HTMLElement>(".grp h3");
           if (h) { h.setAttribute("tabindex", "-1"); h.focus({ preventScroll: true }); }
