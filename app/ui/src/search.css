@@ -23,10 +23,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .stat b { font: 500 11.5px var(--mono); color: var(--fg2); }
 .ibtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--fg3); flex: none; }
 .ibtn:hover { background: var(--bg3); color: var(--fg); }
-.qchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 9px; border-radius: 7px; background: var(--sel); font-size: 12.5px; font-weight: 500; white-space: nowrap; flex: none; }
-.qchip span { color: var(--fg2); font-weight: 400; }
-.qchip button { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--fg3); }
-.qchip button:hover { background: var(--bg3); color: var(--fg); }
+/* .qchip (info chip) lives in base.css — one definition for the archetype */
 
 /* clear-the-search button (X at the right end of the field, popup + full window) */
 .clr { width: 26px; height: 26px; flex: none; display: grid; place-items: center; border-radius: 7px; color: var(--fg3); }
@@ -35,12 +32,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* ---- filter row ---- */
 /* popup gutter: chips start at var(--sp-4), the same x as the search field above and the rows below */
 .frow { display: flex; align-items: center; gap: 6px; flex: none; padding: 0 var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--line); }
-.fc { height: 28px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--fg2); white-space: nowrap; }
-.fc i { font-style: normal; font-size: 11.5px; color: var(--fg3); font-weight: 400; font-variant-numeric: tabular-nums; }
-.fc:hover { background: var(--bg3); }
-.fc.on { background: var(--fg); color: var(--bg); }
-.fc.on i { color: color-mix(in oklab, var(--bg) 65%, var(--fg)); }
-.fc.zero:not(.on) { opacity: .45; }
+/* .fc (filter chip) lives in base.css — one definition for the archetype; active = the row's only accent */
 .dseg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg2); }
 .dseg button { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--fg3); }
 .dseg button.on { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
@@ -204,8 +196,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .abar .toast { color: var(--fg); font-weight: 600; margin-left: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; animation: fade 160ms var(--ease); }
 .abar .toast .undo { font-weight: 600; text-decoration: underline; text-underline-offset: 2px; margin-left: 2px; }
 .abar .toast .undo:hover { text-decoration-thickness: 2px; }
-.abar .dl-chip { margin-left: 10px; color: var(--fg2); font-weight: 500; white-space: nowrap; }
-.abar .dl-chip:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
+.abar .dl-link { margin-left: 10px; color: var(--fg2); font-weight: 500; white-space: nowrap; }
+.abar .dl-link:hover { color: var(--fg); text-decoration: underline; text-underline-offset: 2px; }
 .act { height: 30px; padding: 0 8px 0 10px; display: inline-flex; align-items: center; gap: 8px; border-radius: 8px; color: var(--fg2); font-weight: 500; white-space: nowrap; }
 .act:hover { background: var(--bg3); }
 .act.pri { color: var(--fg); font-weight: 600; }

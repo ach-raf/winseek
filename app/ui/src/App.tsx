@@ -1718,7 +1718,7 @@ export default function App({ backend }: { backend: Backend }) {
           <footer className="abar">
             <span className="st"><span className={"dot" + (state === "live" ? "" : " warn")} />{statusText}</span>
             {models.running && (
-              <button className="dl-chip" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
+              <button className="dl-link" tabIndex={-1} title="Downloading the search-by-meaning models (one time). Click for details."
                       onMouseDown={keep} onClick={openSetup}>
                 Setting up search by meaning{models.progress && models.progress.overall_total > 0
                   ? ` · ${Math.min(100, Math.floor((100 * models.progress.overall_downloaded) / models.progress.overall_total))}%` : "…"}
