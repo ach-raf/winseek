@@ -14,6 +14,18 @@ declare global {
 
 export const inTauri = typeof window !== "undefined" && !!window.__TAURI__;
 
+/** Bytes of a previewable file (media, and .docx family for the pane's Word renderer), streamed
+ *  by the wsfile protocol with Range support. */
+export function wsFileUrl(path: string): string {
+  return `http://wsfile.localhost/?p=${encodeURIComponent(path)}`;
+}
+
+/** What `src` carries for a preview kind: media plays/zooms from the raw bytes; Word documents
+ *  hand them to the docx renderer; everything else has no byte view. */
+function mediaSrc(kind: string, path: string): string | null {
+  return kind === "image" || kind === "video" || kind === "audio" || kind === "document" ? wsFileUrl(path) : null;
+}
+
 function tauriBackend(t: TauriGlobal): Backend {
   const inv = t.core.invoke;
   return {
@@ -60,7 +72,7 @@ function tauriBackend(t: TauriGlobal): Backend {
       const big = (isDir: boolean) => `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=512&t=1`;
       return {
         ...i,
-        src: i.kind === "image" || i.kind === "video" || i.kind === "audio" ? `http://wsfile.localhost/?p=${encodeURIComponent(path)}` : null,
+        src: mediaSrc(i.kind, path),
         thumb: i.kind === "text" ? null : big(i.kind === "folder"),
       };
     },

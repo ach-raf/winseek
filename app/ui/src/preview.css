@@ -238,3 +238,12 @@
 /* the parser panel's Rendered view */
 .pv-parse-md { overflow: auto; min-height: 0; }
 .pv-parse-md .pv-md { padding-top: 2px; }
+
+/* Word documents: real layout (docx-preview) — pages float on the pane's paper */
+.pv-docx { position: absolute; inset: 0; overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+:root[data-theme="light"] .pv-docx { background: var(--bg2); }
+.pv-docx .docx-wrapper { padding: 12px 10px; background: transparent; }
+.pv-docx .docx-wrapper > section.docx { box-shadow: 0 1px 4px rgba(0,0,0,.28), 0 0 0 1px var(--line); margin-bottom: 12px; user-select: text; }
+
+/* right-click menu over selected preview text (the .pv-pick look, parked at the cursor) */
+.pv-copymenu { position: fixed; z-index: 30; min-width: 132px; }

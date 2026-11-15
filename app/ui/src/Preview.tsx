@@ -2,12 +2,13 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } fr
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight } from "prism-react-renderer";
+import { renderAsync } from "docx-preview";
 import "./prismLangs";
 import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { formatDate, formatSize } from "./format";
-import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
@@ -78,6 +79,17 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
   // The PDF page being shown (the actions read that page) and whether the optional document parser is installed.
   const [pdfPage, setPdfPage] = useState<number | null>(null);
   const [parser, setParser] = useState<boolean | null>(null);
+  // Right-click over selected text in the pane -> the copy menu (see CopyMenu).
+  const [copyMenu, setCopyMenu] = useState<{ x: number; y: number; text: string } | null>(null);
+  const pvRef = useRef<HTMLElement>(null);
+  const copyText = useCallback((t: string) => backend.copyTextHtml(t, null), [backend]);
+  const onContext = (e: React.MouseEvent) => {
+    const text = previewSelectionText(document.getSelection(), pvRef.current);
+    if (!text) return; // nothing selected: the global suppressor keeps right-click quiet, as before
+    e.preventDefault();
+    e.stopPropagation();
+    setCopyMenu({ x: e.clientX, y: e.clientY, text });
+  };
 
   useEffect(() => {
     let live = true;
@@ -108,7 +120,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
   const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
 
   return (
-    <aside className="pv" aria-label={`Preview of ${hit.name}`}>
+    <aside className="pv" aria-label={`Preview of ${hit.name}`} ref={pvRef} onContextMenu={onContext}>
       <div className="pv-col">
         <div className={"pbox" + (stale ? " stale" : "")}>
           {err ? (
@@ -146,6 +158,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
           <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
         </div>
       </div>
+      {copyMenu && <CopyMenu x={copyMenu.x} y={copyMenu.y} text={copyMenu.text} copy={copyText} onClose={() => setCopyMenu(null)} />}
     </aside>
   );
 }
@@ -185,8 +198,10 @@ function Body({ backend, info, query, start, page, boxes, onPage, registerApi }:
     case "pdf": return <PdfView backend={backend} info={info} query={query} page={page} boxes={boxes} onPage={onPage} registerApi={registerApi} />;
     case "image": return <ImageView info={info} boxes={boxes} registerApi={registerApi} />;
     case "video": case "audio": return <MediaView info={info} start={start} />;
-    // A document (docx / xlsx / pptx / ODF / RTF) reads exactly like a text file.
-    case "text": case "document": return <TextView info={info} query={query} />;
+    case "text": return <TextView info={info} query={query} />;
+    // A document renders as a real Word file when it can (.docx family); everything else
+    // (xlsx / pptx / ODF / RTF / legacy .doc) reads like the text file it was indexed as.
+    case "document": return <DocView info={info} query={query} />;
     default: return <OtherView info={info} />;
   }
 }
@@ -745,6 +760,104 @@ function termMarks(text: string, terms: string[] | undefined): React.ReactNode {
   const { segments } = highlight(text, terms);
   if (!segments.some((s) => s.hit)) return text;
   return segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text));
+}
+
+// ---- Word documents -----------------------------------------------------------------------------------
+
+/** `wsfile:` answers without a Range in one piece up to this size (FULL_MAX in preview.rs):
+ *  bigger files arrive short and no ZIP reader can open them. */
+const DOCX_ONE_PIECE_MAX = 24 * 1024 * 1024;
+
+/** A document preview: the .docx family renders with real Word layout (docx-preview over the
+ *  streamed bytes); anything else (xlsx / pptx / ODF / RTF / legacy .doc) reads like the text
+ *  file it was indexed as. */
+function DocView({ info, query }: { info: PreviewInfo; query: string }) {
+  const word = isWordDoc(extOf(info.name)) && info.src !== null;
+  return word ? <DocxView info={info} query={query} /> : <TextView info={info} query={query} />;
+}
+
+/** Word layout for one .docx: fetch the bytes, hand them to the renderer, keep the extracted
+ *  text as the fallback when the bytes are out of reach (protocol refusal, or a file bigger
+ *  than the protocol's one-piece cap) or the file is not a docx after all. */
+function DocxView({ info, query }: { info: PreviewInfo; query: string }) {
+  const host = useRef<HTMLDivElement>(null);
+  const [dead, setDead] = useState(false);
+  useEffect(() => {
+    const made = host.current;
+    if (!made || !info.src) return;
+    let live = true;
+    setDead(false);
+    void (async () => {
+      try {
+        const res = await fetch(info.src!);
+        if (!res.ok) throw new Error(`bytes ${res.status}`);
+        const buf = await res.arrayBuffer();
+        // Only files above the one-piece cap can arrive short; smaller ones always come whole.
+        if (info.size !== null && info.size > DOCX_ONE_PIECE_MAX && buf.byteLength < info.size) {
+          throw new Error("bytes truncated");
+        }
+        if (!live) return;
+        made.replaceChildren();
+        await renderAsync(buf, made, undefined, { inWrapper: true });
+      } catch (e) {
+        if (live) { setDead(true); console.info("[preview] docx bytes unusable, showing the extracted text", e); }
+      }
+    })();
+    return () => { live = false; };
+  }, [info.src, info.size]);
+  if (dead) return <TextView info={info} query={query} />;
+  return (
+    <div className="pv-docx">
+      <div className="pv-docx-pages" ref={host} />
+    </div>
+  );
+}
+
+// ---- copy the selected preview text -------------------------------------------------------------------
+
+/** Right-click over selected text in the pane: Copy / Select all. The app suppresses the native
+ *  webview menu, so without this a selection would have no way out — and focus usually sits in
+ *  the search box, which is why Copy goes through the backend clipboard, not a native copy. */
+function CopyMenu({ x, y, text, copy, onClose }: {
+  x: number; y: number; text: string; copy: (t: string) => Promise<void>; onClose: () => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const [msg, setMsg] = useState<"copied" | "failed" | null>(null);
+  useEffect(() => {
+    const press = (e: MouseEvent) => { if (!ref.current?.contains(e.target as Node)) onClose(); };
+    // Capture phase, and Escape must not also close Quick Look behind the menu.
+    const key = (e: KeyboardEvent) => {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); }
+    };
+    window.addEventListener("mousedown", press, true);
+    window.addEventListener("keydown", key, true);
+    return () => { window.removeEventListener("mousedown", press, true); window.removeEventListener("keydown", key, true); };
+  }, [onClose]);
+  useEffect(() => {
+    if (msg !== "copied") return;
+    const t = window.setTimeout(onClose, 700);
+    return () => window.clearTimeout(t);
+  }, [msg, onClose]);
+  const selectAll = () => {
+    const pane = ref.current?.closest(".pv");
+    const root = pane?.querySelector(".pbox") ?? pane;
+    if (!root) return;
+    const r = document.createRange();
+    r.selectNodeContents(root);
+    const s = window.getSelection();
+    s?.removeAllRanges();
+    s?.addRange(r);
+    onClose();
+  };
+  return (
+    <div className="pv-pick pv-copymenu" role="menu" aria-label="Selected text" style={{ left: Math.min(x, window.innerWidth - 150), top: Math.min(y, window.innerHeight - 100) }} ref={ref}>
+      <button className="btn quiet pv-btn" role="menuitem" tabIndex={-1}
+              onClick={() => { void copy(text).then(() => setMsg("copied"), () => setMsg("failed")); }}>
+        {msg === "copied" ? "Copied ✓" : msg === "failed" ? "Copy failed" : "Copy"}
+      </button>
+      <button className="btn quiet pv-btn" role="menuitem" tabIndex={-1} onClick={selectAll}>Select all</button>
+    </div>
+  );
 }
 
 // ---- everything else: big icon / thumbnail + facts --------------------------------------------------------

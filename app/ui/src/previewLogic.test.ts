@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, codeLanguage, fenceLanguage, fitScale, formatClock, highlight, isMarkdown, markTextNodes, pdfRenderWidth, prettyJson, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode } from "./previewLogic.ts";
+import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, codeLanguage, fenceLanguage, fitScale, formatClock, highlight, isMarkdown, isWordDoc, markTextNodes, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode } from "./previewLogic.ts";
 
 test("clampPage keeps a PDF page inside the document", () => {
   assert.equal(clampPage(3, 10), 3);
@@ -75,6 +75,28 @@ test("prettyJson re-indents objects and arrays, leaves everything else raw", () 
   assert.equal(prettyJson('"hello"'), null);
   assert.equal(prettyJson("{not json"), null);
   assert.equal(prettyJson("function f() {}"), null);
+});
+
+test("isWordDoc picks the extensions the docx renderer can show", () => {
+  assert.equal(isWordDoc("docx"), true);
+  assert.equal(isWordDoc("DOCM"), true, "extension case does not matter");
+  assert.equal(isWordDoc("dotx"), true);
+  assert.equal(isWordDoc("doc"), false, "the legacy binary format has no small renderer");
+  assert.equal(isWordDoc("rtf"), false);
+  assert.equal(isWordDoc(""), false);
+});
+
+test("previewSelectionText returns the text only when the selection sits in the pane", () => {
+  const node = { fake: true };
+  const root = { contains: (n: unknown) => n === node } as unknown as Element;
+  const inside = { anchorNode: node, toString: () => "selected words" };
+  assert.equal(previewSelectionText(inside, root), "selected words");
+  const elsewhere = { anchorNode: { fake: "other" }, toString: () => "row text" };
+  assert.equal(previewSelectionText(elsewhere, root), "", "a selection outside the pane is not preview text");
+  const empty = { anchorNode: node, toString: () => "" };
+  assert.equal(previewSelectionText(empty, root), "", "a collapsed selection has no text");
+  assert.equal(previewSelectionText(null, root), "");
+  assert.equal(previewSelectionText(inside, null), "");
 });
 
 test("markTextNodes splits term hits into mark elements, walking nested nodes", () => {

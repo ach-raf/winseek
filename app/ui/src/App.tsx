@@ -2,6 +2,7 @@ import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, use
 import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
+import { previewSelectionText } from "./previewLogic";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
@@ -1100,10 +1101,11 @@ export default function App({ backend }: { backend: Backend }) {
         case "Home": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(0); } break;
         case "End": if (e.ctrlKey) { e.preventDefault(); navigated.current = true; move(selCount - 1); } break;
         case " ":
-          // Space closes Quick Look; it opens it when it cannot be a typed space (empty box, or after arrowing
-          // through the results). Launch rows have no preview: Space is a no-op there.
+          // Space closes Quick Look; it opens it when it cannot be a typed space (empty box, after
+          // arrowing, or after clicking a row). Launch rows have no preview: Space is a no-op there.
+          // Closing hands the space back to the query, so composing "ab cd" right after works.
           if (ovItem?.launch) break;
-          if (pvOpen) { e.preventDefault(); setPvOpen(false); }
+          if (pvOpen) { e.preventDefault(); setPvOpen(false); navigated.current = false; }
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
             e.preventDefault(); setPvOpen(true); recordQuery();
           }
@@ -1125,7 +1127,7 @@ export default function App({ backend }: { backend: Backend }) {
           if (cheat) setCheat(false);
           else if (armed) setArmed(null);
           else if (launchMenu) setLaunchMenu(null);
-          else if (pvOpen) setPvOpen(false);
+          else if (pvOpen) { setPvOpen(false); navigated.current = false; }
           else if (expand && !setupOpenRef.current) setExpand(null);
           else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
@@ -1146,6 +1148,16 @@ export default function App({ backend }: { backend: Backend }) {
           break;
         }
         case "c": case "C":
+          // Selected text in the preview outranks every file action: focus usually sits in the
+          // search box, so a plain Ctrl+C would copy files while the user sees highlighted text.
+          if (e.ctrlKey && !e.shiftKey && !e.altKey) {
+            const sel = previewSelectionText(document.getSelection(), document.querySelector(".pv"));
+            if (sel) {
+              e.preventDefault();
+              void backend.copyTextHtml(sel, null).then(() => flash("Copied"), fail);
+              break;
+            }
+          }
           if (e.ctrlKey && e.altKey && !e.shiftKey) {
             // Copy the file NAME only (Ctrl+Shift+C stays "copy full path"). Launch rows: no-op.
             e.preventDefault();
@@ -1281,7 +1293,11 @@ export default function App({ backend }: { backend: Backend }) {
   const rowHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
       if (suppressClick.current) { suppressClick.current = false; return; }
-      setSel(i); refocus();
+      setSel(i);
+      // A click selects like arrowing does: Space now means Quick Look, not a typed space. Typing
+      // resets it (query change), and closing Quick Look hands the space back to the query too.
+      navigated.current = true;
+      refocus();
     },
     onOpen: (i) => { if (!suppressClick.current) void act("open", rowsRef.current[i]); },
     onMenu: (i, e) => { e.preventDefault(); if (!rowsRef.current[i]) return; setSel(i); void openMenu(i, e.clientX, e.clientY); },

@@ -541,9 +541,92 @@ async function mockPreview(path: string): Promise<PreviewInfo> {
     const content =
       `Document text (mock ${ext.toUpperCase()}): the words you search for are highlighted here, like in a text file.\n\n` +
       PDF_LINES.join("\n");
-    return { ...base, kind: "document", text: { content, truncated: false, encoding: "UTF-8" } };
+    return { ...base, kind: "document", text: { content, truncated: false, encoding: "UTF-8" }, src: ext === "docx" ? docxSampleUrl() : null };
   }
   return base;
+}
+
+// ---- a real minimal .docx for the mock's Word renderer -----------------------------------------------
+// OOXML is a ZIP; the mock builds one with STORED entries (CRC-32, no compression) so the real
+// docx-preview code path runs on screen exactly as it will in the app.
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xEDB88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes: Uint8Array): number {
+  let c = 0xFFFFFFFF;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]!) & 0xFF]! ^ (c >>> 8);
+  return (c ^ 0xFFFFFFFF) >>> 0;
+}
+
+/** A tiny ZIP archive (store method only: local headers, data, central directory, EOCD). */
+function zipStore(entries: { name: string; data: Uint8Array }[]): ArrayBuffer {
+  const enc = new TextEncoder();
+  const chunks: Uint8Array[] = [];
+  const central: Uint8Array[] = [];
+  let offset = 0;
+  const u16 = (v: number) => [v & 0xFF, (v >>> 8) & 0xFF];
+  const u32 = (v: number) => [v & 0xFF, (v >>> 8) & 0xFF, (v >>> 16) & 0xFF, (v >>> 24) & 0xFF];
+  for (const e of entries) {
+    const name = enc.encode(e.name);
+    const crc = crc32(e.data);
+    const local = new Uint8Array([0x50, 0x4B, 0x03, 0x04, ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(crc), ...u32(e.data.length), ...u32(e.data.length), ...u16(name.length), ...u16(0), ...name]);
+    chunks.push(local, e.data);
+    central.push(new Uint8Array([0x50, 0x4B, 0x01, 0x02, ...u16(20), ...u16(20), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(crc), ...u32(e.data.length), ...u32(e.data.length), ...u16(name.length), ...u16(0), ...u16(0), ...u16(0), ...u16(0),
+      ...u32(0), ...u32(offset), ...name]));
+    offset += local.length + e.data.length;
+  }
+  const dirSize = central.reduce((n, c) => n + c.length, 0);
+  const eocd = new Uint8Array([0x50, 0x4B, 0x05, 0x06, ...u16(0), ...u16(0), ...u16(entries.length), ...u16(entries.length),
+    ...u32(dirSize), ...u32(offset), ...u16(0)]);
+  const out = new Uint8Array(offset + dirSize + eocd.length);
+  let at = 0;
+  for (const c of [...chunks, ...central, eocd]) { out.set(c, at); at += c.length; }
+  return out.buffer as ArrayBuffer; // `out` owns its buffer end to end
+}
+
+let docxUrl: string | null = null;
+
+/** The mock's stand-in Word file: a heading, bold text and a table, laid out by the real renderer. */
+function docxSampleUrl(): string {
+  if (docxUrl) return docxUrl;
+  const enc = new TextEncoder();
+  const documentXml =
+    `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+    `<w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>` +
+    `<w:p><w:r><w:rPr><w:b/><w:sz w:val="40"/></w:rPr><w:t>Quarterly report</w:t></w:r></w:p>` +
+    `<w:p><w:r><w:t>Rendered by the same Word engine the app uses, so this page proves the real path: </w:t></w:r>` +
+    `<w:r><w:rPr><w:b/></w:rPr><w:t>bold runs</w:t></w:r><w:r><w:t>, normal runs, and a table below.</w:t></w:r></w:p>` +
+    `<w:tbl><w:tr><w:tc><w:p><w:r><w:t>Item</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Qty</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>Price</w:t></w:r></w:p></w:tc></w:tr>` +
+    `<w:tr><w:tc><w:p><w:r><w:t>Graphics card</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>1</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>1,249.00</w:t></w:r></w:p></w:tc></w:tr>` +
+    `<w:tr><w:tc><w:p><w:r><w:t>NVMe drive</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>2</w:t></w:r></w:p></w:tc><w:tc><w:p><w:r><w:t>310.00</w:t></w:r></w:p></w:tc></w:tr>` +
+    `</w:tbl></w:body></w:document>`;
+  const zip = zipStore([
+    { name: "[Content_Types].xml", data: enc.encode(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">` +
+      `<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>` +
+      `<Default Extension="xml" ContentType="application/xml"/>` +
+      `<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/>` +
+      `</Types>`) },
+    { name: "_rels/.rels", data: enc.encode(
+      `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
+      `<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">` +
+      `<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/>` +
+      `</Relationships>`) },
+    { name: "word/document.xml", data: enc.encode(documentXml) },
+  ]);
+  docxUrl = URL.createObjectURL(new Blob([zip], { type: "application/vnd.openxmlformats-officedocument.wordprocessingml.document" }));
+  return docxUrl;
 }
 
 // ---- launcher (browser twin of launch:: in src-tauri): a small catalog + a simple scorer ----

@@ -139,6 +139,25 @@ export function prettyJson(content: string): string | null {
   }
 }
 
+/** Extensions the pane renders as real Word documents (docx-preview over the streamed bytes). */
+const WORD_EXTS = new Set(["docx", "docm", "dotx", "dotm"]);
+
+/** True when a file of this extension can render as a Word document in the preview. */
+export function isWordDoc(ext: string): boolean {
+  return WORD_EXTS.has(ext.toLowerCase());
+}
+
+/** The selected text when the live selection starts inside `root` (the preview pane), else "".
+ *  Focus usually sits in the search box, so a native Ctrl+C copies nothing: both the Ctrl+C
+ *  branch and the preview's right-click menu use this to mean "the user means this text". */
+export function previewSelectionText(sel: { anchorNode: unknown; toString(): string } | null, root: Element | null): string {
+  if (!sel || !root) return "";
+  const text = sel.toString();
+  if (!text) return "";
+  const at = sel.anchorNode;
+  return typeof at === "object" && at !== null && root.contains(at as Node) ? text : "";
+}
+
 /** A hast node as react-markdown hands it over — just the fields the term-marker touches.
  *  Structural on purpose: no library types, so `node --test` can load this file. */
 export interface MdNode {

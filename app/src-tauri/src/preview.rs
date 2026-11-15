@@ -164,6 +164,10 @@ fn mime_of(ext: &str) -> &'static str {
         "m4a" => "audio/mp4",
         "aac" => "audio/aac",
         "wma" => "audio/x-ms-wma",
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "docm" => "application/vnd.ms-word.document.macroEnabled.12",
+        "dotx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+        "dotm" => "application/vnd.ms-word.template.macroEnabled.12",
         _ => "application/octet-stream",
     }
 }
@@ -611,7 +615,8 @@ fn read_range(path: &Path, start: u64, len: u64) -> std::io::Result<Vec<u8>> {
 
 fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>> {
     let ext = ext_of(path);
-    if !matches!(classify(&ext), Kind::Image | Kind::Video | Kind::Audio) {
+    // Documents stream too: the pane renders .docx family files in the browser (docx-preview).
+    if !matches!(classify(&ext), Kind::Image | Kind::Video | Kind::Audio | Kind::Document) {
         return status_only(403);
     }
     let p = Path::new(path);
@@ -972,6 +977,19 @@ mod tests {
         let secret = dir.path().join("passwords.kdbx");
         std::fs::write(&secret, b"x").unwrap();
         assert_eq!(respond_file(secret.to_str().unwrap(), None).status(), 403);
+
+        // Documents stream for the pane's docx renderer; plain text stays closed.
+        let doc = dir.path().join("letter.docx");
+        std::fs::write(&doc, b"PK").unwrap();
+        let r = respond_file(doc.to_str().unwrap(), None);
+        assert_eq!(r.status().as_u16(), 200);
+        assert_eq!(
+            r.headers()["content-type"],
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        );
+        let txt = dir.path().join("notes.txt");
+        std::fs::write(&txt, b"x").unwrap();
+        assert_eq!(respond_file(txt.to_str().unwrap(), None).status(), 403);
         assert_eq!(
             respond_file(dir.path().join("none.mp4").to_str().unwrap(), None).status(),
             404
