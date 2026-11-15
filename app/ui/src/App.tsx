@@ -1120,7 +1120,7 @@ export default function App({ backend }: { backend: Backend }) {
           // arrowing, or after clicking a row). Launch rows have no preview: Space is a no-op there.
           // Closing hands the space back to the query, so composing "ab cd" right after works.
           if (ovItem?.launch) break;
-          if (pvOpen) { e.preventDefault(); setPvOpen(false); navigated.current = false; }
+          if (pvOpen) { e.preventDefault(); setPvOpen(false); } // Space stays a Quick Look toggle until you type
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
             e.preventDefault(); setPvOpen(true); recordQuery();
           }
