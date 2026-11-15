@@ -15,19 +15,19 @@
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
 
   --acc: #ffc533; --acc-ink: #231a00;
-  --bg: #e8e9ec; --bg2: #f3f4f7; --bg3: #dcdde1; --line: #c7cbd2;
-  --fg: #16181d; --fg2: #585d68; --fg3: #9096a2;
+  --bg: #d6dbe3; --bg2: #e7eaf0; --bg3: #c7cdd8; --line: #a7afbd;
+  --fg: #11141b; --fg2: #454d5c; --fg3: #6f7889;
   --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
   --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
   --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
-  --paper: #ffffff; --paper-line: #c9ccd3; --fold: #e2e4e9;
+  --paper: #f4f5f8; --paper-line: #aab1be; --fold: #d4d8e0;
   --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
   /* Elevation, per theme. --card-shadow lifts a card off the canvas (none in dark: cards there
      are recessed, not floating). --pop-shadow is for things that detach entirely: menus,
      popovers, floating labels — softer than the window's --shadow, present in both themes.
      Light's ring is a real hairline (var(--line)), not translucent ink: cards here are the
      page's containers, and a faint ring reads as missing edges on the light canvas. */
-  --card-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(24,28,36,.08), 0 8px 18px -10px rgba(24,28,36,.25);
+  --card-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(24,32,48,.10), 0 8px 18px -10px rgba(24,32,48,.30);
   --pop-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
   --ok: #2fbf71; --warn: #f0883e; --danger: #e5484d;
   --radius: 10px; --radius-lg: 16px;
@@ -40,7 +40,7 @@
   --ease: cubic-bezier(0.2, 0.9, 0.3, 1.1);
   /* Library-window sidebar surfaces: both themes get a rail with its own identity, distinct
      from the canvas — light a flat cool grey one step off the canvas, dark a lifted graphite. */
-  --side: #eff0f3;
+  --side: #cdd3dd;
   --side-card: var(--bg2);
 }
 :root[data-theme="dark"] {
