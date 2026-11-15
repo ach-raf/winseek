@@ -71,6 +71,22 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .win-pad { grid-column: 1 / -1; pointer-events: none; }
 .list.ov { overflow-anchor: none; }
 
+/* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
+ * Chips are buttons that act on the query — never filter chips (.fc), never info chips (.qchip). */
+.qsug { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2) var(--sp-2) 0; }
+.qsrow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
+.qslab { flex: none; font-size: 12px; font-weight: 600; color: var(--fg3); }
+.qs-chip { flex: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  border: 0; background: var(--bg3); color: var(--fg2); font-size: 12px; padding: 4px 11px; border-radius: 999px; cursor: pointer; }
+.qs-chip:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 8%, var(--bg3)); }
+.qs-chip.ex { background: none; color: var(--fg2); box-shadow: inset 0 0 0 1px var(--line); }
+.qs-chip.ex:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 4%, transparent); box-shadow: inset 0 0 0 1px var(--fg3); }
+.qs-clear { flex: none; border: 0; background: none; color: var(--fg3); font-size: 12px; padding: 3px 8px; border-radius: 999px; cursor: pointer; }
+.qs-clear:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 6%, transparent); }
+.qsug .none.qnone { padding: var(--sp-5) var(--sp-5); }
+/* chips land on the same edge as the section headers: list 8 + qsug 8 = 16 (popup), 12 + 10 = 22 (full) */
+.shell.full .qsug { padding-left: 10px; padding-right: 10px; }
+
 .row { display: grid; grid-template-columns: 36px 1fr auto; gap: var(--sp-3); align-items: center; padding: 6px var(--sp-3) 6px 10px; border-radius: 10px; min-height: 50px; cursor: default; }
 /* popup rows: text lands on the 16px popup gutter (list 8 + row 8) */
 .shell:not(.full) .row { padding-left: var(--sp-2); padding-right: var(--sp-2); }

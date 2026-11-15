@@ -12,7 +12,7 @@ import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, chipCount, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
@@ -210,6 +210,7 @@ export default function App({ backend }: { backend: Backend }) {
   const inputRef = useRef<HTMLInputElement>(null);
   // Search history (Alt+Up / Alt+Down): loaded once, appended when the user acts on a result.
   const hist = useRef<string[]>(qh.load());
+  const [histList, setHistList] = useState<string[]>(() => hist.current); // mirror of `hist` for the home's "Recent searches"
   const histAt = useRef(-1); // -1 = the live input
   const recordQuery = useCallback(() => {
     const q = inputRef.current?.value ?? "";
@@ -217,6 +218,13 @@ export default function App({ backend }: { backend: Backend }) {
     hist.current = qh.push(hist.current, q);
     histAt.current = -1;
     qh.save(hist.current);
+    setHistList(hist.current);
+  }, []);
+  const clearHistory = useCallback(() => {
+    hist.current = [];
+    histAt.current = -1;
+    qh.save(hist.current);
+    setHistList([]);
   }, []);
   const listRef = useRef<HTMLDivElement>(null);
   const seq = useRef(0);
@@ -1380,6 +1388,42 @@ export default function App({ backend }: { backend: Backend }) {
     </div>
   ) : null;
 
+  // Home suggestions (the empty state is never a dead end): recent searches fill the box, "Try" shows
+  // what the query language understands. Most used / Recent files follow below in the Overview.
+  const qsug = isRecent ? (
+    <div className="qsug">
+      {histList.length > 0 && (
+        <div className="qsrow">
+          <span className="qslab">Recent</span>
+          {histList.slice(0, 6).map((q) => (
+            <button key={q} className="qs-chip" tabIndex={-1}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => { setQuery(q); histAt.current = -1; inputRef.current?.focus(); }}>
+              {q}
+            </button>
+          ))}
+          <button className="qs-clear" tabIndex={-1} aria-label="Clear recent searches"
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => { clearHistory(); inputRef.current?.focus(); }}>
+            Clear
+          </button>
+        </div>
+      )}
+      <div className="qsrow">
+        <span className="qslab">Try</span>
+        {EXAMPLE_QUERIES.map((q) => (
+          <button key={q} className="qs-chip ex" tabIndex={-1}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => { setQuery(q); histAt.current = -1; inputRef.current?.focus(); }}>
+            {q}
+          </button>
+        ))}
+      </div>
+      {loaded && ov.flat.length === 0 && (
+        <div className="none qnone"><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</div>
+      )}
+    </div>
+  ) : null;
+
   const driveMenu = !full || status.length > 3;
 
   // ---- filter row ----
@@ -1641,16 +1685,12 @@ export default function App({ backend }: { backend: Backend }) {
               </div>
             )}
 
-            {!showPanel && overview && (ov.flat.length > 0 ? (
+            {!showPanel && overview && (ov.flat.length > 0 || isRecent ? (
               <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
-                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} />
+                        handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (
               <div className="none">
-                {isRecent ? (
-                  <><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</>
-                ) : (
-                  <><b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}</>
-                )}
+                <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}
               </div>
             ) : <div className="list ov" />)}
 

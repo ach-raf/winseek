@@ -359,7 +359,7 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak, onT
   );
 }
 
-export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed }: {
+export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
   /** "Show all" is still reading pages: the list keeps growing. */
   loading?: boolean;
@@ -367,10 +367,13 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
   /** Fold / unfold one kind group ("k:<kind>"). */
   onToggleFold?: (id: SectionId) => void;
   scrollRef: React.RefObject<HTMLDivElement | null>; armed: string | null;
+  /** Static content above the sections (the home's search suggestions); scrolls with the list. */
+  lead?: ReactNode;
 }) {
   let base = 0;
   return (
     <div className="list ov" ref={scrollRef} role="listbox" aria-label="Results">
+      {lead}
       {sections.map((s) => {
         const start = base;
         base += s.items.length;

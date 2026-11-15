@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, chipCount, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, chipCount, EXAMPLE_QUERIES, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
 
 const isImage = (n: string) => /\.(jpe?g|png|webp)$/i.test(n);
@@ -291,4 +292,16 @@ test("without groupByKind the Files section stays flat", () => {
   assert.ok(files);
   assert.equal(files.total, 2);
   assert.equal(sections.some((s) => s.id.toString().startsWith("k:")), false);
+});
+
+test("home examples: static, generic, and every one exercises the parser", () => {
+  const now = new Date(2026, 9, 13).getTime(); // Tue 13 Oct 2026
+  assert.deepEqual(EXAMPLE_QUERIES, ["photos from last summer", "invoice from March", "project plan pdf", "docs from this month"]);
+  const labels = (q: string) => parseQuery(q, { now }).chips.map((c) => c.label);
+  assert.deepEqual(labels(EXAMPLE_QUERIES[0]!), ["Pictures", "Summer 2026"]);
+  assert.deepEqual(labels(EXAMPLE_QUERIES[1]!), ["Mar 2026"]);
+  assert.deepEqual(labels(EXAMPLE_QUERIES[2]!), ["PDF"]);
+  assert.deepEqual(labels(EXAMPLE_QUERIES[3]!), ["Documents", "This month"]);
+  assert.equal(parseQuery(EXAMPLE_QUERIES[1]!, { now }).text, "invoice");
+  assert.equal(parseQuery(EXAMPLE_QUERIES[2]!, { now }).text, "project plan");
 });

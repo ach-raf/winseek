@@ -395,6 +395,10 @@ export function buildHome(opts: {
   return { sections, flat: sections.flatMap((x) => x.items) };
 }
 
+/** Example queries on the home ("Try"): static and generic on purpose (never personal), each one
+ *  exercises a real parser feature — kind + season, text + month, text + extension, kind + relative date. */
+export const EXAMPLE_QUERIES = ["photos from last summer", "invoice from March", "project plan pdf", "docs from this month"];
+
 // ---- display helpers (pure) ----
 
 /** The folder a file is in, home folder dropped, parts joined with " › ": head shrinks with an ellipsis, tail stays.
