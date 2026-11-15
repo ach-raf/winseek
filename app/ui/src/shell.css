@@ -19,12 +19,10 @@
 .idx .d span { text-align: right; font-variant-numeric: tabular-nums; }
 .meter { height: 5px; border-radius: 3px; background: var(--bg3); overflow: hidden; }
 .meter i { display: block; height: 100%; width: calc(var(--u) * 100%); border-radius: 3px; background: var(--fg3); }
-@media (prefers-color-scheme: dark) {
-  /* On the lifted tinted rail, bg3-keyed hover/selected would blend in; use fg overlays. */
-  .nv:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
-  .nv.on { background: color-mix(in oklab, var(--fg) 12%, transparent); box-shadow: none; }
-  .idx .meter { background: var(--bg); }
-}
+/* On the lifted tinted rail, bg3-keyed hover/selected would blend in; use fg overlays. */
+:root[data-theme="dark"] .nv:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
+:root[data-theme="dark"] .nv.on { background: color-mix(in oklab, var(--fg) 12%, transparent); box-shadow: none; }
+:root[data-theme="dark"] .idx .meter { background: var(--bg); }
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 var(--sp-2) 0 var(--sp-5); }
 .tbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }

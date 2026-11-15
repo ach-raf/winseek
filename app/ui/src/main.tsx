@@ -4,6 +4,7 @@ import App from "./App";
 import Library from "./Library";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { applyAccent, loadAccent } from "./accent";
+import { applyTheme, loadTheme, watchSystemTheme } from "./theme";
 import { loadBackend, inTauri } from "./api";
 import "@fontsource-variable/figtree";
 import "@fontsource/ibm-plex-mono/400.css";
@@ -21,9 +22,15 @@ const library = new URLSearchParams(location.search).get("view") === "library" |
 if (library) document.documentElement.classList.add("lib-view");
 
 applyAccent(loadAccent());
+applyTheme(loadTheme());
 // The other window (popup / library) follows a change made in Settings: localStorage is shared,
 // and the storage event fires only in the windows that did not make the change.
-window.addEventListener("storage", (e) => { if (e.key === "winseek.accent" && e.newValue) applyAccent(loadAccent()); });
+window.addEventListener("storage", (e) => {
+  if (e.key === "winseek.accent" && e.newValue) applyAccent(loadAccent());
+  if (e.key === "winseek.theme") applyTheme(loadTheme());
+});
+// On System, a flip of the Windows theme re-resolves live (explicit Light/Dark ignores this).
+watchSystemTheme(() => { if (loadTheme() === "system") applyTheme("system"); });
 
 loadBackend().then((backend) => {
   createRoot(document.getElementById("root")!).render(

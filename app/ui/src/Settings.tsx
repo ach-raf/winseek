@@ -13,6 +13,7 @@ import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import { filterSections, type SettingsSection } from "./settingsNav";
 import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./accent";
+import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
 import { IChevL, ISearch } from "./icons";
@@ -180,6 +181,22 @@ function AccentRow() {
                   style={{ background: a.hex }} onClick={() => change(a.id)} />
         ))}
       </div>
+    </Row>
+  );
+}
+
+/** Light, dark, or following Windows (Settings › General). Applies at once and is remembered;
+ *  the other window follows through the storage event (main.tsx). */
+function ThemeRow() {
+  const [id, setId] = useState<ThemeId>(() => loadTheme());
+  const change = (next: ThemeId) => {
+    setId(next);
+    applyTheme(next);
+    saveTheme(next);
+  };
+  return (
+    <Row title="Theme" desc="Light or dark, or follow Windows.">
+      <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" />
     </Row>
   );
 }
@@ -807,6 +824,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "general" && (
             <>
               <Grp title="General">
+                <ThemeRow />
                 <AccentRow />
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />

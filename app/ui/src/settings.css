@@ -64,7 +64,7 @@
 .snav .nv { height: 34px; font-size: 13.5px; }
 .snav .nv.on { background: var(--bg2); box-shadow: none; }
 .snav .nv:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
-@media (prefers-color-scheme: dark) { .snav .nv.on { background: var(--bg3); } }
+:root[data-theme="dark"] .snav .nv.on { background: var(--bg3); }
 .set-nomatch { padding: 8px 10px; font-size: 12.5px; }
 .scont { grid-column: 2; grid-row: 1; overflow: auto; padding: 0 var(--sp-4) var(--sp-4); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .scont::-webkit-scrollbar { width: 10px; }

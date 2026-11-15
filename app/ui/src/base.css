@@ -1,7 +1,9 @@
 /* ===== winseek v4 design tokens =====
-   Light + dark follow the OS. Accent is the demo's amber (#ffc533, dark ink). */
+   Light ships as :root; :root[data-theme="dark"] swaps the dark values. The attribute is set
+   by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
+   palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink). */
 :root {
-  color-scheme: light dark;
+  color-scheme: light;
   --font: "Figtree Variable", "Figtree", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
   --font-display: var(--font);
   --mono: "IBM Plex Mono", ui-monospace, Consolas, monospace;
@@ -28,18 +30,17 @@
   --side: var(--bg2);
   --side-card: var(--bg);
 }
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #1b1c21; --bg2: #151619; --bg3: #282a31; --line: #2d2f37;
-    --fg: #f3f4f6; --fg2: #b3b7c1; --fg3: #7b808c;
-    --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
-    --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
-    --mark: transparent; --mark-fg: var(--acc);
-    --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
-    --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
-    --side: color-mix(in oklab, var(--acc) 5%, #23252c);
-    --side-card: color-mix(in oklab, var(--acc) 6%, #2f323b);
-  }
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: #1b1c21; --bg2: #151619; --bg3: #282a31; --line: #2d2f37;
+  --fg: #f3f4f6; --fg2: #b3b7c1; --fg3: #7b808c;
+  --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
+  --mark: transparent; --mark-fg: var(--acc);
+  --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
+  --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+  --side: color-mix(in oklab, var(--acc) 5%, #23252c);
+  --side-card: color-mix(in oklab, var(--acc) 6%, #2f323b);
 }
 /* Legacy names still used by not-yet-ported rules; they alias the v4 tokens. Do not add new uses. */
 :root {
