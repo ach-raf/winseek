@@ -616,7 +616,10 @@ fn read_range(path: &Path, start: u64, len: u64) -> std::io::Result<Vec<u8>> {
 fn respond_file(path: &str, range: Option<&str>) -> Response<Cow<'static, [u8]>> {
     let ext = ext_of(path);
     // Documents stream too: the pane renders .docx family files in the browser (docx-preview).
-    if !matches!(classify(&ext), Kind::Image | Kind::Video | Kind::Audio | Kind::Document) {
+    if !matches!(
+        classify(&ext),
+        Kind::Image | Kind::Video | Kind::Audio | Kind::Document
+    ) {
         return status_only(403);
     }
     let p = Path::new(path);
