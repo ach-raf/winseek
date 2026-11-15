@@ -8,6 +8,8 @@
 
 #[cfg(windows)]
 pub mod agent;
+#[cfg(windows)]
+pub mod env;
 pub mod frame;
 #[cfg(windows)]
 pub mod pipe;
@@ -16,6 +18,8 @@ pub mod proto;
 #[cfg(windows)]
 pub use agent::{agent_pipe_name, agent_sddl, current_user_sid};
 pub use agent::{AgentRequest, AgentResponse};
+#[cfg(windows)]
+pub use env::{add_to_path, dir_eq, path_contains, path_raw, path_with, remove_from_path};
 pub use frame::{read_frame, read_message, write_frame, write_message, MAX_FRAME};
 pub use proto::*;
 
