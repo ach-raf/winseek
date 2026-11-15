@@ -200,17 +200,21 @@ code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; backgro
 .hk-cur { height: 26px; min-width: 26px; padding: 0 9px; font-size: 12.5px; font-weight: 600; border-radius: 7px; background: var(--bg3); color: var(--fg); }
 .hk-rec { display: inline-flex; align-items: center; min-width: 220px; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--bg); box-shadow: inset 0 0 0 2px var(--acc); font-size: 12.5px; color: var(--fg2); outline: none; }
 
-/* F1 cheat sheet: one overlay, groups in columns, kbd chips */
-.cheat-overlay {
-  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center;
-  background: color-mix(in srgb, var(--bg) 55%, transparent);
-  backdrop-filter: blur(6px);
-}
-.cheat {
+/* Off-screen setting groups skip layout and paint; `auto 220px` keeps the last known height so
+   the scrollbar does not jump. Settings find filters by data, so hidden text is still matched. */
+.grp { content-visibility: auto; contain-intrinsic-size: auto 220px; }
+.gnote { text-wrap: pretty; }
+/* F1 cheat sheet: one native modal <dialog> (focus contained by the browser), groups in columns */
+dialog.cheat {
   width: min(760px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - 48px));
-  display: flex; flex-direction: column;
+  padding: 0;
   background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
+}
+dialog.cheat[open] { display: flex; flex-direction: column; }
+dialog.cheat::backdrop {
+  background: color-mix(in srgb, var(--bg) 55%, transparent);
+  backdrop-filter: blur(6px);
 }
 .cheat-head { display: flex; align-items: baseline; gap: 10px; padding: 12px 16px 10px; border-bottom: 1px solid var(--line); }
 .cheat-head .muted { margin-right: auto; font-size: 12px; }

@@ -1,39 +1,43 @@
+import { useEffect, useRef } from "react";
 import { byScope, hint, KEYMAP } from "./keymap";
 
 /** The F1 / Ctrl+/ cheat sheet (PRD RB2): every shortcut of the current window, grouped, read
- *  from the one keymap table. Global hotkeys show the current binding once Settings can rebind
- *  them (`bindings`); until then the keymap defaults. */
+ *  from the one keymap table. A native modal <dialog>: the browser contains Tab inside the sheet
+ *  and paints the veil via ::backdrop. The app's global Esc chain closes it first (it owns the
+ *  key, preventDefault stops the native cancel), so onCancel/onClose here are the safety net. */
 export function Shortcuts({ scope, bindings, onClose }: { scope: "popup" | "library"; bindings?: Record<string, string>; onClose: () => void }) {
   const groups = scope === "popup" ? [...byScope("global"), ...byScope("popup")] : byScope(scope);
+  const ref = useRef<HTMLDialogElement>(null);
+  useEffect(() => { ref.current?.showModal(); }, []);
   return (
-    <div className="cheat-overlay" onMouseDown={onClose}>
-      <div className="cheat" role="dialog" aria-modal="true" aria-label="Keyboard shortcuts" onMouseDown={(e) => e.stopPropagation()}>
-        <header className="cheat-head">
-          <b>Keyboard shortcuts</b>
-          <span className="muted">Esc closes</span>
-          <button className="btn quiet" onClick={onClose} aria-label="Close the shortcuts">Close</button>
-        </header>
-        <div className="cheat-cols">
-          {groups.map((g) => (
-            <section key={g.group}>
-              <h3>{g.group}</h3>
-              <ul>
-                {g.items.map((k) => (
-                  <li key={k.id}>
-                    <span className="cheat-keys">
-                      {(bindings?.[k.id] ? [bindings[k.id]] : k.keys).map((c, i) => (
-                        <kbd key={`${c}-${i}`}>{c.replaceAll("+", " ")}</kbd>
-                      ))}
-                    </span>
-                    <span className="cheat-label">{k.label}</span>
-                  </li>
-                ))}
-              </ul>
-            </section>
-          ))}
-        </div>
+    <dialog ref={ref} className="cheat" aria-label="Keyboard shortcuts"
+            onCancel={onClose} onClose={onClose}
+            onMouseDown={(e) => { if (e.target === ref.current) onClose(); /* a click on the ::backdrop */ }}>
+      <header className="cheat-head">
+        <b>Keyboard shortcuts</b>
+        <span className="muted">Esc closes</span>
+        <button className="btn quiet" onClick={onClose} aria-label="Close the shortcuts">Close</button>
+      </header>
+      <div className="cheat-cols">
+        {groups.map((g) => (
+          <section key={g.group}>
+            <h3>{g.group}</h3>
+            <ul>
+              {g.items.map((k) => (
+                <li key={k.id}>
+                  <span className="cheat-keys">
+                    {(bindings?.[k.id] ? [bindings[k.id]!] : k.keys).map((c, i) => (
+                      <kbd key={`${c}-${i}`}>{c.replaceAll("+", " ")}</kbd>
+                    ))}
+                  </span>
+                  <span className="cheat-label">{k.label}</span>
+                </li>
+              ))}
+            </ul>
+          </section>
+        ))}
       </div>
-    </div>
+    </dialog>
   );
 }
 

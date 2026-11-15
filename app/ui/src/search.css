@@ -219,13 +219,14 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sem-hint .link:hover { background: color-mix(in oklab, var(--bg3) 80%, var(--fg)); }
 .sem-hint .ibtn { width: 24px; height: 24px; border-radius: 6px; }
 
-/* ---- in-app context menu for launch rows ---- */
-.ctx-overlay { position: fixed; inset: 0; z-index: 60; }
+/* ---- in-app context menu for launch rows: a native popover (top layer, light dismiss, Esc) ---- */
+.ctx-scrim { position: fixed; inset: 0; z-index: 60; }
 .ctx-menu {
-  position: fixed; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
+  position: fixed; inset: auto; margin: 0; border: 0; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
   background: var(--bg); box-shadow: var(--shadow);
   display: flex; flex-direction: column;
 }
+.ctx-menu:popover-open { display: flex; }
 .ctx-menu button { text-align: left; font-size: 13px; padding: 7px 10px; border-radius: 6px; color: var(--fg); }
 .ctx-menu button:hover, .ctx-menu button:focus-visible { background: var(--bg3); outline: 0; }
 

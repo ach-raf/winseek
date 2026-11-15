@@ -24,6 +24,7 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose 
   ];
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
   useEffect(() => { refs.current[idx]?.focus(); }, [idx]);
+  useEffect(() => { listRef.current?.showPopover(); }, [listRef]); // light dismiss + Esc + top layer come from the popover
 
   const move = (to: number) => setIdx((to + items.length) % items.length);
   const onKey = (e: React.KeyboardEvent) => {
@@ -39,7 +40,7 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose 
       default: {
         // Access letter (O / A / L / C / H): straight to the action.
         const at = items.findIndex((it) => it.acc === e.key.toLowerCase());
-        if (at >= 0) { e.preventDefault(); e.stopPropagation(); items[at].run(); }
+        if (at >= 0) { e.preventDefault(); e.stopPropagation(); items[at]!.run(); }
       }
     }
   };
@@ -50,10 +51,13 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose 
   };
 
   return (
-    <div className="ctx-overlay" onMouseDown={onClose}
-         onContextMenu={(e) => { e.preventDefault(); onClose(); }}>
-      <div className="ctx-menu" style={{ left: menu.x, top: menu.y }} role="menu" aria-label="Launcher actions" ref={listRef}
-           onKeyDown={onKey} onMouseDown={(e) => e.stopPropagation()}>
+    <>
+      {/* Shield only: the popover's own light dismiss closes the menu; this keeps the dismissing
+          click from reaching the row underneath (a native context menu passes no click either). */}
+      <div className="ctx-scrim" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
+           onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }} />
+      <div className="ctx-menu" popover="auto" style={{ left: menu.x, top: menu.y }} role="menu" aria-label="Launcher actions" ref={listRef}
+           onKeyDown={onKey} onToggle={(e) => { if (e.newState === "closed") onClose(); }}>
         {items.map((it, i) => (
           <button key={it.id + i} role="menuitem" tabIndex={i === idx ? 0 : -1}
                   ref={(el) => { refs.current[i] = el; }}
@@ -62,6 +66,6 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose 
           </button>
         ))}
       </div>
-    </div>
+    </>
   );
 }
