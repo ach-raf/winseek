@@ -116,7 +116,7 @@
 .wave i:nth-child(-n+18) { background: var(--acc); }
 
 /* text / documents */
-.pv-text { position: absolute; inset: 0; overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.pv-text { position: absolute; inset: 0; overflow: auto; background: var(--bg); scrollbar-width: thin; scrollbar-color: var(--line) transparent; text-wrap: pretty; }
 .pv-text pre {
   margin: 0; padding: 12px 14px; font: 12px/1.5 var(--mono); color: var(--fg);
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text;

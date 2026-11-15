@@ -86,8 +86,20 @@ html.web body {
 }
 html.web #root { width: 780px; height: 560px; flex: none; }
 html.web .shell { box-shadow: var(--shadow); }
-/* ---- scrollable lists share one overlay scrollbar ---- */
+/* ---- scrollable lists share one overlay scrollbar; none of them chain a scroll past their edge ---- */
 .list, .ov, .set-body { scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+.list, .ov, .set-body, .scont, .cheat-cols, .pv, .pv-text, .lg-scroll, .gr-list { overscroll-behavior: contain; }
+/* Rich hover tooltip (Hint.tsx): anchored to the badge when the webview has anchor positioning. */
+.hint-pop {
+  position: fixed; inset: auto; margin: 0; border: 0; border-radius: 8px;
+  padding: 5px 9px; max-width: 320px;
+  background: color-mix(in srgb, var(--fg) 90%, var(--bg)); color: var(--bg);
+  font-size: 12px; line-height: 1.45; box-shadow: var(--shadow);
+}
+.hint-pop:popover-open { display: block; }
+@supports (anchor-name: --a) {
+  .hint-pop { position-area: block-end span-inline-center; position-try-fallbacks: flip-block; }
+}
 .list::-webkit-scrollbar, .ov::-webkit-scrollbar, .set-body::-webkit-scrollbar, .lg-scroll::-webkit-scrollbar { width: 10px; }
 .list::-webkit-scrollbar-thumb, .ov::-webkit-scrollbar-thumb, .set-body::-webkit-scrollbar-thumb,
 .lg-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }

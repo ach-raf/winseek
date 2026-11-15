@@ -117,7 +117,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
           )}
         </div>
         <div className="pv-title">
-          <h2 title={hit.name}>{hit.name}</h2>
+          <h2 title={hit.name} dir="auto">{hit.name}</h2>
           <div className="kind">{label}</div>
           {matchPct != null && (
             <span className="pv-pct" title="How closely this file matches what you typed">{matchPct}% match{page ? ` · page ${page}` : ""}</span>
@@ -456,6 +456,17 @@ function ParseBar({ backend, path, page, available, dim, registerApi }: {
     const t = window.setTimeout(() => setMsg(null), 2500);
     return () => window.clearTimeout(t);
   }, [msg]);
+  // Ctrl+E runs the extract action; Ctrl+Shift+X copies what the panel shows (PRD B6).
+  // Re-registered every render: the closures must see the current doc / copy helpers.
+  // Registered before the early return below: hook order must not depend on `available`
+  // (the parser can finish downloading while this bar is on screen). Until then the
+  // shortcuts stay unbound, exactly as when the bar took the early return.
+  useEffect(() => {
+    registerApi(available
+      ? { extract: () => void extract(), copyText: () => { if (doc) void copy(doc.markdown, null, "Text"); } }
+      : { extract: undefined, copyText: undefined });
+    return () => registerApi({ extract: undefined, copyText: undefined });
+  });
 
   if (!available) {
     return (
@@ -489,18 +500,12 @@ function ParseBar({ backend, path, page, available, dim, registerApi }: {
     catch (e) { setMsg({ text: errText(e), bad: true }); }
   };
   const extract = async () => { const d = await load(); if (d) { setPick(false); setPanel(true); } };
-  // Ctrl+E runs the extract action; Ctrl+Shift+X copies what the panel shows (PRD B6).
-  // Re-registered every render: the closures must see the current doc / copy helpers.
-  useEffect(() => {
-    registerApi({ extract: () => void extract(), copyText: () => { if (doc) void copy(doc.markdown, null, "Text"); } });
-    return () => registerApi({ extract: undefined, copyText: undefined });
-  });
   const copyTable = async () => {
     const d = await load();
     if (!d) return;
     setPanel(false);
     if (d.tables.length === 0) setMsg({ text: "No table found here", bad: false });
-    else if (d.tables.length === 1) await copy(d.tables[0].tsv, d.tables[0].html, "Table");
+    else if (d.tables.length === 1) await copy(d.tables[0]!.tsv, d.tables[0]!.html, "Table");
     else setPick(true);
   };
   const copyMarkdown = async () => { const d = await load(); if (d) await copy(d.markdown, null, "Markdown"); };

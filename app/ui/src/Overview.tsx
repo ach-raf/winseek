@@ -3,6 +3,7 @@ import { ThumbImg } from "./ThumbImg";
 import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
+import { Hint } from "./Hint";
 import { matchPct, nicePath, reasonOf, relDate } from "./overviewLogic";
 import { picBadge } from "./pictureRank";
 import { launchPath } from "./launchLogic";
@@ -82,8 +83,8 @@ export function RenameInput({ initial, isDir, onCommit, onCancel }: {
       aria-label="New name"
       onKeyDown={(e) => {
         e.stopPropagation(); // global handler must not see keys while renaming
-        if (e.key === "Enter") { e.preventDefault(); finish(true); }
-        else if (e.key === "Escape") { e.preventDefault(); finish(false); }
+        if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); finish(true); }
+        else if (e.key === "Escape" && !e.nativeEvent.isComposing) { e.preventDefault(); finish(false); }
       }}
       onBlur={() => finish(false)}
       onClick={(e) => e.stopPropagation()}
@@ -115,7 +116,7 @@ export interface ItemHandlers {
 /** The folder a file is in as a breadcrumb; the head shrinks with an ellipsis, the last folder stays whole. */
 function PathSub({ path }: { path: string }) {
   const { head, tail } = nicePath(path);
-  return <div className="sub path"><span className="head">{head}</span><span className="tail">{tail}</span></div>;
+  return <div className="sub path" dir="auto"><span className="head">{head}</span><span className="tail">{tail}</span></div>;
 }
 
 /** The compact rows' Type column: "Folder", or the extension in capitals ("File" without one). */
@@ -145,11 +146,11 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
       <FileIcon name={hit.name} isDir={hit.is_dir} variant={app ? "app" : undefined} thumb={thumb}
                 src={backend.iconUrl(hit.path, hit.is_dir, thumb, iconSize(!!top))} />
       <div className="tx">
-        <div className={"nm" + (pct !== null && !renaming ? " hasp" : "")}>
+        <div className={"nm" + (pct !== null && !renaming ? " hasp" : "")} dir="auto">
           {renaming
             ? <RenameInput initial={hit.name} isDir={hit.is_dir} onCommit={(n) => h.onRenameCommit(i, n)} onCancel={h.onRenameCancel} />
             : pct !== null ? <span className="nmt"><Highlight text={hit.name} query={query} /></span> : <Highlight text={hit.name} query={query} />}
-          {pct !== null && <span className="pct" title={reason ?? undefined}>{pct}% match</span>}
+          {pct !== null && <Hint text={reason ?? undefined} className="pct">{pct}% match</Hint>}
         </div>
         {snippet
           ? <div className="sub snip" title="Found inside the file"><Snippet text={snippet} /></div>
@@ -182,7 +183,7 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
       <FileIcon name={item.title} isDir={false} src={src} variant={item.kind} />
       <div className="tx">
-        <div className="nm"><Highlight text={item.title} query={query} ranges={l.ranges} /></div>
+        <div className="nm" dir="auto"><Highlight text={item.title} query={query} ranges={l.ranges} /></div>
         <div className="sub">{isArmed ? `Press Enter again to ${confirmVerb(l)}` : item.subtitle}</div>
       </div>
       <span className="dt" />
@@ -192,13 +193,16 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
   );
 });
 
+/** Source labels that say nothing the tile does not: no hover box for them (it only covers the neighbours). */
+const GENERIC_SUB = new Set(["Installed", "Start menu", "App Paths", "PATH"]);
+
 /** Most used: an app tile. */
 const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; i: number; sel: boolean; backend: Backend; h: ItemHandlers }) {
   const item = it.launch!.item;
   const src = launchIconSrc(backend, item, true);
   return (
     <div className={"atile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={item.title}
-         data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}
+         data-sel={sel ? "1" : undefined} data-i={i} title={GENERIC_SUB.has(item.subtitle) ? undefined : item.subtitle}
          onClick={() => h.onOpen(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
       <FileIcon name={item.title} isDir={false} src={src} variant="app" />
@@ -230,7 +234,7 @@ ${reason}` : it.hit.path}
           {kind && <b>{BADGE[kind]}</b>}{pct !== null && <i>{pct}%</i>}
         </span>
       )}
-      <span className="cap"><Highlight text={it.hit.name} query={query} /></span>
+      <span className="cap" dir="auto"><Highlight text={it.hit.name} query={query} /></span>
     </div>
   );
 });
@@ -274,11 +278,11 @@ function Windowed({ scrollRef, count, className, render }: {
     if (!el || !sc) return;
     const els = el.querySelectorAll<HTMLElement>(":scope > [data-i]");
     if (!els.length) return;
-    const y0 = els[0].getBoundingClientRect().top;
+    const y0 = els[0]!.getBoundingClientRect().top;
     let cols = 1;
-    while (cols < els.length && Math.abs(els[cols].getBoundingClientRect().top - y0) < 0.5) cols++;
+    while (cols < els.length && Math.abs(els[cols]!.getBoundingClientRect().top - y0) < 0.5) cols++;
     if (cols >= els.length) return; // a single row is drawn: no second one to take the height from
-    const stride = els[cols].getBoundingClientRect().top - y0; // fractional on purpose: it is multiplied by thousands of rows
+    const stride = els[cols]!.getBoundingClientRect().top - y0; // fractional on purpose: it is multiplied by thousands of rows
     const cs = getComputedStyle(el);
     const gap = parseFloat(cs.rowGap) || 0;
     const top = el.getBoundingClientRect().top + (parseFloat(cs.paddingTop) || 0) - sc.getBoundingClientRect().top + sc.scrollTop;

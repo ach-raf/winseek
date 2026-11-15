@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { cloneElement, isValidElement, useId, type ReactElement, type ReactNode } from "react";
 
 /** Shared v4 settings building blocks (prototype .grp / .gcard / .grow / .sw / .seg). Styles: settings.css. */
 
@@ -13,14 +13,20 @@ export function Grp({ title, note, label, children }: { title: string; note?: Re
   );
 }
 
-/** One card row: label (+ short description) on the left, the control on the right. */
+/** One card row: label (+ short description) on the left, the control on the right. When there
+ *  is a description it is wired to the control with aria-describedby, so a screen reader reads
+ *  the row's explanation when the control gets focus. */
 export function Row({ title, desc, wrap, hint, children }: {
   title: ReactNode; desc?: ReactNode; wrap?: boolean; hint?: string; children?: ReactNode;
 }) {
+  const descId = useId();
+  const ctl = children != null && isValidElement(children) && desc != null
+    ? cloneElement(children as ReactElement<{ "aria-describedby"?: string }>, { "aria-describedby": descId })
+    : children;
   return (
     <div className={"grow" + (wrap ? " wrap" : "")} title={hint}>
-      <div className="gtxt"><b>{title}</b>{desc ? <span>{desc}</span> : null}</div>
-      {children != null && <div className="gctl">{children}</div>}
+      <div className="gtxt"><b>{title}</b>{desc ? <span id={descId}>{desc}</span> : null}</div>
+      {children != null && <div className="gctl">{ctl}</div>}
     </div>
   );
 }
