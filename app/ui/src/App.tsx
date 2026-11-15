@@ -122,7 +122,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     if (!driveOpen) return;
     const away = (e: MouseEvent) => { if (!drivePickRef.current?.contains(e.target as Node)) setDriveOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setDriveOpen(false); } };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !e.isComposing) { e.stopPropagation(); setDriveOpen(false); } };
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", esc, true);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc, true); };
@@ -946,6 +946,7 @@ export default function App({ backend }: { backend: Backend }) {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (e.isComposing) return; // an IME-confirming Enter/Escape belongs to the composition, not the app
       if (renaming) return;
       if ((e.target as HTMLElement | null)?.closest?.(".setup")) return; // the setup panel's own inputs / buttons
       if (launchMenu && e.key !== "Escape") return; // the launcher menu owns the keyboard (B5)

@@ -62,7 +62,7 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
       <div className="grow addrow">
         <input className="gin" value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
                spellCheck={false} autoComplete="off"
-               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+               onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); e.stopPropagation(); add(); } }} />
         <button className="gbtn" onClick={add} disabled={!text.trim() || !ig}>Add</button>
       </div>
       {bad && <div className="grow"><span className="fr-error" role="alert">{bad}</span></div>}
@@ -663,7 +663,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
         <div className="grow addrow">
           <input className="gin" value={folderText} placeholder={"C:" + String.fromCharCode(92) + "tools"} spellCheck={false} aria-label="Folder to scan for programs"
                  onChange={(e) => setFolderText(e.target.value)}
-                 onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); addFolder(); } }} />
+                 onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); addFolder(); } }} />
           <button className="gbtn" onClick={addFolder}>Add</button>
         </div>
       </Grp>

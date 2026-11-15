@@ -73,7 +73,7 @@ export function Folders({ t1, onChange, onRemove, estimate }: {
       <div className="grow addrow">
         <input className="gin" value={text} onChange={(e) => setText(e.target.value)} placeholder="Add a folder, e.g. D:\Photos" aria-label="Add a folder"
                spellCheck={false} autoComplete="off"
-               onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); e.stopPropagation(); add(); } }} />
+               onKeyDown={(e) => { if (e.key === "Enter" && !e.nativeEvent.isComposing) { e.preventDefault(); e.stopPropagation(); add(); } }} />
         <button className="gbtn" onClick={add} disabled={!text.trim()}>Add</button>
       </div>
       {pending && (
