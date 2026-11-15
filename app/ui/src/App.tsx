@@ -1579,7 +1579,7 @@ export default function App({ backend }: { backend: Backend }) {
   ) : null;
 
   const panels = showPanel && (setupOpen ? (
-    <Setup t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} estimate={backend.tier1Estimate} />
+    <Setup t1={t1} models={models} indexed={status.length ? { files: totalFiles, letters: status.map((v) => v.letter) } : null} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing} onClose={closeSetup} primaryRef={setupPrimaryRef} estimate={backend.tier1Estimate} />
   ) : settingsOpen ? (
     <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
               onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={openLibrary}

@@ -5,6 +5,12 @@
 .firstrun { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 44px 12px; gap: var(--sp-3); animation: fade 200ms var(--ease); outline: 0; }
 .firstrun h2 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em; }
 .firstrun p { margin: 0; max-width: 520px; color: var(--fg2); font-size: 14px; line-height: 1.5; }
+/* done steps (goal gradient): the setup never opens at zero — real completions tick, pending steps stay unsaid */
+.done-list { display: flex; flex-direction: column; gap: var(--sp-2); max-width: 520px; }
+.done-row { display: flex; align-items: baseline; font-size: 13.5px; color: var(--fg2); }
+.done-row .mdot { align-self: center; }
+.done-row b { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+.done-row em { margin-left: auto; color: var(--fg3); font-style: normal; font-size: 12.5px; padding-left: var(--sp-3); }
 .firstrun .actions { display: flex; align-items: center; gap: 10px; margin-top: 4px; }
 .firstrun .actions .muted { color: var(--fg3); }
 .firstrun .btn { height: 34px; padding: 0 16px; border-radius: 9px; font-size: 13.5px; }

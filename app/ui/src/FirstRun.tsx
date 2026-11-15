@@ -71,8 +71,8 @@ function Counter({ rows, summary, onSemantic }: { rows: VolumeStatus[]; summary:
       </div>
       {summary && (
         <p className="summary" role="status">
-          Indexed <b>{fmt(summary.files)} files</b> across {summary.letters.map((l) => l + ":").join(", ")}
-          {summary.secs != null && <> in {summary.secs < 1 ? "<1" : Math.round(summary.secs)} s</>} · Start typing
+          <i className="mdot ok" aria-hidden="true" /> Name index built — <b>{fmt(summary.files)} files</b> across {summary.letters.map((l) => l + ":").join(", ")}
+          {summary.secs != null && <> in {summary.secs < 1 ? "<1" : Math.round(summary.secs)} s</>}. You can already search by name — start typing.
         </p>
       )}
       {summary && onSemantic && (

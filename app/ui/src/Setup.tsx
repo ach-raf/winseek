@@ -139,8 +139,10 @@ function Indexing({ t1, onPause }: { t1: Tier1Status | null; onPause: (p: boolea
 
 const PARSER_DESC = "Reads scanned pages, receipts and screenshots into text and tables you can search and copy";
 
-export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose, primaryRef, estimate }: {
+export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause, onClose, primaryRef, estimate }: {
   t1: Tier1Status | null; models: Models; estimate?: (path: string) => Promise<FolderEstimate>;
+  /** The name index the user already has — ticked as done so the setup never opens at zero. */
+  indexed: { files: number; letters: string[] } | null;
   onFolders: (include: string[]) => void; onRemoveFolder: (path: string) => void; onPause: (p: boolean) => void; onClose: () => void;
   primaryRef: React.MutableRefObject<() => void>;
 }) {
@@ -157,12 +159,33 @@ export function Setup({ t1, models, onFolders, onRemoveFolder, onPause, onClose,
   const root = useRef<HTMLElement>(null);
   const overall = progress && progress.overall_total > 0 ? progress.overall_downloaded / progress.overall_total : null;
   const cancelled = interrupted === "cancelled";
+  // Goal gradient: what is already finished leads. Only real completions are ticked — never a fake start at zero.
+  const modelsDone = phase === "indexing";
+  const doneList = (
+    <div className="done-list" role="list" aria-label="Already done">
+      {indexed && indexed.files > 0 && (
+        <div className="done-row" role="listitem">
+          <i className="mdot ok" aria-hidden="true" />
+          <span>Name index built — <b>{fmt(indexed.files)} files</b>{indexed.letters.length > 0 && <> on {indexed.letters.map((l) => l + ":").join(" ")}</>}</span>
+          <em>you can already search by name</em>
+        </div>
+      )}
+      {modelsDone && (
+        <div className="done-row" role="listitem">
+          <i className="mdot ok" aria-hidden="true" />
+          <span>Meaning models downloaded</span>
+          <em>reading folders in the background</em>
+        </div>
+      )}
+    </div>
+  );
 
   return (
     <section ref={root} className="firstrun setup" aria-label="Search by meaning setup"
              onKeyDown={(e) => { if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); onClose(); } else trapKey(e); }}>
       <h2>Want search by meaning?</h2>
-      <p>Search &ldquo;sunset at the beach&rdquo; and get beach photos, whatever they&rsquo;re named. Everything stays on this PC. Name search keeps working either way.</p>
+      <p>Search &ldquo;sunset at the beach&rdquo; and get beach photos, whatever they&rsquo;re named. Everything stays on this PC. Name search already works — this only adds meaning.</p>
+      {doneList}
 
       <div className={phase === "choose" || phase === "interrupted" || phase === "loading" ? "setup-cols" : undefined}>
       {(phase === "choose" || phase === "interrupted" || phase === "loading") && <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={estimate} />}
