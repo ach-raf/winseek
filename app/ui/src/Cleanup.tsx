@@ -4,8 +4,9 @@ import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { baseName } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
-import { OLD_SHOT_DAYS, freedBytes, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
+import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
 import { IChevL, ICheck } from "./icons";
+import { NameFilter } from "./NameFilter";
 import { Space } from "./Space";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
@@ -707,6 +708,7 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
   const [sel, setSel] = useState(0);
   const [top, setTop] = useState(0);
   const [h, setH] = useState(500);
+  const [q, setQ] = useState("");
   const box = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -717,14 +719,23 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
     setH(el.clientHeight);
     return () => ro.disconnect();
   }, [rows === null || rows.length === 0]);
-  const n = rows?.length ?? 0;
+  const shown = useMemo(() => (rows ?? []).filter((f) => nameMatches(f.name, q)), [rows, q]);
+  const n = shown.length;
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, n - 1))); }, [n]);
 
-  if (rows === null) return <>{bar(title, "")}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
+  if (rows === null) return <>{bar(title, "", <NameFilter value={q} onChange={setQ} label={`Filter ${title.toLowerCase()} by name`} />)}<div className="lg-empty"><span className="spin" aria-label="Loading" /></div></>;
   if (rows.length === 0) return <>{bar(title, "")}<div className="lg-empty">{empty}</div></>;
-  const total = rows.reduce((a, f) => a + (f.size ?? 0), 0);
-  const [from, to] = uniformRange(rows.length, BIG_H, top, h);
-  const cur = rows[sel];
+  if (shown.length === 0) {
+    return (
+      <>
+        {bar(title, `Nothing matches “${q.trim()}” in the ${rows.length.toLocaleString("en-US")} files`, <NameFilter value={q} onChange={setQ} label={`Filter ${title.toLowerCase()} by name`} />)}
+        <div className="lg-empty"><strong>{`Nothing matches “${q.trim()}”`}</strong><span>Clear the filter to see every file again.</span></div>
+      </>
+    );
+  }
+  const total = shown.reduce((a, f) => a + (f.size ?? 0), 0);
+  const [from, to] = uniformRange(shown.length, BIG_H, top, h);
+  const cur = shown[sel];
 
   const select = (i: number) => {
     setSel(i);
@@ -734,18 +745,18 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
     else if ((i + 1) * BIG_H > el.scrollTop + el.clientHeight) el.scrollTop = (i + 1) * BIG_H - el.clientHeight;
   };
   const onKey = (e: React.KeyboardEvent) => {
-    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); select(Math.max(0, Math.min(rows.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)))); }
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); select(Math.max(0, Math.min(shown.length - 1, sel + (e.key === "ArrowDown" ? 1 : -1)))); }
     else if (e.key === "Enter" && cur) { e.preventDefault(); if (e.ctrlKey) actions.reveal(cur.path); else actions.open(cur.path); }
     else if (e.key === "Delete" && cur) { e.preventDefault(); actions.recycle([cur.path]); }
   };
 
   return (
     <>
-      {bar(title, summary(rows.length, total))}
+      {bar(title, summary(shown.length, total), <NameFilter value={q} onChange={setQ} label={`Filter ${title.toLowerCase()} by name`} />)}
       <div className="bg">
         <div className="bg-list" ref={box} tabIndex={0} data-autofocus onKeyDown={onKey} onScroll={(e) => setTop(e.currentTarget.scrollTop)} role="listbox" aria-label={title}>
-          <div style={{ height: rows.length * BIG_H, position: "relative" }}>
-            {rows.slice(from, to).map((f, k) => {
+          <div style={{ height: shown.length * BIG_H, position: "relative" }}>
+            {shown.slice(from, to).map((f, k) => {
               const i = from + k;
               const { head, tail } = splitDir(f.path);
               return (

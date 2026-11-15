@@ -50,3 +50,5 @@ export function FileGlyph({ col, lab }: { col: string; lab: string }) {
     </svg>
   );
 }
+export const IGrid = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></S>;
+export const IRows = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><path d="M4 6h16M4 12h16M4 18h16" /></S>;

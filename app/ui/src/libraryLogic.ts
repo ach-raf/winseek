@@ -388,3 +388,25 @@ export function oldScreenshots<T extends { class: ImgClassName; mtime: number; s
   const before = now - days * 24 * 3600 * 1000;
   return items.filter((i) => i.class === "screenshot" && i.mtime < before).sort((a, b) => b.size - a.size);
 }
+
+// ---- gallery view + list filters (the grid/list toggle and the name filter fields) --------------------------
+
+/** How a gallery shows its items. */
+export type GalleryView = "grid" | "list";
+
+/** Anything unexpected (old value, missing, junk) means the grid. */
+export function parseGalleryView(v: unknown): GalleryView {
+  return v === "list" ? "list" : "grid";
+}
+
+/** Case-insensitive substring match for the per-list filter fields; an empty query matches everything. */
+export function nameMatches(name: string, query: string): boolean {
+  const q = query.trim().toLowerCase();
+  return q.length === 0 || name.toLowerCase().includes(q);
+}
+
+/** Fold keys read back from storage (a JSON array of strings); anything else means no folds. */
+export function parseFoldSet(v: unknown): Set<string> {
+  if (!Array.isArray(v)) return new Set();
+  return new Set(v.filter((x): x is string => typeof x === "string"));
+}

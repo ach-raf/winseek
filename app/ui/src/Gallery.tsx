@@ -3,8 +3,9 @@ import type { Backend, Hit, HitBox } from "./types";
 import { Preview } from "./Preview";
 import { FileIcon } from "./FileIcon";
 import { ThumbImg } from "./ThumbImg";
-import { formatDate, formatSize, kindOf } from "./format";
-import { activeSection, moveMosaic, mosaicMetrics, packMosaic, railEntries, tileBox } from "./libraryLogic";
+import { IGrid, IRows } from "./icons";
+import { formatDate, formatSize, kindOf, splitDir } from "./format";
+import { activeSection, moveMosaic, mosaicMetrics, packMosaic, parseFoldSet, railEntries, tileBox, type GalleryView } from "./libraryLogic";
 
 const PAD = 22;
 const GAP = 4;
@@ -12,6 +13,16 @@ const HEAD_H = 44;
 const NO_HEAD = 6;
 const BOTTOM = 14;
 const OVERSCAN = 320;
+/** Row height of the list view. */
+const LIST_H = 32;
+
+const FOLDS_KEY = "winseek.monthfolds";
+const readFolds = (): ReadonlySet<string> => {
+  try { return parseFoldSet(JSON.parse(localStorage.getItem(FOLDS_KEY) ?? "null")); } catch { return new Set(); }
+};
+const saveFolds = (folds: ReadonlySet<string>) => {
+  try { localStorage.setItem(FOLDS_KEY, JSON.stringify([...folds])); } catch { /* storage off: folds just are not remembered */ }
+};
 
 export interface GridItem {
   path: string;
@@ -72,8 +83,9 @@ function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: nu
 
 /** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized.
  *  `preview` = the search-style preview pane on the right, open by default (collections); Space collapses
- *  and reopens it, and an empty pane shows a hint instead of vanishing. */
-export function Gallery({ backend, sections, rail, actions, empty, preview = false, extra, noun = "photo" }: {
+ *  and reopens it, and an empty pane shows a hint instead of vanishing.
+ *  `view` switches the same sections between the tile mosaic and dense list rows (the owner keeps the choice). */
+export function Gallery({ backend, sections, rail, actions, empty, preview = false, extra, noun = "photo", view = "grid" }: {
   backend: Backend;
   sections: GallerySection[];
   /** Year / month rail on the right (timeline). */
@@ -84,6 +96,8 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   extra?: GridExtra;
   /** What one item is called in the count ("photo", "item"). */
   noun?: string;
+  /** Grid of tiles (default) or dense list rows. */
+  view?: GalleryView;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -93,18 +107,36 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   // With a permanent preview pane (collections) it starts open; Space collapses and reopens it.
   const [pvOpen, setPvOpen] = useState(preview);
   const [pvItem, setPvItem] = useState<GridItem | null>(null);
+  // Folded months: the heading stays (with count and size), the items drop. Remembered across sessions.
+  const [folds, setFolds] = useState<ReadonlySet<string>>(readFolds);
+  const toggleFold = useCallback((key: string) => {
+    setFolds((s) => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key); else n.add(key);
+      saveFolds(n);
+      return n;
+    });
+  }, []);
 
-  const flat = useMemo(() => sections.flatMap((s) => s.items), [sections]);
+  // A folded section keeps its heading and loses its items; everything below is computed from this.
+  const eff = useMemo(
+    () => (folds.size === 0 ? sections : sections.map((s) => (folds.has(s.key) ? { ...s, items: [] } : s))),
+    [sections, folds],
+  );
+  // Sizes for the folded headings ("March 2025 ▸ 214 items · 2.1 GB").
+  const secBytes = useMemo(() => sections.map((s) => s.items.reduce((a, i) => a + (i.size ?? 0), 0)), [sections]);
+
+  const flat = useMemo(() => eff.flatMap((s) => s.items), [eff]);
   const isEmpty = flat.length === 0;
   const sectionStart = useMemo(() => {
     const out: number[] = [];
     let n = 0;
-    for (const s of sections) { out.push(n); n += s.items.length; }
+    for (const s of eff) { out.push(n); n += s.items.length; }
     return out;
-  }, [sections]);
+  }, [eff]);
   const railList = useMemo(
-    () => (rail ? railEntries(sections.filter((s) => s.year !== undefined && s.month !== undefined) as { year: number; month: number; items: GridItem[] }[]) : []),
-    [rail, sections],
+    () => (rail ? railEntries(eff.filter((s) => s.year !== undefined && s.month !== undefined) as { year: number; month: number; items: GridItem[] }[]) : []),
+    [rail, eff],
   );
 
   // 8 columns when there is room (prototype), fewer next to the preview pane / in narrow windows.
@@ -112,11 +144,24 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const cols = inner >= 640 ? 8 : inner >= 460 ? 6 : 4;
   const cell = Math.max(24, (inner - GAP * (cols - 1)) / cols);
   const rowH = Math.max(80, Math.min(132, Math.round(cell * 0.92)));
-  const mosaic = useMemo(() => packMosaic(sections.map((s) => s.items.length), cols), [sections, cols]);
+  const mosaic = useMemo(() => packMosaic(eff.map((s) => s.items.length), cols), [eff, cols]);
   const metrics = useMemo(
-    () => mosaicMetrics(mosaic, rowH, GAP, sections.map((s) => (s.label ? HEAD_H : NO_HEAD)), BOTTOM, 28),
-    [mosaic, rowH, sections],
+    () => mosaicMetrics(mosaic, rowH, GAP, eff.map((s) => (s.label ? HEAD_H : NO_HEAD)), BOTTOM, 28),
+    [mosaic, rowH, eff],
   );
+  // List view: one stacked row per item under the same headings (no tile packing).
+  const listMetrics = useMemo(() => {
+    const top: number[] = [], h: number[] = [];
+    let y = 0;
+    for (const s of eff) {
+      const head = s.label ? HEAD_H : NO_HEAD;
+      top.push(y);
+      const hh = head + s.items.length * LIST_H + (s.items.length > 0 ? BOTTOM : 6);
+      h.push(hh);
+      y += hh;
+    }
+    return { top, h, total: y };
+  }, [eff]);
 
   useLayoutEffect(() => {
     const el = box.current;
@@ -131,21 +176,33 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, flat.length - 1))); }, [flat.length]);
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, [isEmpty]);
 
-  // Keep the selected tile on screen (below the sticky heading).
+  // Keep the selected item on screen (below the sticky heading), in either view.
   const toScroll = useRef(false);
   useEffect(() => {
     const el = box.current;
-    const t = mosaic.tiles[sel];
-    if (!el || !toScroll.current || !t) return;
+    if (!el || !toScroll.current) return;
     toScroll.current = false;
-    const b = tileBox(t, rowH, GAP, metrics.head[t.section] ?? 0);
-    const y = (metrics.top[t.section] ?? 0) + b.y;
+    let y: number, ih: number;
+    if (view === "list") {
+      let si = -1;
+      for (let i = sectionStart.length - 1; i >= 0; i--) if ((sectionStart[i] ?? 0) <= sel) { si = i; break; }
+      if (si < 0) return;
+      const head = eff[si]?.label ? HEAD_H : NO_HEAD;
+      y = (listMetrics.top[si] ?? 0) + head + (sel - (sectionStart[si] ?? 0)) * LIST_H;
+      ih = LIST_H;
+    } else {
+      const t = mosaic.tiles[sel];
+      if (!t) return;
+      const b = tileBox(t, rowH, GAP, metrics.head[t.section] ?? 0);
+      y = (metrics.top[t.section] ?? 0) + b.y;
+      ih = b.h;
+    }
     const margin = 8, headroom = HEAD_H + margin;
     let next = el.scrollTop;
     if (y - headroom < next) next = Math.max(0, y - headroom);
-    else if (y + b.h + margin > next + el.clientHeight) next = y + b.h + margin - el.clientHeight;
+    else if (y + ih + margin > next + el.clientHeight) next = y + ih + margin - el.clientHeight;
     if (next !== el.scrollTop) el.scrollTop = next;
-  }, [sel, mosaic, metrics, rowH]);
+  }, [sel, view, mosaic, metrics, listMetrics, sectionStart, eff]);
 
   const cur = flat[sel] ?? null;
   // The preview follows the selection once it settles (arrowing must not load every file).
@@ -166,14 +223,21 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     if (e.ctrlKey && e.shiftKey && e.key.toLowerCase() === "c") { if (cur) { e.preventDefault(); actions.copy(cur.path); } return; }
     if (e.ctrlKey || e.altKey || e.metaKey) return;
     switch (e.key) {
-      case "ArrowLeft": case "ArrowRight": case "ArrowUp": case "ArrowDown": case "Home": case "End":
+      case "ArrowLeft": case "ArrowRight": case "ArrowUp": case "ArrowDown": case "Home": case "End": {
         e.preventDefault();
-        move(moveMosaic(mosaic, metrics, rowH, GAP, sel, e.key, flat.length));
+        if (view === "list") {
+          const step = e.key === "ArrowUp" || e.key === "ArrowLeft" ? -1 : e.key === "ArrowDown" || e.key === "ArrowRight" ? 1 : null;
+          if (step === null) move(e.key === "Home" ? 0 : flat.length - 1);
+          else move(Math.max(0, Math.min(flat.length - 1, sel + step)));
+        } else {
+          move(moveMosaic(mosaic, metrics, rowH, GAP, sel, e.key, flat.length));
+        }
         break;
+      }
       case "PageDown": case "PageUp": {
         e.preventDefault();
-        const rows = Math.max(1, Math.floor(size.h / (rowH + GAP)) - 1);
-        move(Math.max(0, Math.min(flat.length - 1, sel + (e.key === "PageDown" ? 1 : -1) * rows * cols)));
+        const rows = Math.max(1, Math.floor(size.h / (view === "list" ? LIST_H : rowH + GAP)) - 1);
+        move(Math.max(0, Math.min(flat.length - 1, sel + (e.key === "PageDown" ? 1 : -1) * rows * (view === "list" ? 1 : cols))));
         break;
       }
       case " ": e.preventDefault(); if (cur) setPvOpen((o) => !o); break;
@@ -190,7 +254,10 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const jump = (section: number) => {
     const el = box.current;
     if (!el) return;
-    el.scrollTop = metrics.top[section] ?? 0;
+    // A rail click on a folded month unfolds it (that is the "expand on demand" path).
+    const sk = sections[section]?.key;
+    if (sk && folds.has(sk)) toggleFold(sk);
+    el.scrollTop = (view === "list" ? listMetrics.top[section] : metrics.top[section]) ?? 0;
     const first = sectionStart[section];
     if (first !== undefined) setSel(first);
     root.current?.focus({ preventScroll: true });
@@ -211,11 +278,59 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     <div className="lg" ref={root} tabIndex={0} data-autofocus onKeyDown={onKey} role="listbox" aria-label="Photos">
       <div className="lg-main">
         <div className="lg-scroll" ref={box} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
-          <div className="lg-space" style={{ height: metrics.total }}>
-            {sections.map((s, si) => {
-              const top = metrics.top[si] ?? 0, h = metrics.h[si] ?? 0;
-              if (top + h < lo || top > hi || s.items.length === 0) return null;
-              const head = metrics.head[si] ?? 0;
+          <div className="lg-space" style={{ height: view === "list" ? listMetrics.total : metrics.total }}>
+            {eff.map((s, si) => {
+              const top = (view === "list" ? listMetrics.top[si] : metrics.top[si]) ?? 0;
+              const h = (view === "list" ? listMetrics.h[si] : metrics.h[si]) ?? 0;
+              const folded = folds.has(s.key);
+              if (top + h < lo || top > hi) return null;
+              if (s.items.length === 0 && !folded) return null; // nothing to draw, nothing to reopen
+              const head = s.label ? HEAD_H : NO_HEAD;
+              const orig = sections[si]!; // eff is a 1:1 map of sections, so counts/sizes stay addressable
+              const foldHead = s.label && (
+                <h3 key="h">
+                  <button className="lg-fh" aria-expanded={!folded} tabIndex={-1}
+                          onClick={() => toggleFold(s.key)}
+                          title={folded ? `Show the ${orig.items.length.toLocaleString("en-US")} items` : "Hide these items"}>
+                    {folded ? "▸" : "▾"} {s.label}
+                    <i>{orig.items.length.toLocaleString("en-US")} items{folded && secBytes[si]! > 0 ? ` · ${formatSize(secBytes[si]!)}` : ""}</i>
+                  </button>
+                </h3>
+              );
+              if (view === "list") {
+                const y0 = top + head;
+                const r0 = Math.max(0, Math.floor((lo - y0) / LIST_H));
+                const r1 = Math.min(s.items.length, Math.ceil((hi - y0) / LIST_H));
+                const rows: React.ReactNode[] = [];
+                for (let ri = r0; ri < r1; ri++) {
+                  const k = (sectionStart[si] ?? 0) + ri;
+                  const it = flat[k];
+                  if (!it) continue;
+                  const { tail } = splitDir(it.path);
+                  rows.push(
+                    <div key={it.path} role="option" aria-selected={k === sel}
+                         className={"lg-row" + (k === sel ? " sel" : "")}
+                         style={{ top: head + ri * LIST_H, height: LIST_H }}
+                         title={`${it.path}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}`}
+                         onClick={() => { setSel(k); root.current?.focus({ preventScroll: true }); }}
+                         onDoubleClick={() => actions.open(it.path)}
+                         onContextMenu={(e) => { e.preventDefault(); setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}>
+                      <span className="lg-rth"><Thumb backend={backend} item={it} px={48} /></span>
+                      <span className="lg-rn">{it.name}</span>
+                      <span className="lg-rd">{tail}</span>
+                      <span className="lg-rsp" />
+                      <span className="lg-rs">{it.size !== null ? formatSize(it.size) : ""}</span>
+                      <span className="lg-rt">{it.mtime ? formatDate(it.mtime) : ""}</span>
+                    </div>,
+                  );
+                }
+                return (
+                  <section key={s.key} className="mon" style={{ top, height: h }}>
+                    {foldHead}
+                    {rows}
+                  </section>
+                );
+              }
               const ms = mosaic.sections[si];
               if (!ms) return null; // packed from these same sections, so always present
               const tiles: React.ReactNode[] = [];
@@ -246,7 +361,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
               }
               return (
                 <section key={s.key} className="mon" style={{ top, height: h }}>
-                  {s.label && <h3>{s.label}<i>{s.items.length.toLocaleString("en-US")} items</i></h3>}
+                  {foldHead}
                   {tiles}
                 </section>
               );
@@ -305,6 +420,16 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
           ))}
         </nav>
       )}
+    </div>
+  );
+}
+
+/** The grid/list switch for a gallery (the owner keeps the choice in localStorage). */
+export function GalleryViewToggle({ view, onChange }: { view: GalleryView; onChange: (v: GalleryView) => void }) {
+  return (
+    <div className="dseg gv-seg" role="group" aria-label="How the gallery is shown">
+      <button aria-pressed={view === "grid"} className={view === "grid" ? "on" : ""} title="Tiles" onClick={() => onChange("grid")}><IGrid size={14} /></button>
+      <button aria-pressed={view === "list"} className={view === "list" ? "on" : ""} title="List with names, sizes and dates" onClick={() => onChange("list")}><IRows size={14} /></button>
     </div>
   );
 }

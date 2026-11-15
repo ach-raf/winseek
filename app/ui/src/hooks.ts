@@ -117,3 +117,16 @@ export function useSemantic(backend: Backend, query: string, enabled: boolean, f
   }, [backend, q, active, reload, key, paged, k]);
   return active ? semView(state, q, plan) : NO_HITS;
 }
+
+/** A small preference mirrored into localStorage (best-effort: with storage off, the choice just is
+ *  not remembered). `read` parses the stored string; anything it rejects becomes the fallback inside it. */
+export function useStoredValue<T>(key: string, read: (raw: string | null) => T, write: (v: T) => string): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try { return read(localStorage.getItem(key)); } catch { return read(null); }
+  });
+  const put = useCallback((n: T) => {
+    setV(n);
+    try { localStorage.setItem(key, write(n)); } catch { /* storage unavailable: not remembered */ }
+  }, [key, write]);
+  return [v, put];
+}

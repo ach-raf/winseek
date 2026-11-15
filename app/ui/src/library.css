@@ -391,3 +391,30 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 
 /* queued thumbnails in the mosaic (ThumbImg) */
 .tl .th-wait { position: absolute; inset: 0; }
+
+/* ---- T10: month folds + list view -------------------------------------------------------------------------- */
+
+/* The month heading is a fold: same look as before, now with the ▾/▸ glyph and the count inside the button. */
+.lg-fh { display: flex; gap: 8px; align-items: flex-end; font: inherit; color: var(--fg); background: none; border: 0; padding: 0; margin: 0; cursor: pointer; text-align: left; }
+.lg-fh i { font-style: normal; font-size: 12.5px; font-weight: 400; color: var(--fg3); }
+.lg-fh:hover { color: var(--acc); }
+
+/* List view: dense two-edge rows (name left, folder beside it, size + date hard-right, tabular). */
+.lg-row { position: absolute; left: var(--gut); right: var(--gut); display: flex; align-items: center; gap: 10px; border-radius: 7px; padding: 0 8px; cursor: default; }
+.lg-row:hover { background: var(--bg2); }
+.lg-row.sel { background: var(--sel); }
+.lg-row.sel .lg-rn { color: var(--acc); }
+.lg-rth { width: 22px; height: 22px; border-radius: 5px; overflow: hidden; flex: none; display: grid; place-items: center; background: var(--bg3); color: var(--fg3); }
+.lg-rth img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lg-rn { color: var(--fg); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.lg-rd { color: var(--fg3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
+.lg-rsp { flex: 1 1 12px; min-width: 12px; }
+.lg-rs { color: var(--fg2); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; }
+.lg-rt { color: var(--fg2); font-size: 12.5px; font-variant-numeric: tabular-nums; white-space: nowrap; flex: none; width: 86px; text-align: right; }
+
+/* The grid/list switch (same segmented family as the other dseg controls, icon-only). */
+.gv-seg { flex: none; }
+.gv-seg button { display: grid; place-items: center; width: 30px; height: 26px; padding: 0; color: var(--fg3); }
+.gv-seg button.on { color: var(--fg); background: var(--bg3); }
+.gv-seg button:hover { color: var(--fg); }
+.tbar .nfilter { margin-right: 8px; }

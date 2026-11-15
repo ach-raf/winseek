@@ -4,7 +4,8 @@ import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize } from "./format";
 import { IChevL, IUp, IRefresh } from "./icons";
-import { uniformRange } from "./libraryLogic";
+import { uniformRange, nameMatches } from "./libraryLogic";
+import { NameFilter } from "./NameFilter";
 import {
   KINDS, chainTo, crumbs, detailWithoutHidden, driveTitle, flattenTree, formatPct, kindTotals, parentPath, pct, squarify, tileItems,
   within, withoutHidden, type Rest, type TileItem, type TreeRow,
@@ -537,12 +538,24 @@ function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
   backend: Backend; detail: UsageDetail | null | undefined; base: string; sel: string | null;
   onSel: (p: string) => void; onOpen: (h: Hit) => void; onMenu: (h: Hit, x: number, y: number) => void;
 }) {
+  const [q, setQ] = useState("");
   if (detail === undefined) return <div className="su-none"><span className="spin" aria-label="Loading" /></div>;
   if (detail === null || detail.biggest.length === 0) return <div className="su-none">No files here.</div>;
   const cut0 = base.replace(/\\$/, "").length + 1;
+  const shown = q.trim() ? detail.biggest.filter((h) => nameMatches(h.name, q)) : detail.biggest;
+  if (shown.length === 0) {
+    return (
+      <>
+        <NameFilter value={q} onChange={setQ} label="Filter the biggest files by name" />
+        <div className="su-none">{`Nothing matches “${q.trim()}” among the ${detail.biggest.length.toLocaleString("en-US")} biggest files.`}</div>
+      </>
+    );
+  }
   return (
-    <div role="listbox" aria-label="Biggest files">
-      {detail.biggest.map((h) => {
+    <>
+      <NameFilter value={q} onChange={setQ} label="Filter the biggest files by name" />
+      <div role="listbox" aria-label="Biggest files">
+      {shown.map((h) => {
         const rel = h.path.slice(cut0);
         const cut = rel.lastIndexOf("\\");
         return (
@@ -558,7 +571,8 @@ function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
           </div>
         );
       })}
-    </div>
+      </div>
+    </>
   );
 }
 

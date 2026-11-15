@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { Backend, LibImage, VolumeStatus } from "./types";
-import { TIMELINE_VIEWS, countViews, inView, parseTimelineView, type TimelineView } from "./libraryLogic";
-import { Gallery, type GallerySection, type LibActions } from "./Gallery";
+import { TIMELINE_VIEWS, countViews, inView, nameMatches, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
+import { useStoredValue } from "./hooks";
+import { Gallery, GalleryViewToggle, type GallerySection, type LibActions } from "./Gallery";
+import { NameFilter } from "./NameFilter";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
 import { Sidebar, type Page } from "./Sidebar";
@@ -80,6 +82,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     setTlViewRaw(v);
     try { localStorage.setItem("winseek.timelineView", v); } catch { /* remembered only when storage works */ }
   }, []);
+  // Tiles or list rows for the timeline gallery (per-screen, remembered).
+  const [gview, setGview] = useStoredValue("winseek.galleryView.timeline", parseGalleryView, (v: GalleryView) => v);
+  // What the timeline filter field keeps (matches against file names).
+  const [photoQ, setPhotoQ] = useState("");
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
@@ -209,7 +215,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   // Your own pictures: what collections and clean-up work on (app graphics are never offered there).
   const personal = useMemo(() => visible.filter((i) => i.class !== "graphic"), [visible]);
   const viewCounts = useMemo(() => countViews(visible), [visible]);
-  const shown = useMemo(() => visible.filter((i) => inView(i.class, tlView)), [visible, tlView]);
+  const shown = useMemo(() => {
+    const inView_ = visible.filter((i) => inView(i.class, tlView));
+    return photoQ.trim() ? inView_.filter((i) => nameMatches(baseName(i.path), photoQ)) : inView_;
+  }, [visible, tlView, photoQ]);
   const sections: GallerySection[] = useMemo(
     () => groupByMonth(shown).map((s) => ({
       key: s.key, label: s.label, year: s.year, month: s.month,
@@ -220,6 +229,8 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   const emptyTimeline = images === null
     ? <><span className="spin" aria-label="Loading" /></>
+    : photoQ.trim() && visible.length > 0 && shown.length === 0
+      ? <><strong>{`Nothing matches “${photoQ.trim()}”`}</strong><span>Clear the filter to see every photo again.</span></>
     : loadErr
       ? <><strong>Could not read the photo index</strong><span>{loadErr}</span></>
       : t1?.state === "models_missing"
@@ -248,18 +259,22 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {sub && <span className="hsub">{sub}</span>}
         <span className="sp" />
         {tab === "timeline" && images !== null && visible.length > 0 && (
-          <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
-            {TIMELINE_VIEWS.map((v) => (
-              <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
-                {v.label}<i>{viewCounts[v.id].toLocaleString("en-US")}</i>
-              </button>
-            ))}
-          </div>
+          <>
+            <NameFilter value={photoQ} onChange={setPhotoQ} label="Filter photos by name" />
+            <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
+              {TIMELINE_VIEWS.map((v) => (
+                <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
+                  {v.label}<i>{viewCounts[v.id].toLocaleString("en-US")}</i>
+                </button>
+              ))}
+            </div>
+            <GalleryViewToggle view={gview} onChange={setGview} />
+          </>
         )}
         {chrome}
       </div>
       <main className="lib-body">
-        {tab === "timeline" && <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} />}
+        {tab === "timeline" && <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} view={gview} />}
         {tab === "collections" && (
           <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} />
         )}

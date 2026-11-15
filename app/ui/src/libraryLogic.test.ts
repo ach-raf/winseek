@@ -182,3 +182,31 @@ test("oldScreenshots: only screenshots past the age, biggest first", async () =>
   assert.deepEqual(oldScreenshots(items, now).map((i) => i.id), ["old-big", "old-small"]);
   assert.deepEqual(oldScreenshots(items, now, 5).map((i) => i.id), ["new", "old-big", "old-small"]);
 });
+
+test("parseGalleryView: only 'list' is a list, everything else is the grid", async () => {
+  const { parseGalleryView } = await import("./libraryLogic.ts");
+  assert.equal(parseGalleryView("list"), "list");
+  assert.equal(parseGalleryView("grid"), "grid");
+  assert.equal(parseGalleryView("timeline"), "grid");
+  assert.equal(parseGalleryView(null), "grid");
+  assert.equal(parseGalleryView(undefined), "grid");
+  assert.equal(parseGalleryView(42), "grid");
+});
+
+test("nameMatches: case-insensitive substring, empty query matches all", async () => {
+  const { nameMatches } = await import("./libraryLogic.ts");
+  assert.equal(nameMatches("PXL_20261112_164901.jpg", "pxl"), true);
+  assert.equal(nameMatches("PXL_20261112_164901.jpg", "  PX_2 "), false);
+  assert.equal(nameMatches("invoice march.pdf", "March"), true);
+  assert.equal(nameMatches("anything.txt", "   "), true);
+  assert.equal(nameMatches("a.wav", "a"), true);
+});
+
+test("parseFoldSet: a JSON array of strings becomes the fold set, junk becomes empty", async () => {
+  const { parseFoldSet } = await import("./libraryLogic.ts");
+  assert.deepEqual([...parseFoldSet(["2026-03", "2025-11"])].sort(), ["2025-11", "2026-03"]);
+  assert.equal(parseFoldSet([]).size, 0);
+  assert.equal(parseFoldSet("2026-03").size, 0);
+  assert.equal(parseFoldSet([1, "2026-03"]).size, 1);
+  assert.equal(parseFoldSet(null).size, 0);
+});

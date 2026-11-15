@@ -1,9 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./types";
-import { Gallery, type GallerySection, type GridExtra, type GridItem, type LibActions } from "./Gallery";
+import { Gallery, GalleryViewToggle, type GallerySection, type GridExtra, type GridItem, type LibActions } from "./Gallery";
+import { NameFilter } from "./NameFilter";
 import { baseName } from "./Semantic";
 import { kindOf } from "./format";
-import { freshIdeas } from "./libraryLogic";
+import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./libraryLogic";
+import { useStoredValue } from "./hooks";
 import { IChevL, IPlus } from "./icons";
 
 interface Eval {
@@ -87,6 +89,9 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   }, [list, selName]);
 
   const sel = list?.find((c) => c.name === selName) ?? null;
+  // Tiles or list rows for one collection's gallery, and a name filter over its items (per-screen, remembered).
+  const [gview, setGview] = useStoredValue("winseek.galleryView.collections", parseGalleryView, (v: GalleryView) => v);
+  const [collQ, setCollQ] = useState("");
 
   const shots = useMemo(
     () => images.filter((i) => i.class === "screenshot"),
@@ -114,6 +119,16 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
       { key: `${sel.name}:docs`, label: docs.length ? "Documents" : null, items: docs },
     ].filter((s) => s.items.length > 0);
   }, [sel, hitsOf]);
+
+  // The name filter narrows the same sections; empty groups drop out.
+  const shownSections: GallerySection[] = useMemo(
+    () => (collQ.trim()
+      ? sections.map((s) => ({ ...s, items: s.items.filter((i) => nameMatches(i.name, collQ)) })).filter((s) => s.items.length > 0)
+      : sections),
+    [sections, collQ],
+  );
+  // A filter follows its collection: switching collections starts clean.
+  useEffect(() => { setCollQ(""); }, [selName]);
 
   const save = useCallback(async (next: Collection[]): Promise<boolean> => {
     try {
@@ -305,6 +320,8 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
               <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
             </label>
           )}
+          <NameFilter value={collQ} onChange={setCollQ} label="Filter in this collection" />
+          <GalleryViewToggle view={gview} onChange={setGview} />
           <div className="co-btns">
             <button className="btn" onClick={() => editCollection(sel)}>Edit</button>
             {confirmDel ? (
@@ -325,7 +342,11 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
           </div>
         )}
         <div className="co-grid">
-          <Gallery backend={backend} sections={sections} actions={actions} empty={emptyMsg} preview extra={extra} noun="item" />
+          <Gallery backend={backend} sections={shownSections} actions={actions}
+                   empty={collQ.trim() && sections.length > 0 && shownSections.length === 0
+                     ? <><strong>{`Nothing matches “${collQ.trim()}”`}</strong><span>Clear the filter to see the whole collection again.</span></>
+                     : emptyMsg}
+                   preview extra={extra} noun="item" view={gview} />
         </div>
       </div>
     );
