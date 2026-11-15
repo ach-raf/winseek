@@ -3,11 +3,12 @@ import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCf
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
-import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage, waitingText } from "./Status";
+import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { fileName } from "./reasonText";
 import { eventToCombo } from "./hotkeyLogic";
-import { Folders, pausedText } from "./Setup";
+import { Folders } from "./Setup";
+import { pausedText, statusVerdict, waitingText } from "./statusVerdict";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import { filterSections, type SettingsSection } from "./settingsNav";
@@ -392,6 +393,7 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
   const [page, err, reload] = useStatusPage(backend);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [rebuilding, setRebuilding] = useState(false);
+  const [open, setOpen] = useState<boolean | null>(null); // details fold: null = follow the verdict
 
   const rescan = useCallback((letter: string) => {
     setBusy((b) => new Set(b).add(letter));
@@ -409,14 +411,24 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
       ? <div className="fr-error" role="alert">Could not read the status: {err}</div>
       : <Grp title="Status"><div className="grow stack"><Bar value={null} label="Loading" /></div></Grp>;
   }
+  // One calm verdict up top; the groups stay, collapsed under it unless something needs attention.
+  const v = statusVerdict(page);
+  const detailsOpen = open ?? v.tone !== "ok";
   return (
     <>
-      <Names t0={page.tier0} busy={busy} onRescan={rescan} />
-      <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
-                     onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
-                     onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
-                     onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
-      <ModelsPane m={page.models} />
+      <div className={"verdict " + v.tone} role="status">
+        <span className="dot" aria-hidden="true" />
+        <div className="vtx"><b>{v.headline}</b>{v.sub && <span className="vsub">{v.sub}</span>}</div>
+      </div>
+      <details className="st-details" open={detailsOpen} onToggle={(e) => setOpen((e.target as HTMLDetailsElement).open)}>
+        <summary>Details</summary>
+        <Names t0={page.tier0} busy={busy} onRescan={rescan} />
+        <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
+                       onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
+                       onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
+                       onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
+        <ModelsPane m={page.models} />
+      </details>
     </>
   );
 }

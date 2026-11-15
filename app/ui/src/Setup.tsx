@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Models } from "./hooks";
-import type { FolderEstimate, ModelsPlan, PausedReason, Tier1Status } from "./types";
+import type { FolderEstimate, ModelsPlan, Tier1Status } from "./types";
 import { estimateText } from "./estimateLogic";
 import { formatSize } from "./format";
+import { pausedText } from "./statusVerdict";
 import { trapKey } from "./trap";
 import { Grp, Row, XIcon } from "./settingsUi";
 
@@ -11,12 +12,6 @@ const fmt = (n: number) => n.toLocaleString("en-US");
 export function backendLine(plan: ModelsPlan): string {
   const how = plan.backend === "cuda12" ? "using CUDA" : plan.backend === "vulkan" ? "using Vulkan" : "using the CPU";
   return plan.gpu ? `${plan.gpu}, ${how}` : `No dedicated GPU found, ${how}`;
-}
-
-export function pausedText(r: PausedReason): string {
-  return r === "user" ? "Paused by you"
-    : r === "battery" ? "Paused on battery power. It resumes when you plug in."
-    : "Paused while a full-screen game or presentation runs. It resumes afterwards.";
 }
 
 function Bar({ value, label }: { value: number | null; label: string }) {

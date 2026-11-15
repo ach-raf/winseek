@@ -139,6 +139,31 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .s-error .st-state { color: var(--danger); }
 .s-error .st-state .dot { background: var(--danger); }
 
+/* verdict: the one calm headline the Status page opens with; the groups fold under it */
+.verdict { display: flex; align-items: flex-start; gap: 10px; padding: 2px 2px var(--sp-1); }
+.verdict .dot { margin-top: 6px; }
+.verdict b { font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.verdict .vsub { display: block; margin-top: 3px; font-size: 12.5px; color: var(--fg3); }
+.verdict.busy .dot { background: var(--warn); }
+.verdict.problem .dot { background: var(--danger); }
+.verdict.problem b { color: var(--danger); }
+.st-details > summary { list-style: none; cursor: pointer; display: inline-flex; align-items: center; gap: 7px; padding: var(--sp-2) 2px; font-size: 12.5px; font-weight: 600; color: var(--fg3); user-select: none; }
+.st-details > summary::-webkit-details-marker { display: none; }
+.st-details > summary::after { content: "\203A"; font-size: 14px; line-height: 1; transition: transform .12s; }
+.st-details[open] > summary::after { transform: rotate(90deg); }
+.st-details[open] > summary { margin-bottom: var(--sp-1); }
+
+/* parse timeline: read / reading now / queued, one thin strip (emphasis by difference: the moving part is the coloured one) */
+.tl-strip { display: flex; gap: 2px; height: 6px; border-radius: 3px; overflow: hidden; background: var(--bg3); }
+.tl-strip i { display: block; height: 100%; border-radius: 1px; }
+.tl-strip .tl-done { background: var(--fg3); }
+.tl-strip .tl-now { background: var(--warn); }
+.tl-key { display: flex; gap: 14px; font-size: 11.5px; color: var(--fg3); }
+.tl-key i { display: inline-block; width: 7px; height: 7px; border-radius: 2px; margin-right: 5px; }
+.tl-key i.tl-done { background: var(--fg3); }
+.tl-key i.tl-now { background: var(--warn); }
+.tl-key i.tl-q { background: var(--bg3); box-shadow: inset 0 0 0 1px var(--line); }
+
 /* switch: prototype .sw (38x22, 16px knob, accent when on) restyled in place */
 .settings .switch, .setup .switch { width: 38px; height: 22px; border-radius: 11px; background: var(--bg3); box-shadow: inset 0 0 0 1px var(--line); transition: background .15s; }
 .settings .switch::after, .setup .switch::after { top: 3px; left: 3px; width: 16px; height: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
-import type { Backend, StatusIndex, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusFfmpeg, StatusTier1, StatusWaiting, VolumeDetail } from "./types";
+import type { Backend, StatusIndex, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusTier1, VolumeDetail } from "./types";
 import { formatClock, formatDate, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
-import { pausedText } from "./Setup";
+import { pausedText, plural, waitingText } from "./statusVerdict";
 import { Grp, Row } from "./settingsUi";
 import { fileName, reasonHint, reasonSentence } from "./reasonText";
 
@@ -95,37 +95,6 @@ export function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<strin
       {t0.volumes.length === 0 && <div className="grow none">No volumes to show</div>}
     </Grp>
   );
-}
-
-const plural = (n: number, one: string, many: string) => `${fmt(n)} ${n === 1 ? one : many}`;
-
-/** Where the automatic download of the audio / video tool stands, in plain words. */
-function ffmpegText(f: StatusFfmpeg | null): string {
-  if (f?.state === "downloading") {
-    const pct = f.total > 0 ? ` (${Math.min(99, Math.floor((f.downloaded / f.total) * 100))}%)` : "";
-    return `waiting for the audio and video tool, which is downloading${pct}`;
-  }
-  if (f?.state === "failed") return `waiting for the audio and video tool: the download failed${f.error ? ` (${f.error})` : ""}. Check the internet connection, then press Retry`;
-  return "waiting for the audio and video tool, which downloads by itself";
-}
-
-/** What one group of queued files is waiting for, in plain words. */
-function waitingLine(w: StatusWaiting, f: StatusFfmpeg | null): string {
-  return w.why === "pdf_reader_missing" ? `${plural(w.count, "PDF is", "PDFs are")} waiting for the PDF reader to download`
-    : w.why === "pdf_reader_broken" ? `${plural(w.count, "PDF is", "PDFs are")} waiting: the PDF reader is installed but could not be loaded`
-    : w.why === "ffmpeg_missing" ? `${plural(w.count, w.kind === "audio" ? "audio file is" : "video is", w.kind === "audio" ? "audio files are" : "videos are")} ${ffmpegText(f)}`
-    : `${plural(w.count, "file is", "files are")} waiting`;
-}
-
-/** The State line while files are queued and nothing is running: why, in plain words. */
-export function waitingText(t: StatusTier1): string {
-  const blocked = t.waiting.reduce((a, w) => a + w.count, 0);
-  if (t.waiting.length > 0 && blocked >= t.queue) return "Waiting. " + t.waiting.map((w) => waitingLine(w, t.ffmpeg)).join("; ");
-  if (t.error) return `Retrying after an error (${fmt(t.queue)} queued)`;
-  const rest = t.queue - blocked;
-  return t.waiting.length > 0
-    ? `Starting the next batch of ${fmt(rest)} files. ${t.waiting.map((w) => waitingLine(w, t.ffmpeg)).join("; ")}`
-    : `Starting the next batch (${fmt(t.queue)} queued)`;
 }
 
 /** A count with the reasons behind it: hover shows the first, the arrow opens every reason, each as
@@ -322,6 +291,20 @@ function ParserRows({ p }: { p: StatusParser }) {
             ? `${fmt(run.total)} pages read in ${formatDuration(Math.max(0, run.ended_unix - run.started_unix))}`
             : `${fmt(run.total)} pages read`}
         </Kv>
+      )}
+      {run && run.total > 0 && run.ended_unix == null && run.left > 0 && (
+        <div className="grow stack">
+          <div className="tl-strip" role="img"
+               aria-label={`Parse timeline: ${fmt(handled)} pages read, ${fmt(p.live?.pages ?? 0)} reading now, ${fmt(Math.max(0, run.left - (p.live?.pages ?? 0)))} queued`}>
+            <i className="tl-done" style={{ width: `${Math.min(100, (handled / run.total) * 100)}%` }} />
+            <i className="tl-now" style={{ width: `${Math.min(100, ((p.live?.pages ?? 0) / run.total) * 100)}%` }} />
+          </div>
+          <div className="tl-key" aria-hidden="true">
+            <span><i className="tl-done" />read</span>
+            <span><i className="tl-now" />reading now</span>
+            <span><i className="tl-q" />queued</span>
+          </div>
+        </div>
       )}
       {p.live && (
         <Kv k="Now reading" title="The page batch the document parser has in flight">
