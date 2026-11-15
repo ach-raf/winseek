@@ -93,15 +93,41 @@ It is weak on complex charts and rotated tables. Pages it cannot read confidentl
 
 ## Use from AI agents
 
-`winseek-mcp.exe` is a read-only MCP server. Clients get name search with type, date and size filters, search by meaning, text extraction from PDFs and Office files, app and Settings lookup, and index status. It cannot open, launch, rename or delete anything.
+`winseek-mcp.exe` is a read-only MCP server (stdio, JSON-RPC; speaks the 2025-11-25, 2025-06-18 and 2025-03-26 protocol revisions). It connects to the running winseek app over a named pipe that only your user account may open, and starts the app in the tray if it is not running. Tools:
 
-Enable it under Settings › Agents (off by default), then for Claude Code:
+| Tool | Answers |
+|---|---|
+| `search_files` | name search with the app's syntax (`ext:`, `size:>`, `dm:today`, `folder:`) |
+| `search_by_meaning` | documents, screenshots and photos by what they contain |
+| `read_text` / `parse_document` | the text of PDFs, Office files, images already parsed |
+| `recent_files` / `file_info` | recently used files; type, size, image dimensions |
+| `find_apps` | installed apps, Windows settings and commands, with what they open |
+| `library_big_files` / `library_duplicates` / `library_collections` | the same views the library window shows |
+| `index_status` | what is indexed and how far along |
+
+It cannot open, launch, rename or delete anything. Enable it under Settings › Agents (off by default), then for Claude Code:
 
 ```
 claude mcp add winseek -- "C:\Program Files\winseek\winseek-mcp.exe"
 ```
 
 Snippets for Claude Desktop, Cursor, VS Code and Codex are in the same settings page. Every agent call is logged there.
+
+## Command line
+
+`winseek-cli.exe` does what the app does from a terminal. The installer puts it on the PATH, so `winseek-cli` works in any new shell (Settings › Agents › Command line manages your user PATH; `winseek-cli path add --machine` does what the installer does).
+
+```
+winseek-cli search invoice ext:pdf --sort size -n 20     # name index, same syntax as the app
+winseek-cli status                                       # volumes, file counts, index state
+winseek-cli index D: --wait                              # rescan a volume from the file table
+winseek-cli meaning quarterly numbers --long             # search by what files contain
+winseek-cli read "C:\docs\report.pdf" --page 3           # extract the text (PDF, Office, OCR)
+winseek-cli recent -n 10                                 # recently used files
+winseek-cli apps theme --kind setting                    # the launcher catalog
+```
+
+`search`, `status` and `index` talk to the `searchd` service and work even when the app is closed. `meaning`, `read`, `recent` and `apps` go through the app (the same code path agents use), so they need it running with agent access on. Add `--json` to any command for the raw result; paths go to stdout one per line, so the output pipes. `winseek-cli help` lists everything.
 
 ## Privacy
 
