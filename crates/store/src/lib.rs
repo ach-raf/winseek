@@ -1307,10 +1307,11 @@ impl Store {
         Ok(out)
     }
 
-    /// Calibrated search by meaning (see [`relevance`]): every vector is scored against the
-    /// query, hub-corrected with `hub`, and each file content's best `adj` per modality is placed
-    /// in that modality's distribution. Returns the best `per_modality` file contents of each
-    /// modality as candidates (one per file path), ungated: [`relevance::gate`] decides.
+    /// Calibrated search by meaning (see [`relevance`]): every vector row is scored against the
+    /// query and hub-corrected with `hub`; the rows give the per-modality centring and the one
+    /// deviation, and each file content's best row becomes its `z`. Returns the best
+    /// `per_modality` file contents of each modality as candidates (one per file path), ungated:
+    /// [`relevance::gate`] decides.
     pub fn search_calibrated(&self, query: &[f32], hub: &[f32], per_modality: usize) -> Result<Vec<Candidate>> {
         self.search_calibrated_multi(&[query], hub, per_modality, &HashSet::new())
     }
@@ -1370,6 +1371,8 @@ impl Store {
         // (hash, modality) -> per query (adj, raw, chunk)
         type PerQuery = Vec<(f32, f32, u32)>;
         let mut best: HashMap<(String, Modality), PerQuery> = HashMap::new();
+        // per query: sums of the hub-corrected score over EVERY row (not per-file best) -> the scale
+        let mut row_stats: Vec<relevance::RowStats> = vec![relevance::RowStats::default(); nq];
         {
             let mut st = self.conn.prepare_cached("SELECT hash, chunk, kind, vec FROM vectors")?;
             let mut rows = st.query([])?;
@@ -1385,27 +1388,27 @@ impl Store {
                 }
                 let hub_dot = dot_le(hub, blob);
                 let chunk: u32 = r.get(1)?;
+                let modality = Modality::from(kind);
                 let slot = best
-                    .entry((hash.to_owned(), Modality::from(kind)))
+                    .entry((hash.to_owned(), modality))
                     .or_insert_with(|| vec![(f32::NEG_INFINITY, 0.0, 0); nq]);
                 for (qi, q) in queries.iter().enumerate() {
                     let raw = dot_le(q, blob);
                     let adj = raw - hub_dot;
+                    row_stats[qi].add(modality, adj);
                     if adj > slot[qi].0 {
                         slot[qi] = (adj, raw, chunk);
                     }
                 }
             }
         }
+        // None below MIN_POPULATION rows: no z, the tiny-library floor applies
+        let scales: Vec<Option<relevance::Scale>> = row_stats.iter().map(|r| r.scale()).collect();
         type Pick<'a> = (&'a String, f32, f32, u32, Option<f32>);
         let mut out = Vec::new();
         for m in [Modality::Visual, Modality::Text, Modality::Audio] {
             let items: Vec<(&String, &PerQuery)> =
                 best.iter().filter(|((_, km), _)| *km == m).map(|((h, _), v)| (h, v)).collect();
-            let n = items.len();
-            let stats: Vec<(f32, f32)> = (0..nq)
-                .map(|qi| relevance::mean_sd(&items.iter().map(|i| i.1[qi].0).collect::<Vec<f32>>()))
-                .collect();
             // each content under the query it stands out most for: (hash, adj, raw, chunk, z)
             let mut picked: Vec<Pick<'_>> = items
                 .iter()
@@ -1413,20 +1416,22 @@ impl Store {
                     let mut win = 0usize;
                     let mut win_key = f32::NEG_INFINITY;
                     for (qi, v) in per.iter().enumerate() {
-                        let key = relevance::z_of(v.0, n, stats[qi].0, stats[qi].1).unwrap_or(v.0);
+                        let key = scales[qi].map_or(v.0, |sc| sc.z(m, v.0));
                         if key > win_key {
                             win = qi;
                             win_key = key;
                         }
                     }
                     let (adj, raw, chunk) = per[win];
-                    (*hash, adj, raw, chunk, relevance::z_of(adj, n, stats[win].0, stats[win].1))
+                    (*hash, adj, raw, chunk, scales[win].map(|sc| sc.z(m, adj)))
                 })
                 .collect();
             let key = |i: &Pick<'_>| i.4.unwrap_or(i.1);
             picked.sort_by(|a, b| key(b).total_cmp(&key(a)).then_with(|| a.0.cmp(b.0)));
-            let keep = |adj: f32, z: Option<f32>| passing.is_none_or(|zm| adj >= relevance::ADJ_MIN && z.is_none_or(|z| z >= zm));
-            for (hash, adj, raw, chunk, z) in picked.into_iter().filter(|p| keep(p.1, p.4)).take(per_modality) {
+            let keep = |c: &Pick<'_>| {
+                passing.is_none_or(|zm| Candidate { file_id: FileId(0), path: String::new(), hash: String::new(), chunk: 0, locator: None, modality: m, score: c.2, adj: c.1, z: c.4 }.passes_at(zm))
+            };
+            for (hash, adj, raw, chunk, z) in picked.into_iter().filter(|p| keep(p)).take(per_modality) {
                 let locator: Option<String> = self
                     .conn
                     .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?

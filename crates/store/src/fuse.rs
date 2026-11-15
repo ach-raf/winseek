@@ -1,6 +1,6 @@
 //! Hybrid ranking: exact-word hits (FTS5 / bm25) fused into the semantic list.
 //!
-//! The semantic list is already calibrated and gated ([`crate::relevance`]: `Z_MIN`, `ADJ_MIN`).
+//! The semantic list is already calibrated and gated ([`crate::relevance`]: `Z_MIN` on the meaning scale).
 //! Those gates are about *meaning*; a literal match is a different kind of evidence and must not
 //! be judged by them: an invoice number, an error code or a serial has no "meaning" for the
 //! embedding model, so its vector can sit far below the gate while the text contains it verbatim.
