@@ -880,7 +880,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
         </nav>
         <div className="scont" ref={bodyRef}>
-          {/* the inner block has its own height, so the full window's card columns balance and scroll down, not sideways */}
+          {/* one 640px column in every host; the div only caps the width */}
           <div className="scols">
           {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} onError={onError} />}
           {section === "indexing" && (
