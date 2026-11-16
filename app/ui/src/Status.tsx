@@ -4,6 +4,7 @@ import { formatClock, formatDate, formatDuration, formatPages, formatPercent, fo
 import { pausedText, plural, waitingText } from "./statusVerdict";
 import { Grp, Row } from "./settingsUi";
 import { fileName, reasonHint, reasonSentence } from "./reasonText";
+import type { SettingsSection } from "./settingsNav";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const POLL_MS = 1000;
@@ -145,10 +146,8 @@ function stateLine(t: StatusTier1): string {
     : t.queue > 0 ? waitingText(t) : "All caught up";
 }
 
-export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmpeg, onReveal }: { t1: StatusTier1; onRebuild: () => void; rebuilding: boolean; onResume?: () => void; onRetryFfmpeg?: () => void; onReveal?: (path: string) => void }) {
-  const [ask, setAsk] = useState(false);
+export function StatusMeaning({ t1, onSection, onResume, onRetryFfmpeg, onReveal }: { t1: StatusTier1; onSection?: (s: SettingsSection) => void; onResume?: () => void; onRetryFfmpeg?: () => void; onReveal?: (path: string) => void }) {
   const s = t1.stats;
-  useEffect(() => { if (!t1.can_rebuild) setAsk(false); }, [t1.can_rebuild]);
   return (
     <Grp title="Search by meaning" label="Meaning">
       <Row title="State" desc={<span className={"st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</span>}>
@@ -156,6 +155,10 @@ export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmp
         {t1.ffmpeg?.state === "failed" && onRetryFfmpeg && <button className="gbtn pri" onClick={onRetryFfmpeg}>Retry</button>}
       </Row>
       <IndexRow index={t1.index} />
+      {/* Diagnostics never own the rebuild button; when the verdict says one is needed, point at the section that has it. */}
+      {t1.index?.needs_rebuild && onSection && (
+        <div className="grow"><button className="gchip" onClick={() => onSection("meaning")}>Rebuild → Search by meaning</button></div>
+      )}
       {t1.state === "unavailable" ? (
         t1.error && <div className="grow"><span className="fr-error" role="alert">{t1.error}</span></div>
       ) : (
@@ -181,25 +184,35 @@ export function StatusMeaning({ t1, onRebuild, rebuilding, onResume, onRetryFfmp
           </Kv>
           <Kv k="Time left">{t1.eta_s != null ? `about ${formatDuration(t1.eta_s)}` : "—"}</Kv>
           {t1.error && <div className="grow"><span className="fr-error" role="alert">Last error: {t1.error}</span></div>}
-          {!ask ? (
-            <Row title="Rebuild meaning index" desc="Forget every embedding and index the folders again">
-              <button className="gbtn" disabled={!t1.can_rebuild || rebuilding} onClick={() => setAsk(true)}
-                      title={t1.can_rebuild ? "Forget every embedding and index the folders again" : "Search by meaning is not available"}>
-                {rebuilding ? "Rebuilding…" : "Rebuild…"}
-              </button>
-            </Row>
-          ) : (
-            <div className="grow wrap" role="alertdialog" aria-label="Confirm rebuild">
-              <div className="gtxt"><b>Delete the meaning index and embed every file again?</b><span>This can take a while. Name search is not affected.</span></div>
-              <div className="gctl">
-                <button className="gbtn pri" autoFocus onClick={() => { setAsk(false); onRebuild(); }}>Rebuild</button>
-                <button className="gbtn" onClick={() => setAsk(false)}>Cancel</button>
-              </div>
-            </div>
-          )}
         </>
       )}
     </Grp>
+  );
+}
+
+/** The one rebuild control (Settings › Search by meaning › Maintenance). Status deep-links here
+ *  instead of rendering its own copy, so there is exactly one mutation path. */
+export function RebuildRow({ canRebuild, rebuilding, onRebuild }: { canRebuild: boolean; rebuilding: boolean; onRebuild: () => void }) {
+  const [ask, setAsk] = useState(false);
+  useEffect(() => { if (!canRebuild) setAsk(false); }, [canRebuild]);
+  if (!ask) {
+    return (
+      <Row title="Rebuild meaning index" desc="Forget every embedding and index the folders again">
+        <button className="gbtn" disabled={!canRebuild || rebuilding} onClick={() => setAsk(true)}
+                title={canRebuild ? "Forget every embedding and index the folders again" : "Search by meaning is not available"}>
+          {rebuilding ? "Rebuilding…" : "Rebuild…"}
+        </button>
+      </Row>
+    );
+  }
+  return (
+    <div className="grow wrap" role="alertdialog" aria-label="Confirm rebuild">
+      <div className="gtxt"><b>Delete the meaning index and embed every file again?</b><span>This can take a while. Name search is not affected.</span></div>
+      <div className="gctl">
+        <button className="gbtn pri" autoFocus onClick={() => { setAsk(false); onRebuild(); }}>Rebuild</button>
+        <button className="gbtn" onClick={() => setAsk(false)}>Cancel</button>
+      </div>
+    </div>
   );
 }
 

@@ -3,7 +3,7 @@ import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, Igno
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
 import { argsPreview, pathNote, snippets } from "./agentLogic";
-import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
+import { Bar, IndexRow, Models as ModelsPane, Names, RebuildRow, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { fileName } from "./reasonText";
 import { eventToCombo } from "./hotkeyLogic";
@@ -165,7 +165,7 @@ function VersionRow({ backend, onError }: { backend: Backend; onError: (e: unkno
   return <Row title="Version" desc={`winseek for Windows ${v}`} hint={`winseek v${v}`}><span className="val">{v}</span></Row>;
 }
 
-/** Accent colour swatches (Settings › General). Applies at once and is remembered; the other
+/** Accent colour swatches (Settings › Appearance). Applies at once and is remembered; the other
  *  window follows through the storage event (main.tsx). */
 function AccentRow() {
   const [id, setId] = useState<AccentId>(() => loadAccent());
@@ -187,7 +187,7 @@ function AccentRow() {
   );
 }
 
-/** Window transparency slider (Settings › General). Applies at once and is remembered; the
+/** Window transparency slider (Settings › Appearance). Applies at once and is remembered; the
  *  other window follows through the storage event (main.tsx). 40% floor keeps text readable. */
 function TransparencyRow() {
   const [pct, setPct] = useState<number>(() => loadOpacity());
@@ -207,7 +207,7 @@ function TransparencyRow() {
   );
 }
 
-/** Light, dark, or following Windows (Settings › General). Applies at once and is remembered;
+/** Light, dark, or following Windows (Settings › Appearance). Applies at once and is remembered;
  *  the other window follows through the storage event (main.tsx). */
 function ThemeRow() {
   const [id, setId] = useState<ThemeId>(() => loadTheme());
@@ -302,12 +302,18 @@ function ModelLine({ name, detail, act, optional, label, onGet, onCancel, childr
   );
 }
 
-/** Search by meaning at a glance: what it is doing, how fast, and which models are installed / loaded. */
-function Meaning({ backend, t1, models, onPause, onSetup }: {
-  backend: Backend; t1: Tier1Status | null; models: Models; onPause: (p: boolean) => void; onSetup: () => void;
+/** Search by meaning at a glance: what it is doing, how fast, and which models are installed / loaded.
+ *  Also the engine's home section: model downloads, the performance profile and the rebuild live here. */
+function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
+  backend: Backend; t1: Tier1Status | null; models: Models; onPause: (p: boolean) => void; onSetup: () => void; onError: (e: unknown) => void;
 }) {
   const [page, , reload] = useStatusPage(backend);
   const { refreshPlan, running } = models;
+  const [rebuilding, setRebuilding] = useState(false);
+  const rebuild = useCallback(() => {
+    setRebuilding(true);
+    backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
+  }, [backend, reload, onError]);
   useEffect(() => { refreshPlan(); }, [refreshPlan]);
   // A download that ends (or fails) shows its result right away, not at the next status poll.
   const wasRunning = useRef(running);
@@ -395,8 +401,8 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
         )}
       </Grp>
       {m && (
-        <section className="grp" aria-label="Models">
-          <h3>Components</h3>
+        <section className="grp" aria-label="Model downloads">
+          <h3>Model downloads</h3>
           <div className="gcard" role="list">
             <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
                        act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
@@ -422,16 +428,19 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
           </div>
         </section>
       )}
+      <Performance backend={backend} onError={onError} />
+      <Grp title="Maintenance">
+        <RebuildRow canRebuild={!!st?.can_rebuild} rebuilding={rebuilding} onRebuild={rebuild} />
+      </Grp>
       {st?.error && <div className="fr-error" role="alert">Last error: {st.error}</div>}
     </>
   );
 }
 
 /** The Status page, embedded as a Settings section: names index, meaning index, models and files. */
-function StatusSection({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
+function StatusSection({ backend, onError, onSection }: { backend: Backend; onError: (e: unknown) => void; onSection: (s: SettingsSection) => void }) {
   const [page, err, reload] = useStatusPage(backend);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [rebuilding, setRebuilding] = useState(false);
   const [open, setOpen] = useState<boolean | null>(null); // details fold: null = follow the verdict
 
   const rescan = useCallback((letter: string) => {
@@ -439,10 +448,6 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
     backend.rescanVolume(letter).then(reload).catch(onError).finally(() => {
       setBusy((b) => { const n = new Set(b); n.delete(letter); return n; });
     });
-  }, [backend, reload, onError]);
-  const rebuild = useCallback(() => {
-    setRebuilding(true);
-    backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
   }, [backend, reload, onError]);
 
   if (!page) {
@@ -463,7 +468,7 @@ function StatusSection({ backend, onError }: { backend: Backend; onError: (e: un
       {detailsOpen && (
         <>
           <Names t0={page.tier0} busy={busy} onRescan={rescan} />
-          <StatusMeaning t1={page.tier1} onRebuild={rebuild} rebuilding={rebuilding}
+          <StatusMeaning t1={page.tier1} onSection={onSection}
                          onResume={() => { backend.tier1Pause(false).then(reload).catch(onError); }}
                          onRetryFfmpeg={() => { backend.ffmpegRetry().then(reload).catch(onError); }}
                          onReveal={(p) => { backend.revealPath(p).catch(onError); }} />
@@ -579,7 +584,7 @@ const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optiona
   { which: "clipboard", label: "Search the clipboard", blurb: "Opens winseek with whatever you copied as the query", optional: true },
 ];
 
-/** Settings › General › Shortcuts: the three global hotkeys, each with a press-to-record field
+/** Settings › Shortcuts: the three global hotkeys, each with a press-to-record field
  *  (PRD B9). Recording never swallows keys: every press is captured, Esc cancels, Backspace
  *  clears the held combo (Backspace on an empty field marks an optional one for removal),
  *  Enter saves a captured combo, Save applies. */
@@ -670,9 +675,11 @@ function HkRec({ combo, onBlur, onKeyDown }: { combo: string | null; onBlur: () 
 
 export type { SettingsSection };
 
-/** General first, engine next, add-ons, diagnostics last (the known order); Ctrl+1..7 follow it. */
+/** General first, engine next, add-ons, diagnostics last (the known order); Ctrl+1..8 follow it. */
 const NAV: { id: SettingsSection; label: string }[] = [
   { id: "general", label: "General" },
+  { id: "appearance", label: "Appearance" },
+  { id: "shortcuts", label: "Shortcuts" },
   { id: "indexing", label: "Indexing" },
   { id: "meaning", label: "Search by meaning" },
   { id: "launcher", label: "Apps and commands" },
@@ -875,9 +882,10 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
         <div className="scont" ref={bodyRef}>
           {/* the inner block has its own height, so the full window's card columns balance and scroll down, not sideways */}
           <div className="scols">
-          {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} />}
+          {section === "meaning" && <Meaning backend={backend} t1={t1} models={models} onPause={onPause} onSetup={onSetup} onError={onError} />}
           {section === "indexing" && (
             <>
+              <p className="gnote gnote-top">These folders also feed Search by meaning.</p>
               <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={backend.tier1Estimate} />
               <CodeToggle backend={backend} onError={onError} />
               <IgnoredNames backend={backend} onError={onError} />
@@ -887,17 +895,14 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "agents" && <AgentsSection backend={backend} onError={onError} />}
           {section === "general" && (
             <>
-              <Grp title="General">
-                <ThemeRow />
-                <AccentRow />
-                <TransparencyRow />
+              <Grp title="Startup">
                 <DefaultViewRow backend={backend} onError={onError} />
                 <AutostartRow backend={backend} onError={onError} />
+              </Grp>
+              <Grp title="Updates">
                 <UpdatesRow backend={backend} onError={onError} />
                 <VersionRow backend={backend} onError={onError} />
               </Grp>
-              <Performance backend={backend} onError={onError} />
-              <ShortcutsBlock backend={backend} onError={onError} />
               <Grp title="Library">
                 <Row title="Photos and clean up" desc="Photos by month, collections, and finding near-duplicates or oversized files">
                   <button className="gbtn" onClick={onLibrary}>Open</button>
@@ -905,7 +910,15 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
               </Grp>
             </>
           )}
-          {section === "status" && <StatusSection backend={backend} onError={onError} />}
+          {section === "appearance" && (
+            <Grp title="Appearance">
+              <ThemeRow />
+              <AccentRow />
+              <TransparencyRow />
+            </Grp>
+          )}
+          {section === "shortcuts" && <ShortcutsBlock backend={backend} onError={onError} />}
+          {section === "status" && <StatusSection backend={backend} onError={onError} onSection={onSection} />}
           </div>
         </div>
         <footer className="set-foot">

@@ -126,6 +126,8 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .grow.kv .gtxt { flex: 0 1 auto; max-width: 60%; }
 .grow .bad, .st-miss { color: var(--warn); }
 .firstrun .gnote { margin: 8px 2px 0; max-width: none; font-size: 12.5px; line-height: 1.45; color: var(--fg3); }
+/* a note that opens a section (before the first card), on the card text's left edge */
+.gnote-top { margin: 0 0 var(--sp-3) var(--sp-4); }
 .gnote code, .gtxt code { font-size: 11.5px; }
 .gsub { flex: 1 0 100%; margin-top: -2px; }
 .gsub .bar { grid-column: auto; }
@@ -199,6 +201,11 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .gbtn.danger { color: var(--danger); }
 .gbtn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 12%, var(--bg3)); }
 .gbtn:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+
+/* deep-link chip: Status pointing at the section that owns the action (never a second button for it) */
+.gchip { height: 28px; padding: 0 12px; border-radius: 14px; font-size: 12.5px; font-weight: 600; color: var(--acc); box-shadow: inset 0 0 0 1px var(--line); white-space: nowrap; }
+.gchip:hover { background: var(--bg3); }
+.gchip:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 
 /* text inputs inside cards */
 .gin { flex: 1; min-width: 0; height: 30px; padding: 0 10px; font: inherit; font-size: 13px; color: var(--fg); background: var(--bg); border: 0; border-radius: 8px; box-shadow: inset 0 0 0 1px var(--line); outline: 0; caret-color: var(--acc); user-select: text; cursor: text; }
