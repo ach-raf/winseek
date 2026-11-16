@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rowAction, type DownloadState } from "./modelRows.ts";
+import { refinerView, rowAction, type DownloadState } from "./modelRows.ts";
 import type { ModelsPlan, PlanItem } from "./types.ts";
 
 const item = (name: string, group: PlanItem["group"], bytes: number | null, present = false): PlanItem =>
@@ -70,4 +70,14 @@ test("rowAction: a failed download offers a retry on its own rows only", () => {
   assert.deepEqual(rowAction("parser", false, s), { kind: "download", bytes: 1600 });
   // the automatic download failed: the default rows offer the retry
   assert.equal(rowAction("embedder", false, { ...s, groups: null }).kind, "failed");
+});
+
+test("refinerView: no graphics card = switch disabled, chip says so, even if it was asked on", () => {
+  const gpu = { enabled: true, state: "ready" as const };
+  assert.deepEqual(refinerView(gpu), { on: true, disabled: false, text: "On", cls: " on" });
+  assert.deepEqual(refinerView({ ...gpu, enabled: false, state: "off" }), { on: false, disabled: false, text: "Off", cls: "" });
+  assert.equal(refinerView({ ...gpu, enabled: false, state: "off" }, true).text, "Warming up");
+  const cpu = { enabled: false, state: "off" as const, reason: "needs a graphics card" };
+  assert.deepEqual(refinerView(cpu), { on: false, disabled: true, text: "Needs a graphics card", cls: "" });
+  assert.equal(refinerView(cpu, true).on, false);
 });

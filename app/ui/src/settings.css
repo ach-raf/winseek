@@ -360,3 +360,4 @@ dialog.confirm::backdrop {
 .rr-chip.on { color: var(--ok); }
 .rr-chip.warm { color: var(--warn); }
 .rr-chip.bad { color: var(--danger); }
+.rr-reason { display: block; color: var(--fg3); font-size: 12px; margin-top: 2px; }

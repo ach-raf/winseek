@@ -242,6 +242,8 @@ export interface StatusReranker {
   present: boolean;
   enabled: boolean;
   state: RerankState;
+  /** Why it cannot run on this machine ("needs a graphics card"); absent when it can. */
+  reason?: string;
   files: StatusModelFile[];
 }
 /** Answer of `rerank_set_enabled`. */
@@ -603,7 +605,7 @@ export interface Backend {
   modelsDownload(includeParser?: boolean, groups?: ModelGroup[]): Promise<void>;
   /** Aborts but keeps partial files; a later modelsDownload resumes. */
   modelsCancel(): Promise<void>;
-  /** Turns the optional result refiner on or off (CPU only); resolves to its state after the change. */
+  /** Turns the optional result refiner on or off (graphics card only); resolves to its state after the change. */
   rerankSetEnabled(enabled: boolean): Promise<RerankSet>;
   /** Try the audio / video tool (ffmpeg) download again now. */
   ffmpegRetry(): Promise<void>;

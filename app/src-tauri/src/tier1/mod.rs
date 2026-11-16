@@ -74,14 +74,14 @@ const RECOVERY_INTERVAL: Duration = Duration::from_secs(600);
 pub const SETTING_PROFILE: &str = "profile";
 /// Store setting: `0` switches the reranker off; absent / anything else = on (when installed).
 pub const SETTING_RERANK_ENABLED: &str = "rerank_enabled";
-/// Candidates handed to the reranker: the overview's quick list / "Show all" (a cold CPU model must
-/// score them all inside [`reranker::BUDGET`]).
-const RERANK_TOP_OVERVIEW: usize = 30;
-const RERANK_TOP_FULL: usize = 50;
+/// Candidates handed to the reranker, overview and "Show all" alike: on the GPU 20 documents of
+/// [`RERANK_DOC_CHARS`] take ~0.7 s, well inside [`reranker::BUDGET`].
+const RERANK_TOP_DOCS: usize = 20;
 /// Fewer candidates than this are not worth a reranker call.
 const RERANK_MIN_DOCS: usize = 3;
-/// A document is cut to this many characters (the server's ubatch holds query + document).
-const RERANK_DOC_CHARS: usize = 1800;
+/// A document is cut to this many characters (the server's 2048-token context holds query +
+/// document; dense non-English text runs ~0.7 tokens per character).
+const RERANK_DOC_CHARS: usize = 1000;
 /// On-demand parse results kept in memory (by content hash and page).
 const DOC_CACHE: usize = 8;
 
@@ -436,14 +436,10 @@ impl Tier1 {
         // The saved profile applies to both GPU models; they share one phase tracker.
         let profile = stored_profile(&store);
         embedder.set_profile(profile);
-        let parser = LlamaParser::new(
-            root.clone(),
-            manifest.clone(),
-            profile,
-            embedder.gpu_phase(),
-        );
+        let gpu = embedder.gpu_phase();
+        let parser = LlamaParser::new(root.clone(), manifest.clone(), profile, gpu.clone());
         let t = Tier1::new(store, Box::new(embedder), Box::new(parser), scopes.clone());
-        t.set_reranker(Box::new(LlamaReranker::new(root, manifest)));
+        t.set_reranker(Box::new(LlamaReranker::new(root, manifest, profile, gpu)));
         if defaulted {
             let _ = lock(&t.store).set_scopes(&scopes);
         }
@@ -735,6 +731,7 @@ impl Tier1 {
             .map_err(|e| e.to_string())?;
         lock(&self.embedder).set_profile(p);
         lock(&self.parser).set_profile(p);
+        lock(&self.reranker).set_profile(p);
         Ok(p)
     }
 
@@ -1067,34 +1064,32 @@ impl Tier1 {
         Ok(())
     }
 
-    /// `{present, enabled, state}` for the status page. `present` = model file + llama build on disk;
+    /// `{present, enabled, state, reason}` for the status page. `present` = model file + llama build on disk;
     /// `enabled` = present and not switched off; `state` = "off" | "warming" | "ready" | "error".
     pub fn rerank_status(&self) -> RerankStatus {
         let setting = self.rerank_setting();
         match self.reranker.try_lock() {
-            Ok(r) => RerankStatus::of(r.present(), setting, r.state()),
+            Ok(r) => RerankStatus::of(r.present(), setting, r.state(), r.reason()),
             // A rerank call is in flight: present, loaded and working.
-            Err(std::sync::TryLockError::WouldBlock) => RerankStatus::of(true, setting, "ready"),
+            Err(std::sync::TryLockError::WouldBlock) => {
+                RerankStatus::of(true, setting, "ready", None)
+            }
             Err(std::sync::TryLockError::Poisoned(p)) => {
                 let r = p.into_inner();
-                RerankStatus::of(r.present(), setting, r.state())
+                RerankStatus::of(r.present(), setting, r.state(), r.reason())
             }
         }
     }
 
     /// Refine the order of the best meaning hits with the reranker, in place. Never fails the
     /// search: any problem (switched off, not installed, still warming up, timeout, bad reply)
-    /// leaves `rows` exactly as they were. Candidates are the first `RERANK_TOP_*` meaning rows;
+    /// leaves `rows` exactly as they were. Candidates are the first `RERANK_TOP_DOCS` meaning rows;
     /// only those whose best chunk has stored text are scored.
-    fn rerank_rows(&self, q: &str, rows: &mut [SemRow], limit: Option<usize>) {
+    fn rerank_rows(&self, q: &str, rows: &mut [SemRow]) {
         if q.is_empty() || !self.rerank_setting() {
             return;
         }
-        let top = if limit.is_some() {
-            RERANK_TOP_OVERVIEW
-        } else {
-            RERANK_TOP_FULL
-        };
+        let top = RERANK_TOP_DOCS;
         let cand: Vec<usize> = (0..rows.len())
             .filter(|&i| rows[i].source == "meaning")
             .take(top)
@@ -1300,7 +1295,7 @@ impl Tier1 {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
-        self.rerank_rows(q, &mut rows, limit);
+        self.rerank_rows(q, &mut rows);
         finalize_scores(&mut rows);
         let more = limit.is_some_and(|k| top_per_kind(&mut rows, k));
         Ok((self.state_str().into(), rows, more))
@@ -1316,15 +1311,23 @@ pub struct RerankStatus {
     pub enabled: bool,
     /// "off" | "warming" | "ready" | "error"
     pub state: &'static str,
+    /// Why it cannot run on this machine ("needs a graphics card"): then never enabled, state "off".
+    pub reason: Option<&'static str>,
 }
 
 impl RerankStatus {
-    fn of(present: bool, setting: bool, state: &'static str) -> RerankStatus {
-        let enabled = present && setting;
+    fn of(
+        present: bool,
+        setting: bool,
+        state: &'static str,
+        reason: Option<&'static str>,
+    ) -> RerankStatus {
+        let enabled = present && setting && reason.is_none();
         RerankStatus {
             present,
             enabled,
             state: if enabled { state } else { "off" },
+            reason,
         }
     }
 }
@@ -2319,12 +2322,63 @@ mod tests {
     }
 
     #[test]
+    fn rerank_needing_a_gpu_is_off_with_a_reason_and_leaves_the_order_alone() {
+        struct NoGpu;
+        impl Reranker for NoGpu {
+            fn present(&self) -> bool {
+                true
+            }
+            fn rerank(&mut self, _: &str, _: &[String]) -> Result<Vec<f32>, reranker::RerankError> {
+                Err(reranker::RerankError::Unsupported)
+            }
+            fn tick_idle(&mut self) {}
+            fn unload(&mut self) {}
+            fn state(&self) -> &'static str {
+                "off"
+            }
+            fn reason(&self) -> Option<&'static str> {
+                Some(reranker::NEEDS_GPU)
+            }
+        }
+        let (t, _) = rerank_tier(5, 3);
+        t.set_reranker(Box::new(NoGpu));
+        let s = t.rerank_status();
+        assert_eq!(
+            (s.present, s.enabled, s.state, s.reason),
+            (true, false, "off", Some("needs a graphics card"))
+        );
+        assert!(!t.semantic_search("cat", 5).unwrap().reranked);
+    }
+
+    #[test]
+    fn rerank_takes_the_top_documents_only() {
+        let t = tier(Box::new(Q), &[r"C:\Docs"]);
+        for i in 0..(RERANK_TOP_DOCS as u64 + 5) {
+            add_text_doc(
+                &t,
+                i + 1,
+                &format!(r"C:\Docs\cat{i}.txt"),
+                1,
+                &format!("body {i}"),
+            );
+        }
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        t.set_reranker(Box::new(FakeRerank {
+            calls: calls.clone(),
+            fail: false,
+        }));
+        t.semantic_page("cat", 0, SEM_K_SHALLOW + 1).unwrap();
+        assert_eq!(calls.lock().unwrap()[0].1.len(), RERANK_TOP_DOCS);
+    }
+
+    #[test]
     fn rerank_status_follows_presence_and_the_switch() {
         let t = tier(Box::new(Q), &[]);
         let off = RerankStatus {
             present: false,
             enabled: false,
             state: "off",
+            reason: None,
         };
         assert_eq!(t.rerank_status(), off, "NoReranker: not installed");
         let (t, _) = rerank_tier(1, 0);

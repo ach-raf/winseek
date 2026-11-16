@@ -149,6 +149,7 @@ const RERANK_ITEMS: MockItem[] = [
 const missingParam = new Set((params.get("missing") ?? "").split(",").filter(Boolean));
 const parserInstalled = params.get("parser") !== "0" && !missingParam.has("parser");
 const rerankerInstalled = params.get("reranker") !== "0" && !missingParam.has("reranker");
+const rerankNoGpu = params.get("reranker") === "cpu"; // installed, but the machine has no graphics card
 let rerankOn = params.get("reranker") === "on";
 let rerankWarmAt = 0; // when it was switched on (it "warms up" for a couple of seconds)
 let lastParseAt: number | null = null; // when the parser server was last used (it unloads after IDLE_UNLOAD_S)
@@ -188,7 +189,7 @@ modelsInstalled = coreHave();
 const groupHave = (g: ModelGroup) => [...MOCK_ITEMS, ...PARSER_ITEMS, ...RERANK_ITEMS].filter((i) => i.group === g).every(itemHave);
 const parserHave = () => groupHave("parser");
 const rerankerHave = () => groupHave("reranker");
-const rerankState = (): RerankState => (!rerankerHave() || !rerankOn ? "off" : performance.now() - rerankWarmAt < 2500 ? "warming" : "ready");
+const rerankState = (): RerankState => (!rerankerHave() || !rerankOn || rerankNoGpu ? "off" : performance.now() - rerankWarmAt < 2500 ? "warming" : "ready");
 // ?pdfium=0 shows the "PDF reader is being downloaded" state; otherwise the engine is there (first run included).
 const pdfiumHave = () => groupHave("pdfium") || (!modelsInstalled && params.get("pdfium") !== "0" && !missingParam.has("pdfium"));
 
@@ -352,8 +353,9 @@ function mockStatusPage(): StatusPage {
       reranker: {
         model_id: "qwen3-reranker-0.6b",
         present: rerankerHave(),
-        enabled: rerankOn,
+        enabled: rerankOn && !rerankNoGpu,
         state: rerankState(),
+        ...(rerankNoGpu ? { reason: "needs a graphics card" } : {}),
         files: [
           { name: "Qwen3-Reranker-0.6B.Q8_0.gguf", role: "model", expected_bytes: 495000000, bytes: rerankerHave() ? 495000000 : null },
         ],
@@ -1086,7 +1088,7 @@ export const mockBackend: Backend = {
     await sleep(60);
     if (!rerankerHave()) throw new Error("The result refiner is not installed.");
     if (enabled && !rerankOn) rerankWarmAt = performance.now();
-    rerankOn = enabled;
+    rerankOn = enabled && !rerankNoGpu;
     return { present: true, enabled: rerankOn, state: rerankState() };
   },
   async ffmpegRetry() {},

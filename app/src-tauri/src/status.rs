@@ -350,6 +350,9 @@ pub struct RerankerDto {
     pub enabled: bool,
     /// "off" | "warming" | "ready" | "error"
     pub state: &'static str,
+    /// Why it cannot run here ("needs a graphics card"); absent when it can.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<&'static str>,
     pub files: Vec<ModelFileDto>,
 }
 
@@ -598,6 +601,7 @@ fn models_section(
             present: reranker.present,
             enabled: reranker.enabled,
             state: reranker.state,
+            reason: reranker.reason,
             files: root
                 .map(|r| {
                     files_of(
@@ -702,6 +706,7 @@ pub async fn status_page(app: AppHandle) -> Result<StatusPageDto, String> {
                 present: false,
                 enabled: false,
                 state: "off",
+                reason: None,
             });
         let det = app.state::<Models>().detected();
         let root = tier1::data_root();
@@ -876,6 +881,7 @@ mod tests {
                 present: false,
                 enabled: false,
                 state: "off",
+                reason: None,
             },
         );
         assert!(!m.llama_present && m.files.is_empty());
@@ -1016,6 +1022,7 @@ mod tests {
                     present: true,
                     enabled: false,
                     state: "off",
+                    reason: Some("needs a graphics card"),
                 },
             ),
         };
@@ -1044,6 +1051,7 @@ mod tests {
         assert_eq!(v["models"]["reranker"]["present"], true);
         assert_eq!(v["models"]["reranker"]["enabled"], false);
         assert_eq!(v["models"]["reranker"]["state"], "off");
+        assert_eq!(v["models"]["reranker"]["reason"], "needs a graphics card");
         assert!(v["models"]["reranker"]["files"]
             .as_array()
             .unwrap()

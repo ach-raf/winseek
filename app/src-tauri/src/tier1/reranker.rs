@@ -1,11 +1,16 @@
 //! The optional reranker behind semantic search (Qwen3-Reranker-0.6B): a trait, plus the real
-//! implementation that runs one CPU-only `llama-server` (`Role::Rerank`) on demand.
+//! implementation that runs one GPU `llama-server` (`Role::Rerank`) on demand.
 //!
 //! Nothing here may ever make a search worse: every failure (files missing, spawn failed, timeout,
 //! bad reply) is an `Err` and the caller keeps the ranking it already has. The server is spawned
 //! lazily; the query that finds none running does not wait for it (it starts loading on a
 //! background thread and that query gets `Warming`), later queries are reranked. It is unloaded
-//! after [`IDLE_UNLOAD`] without use. It needs no GPU, so it takes no part in `GpuPhase`.
+//! after [`IDLE_UNLOAD`] without use.
+//!
+//! GPU only: on CPU a few documents already take longer than [`BUDGET`], so on a CPU backend or in
+//! the Low profile the reranker is unsupported ([`NEEDS_GPU`]): never spawned, shown as "off". The
+//! model is ~0.5 GB, so it is not part of the `GpuPhase` exclusion, but it stays out of the way of
+//! bulk work: while the index or parser server is resident (outside Fast) a query is not reranked.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -21,11 +26,14 @@ use winseek_llama::{
 };
 
 use super::embedder::models_dir;
+use super::gpu_phase::GpuPhase;
 
 pub const MODEL_ID: &str = "qwen3-reranker-0.6b";
 pub const IDLE_UNLOAD: Duration = Duration::from_secs(120);
 /// Hard budget of one rerank call (the HTTP request); a slower answer is dropped.
 pub const BUDGET: Duration = Duration::from_millis(1500);
+/// Status `reason` when the reranker cannot run here (CPU backend or Low profile).
+pub const NEEDS_GPU: &str = "needs a graphics card";
 /// A 0.6B Q6_K model loads in a second or two; a cold disk may take longer.
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(60);
 /// After a failed start, wait this long before trying to spawn again.
@@ -37,6 +45,10 @@ pub enum RerankError {
     Missing,
     /// No server is running yet: it is being started in the background, this query is not refined.
     Warming,
+    /// CPU backend or Low profile: reranking never runs.
+    Unsupported,
+    /// A bulk GPU job (index / parser server) is resident: this query is not reranked.
+    GpuBusy,
     /// Spawn failed, timeout, HTTP or reply problem.
     Other(String),
 }
@@ -46,6 +58,8 @@ impl fmt::Display for RerankError {
         match self {
             RerankError::Missing => write!(f, "reranker not installed"),
             RerankError::Warming => write!(f, "reranker is starting"),
+            RerankError::Unsupported => write!(f, "{NEEDS_GPU}"),
+            RerankError::GpuBusy => write!(f, "gpu is busy"),
             RerankError::Other(m) => write!(f, "{m}"),
         }
     }
@@ -68,6 +82,17 @@ pub trait Reranker {
     fn state(&self) -> &'static str {
         "off"
     }
+    /// Why it cannot run on this machine (status `reason`); `None` when it can.
+    fn reason(&self) -> Option<&'static str> {
+        None
+    }
+    /// The performance profile changed: drop the server, use the new profile from now on.
+    fn set_profile(&mut self, _p: Profile) {}
+}
+
+/// Reranking runs on a GPU backend outside the Low profile only.
+pub fn gpu_supported(backend: Backend, profile: Profile) -> bool {
+    backend != Backend::Cpu && !profile.low_vram()
 }
 
 /// Model file of the reranker entry under `models_dir`.
@@ -105,12 +130,33 @@ pub struct LlamaReranker {
     manifest: Manifest,
     shared: Arc<Shared>,
     reaper: IdleReaper,
+    backend: Backend,
+    profile: Profile,
+    gpu: Arc<Mutex<GpuPhase>>,
 }
 
 impl LlamaReranker {
-    /// `root` is `%LOCALAPPDATA%\winseek`.
-    pub fn new(root: PathBuf, manifest: Manifest) -> Self {
+    /// `root` is `%LOCALAPPDATA%\winseek`; `gpu` is the embedder's phase tracker.
+    pub fn new(
+        root: PathBuf,
+        manifest: Manifest,
+        profile: Profile,
+        gpu: Arc<Mutex<GpuPhase>>,
+    ) -> Self {
+        Self::with_backend(root, manifest, detect_backend().backend, profile, gpu)
+    }
+
+    pub fn with_backend(
+        root: PathBuf,
+        manifest: Manifest,
+        backend: Backend,
+        profile: Profile,
+        gpu: Arc<Mutex<GpuPhase>>,
+    ) -> Self {
         LlamaReranker {
+            backend,
+            profile,
+            gpu,
             root,
             manifest,
             shared: Arc::new(Shared::default()),
@@ -141,12 +187,13 @@ impl LlamaReranker {
         let shared = self.shared.clone();
         let epoch = shared.epoch.load(Ordering::SeqCst);
         let (root, manifest) = (self.root.clone(), self.manifest.clone());
+        let (backend, profile) = (self.backend, self.profile);
         let started = std::thread::Builder::new()
             .name("rerank-warm".into())
             .spawn({
                 let shared = shared.clone();
                 move || {
-                    let r = spawn_server(&root, &manifest);
+                    let r = spawn_server(&root, &manifest, backend, profile);
                     match r {
                         Ok(run) => {
                             *lock(&shared.failed) = None;
@@ -168,17 +215,25 @@ impl LlamaReranker {
     }
 }
 
-fn spawn_server(root: &Path, manifest: &Manifest) -> Result<Running, String> {
+fn spawn_server(
+    root: &Path,
+    manifest: &Manifest,
+    start: Backend,
+    profile: Profile,
+) -> Result<Running, String> {
     let model = model_path(manifest, &models_dir(root)).ok_or("reranker not in manifest")?;
-    let start = detect_backend().backend;
-    // `Role::Rerank` is CPU-only whatever build runs it; the chain only finds an exe that starts.
+    // GPU builds only: a CPU server would be too slow for the budget.
+    let order: Vec<Backend> = fallback_order(start)
+        .into_iter()
+        .filter(|b| *b != Backend::Cpu)
+        .collect();
     let cfg = SpawnConfig {
         role: Role::Rerank,
-        profile: Profile::Balanced,
+        profile,
         health_timeout: HEALTH_TIMEOUT,
         ..Default::default()
     };
-    let (_, server) = fallback_chain(&fallback_order(start), |b| {
+    let (_, server) = fallback_chain(&order, |b| {
         let exe = resolve_exe(root, manifest, b).ok_or_else(|| {
             winseek_llama::Error::NotFound(format!("llama-server for {}", b.dir_name()))
         })?;
@@ -200,6 +255,12 @@ impl Reranker for LlamaReranker {
     fn rerank(&mut self, query: &str, docs: &[String]) -> Result<Vec<f32>, RerankError> {
         if !self.present() {
             return Err(RerankError::Missing);
+        }
+        if self.reason().is_some() {
+            return Err(RerankError::Unsupported);
+        }
+        if lock(&self.gpu).busy() {
+            return Err(RerankError::GpuBusy);
         }
         self.reaper.touch();
         {
@@ -235,14 +296,27 @@ impl Reranker for LlamaReranker {
     }
 
     fn warm(&mut self) {
-        if self.present() && lock(&self.shared.slot).is_none() {
+        if self.present()
+            && self.reason().is_none()
+            && !lock(&self.gpu).busy()
+            && lock(&self.shared.slot).is_none()
+        {
             self.reaper.touch();
             self.start_warmup();
         }
     }
 
+    fn reason(&self) -> Option<&'static str> {
+        (!gpu_supported(self.backend, self.profile)).then_some(NEEDS_GPU)
+    }
+
+    fn set_profile(&mut self, p: Profile) {
+        self.unload();
+        self.profile = p;
+    }
+
     fn state(&self) -> &'static str {
-        if !self.file_present() {
+        if !self.file_present() || self.reason().is_some() {
             "off"
         } else if self.shared.warming.load(Ordering::SeqCst) {
             "warming"
@@ -272,10 +346,35 @@ impl Reranker for NoReranker {
 mod tests {
     use super::*;
 
+    fn test_reranker(root: &Path, b: Backend, p: Profile) -> LlamaReranker {
+        let gpu = Arc::new(Mutex::new(GpuPhase::new(p)));
+        LlamaReranker::with_backend(root.to_path_buf(), Manifest::embedded(), b, p, gpu)
+    }
+
+    #[test]
+    fn gpu_is_required_for_reranking() {
+        assert!(gpu_supported(Backend::Cuda12, Profile::Balanced));
+        assert!(gpu_supported(Backend::Vulkan, Profile::Fast));
+        assert!(!gpu_supported(Backend::Cpu, Profile::Fast));
+        assert!(!gpu_supported(Backend::Cuda12, Profile::Low));
+        let d = tempfile::tempdir().unwrap();
+        let mut r = test_reranker(d.path(), Backend::Cpu, Profile::Balanced);
+        assert_eq!(r.reason(), Some(NEEDS_GPU));
+        assert_eq!(r.state(), "off");
+        r.warm(); // never spawns
+        assert!(!r.shared.warming.load(Ordering::SeqCst));
+        let mut g = test_reranker(d.path(), Backend::Cuda12, Profile::Balanced);
+        assert_eq!(g.reason(), None);
+        g.set_profile(Profile::Low);
+        assert_eq!(g.reason(), Some(NEEDS_GPU));
+        g.set_profile(Profile::Fast);
+        assert_eq!(g.reason(), None);
+    }
+
     #[test]
     fn missing_files_mean_missing_and_off() {
         let d = tempfile::tempdir().unwrap();
-        let mut r = LlamaReranker::new(d.path().to_path_buf(), Manifest::embedded());
+        let mut r = test_reranker(d.path(), Backend::Cuda12, Profile::Balanced);
         assert!(!r.present());
         assert_eq!(r.state(), "off");
         assert_eq!(r.rerank("q", &["a".into()]), Err(RerankError::Missing));

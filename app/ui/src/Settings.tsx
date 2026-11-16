@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, RerankState, StatusModels, StatusReranker, Tier1Status, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, StatusReranker, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
-import { rowAction, type RowAction } from "./modelRows";
+import { refinerView, rowAction, type RowAction } from "./modelRows";
 import { argsPreview, snippets } from "./agentLogic";
 import { Bar, IndexRow, Models as ModelsPane, Names, StatusMeaning, useStatusPage } from "./Status";
 import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
@@ -306,26 +306,18 @@ function ModelLine({ name, detail, act, optional, label, onGet, onCancel, extra,
   );
 }
 
-const REFINER_CHIP: Record<RerankState, { text: string; cls: string }> = {
-  off: { text: "Off", cls: "" },
-  warming: { text: "Warming up", cls: " warm" },
-  ready: { text: "On", cls: " on" },
-  error: { text: "Unavailable", cls: " bad" },
-};
-
 /** The result refiner's switch and status chip (shown once its model is installed). */
 function RefinerControl({ backend, r, onChanged }: { backend: Backend; r: StatusReranker; onChanged: () => void }) {
   const [pending, setPending] = useState<boolean | null>(null);
-  const on = pending ?? r.enabled;
+  const v = refinerView(r, pending);
   const change = (v: boolean) => {
     setPending(v);
     backend.rerankSetEnabled(v).catch(() => {}).finally(() => { setPending(null); onChanged(); });
   };
-  const chip = REFINER_CHIP[on ? (r.enabled ? r.state : "warming") : "off"];
   return (
     <>
-      <span className={"rr-chip" + chip.cls} role="status">{chip.text}</span>
-      <Switch checked={on} onChange={change} label="Refine search results" />
+      <span className={"rr-chip" + v.cls} role="status">{v.text}</span>
+      <Switch checked={v.on} disabled={v.disabled} onChange={change} label="Refine search results" />
     </>
   );
 }
@@ -451,8 +443,9 @@ function Meaning({ backend, t1, models, onPause, onSetup }: {
                        act={act("reranker", m.reranker.present)} label="Install" onGet={get("reranker")} onCancel={models.cancel}
                        extra={m.reranker.present ? <RefinerControl backend={backend} r={m.reranker} onChanged={reload} /> : undefined}>
               {m.reranker.present
-                ? "Re-checks the top results for a closer match. Runs on the processor, no graphics memory."
-                : "Optional. Search already works without it — this re-checks the top results for a closer match. Runs on the processor, no graphics memory."}
+                ? "Re-checks the top results for a closer match. Runs on the graphics card, about 0.5 GB."
+                : "Optional. Search already works without it — this re-checks the top results for a closer match. Runs on the graphics card, about 0.5 GB."}
+              {m.reranker.reason && <small className="rr-reason">{m.reranker.reason.charAt(0).toUpperCase() + m.reranker.reason.slice(1)}</small>}
             </ModelLine>
           </div>
         </section>

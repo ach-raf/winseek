@@ -5,7 +5,7 @@
 //! `/v1/embeddings` on this server.
 
 use std::io::Read;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
@@ -67,11 +67,29 @@ impl RerankClient {
         }
     }
 
-    /// Relevance scores (0..1, input order). `timeout` bounds the whole request.
+    /// Relevance scores (0..1, input order). `timeout` bounds the whole call. A 400 (llama-server's
+    /// "request exceeds the available context size", typical for dense non-English text) is retried
+    /// once with every document cut to half its length, inside the same budget; any other failure,
+    /// or a second 400, is an error.
     pub fn rerank(&self, query: &str, docs: &[String], timeout: Duration) -> Result<Vec<f32>> {
         if docs.is_empty() {
             return Ok(Vec::new());
         }
+        let started = Instant::now();
+        match self.request(query, docs, timeout) {
+            Err(Error::Http(m)) if m == STATUS_400 => {
+                let left = timeout.saturating_sub(started.elapsed());
+                if left.is_zero() {
+                    return Err(Error::Http(m));
+                }
+                let halved: Vec<String> = docs.iter().map(|d| halve(d)).collect();
+                self.request(query, &halved, left)
+            }
+            r => r,
+        }
+    }
+
+    fn request(&self, query: &str, docs: &[String], timeout: Duration) -> Result<Vec<f32>> {
         let agent = ureq::AgentBuilder::new()
             .timeout_connect(Duration::from_secs(2).min(timeout))
             .timeout(timeout)
@@ -91,6 +109,13 @@ impl RerankClient {
             serde_json::from_str(&text).map_err(|e| rerank_err(format!("bad json: {e}")))?;
         parse_scores(&v, docs.len())
     }
+}
+
+const STATUS_400: &str = "status code 400";
+
+/// The first half of `s` (by characters, rounded up so a non-empty text stays non-empty).
+fn halve(s: &str) -> String {
+    s.chars().take(s.chars().count().div_ceil(2)).collect()
 }
 
 #[cfg(test)]
@@ -179,6 +204,99 @@ mod tests {
         assert_eq!(seen[0].1, "Bearer SECRET");
         let b: Value = serde_json::from_str(&seen[0].2).unwrap();
         assert_eq!(b, rerank_body("q", &docs));
+    }
+
+    /// Serves each `(status, body)` in turn on its own connection; records every request body.
+    fn mock_seq(replies: Vec<(&'static str, String)>) -> (String, Seen) {
+        let l = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", l.local_addr().unwrap());
+        let seen: Seen = Arc::new(Mutex::new(Vec::new()));
+        let seen2 = seen.clone();
+        std::thread::spawn(move || {
+            for (status, resp) in replies {
+                let Ok((mut s, _)) = l.accept() else { return };
+                let mut r = BufReader::new(s.try_clone().unwrap());
+                let mut reqline = String::new();
+                r.read_line(&mut reqline).unwrap();
+                let mut len = 0usize;
+                loop {
+                    let mut line = String::new();
+                    r.read_line(&mut line).unwrap();
+                    if line == "\r\n" || line.is_empty() {
+                        break;
+                    }
+                    if let Some(v) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                        len = v.trim().parse().unwrap();
+                    }
+                }
+                let mut body = vec![0u8; len];
+                r.read_exact(&mut body).unwrap();
+                seen2.lock().unwrap().push((
+                    reqline.trim().to_string(),
+                    String::new(),
+                    String::from_utf8(body).unwrap(),
+                ));
+                let _ = write!(
+                    s,
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{resp}",
+                    resp.len()
+                );
+            }
+        });
+        (url, seen)
+    }
+
+    const OVERSIZE: &str = r#"{"error":{"code":400,"message":"request (1175 tokens) exceeds the available context size"}}"#;
+
+    #[test]
+    fn halve_cuts_by_characters() {
+        assert_eq!(halve("abcd"), "ab");
+        assert_eq!(halve("abc"), "ab");
+        assert_eq!(halve("x"), "x");
+        assert_eq!(halve("日本語テキスト"), "日本語テ");
+        assert_eq!(halve(""), "");
+    }
+
+    #[test]
+    fn a_400_is_retried_once_with_documents_halved() {
+        let ok =
+            r#"{"results":[{"index":0,"relevance_score":0.3},{"index":1,"relevance_score":0.7}]}"#;
+        let (url, seen) = mock_seq(vec![
+            ("400 Bad Request", OVERSIZE.into()),
+            ("200 OK", ok.into()),
+        ]);
+        let c = RerankClient::new(&url, "k");
+        let docs = vec!["abcdefgh".to_string(), "ijkl".to_string()];
+        let s = c.rerank("q", &docs, Duration::from_secs(5)).unwrap();
+        assert_eq!(s, vec![0.3, 0.7]);
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        let first: Value = serde_json::from_str(&seen[0].2).unwrap();
+        let second: Value = serde_json::from_str(&seen[1].2).unwrap();
+        assert_eq!(first, rerank_body("q", &docs));
+        assert_eq!(second["documents"], json!(["abcd", "ij"]));
+        assert_eq!(second["query"], "q");
+    }
+
+    #[test]
+    fn a_second_400_is_an_error_and_other_statuses_are_not_retried() {
+        let (url, seen) = mock_seq(vec![
+            ("400 Bad Request", OVERSIZE.into()),
+            ("400 Bad Request", OVERSIZE.into()),
+        ]);
+        let c = RerankClient::new(&url, "k");
+        let e = c
+            .rerank("q", &["abcd".into()], Duration::from_secs(5))
+            .unwrap_err();
+        assert!(e.to_string().contains("400"), "{e}");
+        assert_eq!(seen.lock().unwrap().len(), 2, "exactly one retry");
+
+        let (url, seen) = mock_seq(vec![("500 Internal Server Error", "{}".into())]);
+        let c = RerankClient::new(&url, "k");
+        assert!(c
+            .rerank("q", &["abcd".into()], Duration::from_secs(5))
+            .is_err());
+        assert_eq!(seen.lock().unwrap().len(), 1);
     }
 
     #[test]

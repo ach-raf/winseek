@@ -65,6 +65,12 @@ impl GpuPhase {
         self.set(g, false);
     }
 
+    /// A bulk GPU model (index or parser server) is resident outside the Fast profile: the small
+    /// reranker stays out of its way and the query is simply not reranked.
+    pub fn busy(&self) -> bool {
+        self.profile != Profile::Fast && (self.index || self.parser)
+    }
+
     pub fn is_loaded(&self, g: Gpu) -> bool {
         self.loaded(g)
     }
@@ -73,6 +79,19 @@ impl GpuPhase {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn busy_while_a_bulk_model_is_resident_unless_fast() {
+        let mut g = GpuPhase::new(Profile::Balanced);
+        assert!(!g.busy());
+        g.begin(Gpu::Index);
+        assert!(g.busy());
+        g.end(Gpu::Index);
+        assert!(!g.busy());
+        let mut f = GpuPhase::new(Profile::Fast);
+        f.begin(Gpu::Parser);
+        assert!(!f.busy());
+    }
 
     #[test]
     fn balanced_phases_index_and_parser() {

@@ -20,8 +20,8 @@ pub enum Role {
     EmbedIndex,
     /// Chat / vision parsing (Infinity-Parser2).
     Parser,
-    /// Qwen3-Reranker-0.6B (`/v1/rerank`): CPU, ~0 VRAM, one slot. The ubatch holds a whole
-    /// query + document pair, otherwise llama-server rejects the request.
+    /// Qwen3-Reranker-0.6B (`/v1/rerank`): GPU (~0.5 GB) except in `Low`, one slot. The ubatch holds
+    /// a whole query + document pair, otherwise llama-server rejects the request.
     Rerank,
 }
 
@@ -60,6 +60,9 @@ impl Profile {
         }
     }
 }
+
+/// Context / batch / ubatch of the reranker server (one query + one clipped document).
+const RERANK_CTX: &str = "2048";
 
 /// Context kept per parser slot: a 1024 px page is a few thousand tokens in and out.
 pub const PARSER_CTX_PER_SLOT: u32 = 8192;
@@ -128,30 +131,38 @@ pub fn role_args(role: Role, profile: Profile) -> Vec<String> {
             "-tb",
             "4",
         ],
-        Role::Rerank => &[
-            "--reranking",
-            "--embedding",
-            "--pooling",
-            "rank",
-            "--cache-ram",
-            "0",
-            "-np",
-            "1",
-            "-c",
-            "1024",
-            "-b",
-            "1024",
-            "-ub",
-            "1024",
-            "-ngl",
-            "0",
-            "--device",
-            "none",
-            "-t",
-            "4",
-            "-tb",
-            "4",
-        ],
+        // GPU (the model is ~0.5 GB) unless Low; the app does not run it on a CPU backend at all
+        // (too slow for the call budget), but a CPU-only build ignores `-ngl` anyway. The context
+        // holds one query + one document pair: 1000 chars of dense non-English text is ~700 tokens
+        // and an unclipped 1800-char chunk was 1175 tokens, so 1024 overflowed.
+        Role::Rerank => {
+            let mut p: Vec<String> = [
+                "--reranking",
+                "--embedding",
+                "--pooling",
+                "rank",
+                "--cache-ram",
+                "0",
+                "-np",
+                "1",
+                "-c",
+                RERANK_CTX,
+                "-b",
+                RERANK_CTX,
+                "-ub",
+                RERANK_CTX,
+            ]
+            .map(String::from)
+            .into();
+            if low {
+                p.extend(
+                    ["-ngl", "0", "--device", "none", "-t", "4", "-tb", "4"].map(String::from),
+                );
+            } else {
+                p.extend(["-ngl", "99"].map(String::from));
+            }
+            return p;
+        }
         Role::EmbedIndex => &[
             "--embeddings",
             "--pooling",
@@ -645,7 +656,7 @@ mod tests {
     }
 
     #[test]
-    fn rerank_role_is_cpu_only_single_slot_with_rank_pooling() {
+    fn rerank_role_is_single_slot_with_rank_pooling_and_a_2048_context() {
         for p in ALL {
             let a = args(Role::Rerank, p, false);
             let has = |w: &[&str]| a.windows(w.len()).any(|x| x == w);
@@ -653,10 +664,24 @@ mod tests {
                 has(&["--reranking", "--embedding", "--pooling", "rank"]),
                 "{a:?}"
             );
-            assert!(has(&["-ngl", "0", "--device", "none"]), "{a:?}");
-            assert!(has(&["-np", "1"]) && has(&["-ub", "1024"]) && has(&["-c", "1024"]));
+            assert!(has(&["-np", "1"]) && has(&["-ub", "2048"]) && has(&["-b", "2048"]));
+            assert!(has(&["-c", "2048"]));
             assert!(has(&["--cache-ram", "0"]));
         }
+    }
+
+    #[test]
+    fn rerank_role_offloads_to_the_gpu_except_in_low() {
+        for p in [Profile::Balanced, Profile::Fast] {
+            let a = args(Role::Rerank, p, false);
+            assert!(a.windows(2).any(|x| x == ["-ngl", "99"]), "{a:?}");
+            assert!(!a.iter().any(|x| x == "--device"), "{a:?}");
+        }
+        let a = args(Role::Rerank, Profile::Low, false);
+        assert!(
+            a.windows(4).any(|x| x == ["-ngl", "0", "--device", "none"]),
+            "{a:?}"
+        );
     }
 
     #[test]
