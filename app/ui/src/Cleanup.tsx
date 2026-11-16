@@ -345,7 +345,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
           <span>{live.n} selected</span>
           <button className="btn sm ghost" disabled={allOn} onClick={() => setPicked(new Set(allKeys))}>Select all</button>
           <button className="btn sm ghost" onClick={() => setPicked(new Set())}>Clear</button>
-          <button className="btn" disabled={busy} onClick={() => void go()}>Move {formatSize(live.freed)} to Recycle Bin</button>
+          <button className="btn danger" disabled={busy} onClick={() => void go()}>Move {formatSize(live.freed)} to Recycle Bin</button>
         </div>
       )}
     </div>
@@ -658,7 +658,7 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
         <span>Suggested keep: largest resolution, then newest, then shortest path.</span>
         <KeyHints items={[["← →", "Move"], ["Space", "Keep / recycle"], ["↵", "Open"], ["Del", "Recycle"]]} />
         <span className="sp" />
-        <button className="btn pri" disabled={busy || doomed.length === 0} onClick={() => void go()}>
+        <button className="btn danger" disabled={busy || doomed.length === 0} onClick={() => void go()}>
           Move {doomed.length} to Recycle Bin{doomed.length ? ` · frees ${formatSize(freed)}` : ""}
         </button>
       </footer>
@@ -775,7 +775,7 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
                   <span className="bg-size">{formatSize(f.size)}</span>
                   <span className="bg-date">{formatDate(f.mtime)}</span>
                   <button className="btn sm" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.reveal(f.path); }}>Reveal</button>
-                  <button className="btn sm" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.recycle([f.path]); }}>Recycle</button>
+                  <button className="btn sm su-del" tabIndex={-1} onClick={(e) => { e.stopPropagation(); actions.recycle([f.path]); }}>Recycle</button>
                 </div>
               );
             })}

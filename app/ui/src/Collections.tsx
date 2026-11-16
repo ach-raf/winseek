@@ -327,8 +327,8 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
             <button className="btn" onClick={() => editCollection(sel)} title="Edit (F2)">Edit</button>
             {confirmDel ? (
               <>
-                <button className="btn pri" onClick={() => void del()}>Delete collection</button>
-                <button className="btn" onClick={() => setConfirmDel(false)}>Keep</button>
+                <button className="btn danger" onClick={() => void del()}>Delete collection</button>
+                <button className="btn secondary" onClick={() => setConfirmDel(false)}>Keep</button>
               </>
             ) : (
               <button className="btn" onClick={() => setConfirmDel(true)} title="Delete this collection (Del)">Delete</button>

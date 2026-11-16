@@ -15,6 +15,12 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib-main .btn:hover:not(:disabled) { background: color-mix(in oklab, var(--fg) 7%, var(--bg3)); }
 .lib-main .btn.pri { background: var(--acc); color: var(--acc-ink); }
 .lib-main .btn.pri:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #000); }
+/* semantic variants keep their meaning inside the library window, where the plain .lib-main .btn
+   rule would otherwise paint every button (confirm verb AND Cancel) the same grey */
+.lib-main .btn.danger { background: var(--danger); color: #fff; }
+.lib-main .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 82%, #000); }
+.lib-main .btn.secondary { color: var(--fg); font-weight: 500; background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
+.lib-main .btn.secondary:hover:not(:disabled) { background: var(--hover); }
 .lib-main .btn.sm { height: 30px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
 .lib-main .btn:disabled { opacity: .5; }
 
@@ -147,6 +153,8 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .selbar > span { margin-right: auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .lib-main .selbar .btn { background: var(--acc); color: var(--acc-ink); height: 34px; }
 .lib-main .selbar .btn:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #000); }
+.lib-main .selbar .btn.danger { background: var(--danger); color: #fff; }
+.lib-main .selbar .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 82%, #000); }
 .selbar .btn.ghost, .lib-main .selbar .btn.ghost { background: none; color: inherit; height: 26px; font-size: 12.5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
 .selbar .btn.ghost:hover:not(:disabled), .lib-main .selbar .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,.14); }
 .cl-sub { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) var(--gut) var(--sp-3); flex: none; }
@@ -198,7 +206,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .gd-act input { accent-color: var(--acc); margin: 0; }
 .gd-link { color: var(--acc); text-decoration: underline; text-underline-offset: 2px; font-size: 12px; }
 .gd-bar { display: flex; align-items: center; gap: var(--sp-3); padding: 10px var(--sp-4); flex: none; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg3); }
-.lib-main .gd-bar .btn.pri { height: 42px; padding: 0 18px; font-size: 14px; }
+.lib-main .gd-bar .btn.danger { height: 42px; padding: 0 18px; font-size: 14px; }
 
 /* drill-in: large files */
 .bg { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }

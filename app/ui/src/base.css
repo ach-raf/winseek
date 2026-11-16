@@ -149,6 +149,13 @@ html.web .shell { box-shadow: var(--shadow); }
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--accent-fg)); }
 .btn.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, var(--accent-fg)); }
 .btn.primary:disabled { opacity: 0.75; }
+/* destructive: the only red-filled button; reserved for the verb of a confirm gate and the like.
+   Affirmative stays .primary (accent), Cancel stays neutral (.secondary / .quiet). */
+.btn.danger { background: var(--danger); color: #fff; }
+.btn.danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 88%, #000); }
+.btn.danger:active:not(:disabled) { background: color-mix(in srgb, var(--danger) 78%, #000); }
+.btn.danger:focus-visible { outline-color: var(--danger); }
+.btn.danger:disabled { opacity: 0.75; }
 .btn.secondary { color: var(--fg); font-weight: 500; background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
 .btn.secondary:hover:not(:disabled) { background: var(--hover); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent); }
 .btn.secondary:active:not(:disabled) { background: color-mix(in srgb, var(--hover) 60%, var(--fg) 8%); }

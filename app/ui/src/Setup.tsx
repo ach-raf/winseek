@@ -257,7 +257,7 @@ export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause,
             {phase === "interrupted" ? "Resume download" : "Download"}
           </button>
         )}
-        {phase === "downloading" && <button className="btn primary" onClick={models.cancel}>Cancel</button>}
+        {phase === "downloading" && <button className="btn secondary" onClick={models.cancel}>Cancel</button>}
         {phase === "indexing" && <button className="btn primary" onClick={onClose}>Done</button>}
         {phase !== "indexing" && <button className="btn quiet" onClick={onClose}>{phase === "downloading" ? "Hide" : "Not now"}</button>}
       </div>

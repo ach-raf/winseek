@@ -9,7 +9,8 @@ import type { ConfirmAsk } from "./confirmLogic";
  *  The app's global Esc chains own the Esc key and preventDefault the native cancel away, so an
  *  owner must yield while `open` (Library does; panels check for a `dialog` ancestor and return).
  *  For small Settings rows where a modal outweighs the action, `ConfirmButton` is the two-step
- *  button form of the same idea. */
+ *  button form of the same idea. Every ask here is destructive, so the verb is the one red-filled
+ *  button in the app; Cancel is the neutral secondary. */
 export function useConfirm() {
   const [ask, setAsk] = useState<ConfirmAsk | null>(null);
   const settle = useRef<((ok: boolean) => void) | null>(null);
@@ -54,8 +55,8 @@ function ConfirmDialog({ ask, onConfirm, onClose }: { ask: ConfirmAsk | null; on
           <div className="confirm-btns">
             {/* focus lands on Cancel (showModal starts at the first button): Enter answers no —
                 going through with it is a deliberate Tab+Enter or a click */}
-            <button className="btn" onClick={onClose}>Cancel</button>
-            <button className="btn primary" onClick={onConfirm}>{ask.verb}</button>
+            <button className="btn secondary" onClick={onClose}>Cancel</button>
+            <button className="btn danger" onClick={onConfirm}>{ask.verb}</button>
           </div>
         </>
       )}
