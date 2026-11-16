@@ -302,11 +302,11 @@ function mockStatusPage(): StatusPage {
       index: {
         stamp: { model_id: "embeddinggemma-2", llama_build: "b11588", quant: "Q8_0", image_budget: 280, dims: 768 },
         current: { model_id: "embeddinggemma-2", llama_build: "b11588", quant: "Q8_0", image_budget: 280, dims: 768 },
-        state: "current",
-        verdict: { kind: "current", cos: null },
+        state: "build_drift",
+        verdict: { kind: "moved", cos: 0.987 },
         app_version: "0.2.25",
         stamped_unix: Math.floor((Date.now() - 11 * 86400_000) / 1000),
-        needs_rebuild: false,
+        needs_rebuild: true,
       },
       failed_reasons: s && s.failed > 0
         ? [

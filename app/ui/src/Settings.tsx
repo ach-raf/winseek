@@ -901,6 +901,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
             <ISearch size={16} />
             <input ref={findRef} className="sf" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
                    onChange={(e) => { setFind(e.target.value); setActive(0); }}
+                   onBlur={() => { setFind(""); setActive(0); }}
                    onKeyDown={(e) => {
                      if (e.key === "ArrowDown") { e.preventDefault(); if (results.length) setActive((a) => Math.min(a + 1, results.length - 1)); else navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
                      else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
