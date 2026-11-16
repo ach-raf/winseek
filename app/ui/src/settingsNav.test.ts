@@ -8,11 +8,11 @@ test("parseSection falls back to general", () => {
   assert.equal(parseSection("meaning"), "meaning");
   assert.equal(parseSection("nope"), "general");
   assert.equal(parseSection(null), "general");
-  assert.equal(parseSection("performance"), "general"); // the old Performance section moved into General
+  assert.equal(parseSection("performance"), "meaning"); // the old Performance section lives in Search by meaning now
 });
 
 test("sections follow the known order: General first, Status last", () => {
-  assert.deepEqual(SECTION_IDS, ["general", "indexing", "meaning", "launcher", "agents", "status"]);
+  assert.deepEqual(SECTION_IDS, ["general", "appearance", "shortcuts", "indexing", "meaning", "launcher", "agents", "status"]);
 });
 
 test("empty query keeps everything", () => {
@@ -20,10 +20,12 @@ test("empty query keeps everything", () => {
 });
 
 test("keywords find the right section", () => {
-  assert.deepEqual(filterSections(items, "hotkey").map((s) => s.id), ["general"]);
-  assert.deepEqual(filterSections(items, "hotkeys").map((s) => s.id), ["general"]);
-  assert.deepEqual(filterSections(items, "gpu").map((s) => s.id), ["general"]);
+  assert.deepEqual(filterSections(items, "hotkey").map((s) => s.id), ["shortcuts"]);
+  assert.deepEqual(filterSections(items, "hotkeys").map((s) => s.id), ["shortcuts"]);
+  assert.deepEqual(filterSections(items, "gpu").map((s) => s.id), ["meaning"]);
   assert.deepEqual(filterSections(items, "full screen").map((s) => s.id), ["general"]);
+  assert.deepEqual(filterSections(items, "accent").map((s) => s.id), ["appearance"]);
+  assert.deepEqual(filterSections(items, "rebuild").map((s) => s.id), ["meaning"]);
   assert.deepEqual(filterSections(items, "zzz"), []);
 });
 
