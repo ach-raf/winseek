@@ -196,6 +196,8 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .gbtn:disabled { opacity: .5; }
 .gbtn.pri { background: var(--acc); color: var(--acc-ink); }
 .gbtn.pri:hover:not(:disabled) { background: color-mix(in srgb, var(--acc) 88%, #000); }
+.gbtn.danger { color: var(--danger); }
+.gbtn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 12%, var(--bg3)); }
 .gbtn:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 
 /* text inputs inside cards */
@@ -248,8 +250,19 @@ code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; backgro
 
 /* hotkey recorder */
 .hk-line { display: flex; align-items: center; gap: 8px; }
-.hk-cur { height: 26px; min-width: 26px; padding: 0 9px; font-size: 12.5px; font-weight: 600; border-radius: 7px; background: var(--bg3); color: var(--fg); }
-.hk-rec { display: inline-flex; align-items: center; min-width: 220px; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--bg); box-shadow: inset 0 0 0 2px var(--acc); font-size: 12.5px; color: var(--fg2); outline: none; }
+.hk-cur { height: 26px; min-width: 26px; padding: 0 9px; font-size: 12.5px; font-weight: 600; border-radius: 7px; background: var(--bg3); color: var(--fg); transition: box-shadow 300ms var(--ease); }
+/* the field pulses its accent ring while listening; once a combo is held the ring goes steady and
+   the hint flips to "Enter saves". Reduced motion gets the steady ring from the start. */
+.hk-rec { display: inline-flex; align-items: center; gap: 8px; min-width: 220px; height: 30px; padding: 0 10px; border-radius: 8px; background: var(--bg); box-shadow: inset 0 0 0 2px var(--acc); font-size: 12.5px; color: var(--fg2); outline: none; animation: hk-wait 1.6s ease-in-out infinite; }
+.hk-rec.has { animation: none; color: var(--fg); font-weight: 600; box-shadow: inset 0 0 0 2px var(--acc), 0 0 0 3px color-mix(in srgb, var(--acc) 22%, transparent); }
+.hk-esc { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--fg3); white-space: nowrap; }
+@keyframes hk-wait {
+  0%, 100% { box-shadow: inset 0 0 0 2px var(--acc); }
+  50% { box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--acc) 40%, transparent), 0 0 0 3px color-mix(in srgb, var(--acc) 14%, transparent); }
+}
+@media (prefers-reduced-motion: reduce) { .hk-rec { animation: none; } }
+/* the just-saved chip flashes green once (ShortcutsBlock holds .hk-flash for ~1.2 s) */
+.hk-cur.hk-flash { box-shadow: inset 0 0 0 2px var(--ok); }
 
 /* Off-screen setting groups skip layout and paint; `auto 220px` keeps the last known height so
    the scrollbar does not jump. Settings find filters by data, so hidden text is still matched. */
@@ -290,9 +303,9 @@ dialog.confirm::backdrop {
 .confirm-list .cmore { color: var(--fg3); }
 .confirm-note { font-size: 11.5px; color: var(--fg3); text-wrap: pretty; }
 .confirm-btns { display: flex; justify-content: flex-end; gap: 8px; padding: 10px var(--sp-4) var(--sp-4); }
-/* armed two-step button (ConfirmButton): reads as a warning until the second click */
-.gbtn.gbtn-arm { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 45%, var(--line)); }
-.gbtn.gbtn-arm:hover:not(:disabled) { border-color: var(--danger); }
+/* armed two-step button (ConfirmButton): red-tinted fill + red hairline ring until the second click */
+.gbtn.gbtn-arm { color: var(--danger); background: color-mix(in oklab, var(--danger) 14%, var(--bg3)); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--danger) 40%, transparent); }
+.gbtn.gbtn-arm:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 26%, var(--bg3)); box-shadow: inset 0 0 0 1px var(--danger); }
 .cheat-head { display: flex; align-items: baseline; gap: 10px; padding: var(--sp-3) var(--sp-4) 10px; border-bottom: 1px solid var(--line); }
 .cheat-head .muted { margin-right: auto; font-size: 12px; }
 .cheat-cols { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 4px var(--sp-5); padding: 10px var(--sp-4) var(--sp-4); overflow: auto; }

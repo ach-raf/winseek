@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
@@ -581,22 +581,28 @@ const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optiona
 
 /** Settings › General › Shortcuts: the three global hotkeys, each with a press-to-record field
  *  (PRD B9). Recording never swallows keys: every press is captured, Esc cancels, Backspace
- *  clears the optional ones, Save applies. */
+ *  clears the held combo (Backspace on an empty field marks an optional one for removal),
+ *  Enter saves a captured combo, Save applies. */
 function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [hk, setHk] = useState<Hotkeys | null>(null);
   const [rec, setRec] = useState<{ which: keyof Hotkeys; combo: string | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const [saved, setSaved] = useState<keyof Hotkeys | null>(null);
+  const flashT = useRef<number | undefined>(undefined);
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.hotkeysGet().then(setHk).catch(onError);
     backend.onHotkeysChanged((h) => setHk(h)).then((u) => (dead ? u() : (off = u)));
-    return () => { dead = true; off?.(); };
+    return () => { dead = true; off?.(); window.clearTimeout(flashT.current); };
   }, [backend, onError]);
   const save = async () => {
     if (!rec) return;
     try {
       setHk(await backend.hotkeysSet(rec.which, rec.combo));
       setErr(null);
+      setSaved(rec.which); // the bound chip flashes green so the apply is visible
+      window.clearTimeout(flashT.current);
+      flashT.current = window.setTimeout(() => setSaved(null), 1200);
       setRec(null);
     } catch (e) {
       setErr(errText(e));
@@ -613,29 +619,28 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
           <Row key={row.which} title={row.label} desc={row.blurb}>
             {recording ? (
               <span className="hk-line">
-                <span className="hk-rec" tabIndex={0} autoFocus role="textbox" aria-label="Press a shortcut"
-                      onBlur={() => setRec(null)}
-                      onKeyDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        if (e.key === "Escape") { setRec(null); return; }
-                        if (e.key === "Backspace") { if (row.optional) setRec({ which: row.which, combo: null }); return; }
-                        const c = eventToCombo(e);
-                        if (c) setRec({ which: row.which, combo: c });
-                      }}>
-                  {rec.combo ?? "Press a shortcut… (Esc cancels)"}
-                </span>
-                <button className="gbtn pri" onMouseDown={(e) => e.preventDefault()} onClick={() => void save()}>Save</button>
-                <button className="gbtn" onClick={() => setRec(null)}>Cancel</button>
+                <HkRec combo={rec.combo} onBlur={() => setRec(null)}
+                       onKeyDown={(e) => {
+                         e.preventDefault();
+                         e.stopPropagation();
+                         if (e.key === "Escape") { setRec(null); return; }
+                         if (e.key === "Enter") { if (rec.combo) void save(); return; }
+                         if (e.key === "Backspace") { setRec({ which: row.which, combo: null }); return; }
+                         const c = eventToCombo(e);
+                         if (c) setRec({ which: row.which, combo: c });
+                       }} />
+                {/* disabled until a combo is held: with nothing held, Save would unbind */}
+                <button className="gbtn pri" disabled={!rec.combo} onMouseDown={(e) => e.preventDefault()} onClick={() => void save()}>Save</button>
+                <button className="gbtn" onMouseDown={(e) => e.preventDefault()} onClick={() => setRec(null)}>Cancel</button>
               </span>
             ) : (
               <span className="hk-line">
-                {bound ? <kbd className="hk-cur">{bound}</kbd> : <span className="val">None</span>}
+                {bound ? <kbd className={"hk-cur" + (saved === row.which ? " hk-flash" : "")}>{bound}</kbd> : <span className="val">None</span>}
                 <button className="gbtn" onMouseDown={(e) => e.preventDefault()} onClick={() => { setErr(null); setRec({ which: row.which, combo: null }); }}>
                   {bound ? "Change" : "Set"}
                 </button>
                 {row.optional && bound && (
-                  <button className="gbtn" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
+                  <button className="gbtn danger" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
                 )}
               </span>
             )}
@@ -644,6 +649,22 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
       })}
       {err && <div className="grow"><span className="fr-error" role="alert">{err}</span></div>}
     </Grp>
+  );
+}
+
+/** The press-to-record field. Focused the moment it mounts — clicking Change lands here with no
+ *  second click (both autoFocus and the effect, so the WebView focus race cannot win) — and shows
+ *  its two states itself: pulsing accent ring while listening, steady ring + the captured keys
+ *  with an "Enter saves" hint once a combo is held. */
+function HkRec({ combo, onBlur, onKeyDown }: { combo: string | null; onBlur: () => void; onKeyDown: (e: KeyboardEvent<HTMLSpanElement>) => void }) {
+  const ref = useRef<HTMLSpanElement>(null);
+  useEffect(() => { ref.current?.focus({ preventScroll: true }); }, []);
+  return (
+    <span ref={ref} className={"hk-rec" + (combo ? " has" : "")} tabIndex={0} autoFocus role="textbox"
+          aria-label="Press a shortcut" onBlur={onBlur} onKeyDown={onKeyDown}>
+      {combo ?? "Press keys…"}
+      <span className="hk-esc">{combo ? "Enter saves · Esc cancels" : "Esc cancels"}</span>
+    </span>
   );
 }
 
