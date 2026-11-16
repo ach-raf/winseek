@@ -921,6 +921,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           <button className="ibtn" onClick={onClose} title="Back to search (Esc)" aria-label="Back to search"><IChevL size={17} /></button>
         )}
         <h1>Settings</h1>
+        <span className="sp" />
         {chrome}
       </header>
       <div className="set">
