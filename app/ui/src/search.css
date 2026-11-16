@@ -344,3 +344,5 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .tile .tpct.k-name b::before { background: #fff; }
 .tile .tpct.k-both b::before { box-shadow: 8px 0 0 #fff; margin-right: 13px; }
 .tile .tpct.k-text b::before { border-radius: 1px; }
+.sh > span > i.refined::before { content: "\00b7  "; }
+.sh > span > i.refined { color: var(--fg3); }

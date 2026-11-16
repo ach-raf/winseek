@@ -20,6 +20,7 @@ const page = (over: {
     llama_build: "b11588", backend: "cuda12", gpu: "RTX", llama_present: true, model_id: "m", profile: "fast", quant: "Q8_0",
     files: [], server: { running: true, port: 8080, unload_in_s: null, idle_unload_s: 900 },
     pdfium: { build: "7881", present: true, source: "installed", expected_bytes: 1, bytes: 1 },
+    reranker: { model_id: "r", present: false, enabled: false, state: "off", files: [] },
     parser: {
       model_id: "p", present: true, files: [], server: { running: false, port: null, unload_in_s: null, idle_unload_s: 900 },
       queue: { queued: 0, done: 0, failed: 0, skipped: 0 }, rate: null, eta_s: null, profile: "fast",

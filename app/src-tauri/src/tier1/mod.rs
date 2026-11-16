@@ -29,6 +29,7 @@ pub mod policy;
 pub mod process;
 pub mod progress;
 pub mod provenance;
+pub mod reranker;
 pub mod route;
 pub mod scopes;
 
@@ -57,6 +58,7 @@ use parse_pass::{ParsePass, PARSE_LONG_SIDE};
 use parser::{LlamaParser, Parser};
 use policy::PauseReason;
 use process::{Pass, Processor};
+use reranker::{LlamaReranker, NoReranker, Reranker};
 
 const ST_MODELS_MISSING: u8 = 0;
 const ST_IDLE: u8 = 1;
@@ -70,6 +72,16 @@ const ERROR_BACKOFF: Duration = Duration::from_secs(30);
 const RECOVERY_INTERVAL: Duration = Duration::from_secs(600);
 /// Store setting: the performance profile (`low` | `balanced` | `fast`).
 pub const SETTING_PROFILE: &str = "profile";
+/// Store setting: `0` switches the reranker off; absent / anything else = on (when installed).
+pub const SETTING_RERANK_ENABLED: &str = "rerank_enabled";
+/// Candidates handed to the reranker, overview and "Show all" alike: on the GPU 20 documents of
+/// [`RERANK_DOC_CHARS`] take ~0.7 s, well inside [`reranker::BUDGET`].
+const RERANK_TOP_DOCS: usize = 20;
+/// Fewer candidates than this are not worth a reranker call.
+const RERANK_MIN_DOCS: usize = 3;
+/// A document is cut to this many characters (the server's 2048-token context holds query +
+/// document; dense non-English text runs ~0.7 tokens per character).
+const RERANK_DOC_CHARS: usize = 1000;
 /// On-demand parse results kept in memory (by content hash and page).
 const DOC_CACHE: usize = 8;
 
@@ -78,6 +90,8 @@ pub struct Tier1 {
     embedder: Mutex<Box<dyn Embedder + Send>>,
     /// The document parser (Infinity-Parser2). Never locked together with the embedder.
     parser: Mutex<Box<dyn Parser + Send>>,
+    /// The optional reranker (Qwen3-Reranker). Locked on its own, never together with another model.
+    reranker: Mutex<Box<dyn Reranker + Send>>,
     /// Last on-demand parse results, newest last.
     doc_cache: Mutex<Vec<((String, u32), ParsedDoc)>>,
     /// Effective pause flag read by the processor: user pause or an automatic reason.
@@ -203,6 +217,9 @@ pub struct SemanticHit {
     /// Where the query words sit on the image / PDF page (fractions 0-1), from the chunk's OCR or parser
     /// boxes; only boxes whose text contains a query word. `None` when there are none.
     pub boxes: Option<Vec<HitBox>>,
+    /// The reranker's relevance for this file, 0..1 (`None`: not reranked). The UI shows it as the
+    /// match badge when present.
+    pub rerank: Option<f32>,
 }
 
 /// Result of the on-demand "Extract text" in the preview.
@@ -263,6 +280,8 @@ pub struct SemanticResult {
     pub total: usize,
     /// More relevant files exist than were returned.
     pub more: bool,
+    /// The reranker refined this list (some hit carries `rerank`): the UI shows "Refined".
+    pub reranked: bool,
 }
 
 impl SemanticResult {
@@ -271,14 +290,20 @@ impl SemanticResult {
             state: state.into(),
             total: hits.len(),
             more: false,
+            reranked: false,
             hits,
         }
     }
 }
 
 /// A meaning / text hit before the per-file work (stat, highlight boxes) a returned page pays for.
+#[derive(Clone)]
 struct SemRow {
     path: String,
+    /// Content hash + chunk of the best-matching chunk (meaning hits only): where its text is stored.
+    chunk: Option<(String, u32)>,
+    /// The reranker's relevance, 0..1.
+    rerank: Option<f32>,
     score: f32,
     /// `score` before [`finalize_scores`] made it relative.
     rank: f32,
@@ -302,6 +327,7 @@ impl SemRow {
             at: media::locator_time(self.locator.as_deref()),
             source: self.source,
             boxes: hitbox::hit_boxes(self.locator.as_deref(), q),
+            rerank: self.rerank,
         }
     }
 }
@@ -348,6 +374,7 @@ impl Tier1 {
             store: Mutex::new(store),
             embedder: Mutex::new(embedder),
             parser: Mutex::new(parser),
+            reranker: Mutex::new(Box::new(NoReranker)),
             doc_cache: Mutex::new(Vec::new()),
             paused: AtomicBool::new(false),
             user_paused: AtomicBool::new(false),
@@ -409,8 +436,10 @@ impl Tier1 {
         // The saved profile applies to both GPU models; they share one phase tracker.
         let profile = stored_profile(&store);
         embedder.set_profile(profile);
-        let parser = LlamaParser::new(root, manifest, profile, embedder.gpu_phase());
+        let gpu = embedder.gpu_phase();
+        let parser = LlamaParser::new(root.clone(), manifest.clone(), profile, gpu.clone());
         let t = Tier1::new(store, Box::new(embedder), Box::new(parser), scopes.clone());
+        t.set_reranker(Box::new(LlamaReranker::new(root, manifest, profile, gpu)));
         if defaulted {
             let _ = lock(&t.store).set_scopes(&scopes);
         }
@@ -702,6 +731,7 @@ impl Tier1 {
             .map_err(|e| e.to_string())?;
         lock(&self.embedder).set_profile(p);
         lock(&self.parser).set_profile(p);
+        lock(&self.reranker).set_profile(p);
         Ok(p)
     }
 
@@ -938,6 +968,7 @@ impl Tier1 {
                 state,
                 total: hits.len(),
                 more,
+                reranked: rows.iter().any(|r| r.rerank.is_some()),
                 hits,
             });
         }
@@ -970,6 +1001,7 @@ impl Tier1 {
             state: list.state.clone(),
             total: list.rows.len(),
             more: offset + hits.len() < list.rows.len(),
+            reranked: list.rows.iter().any(|r| r.rerank.is_some()),
             hits,
         })
     }
@@ -990,6 +1022,8 @@ impl Tier1 {
             .map(|h| SemRow {
                 page: None,
                 path: h.path,
+                chunk: None,
+                rerank: None,
                 score: 0.0,
                 rank: 0.0,
                 locator: None,
@@ -1000,6 +1034,98 @@ impl Tier1 {
         let more = limit.is_some_and(|k| rows.len() > k);
         rows.truncate(limit.unwrap_or(usize::MAX));
         (self.state_str().into(), rows, more)
+    }
+
+    /// Install another reranker (tests inject a fake; `open_default` the llama-backed one).
+    pub(crate) fn set_reranker(&self, r: Box<dyn Reranker + Send>) {
+        *lock(&self.reranker) = r;
+    }
+
+    /// The user's switch: everything but an explicit `0` is on.
+    pub fn rerank_setting(&self) -> bool {
+        lock(&self.store)
+            .get_setting(SETTING_RERANK_ENABLED)
+            .ok()
+            .flatten()
+            .is_none_or(|v| v != "0")
+    }
+
+    /// Switch the reranker on / off (persisted). Off unloads the server; on starts loading it.
+    pub fn set_rerank_enabled(&self, on: bool) -> Result<(), String> {
+        lock(&self.store)
+            .set_setting(SETTING_RERANK_ENABLED, Some(if on { "1" } else { "0" }))
+            .map_err(|e| e.to_string())?;
+        let mut r = lock(&self.reranker);
+        if on {
+            r.warm();
+        } else {
+            r.unload();
+        }
+        Ok(())
+    }
+
+    /// `{present, enabled, state, reason}` for the status page. `present` = model file + llama build on disk;
+    /// `enabled` = present and not switched off; `state` = "off" | "warming" | "ready" | "error".
+    pub fn rerank_status(&self) -> RerankStatus {
+        let setting = self.rerank_setting();
+        match self.reranker.try_lock() {
+            Ok(r) => RerankStatus::of(r.present(), setting, r.state(), r.reason()),
+            // A rerank call is in flight: present, loaded and working.
+            Err(std::sync::TryLockError::WouldBlock) => {
+                RerankStatus::of(true, setting, "ready", None)
+            }
+            Err(std::sync::TryLockError::Poisoned(p)) => {
+                let r = p.into_inner();
+                RerankStatus::of(r.present(), setting, r.state(), r.reason())
+            }
+        }
+    }
+
+    /// Refine the order of the best meaning hits with the reranker, in place. Never fails the
+    /// search: any problem (switched off, not installed, still warming up, timeout, bad reply)
+    /// leaves `rows` exactly as they were. Candidates are the first `RERANK_TOP_DOCS` meaning rows;
+    /// only those whose best chunk has stored text are scored.
+    fn rerank_rows(&self, q: &str, rows: &mut [SemRow]) {
+        if q.is_empty() || !self.rerank_setting() {
+            return;
+        }
+        let top = RERANK_TOP_DOCS;
+        let cand: Vec<usize> = (0..rows.len())
+            .filter(|&i| rows[i].source == "meaning")
+            .take(top)
+            .collect();
+        let texts: Vec<Option<String>> = {
+            let store = lock(&self.store);
+            cand.iter()
+                .map(|&i| {
+                    let (hash, chunk) = rows[i].chunk.as_ref()?;
+                    let body = store.chunk_text(hash, *chunk).ok().flatten()?;
+                    let doc = clip_chars(body.trim(), RERANK_DOC_CHARS);
+                    (!doc.is_empty()).then_some(doc)
+                })
+                .collect()
+        };
+        let (with_text, docs): (Vec<usize>, Vec<String>) = cand
+            .iter()
+            .zip(texts)
+            .filter_map(|(&i, t)| Some((i, t?)))
+            .unzip();
+        if docs.len() < RERANK_MIN_DOCS {
+            return;
+        }
+        // A rerank already in flight (another search) is not waited for.
+        let Ok(mut r) = self.reranker.try_lock() else {
+            return;
+        };
+        if !r.present() {
+            return;
+        }
+        let scores = match r.rerank(q, &docs) {
+            Ok(s) if s.len() == docs.len() => s,
+            _ => return,
+        };
+        drop(r);
+        apply_rerank(rows, &cand, &with_text, &scores);
     }
 
     /// The hits for `q` before the per-file work: `(state, rows, more exist)`. `limit` = the
@@ -1040,6 +1166,8 @@ impl Tier1 {
                 .map(|h| SemRow {
                     page: locator_page(h.locator.as_deref()),
                     path: h.path,
+                    chunk: None,
+                    rerank: None,
                     score: 0.0,
                     rank: 0.0,
                     locator: h.locator,
@@ -1113,6 +1241,8 @@ impl Tier1 {
                     };
                 seen.insert(key);
                 SemRow {
+                    chunk: Some((h.hash, h.chunk)),
+                    rerank: None,
                     path: h.path,
                     score,
                     rank: score,
@@ -1136,6 +1266,8 @@ impl Tier1 {
             rows.push(SemRow {
                 page: locator_page(t.locator.as_deref()),
                 path: t.path,
+                chunk: None,
+                rerank: None,
                 score: words,
                 rank: words,
                 locator: t.locator,
@@ -1163,10 +1295,95 @@ impl Tier1 {
                 .copied()
                 .unwrap_or(usize::MAX)
         });
+        self.rerank_rows(q, &mut rows);
         finalize_scores(&mut rows);
         let more = limit.is_some_and(|k| top_per_kind(&mut rows, k));
         Ok((self.state_str().into(), rows, more))
     }
+}
+
+/// What the status page shows about the reranker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+pub struct RerankStatus {
+    /// Model file and a llama build are on disk.
+    pub present: bool,
+    /// Present and not switched off: searches try to refine their order.
+    pub enabled: bool,
+    /// "off" | "warming" | "ready" | "error"
+    pub state: &'static str,
+    /// Why it cannot run on this machine ("needs a graphics card"): then never enabled, state "off".
+    pub reason: Option<&'static str>,
+}
+
+impl RerankStatus {
+    fn of(
+        present: bool,
+        setting: bool,
+        state: &'static str,
+        reason: Option<&'static str>,
+    ) -> RerankStatus {
+        let enabled = present && setting && reason.is_none();
+        RerankStatus {
+            present,
+            enabled,
+            state: if enabled { state } else { "off" },
+            reason,
+        }
+    }
+}
+
+/// The first `max` characters of `s` (on a character boundary).
+fn clip_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => s[..i].to_string(),
+        None => s.to_string(),
+    }
+}
+
+/// Blend the reranker's probabilities into the scores of the candidate rows and re-sort them.
+///
+/// `cand` = positions of the candidate rows (ascending), `scored` = those of them that were
+/// scored, `probs` = their reranker probabilities (0..1). The existing score is a z-like number
+/// (unbounded above, words bonus included), the probability lives in 0..1, so the old score is
+/// first normalised by the best candidate's (0..1) and the two are averaged 50/50; the average
+/// is then scaled back by that best score so it stays on the scale of the rows that were not
+/// scored (text-only hits, rows beyond the candidates, rows without text). Candidates keep their
+/// slots in the list; only the order among them changes, ties keep the old order. Rows that were
+/// not scored (images, audio) keep their score and take part in the re-sort.
+fn apply_rerank(rows: &mut [SemRow], cand: &[usize], scored: &[usize], probs: &[f32]) {
+    let top = cand.iter().map(|&i| rows[i].score).fold(0.0f32, f32::max);
+    if top <= 0.0 || scored.len() != probs.len() {
+        return;
+    }
+    for (&i, &p) in scored.iter().zip(probs) {
+        let p = if p.is_finite() {
+            p.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let norm = (rows[i].score / top).clamp(0.0, 1.0);
+        let blended = (0.5 * norm + 0.5 * p) * top;
+        rows[i].score = blended;
+        rows[i].rank = blended;
+        rows[i].rerank = Some(p);
+    }
+    let mut order: Vec<usize> = cand.to_vec();
+    order.sort_by(|&a, &b| rows[b].score.total_cmp(&rows[a].score)); // stable
+    let sorted: Vec<SemRow> = order.iter().map(|&i| rows[i].clone()).collect();
+    for (&slot, row) in cand.iter().zip(sorted) {
+        rows[slot] = row;
+    }
+}
+
+/// Switch the reranker on / off. Returns the new status.
+#[tauri::command]
+pub async fn rerank_set_enabled(
+    h: tauri::State<'_, Handle>,
+    enabled: bool,
+) -> Result<RerankStatus, String> {
+    let t = h.get()?;
+    crate::commands::blocking(move || t.set_rerank_enabled(enabled).map(|_| t.rerank_status()))
+        .await?
 }
 
 /// The overview's quick list: the best `k` meaning hits among the pictures and the best `k` among
@@ -1283,6 +1500,9 @@ fn worker_loop(t: Arc<Tier1>) {
         };
         if let Ok(mut p) = t.parser.try_lock() {
             p.tick_idle(); // a parse in progress (preview) is not idle
+        }
+        if let Ok(mut r) = t.reranker.try_lock() {
+            r.tick_idle();
         }
         // Embedding work comes first: the parser gives the GPU back before the index model loads.
         if have_models && proc.has_index_work(&t.store) {
@@ -1686,6 +1906,8 @@ mod tests {
     fn srow(path: &str, score: f32, source: &'static str) -> SemRow {
         SemRow {
             path: path.into(),
+            chunk: None,
+            rerank: None,
             score,
             rank: score,
             locator: None,
@@ -1944,6 +2166,293 @@ mod tests {
         assert_eq!(r.hits[0].path, r"C:\Pics\cat.jpg");
         assert!(r.hits[0].score > 0.99);
         assert!(t.semantic_search("  ", 5).unwrap().hits.is_empty());
+    }
+
+    // ---- reranker ------------------------------------------------------------------
+
+    /// A done text file whose single chunk (vector `hot`) has `body` as its stored text.
+    fn add_text_doc(t: &Tier1, n: u64, path: &str, hot: usize, body: &str) {
+        let mut s = lock(&t.store);
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "{v}".into(),
+                    frn: n,
+                },
+                path,
+                1,
+                1,
+                "doc",
+            )
+            .unwrap();
+        s.complete(
+            id,
+            &format!("h{n}"),
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: None,
+                vec: unit(hot),
+            }],
+            &[(0, body.to_string())],
+        )
+        .unwrap();
+    }
+
+    type Calls = Arc<Mutex<Vec<(String, Vec<String>)>>>;
+
+    /// Scores 0.9 for a document that contains "winner", 0.1 otherwise; remembers what it was given.
+    struct FakeRerank {
+        calls: Calls,
+        fail: bool,
+    }
+    impl Reranker for FakeRerank {
+        fn present(&self) -> bool {
+            true
+        }
+        fn rerank(&mut self, q: &str, docs: &[String]) -> Result<Vec<f32>, reranker::RerankError> {
+            self.calls.lock().unwrap().push((q.into(), docs.to_vec()));
+            if self.fail {
+                return Err(reranker::RerankError::Warming);
+            }
+            Ok(docs
+                .iter()
+                .map(|d| if d.contains("winner") { 0.9 } else { 0.1 })
+                .collect())
+        }
+        fn tick_idle(&mut self) {}
+        fn unload(&mut self) {}
+        fn state(&self) -> &'static str {
+            "ready"
+        }
+    }
+
+    fn rerank_tier(n: u64, winner: u64) -> (Arc<Tier1>, Calls) {
+        let t = tier(Box::new(Q), &[r"C:\Docs"]);
+        for i in 0..n {
+            let body = if i == winner {
+                "the winner body".to_string()
+            } else {
+                format!("plain body {i}")
+            };
+            add_text_doc(&t, i + 1, &format!(r"C:\Docs\cat{i}.txt"), 1, &body);
+        }
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        t.set_reranker(Box::new(FakeRerank {
+            calls: calls.clone(),
+            fail: false,
+        }));
+        (t, calls)
+    }
+
+    #[test]
+    fn rerank_promotes_the_relevant_document_and_flags_the_result() {
+        let (t, calls) = rerank_tier(5, 3);
+        let r = t.semantic_search("cat", 5).unwrap();
+        assert!(r.reranked);
+        assert_eq!(r.hits[0].path, r"C:\Docs\cat3.txt", "{:?}", r.hits);
+        assert_eq!(r.hits[0].rerank, Some(0.9));
+        assert!(r.hits[1..].iter().all(|h| h.rerank == Some(0.1)));
+        assert!(r.hits[0].score > 0.99 && r.hits[1].score < r.hits[0].score);
+        {
+            let c = calls.lock().unwrap();
+            assert_eq!(c.len(), 1);
+            assert_eq!(c[0].0, "cat", "the plain query, no embedding prefix");
+            assert_eq!(c[0].1.len(), 5);
+            assert!(c[0].1.contains(&"the winner body".to_string()));
+        }
+        // "Show all" goes through the same step
+        let all = t.semantic_page("cat", 0, SEM_K_SHALLOW + 1).unwrap();
+        assert!(all.reranked);
+        assert_eq!(all.hits[0].path, r"C:\Docs\cat3.txt");
+    }
+
+    #[test]
+    fn rerank_failure_leaves_the_order_untouched() {
+        let (t, calls) = rerank_tier(5, 3);
+        t.set_reranker(Box::new(NoReranker));
+        let base = t.semantic_search("cat", 5).unwrap();
+        assert!(!base.reranked && base.hits.iter().all(|h| h.rerank.is_none()));
+        t.set_reranker(Box::new(FakeRerank {
+            calls: calls.clone(),
+            fail: true,
+        }));
+        let r = t.semantic_search("cat", 5).unwrap();
+        assert_eq!(calls.lock().unwrap().len(), 1, "it was asked, and failed");
+        assert!(!r.reranked);
+        assert_eq!(r.hits, base.hits);
+    }
+
+    #[test]
+    fn rerank_is_skipped_when_off_or_too_few_documents() {
+        let (t, calls) = rerank_tier(5, 3);
+        assert!(t.rerank_setting(), "absent key = on");
+        t.set_rerank_enabled(false).unwrap();
+        assert!(!t.rerank_setting());
+        assert!(!t.semantic_search("cat", 5).unwrap().reranked);
+        assert!(calls.lock().unwrap().is_empty());
+        t.set_rerank_enabled(true).unwrap();
+        assert!(t.semantic_search("cat", 5).unwrap().reranked);
+        assert_eq!(calls.lock().unwrap().len(), 1);
+
+        let (few, calls) = rerank_tier(2, 1);
+        assert!(!few.semantic_search("cat", 5).unwrap().reranked);
+        assert!(calls.lock().unwrap().is_empty(), "under 3 candidates");
+    }
+
+    #[test]
+    fn rerank_documents_are_clipped_and_images_without_text_are_not_sent() {
+        let t = tier(Box::new(Q), &[r"C:\Docs"]);
+        let long = "x".repeat(RERANK_DOC_CHARS * 2);
+        for i in 0..3 {
+            add_text_doc(&t, i + 1, &format!(r"C:\Docs\cat{i}.txt"), 1, &long);
+        }
+        add_done(&t, 9, r"C:\Docs\cat.jpg", 1); // an image: no stored text
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        t.set_reranker(Box::new(FakeRerank {
+            calls: calls.clone(),
+            fail: false,
+        }));
+        let r = t.semantic_search("cat", 10).unwrap();
+        let c = calls.lock().unwrap();
+        assert_eq!(c[0].1.len(), 3);
+        assert!(c[0].1.iter().all(|d| d.chars().count() == RERANK_DOC_CHARS));
+        let img = r.hits.iter().find(|h| h.path.ends_with("cat.jpg")).unwrap();
+        assert_eq!(img.rerank, None, "no text, no rerank score");
+    }
+
+    #[test]
+    fn rerank_needing_a_gpu_is_off_with_a_reason_and_leaves_the_order_alone() {
+        struct NoGpu;
+        impl Reranker for NoGpu {
+            fn present(&self) -> bool {
+                true
+            }
+            fn rerank(&mut self, _: &str, _: &[String]) -> Result<Vec<f32>, reranker::RerankError> {
+                Err(reranker::RerankError::Unsupported)
+            }
+            fn tick_idle(&mut self) {}
+            fn unload(&mut self) {}
+            fn state(&self) -> &'static str {
+                "off"
+            }
+            fn reason(&self) -> Option<&'static str> {
+                Some(reranker::NEEDS_GPU)
+            }
+        }
+        let (t, _) = rerank_tier(5, 3);
+        t.set_reranker(Box::new(NoGpu));
+        let s = t.rerank_status();
+        assert_eq!(
+            (s.present, s.enabled, s.state, s.reason),
+            (true, false, "off", Some("needs a graphics card"))
+        );
+        assert!(!t.semantic_search("cat", 5).unwrap().reranked);
+    }
+
+    #[test]
+    fn rerank_takes_the_top_documents_only() {
+        let t = tier(Box::new(Q), &[r"C:\Docs"]);
+        for i in 0..(RERANK_TOP_DOCS as u64 + 5) {
+            add_text_doc(
+                &t,
+                i + 1,
+                &format!(r"C:\Docs\cat{i}.txt"),
+                1,
+                &format!("body {i}"),
+            );
+        }
+        let calls: Calls = Arc::new(Mutex::new(Vec::new()));
+        t.set_reranker(Box::new(FakeRerank {
+            calls: calls.clone(),
+            fail: false,
+        }));
+        t.semantic_page("cat", 0, SEM_K_SHALLOW + 1).unwrap();
+        assert_eq!(calls.lock().unwrap()[0].1.len(), RERANK_TOP_DOCS);
+    }
+
+    #[test]
+    fn rerank_status_follows_presence_and_the_switch() {
+        let t = tier(Box::new(Q), &[]);
+        let off = RerankStatus {
+            present: false,
+            enabled: false,
+            state: "off",
+            reason: None,
+        };
+        assert_eq!(t.rerank_status(), off, "NoReranker: not installed");
+        let (t, _) = rerank_tier(1, 0);
+        let s = t.rerank_status();
+        assert_eq!((s.present, s.enabled, s.state), (true, true, "ready"));
+        t.set_rerank_enabled(false).unwrap();
+        let s = t.rerank_status();
+        assert_eq!((s.present, s.enabled, s.state), (true, false, "off"));
+    }
+
+    fn row(path: &str, score: f32, text: bool) -> SemRow {
+        SemRow {
+            path: path.into(),
+            chunk: text.then(|| ("h".into(), 0)),
+            rerank: None,
+            score,
+            rank: score,
+            locator: None,
+            snippet: None,
+            page: None,
+            source: "meaning",
+        }
+    }
+
+    #[test]
+    fn apply_rerank_blends_half_and_half_on_the_old_scale() {
+        // old z scores 4 / 3 / 2; the reranker says the last one is the answer
+        let mut rows = vec![
+            row("a", 4.0, true),
+            row("b", 3.0, true),
+            row("c", 2.0, true),
+        ];
+        apply_rerank(&mut rows, &[0, 1, 2], &[0, 1, 2], &[0.2, 0.2, 1.0]);
+        let order: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        // a: (0.5*1 + 0.5*0.2)*4 = 2.4 ; b: (0.5*0.75 + 0.1)*4 = 1.9 ; c: (0.5*0.5 + 0.5)*4 = 3.0
+        assert_eq!(order, ["c", "a", "b"]);
+        assert!((rows[0].score - 3.0).abs() < 1e-5 && (rows[1].score - 2.4).abs() < 1e-5);
+        assert_eq!(rows[0].rank, rows[0].score);
+        assert_eq!(rows[0].rerank, Some(1.0));
+    }
+
+    #[test]
+    fn apply_rerank_keeps_other_rows_and_unscored_scores() {
+        let mut rows = vec![
+            row("img", 4.0, false), // no text: keeps its score
+            SemRow {
+                source: "text",
+                ..row("words", 1.0, false)
+            },
+            row("a", 3.0, true),
+            row("b", 3.0, true),
+            row("tail", 2.0, true), // beyond the candidates
+        ];
+        apply_rerank(&mut rows, &[0, 2, 3], &[2, 3], &[0.0, 1.0]);
+        let order: Vec<&str> = rows.iter().map(|r| r.path.as_str()).collect();
+        // the text row and the tail stay in their slots; candidates reorder among slots 0, 2, 3
+        assert_eq!(order, ["img", "words", "b", "a", "tail"]);
+        assert_eq!(rows[0].score, 4.0);
+        assert_eq!(rows[0].rerank, None);
+        assert_eq!((rows[1].score, rows[4].score), (1.0, 2.0));
+        assert_eq!(rows[4].rerank, None);
+        // NaN is treated as 0, a zero top changes nothing
+        let mut z = vec![row("z", 0.0, true)];
+        apply_rerank(&mut z, &[0], &[0], &[0.9]);
+        assert_eq!(z[0].rerank, None);
+        let mut n = vec![row("n", 2.0, true)];
+        apply_rerank(&mut n, &[0], &[0], &[f32::NAN]);
+        assert_eq!(n[0].rerank, Some(0.0));
+    }
+
+    #[test]
+    fn clip_chars_respects_character_boundaries() {
+        assert_eq!(clip_chars("héllo wörld", 5), "héllo");
+        assert_eq!(clip_chars("short", 50), "short");
     }
 
     #[test]

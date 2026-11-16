@@ -1326,6 +1326,15 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// The stored text of one chunk (`None` when the chunk has none: an image without OCR, audio).
+    pub fn chunk_text(&self, hash: &str, chunk: u32) -> Result<Option<String>> {
+        let mut st = self
+            .conn
+            .prepare_cached("SELECT body FROM texts WHERE hash = ?1 AND chunk = ?2 LIMIT 1")?;
+        let mut rows = st.query_map(params![hash, chunk], |r| r.get::<_, String>(0))?;
+        Ok(rows.next().transpose()?)
+    }
+
     /// Store the owed vectors for `hash` and move every text-only file with that content to done.
     pub fn finish_vectors(&mut self, hash: &str, vectors: &[ChunkVec]) -> Result<()> {
         for v in vectors {
@@ -4163,6 +4172,22 @@ mod tests {
 
     fn cvv() -> Vec<f32> {
         vec![1., 0., 0., 0.]
+    }
+
+    #[test]
+    fn chunk_text_returns_one_chunks_body() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        let f = s.upsert_file(&key(1), r"C:\p.txt", 10, 1, "txt").unwrap();
+        let vecs = [tv(0, 1, [1., 0., 0., 0.]), tv(1, 1, [0., 1., 0., 0.])];
+        let texts: Vec<(u32, String)> = vec![(0, "first body".into()), (1, "second body".into())];
+        s.complete(f, "h", &vecs, &texts).unwrap();
+        assert_eq!(
+            s.chunk_text("h", 1).unwrap().as_deref(),
+            Some("second body")
+        );
+        assert_eq!(s.chunk_text("h", 0).unwrap().as_deref(), Some("first body"));
+        assert_eq!(s.chunk_text("h", 7).unwrap(), None);
+        assert_eq!(s.chunk_text("other", 0).unwrap(), None);
     }
 
     #[test]

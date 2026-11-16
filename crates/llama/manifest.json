@@ -99,6 +99,18 @@
                     "size": 364664576
                 }
             ]
+        },
+        {
+            "id": "qwen3-reranker-0.6b",
+            "profile": "default",
+            "files": [
+                {
+                    "role": "model",
+                    "url": "https://huggingface.co/Voodisss/Qwen3-Reranker-0.6B-GGUF-llama_cpp/resolve/eb9ad47d4e53c2a6abd6158b505f1539d1c5650c/Qwen3-Reranker-0.6B-Q6_K.gguf",
+                    "sha256": "5916ab2926388177a0a7b6eedfd909d214a29592ce35153a7d9ff86c08e4b99e",
+                    "size": 494879136
+                }
+            ]
         }
     ]
 }

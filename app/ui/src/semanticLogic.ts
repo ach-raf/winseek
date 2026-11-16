@@ -10,6 +10,8 @@ export interface SemanticState {
   more: boolean;
   /** "Show all" is still reading pages. */
   loading: boolean;
+  /** The optional refiner re-checked the top hits of this answer. */
+  reranked?: boolean;
 }
 
 export const NO_HITS: SemanticState = { query: "", key: "", hits: [], more: false, loading: false };
@@ -57,16 +59,18 @@ export async function runSemantic(
   try {
     if (!plan.paged) {
       const r = await backend.semanticSearch(q, plan.k);
-      if (live()) emit({ query: q, key: plan.key, hits: r.hits, more: !!r.more, loading: false });
+      if (live()) emit({ query: q, key: plan.key, hits: r.hits, more: !!r.more, loading: false, reranked: !!r.reranked });
       return;
     }
     let hits: SemanticHit[] = [];
+    let reranked = false;
     for (;;) {
       const r = await backend.semanticSearch(q, plan.k, hits.length);
       if (!live() || r.state === "superseded") return;
       hits = hits.concat(r.hits);
+      reranked ||= !!r.reranked;
       const done = r.hits.length === 0 || hits.length >= (r.total ?? hits.length);
-      emit({ query: q, key: plan.key, hits, more: false, loading: !done });
+      emit({ query: q, key: plan.key, hits, more: false, loading: !done, reranked: reranked || undefined });
       if (done) return;
     }
   } catch {

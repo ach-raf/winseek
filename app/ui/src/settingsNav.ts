@@ -68,6 +68,7 @@ export const SETTING_INDEX: SettingEntry[] = [
   { id: "model-llama", section: "meaning", title: "llama.cpp", keywords: "download engine server cuda vulkan llama build" },
   { id: "model-pdfium", section: "meaning", title: "PDF reader", keywords: "download pdf pdfium reader documents" },
   { id: "model-parser", section: "meaning", title: "Document parser", keywords: "download parser documents ocr pages scan install" },
+  { id: "model-reranker", section: "meaning", title: "Result refiner", keywords: "refine rerank reranker results better match optional download install" },
   { id: "profile", section: "meaning", title: "Background work", keywords: "performance profile light balanced fast gpu vram memory graphics" },
   { id: "rebuild", section: "meaning", title: "Rebuild meaning index", keywords: "re-index reindex delete embeddings forget index again maintenance" },
   { id: "l-apps", section: "launcher", title: "Installed apps", keywords: "apps start menu store programs launcher find" },

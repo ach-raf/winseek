@@ -25,7 +25,7 @@ use winseek_llama::{
     ModelProfile, ModelRole, Progress,
 };
 
-use crate::tier1::{self, embedder, parser, pdf};
+use crate::tier1::{self, embedder, parser, pdf, reranker};
 
 /// Progress events are throttled to about 10 per second.
 pub const EMIT_EVERY: Duration = Duration::from_millis(100);
@@ -38,9 +38,10 @@ pub enum Group {
     Embedder,
     Pdfium,
     Parser,
+    Reranker,
 }
 
-/// What the first-run download fetches (everything but the optional parser).
+/// What the first-run download fetches (everything but the optional parser and reranker).
 pub const DEFAULT_GROUPS: [Group; 3] = [Group::Llama, Group::Embedder, Group::Pdfium];
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -49,7 +50,7 @@ pub struct PlanItem {
     /// `None` when the manifest does not carry a size: learned once the download starts.
     pub bytes: Option<u64>,
     pub present: bool,
-    /// Not part of the default setup (the document parser): the UI offers it as a checkbox, and it is
+    /// Not part of the default setup (the document parser, the reranker): the UI offers it as a checkbox, and it is
     /// left out of `total_bytes_missing`.
     pub optional: bool,
     pub group: Group,
@@ -197,6 +198,21 @@ fn jobs(root: &Path, manifest: &Manifest, backend: Backend) -> Vec<Job> {
                     present: dir.join(f.file_name()).is_file(),
                     optional: true,
                     group: Group::Parser,
+                },
+                source: Source::Model(f.clone()),
+            });
+        }
+    }
+    if let Some(entry) = manifest.model(reranker::MODEL_ID, ModelProfile::Default) {
+        let dir = embedder::models_dir(root);
+        for f in entry.files.iter().filter(|f| f.role == ModelRole::Model) {
+            out.push(Job {
+                item: PlanItem {
+                    name: "Reranker model".into(),
+                    bytes: Some(f.size),
+                    present: dir.join(f.file_name()).is_file(),
+                    optional: true,
+                    group: Group::Reranker,
                 },
                 source: Source::Model(f.clone()),
             });
@@ -675,8 +691,9 @@ pub fn start_download(app: &AppHandle, groups: Vec<Group>) -> Result<(), String>
     spawned.map(|_| ()).map_err(|e| e.to_string())
 }
 
-/// `groups`: only these components (a Settings row); otherwise the default set, plus the parser with
-/// `include_parser` (the Setup panel).
+/// `groups`: only these components (a Settings row; `["reranker"]` fetches the optional reranker);
+/// otherwise the default set, plus the parser with `include_parser` (the Setup panel). The reranker
+/// is never part of the default set.
 #[tauri::command]
 pub fn models_download(
     app: AppHandle,
@@ -760,7 +777,8 @@ mod tests {
                 "EmbeddingGemma-2 vision projector",
                 "PDF engine (pdfium 7881)",
                 "Document parser model",
-                "Document parser vision projector"
+                "Document parser vision projector",
+                "Reranker model"
             ]
         );
         assert!(p.items.iter().all(|i| !i.present));
@@ -772,13 +790,19 @@ mod tests {
             .collect();
         assert_eq!(
             optional,
-            ["Document parser model", "Document parser vision projector"],
-            "only the parser is optional"
+            [
+                "Document parser model",
+                "Document parser vision projector",
+                "Reranker model"
+            ],
+            "only the parser and the reranker are optional"
         );
+        let rr = p.items.iter().find(|i| i.name == "Reranker model").unwrap();
+        assert_eq!((rr.bytes, rr.group), (Some(494_879_136), Group::Reranker));
         let parser_bytes: u64 = p
             .items
             .iter()
-            .filter(|i| i.optional)
+            .filter(|i| i.optional && i.group == Group::Parser)
             .filter_map(|i| i.bytes)
             .sum();
         let entry = man.model(parser::MODEL_ID, ModelProfile::Default).unwrap();
@@ -799,7 +823,7 @@ mod tests {
         assert!(!p.size_unknown && !p.downloading);
         assert_eq!(p.backend, Backend::Cuda12);
         let cpu = build_plan(d.path(), &man, &det(Backend::Cpu), true);
-        assert_eq!(cpu.items.len(), 6);
+        assert_eq!(cpu.items.len(), 7);
         assert!(cpu.downloading);
         assert_eq!(serde_json::to_value(&cpu).unwrap()["backend"], "cpu");
     }
@@ -818,7 +842,7 @@ mod tests {
         assert!(find_server_exe(&dir).is_some());
         let p = build_plan(d.path(), &man, &det(Backend::Vulkan), false);
         let present: Vec<_> = p.items.iter().map(|i| i.present).collect();
-        assert_eq!(present, [true, true, false, false, false, false]);
+        assert_eq!(present, [true, true, false, false, false, false, false]);
         assert_eq!(p.total_bytes_missing, 554_821_024 + 3_733_154);
         assert!(!p.size_unknown);
     }
@@ -1164,7 +1188,7 @@ mod tests {
         }
         assert!(
             !needs_download(&p),
-            "the parser alone never triggers the automatic download"
+            "the optional parser and reranker never trigger the automatic download"
         );
     }
 
@@ -1199,22 +1223,32 @@ mod tests {
         use Group::*;
         assert_eq!(
             groups,
-            [Llama, Llama, Embedder, Embedder, Pdfium, Parser, Parser]
+            [Llama, Llama, Embedder, Embedder, Pdfium, Parser, Parser, Reranker]
         );
-        assert!(p.items.iter().all(|i| i.optional == (i.group == Parser)));
+        assert!(p
+            .items
+            .iter()
+            .all(|i| i.optional == matches!(i.group, Parser | Reranker)));
         assert_eq!(
             serde_json::to_value(&p.items[4]).unwrap()["group"],
             "pdfium"
         );
         assert_eq!(
-            serde_json::from_str::<Vec<Group>>(r#"["embedder","parser"]"#).unwrap(),
-            [Embedder, Parser]
+            serde_json::from_str::<Vec<Group>>(r#"["embedder","parser","reranker"]"#).unwrap(),
+            [Embedder, Parser, Reranker]
         );
     }
 
     #[test]
     fn pick_groups_defaults_to_first_run_set() {
         assert_eq!(pick_groups(false, None), DEFAULT_GROUPS);
+        assert!(!DEFAULT_GROUPS.contains(&Group::Reranker));
+        assert!(!pick_groups(true, None).contains(&Group::Reranker));
+        assert_eq!(
+            pick_groups(false, Some(vec![Group::Reranker])),
+            [Group::Reranker],
+            "the reranker is fetched on request only"
+        );
         assert_eq!(
             pick_groups(true, None),
             [Group::Llama, Group::Embedder, Group::Pdfium, Group::Parser]

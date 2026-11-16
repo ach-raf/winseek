@@ -139,6 +139,7 @@ fn main() {
             tier1::semantic_search,
             tier1::parse_document,
             tier1::parser_present,
+            tier1::rerank_set_enabled,
             tier1::get_profile,
             tier1::set_profile,
             tier1::library::library_images,

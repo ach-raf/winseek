@@ -343,7 +343,7 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak, onT
           {loading && <i className="busy" role="status">finding more</i>}
         </button>
       ) : (
-        <span>{s.title}{s.count && <i>{s.total.toLocaleString("en-US")}</i>}{s.count && loading && <i className="busy" role="status">finding more</i>}</span>
+        <span>{s.title}{s.count && <i>{s.total.toLocaleString("en-US")}</i>}{s.count && loading && <i className="busy" role="status">finding more</i>}{s.refined && <i className="refined" title="The best matches were double-checked for a closer fit">Refined</i>}</span>
       )}
       {(s.note || s.more) && (
         <small>

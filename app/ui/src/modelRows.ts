@@ -1,4 +1,4 @@
-import type { ModelGroup, ModelsPlan } from "./types";
+import type { ModelGroup, ModelsPlan, RerankState, StatusReranker } from "./types";
 
 /** What a Settings model row offers when its component is not installed. */
 export type RowAction =
@@ -44,4 +44,19 @@ export function rowAction(g: ModelGroup, installed: boolean, s: DownloadState): 
   }
   if (s.interrupted && mine) return { kind: "failed", error: s.interrupted, bytes };
   return { kind: "download", bytes };
+}
+
+const REFINER_CHIP: Record<RerankState, { text: string; cls: string }> = {
+  off: { text: "Off", cls: "" },
+  warming: { text: "Warming up", cls: " warm" },
+  ready: { text: "On", cls: " on" },
+  error: { text: "Unavailable", cls: " bad" },
+};
+
+/** The result refiner row's switch and chip. `pending`: the value just requested, until the server answers. */
+export function refinerView(r: Pick<StatusReranker, "enabled" | "state" | "reason">, pending: boolean | null = null) {
+  if (r.reason) return { on: false, disabled: true, text: "Needs a graphics card", cls: "" };
+  const on = pending ?? r.enabled;
+  const chip = REFINER_CHIP[on ? (r.enabled ? r.state : "warming") : "off"];
+  return { on, disabled: false, text: chip.text, cls: chip.cls };
 }

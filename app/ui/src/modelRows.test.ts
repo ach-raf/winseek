@@ -1,10 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { rowAction, type DownloadState } from "./modelRows.ts";
+import { refinerView, rowAction, type DownloadState } from "./modelRows.ts";
 import type { ModelsPlan, PlanItem } from "./types.ts";
 
 const item = (name: string, group: PlanItem["group"], bytes: number | null, present = false): PlanItem =>
-  ({ name, group, bytes, present, optional: group === "parser" });
+  ({ name, group, bytes, present, optional: group === "parser" || group === "reranker" });
 
 const plan = (items: PlanItem[]): ModelsPlan => ({
   backend: "cuda12", gpu: null, driver: null, items, total_bytes_missing: 0, size_unknown: false, downloading: false,
@@ -17,6 +17,7 @@ const base = plan([
   item("PDF engine", "pdfium", 4, true),
   item("Document parser model", "parser", 1200),
   item("Document parser vision projector", "parser", 400),
+  item("Reranker model", "reranker", 495),
 ]);
 
 const idle: DownloadState = { plan: base, running: false, groups: null, got: {}, interrupted: null };
@@ -24,6 +25,18 @@ const idle: DownloadState = { plan: base, running: false, groups: null, got: {},
 test("rowAction: offers the download of a missing part with its size", () => {
   assert.deepEqual(rowAction("embedder", false, idle), { kind: "download", bytes: 800 });
   assert.deepEqual(rowAction("parser", false, idle), { kind: "download", bytes: 1600 });
+});
+
+test("rowAction: the optional refiner row offers its own download, never part of the default set", () => {
+  assert.deepEqual(rowAction("reranker", false, idle), { kind: "download", bytes: 495 });
+  assert.deepEqual(rowAction("reranker", true, idle), { kind: "installed" });
+  const s: DownloadState = { ...idle, running: true, groups: ["reranker"], got: { "Reranker model": 99 } };
+  assert.deepEqual(rowAction("reranker", false, s), { kind: "downloading", got: 99, total: 495, frac: 99 / 495 });
+  assert.deepEqual(rowAction("embedder", false, s), { kind: "waiting" });
+  const auto: DownloadState = { ...idle, running: true, got: {} };
+  assert.deepEqual(rowAction("reranker", false, auto), { kind: "waiting" }, "the first-run download does not include it");
+  const failed: DownloadState = { ...idle, groups: ["reranker"], interrupted: "cancelled" };
+  assert.deepEqual(rowAction("reranker", false, failed), { kind: "failed", error: "cancelled", bytes: 495 });
 });
 
 test("rowAction: installed wins, from the status page or when the plan has nothing missing", () => {
@@ -57,4 +70,14 @@ test("rowAction: a failed download offers a retry on its own rows only", () => {
   assert.deepEqual(rowAction("parser", false, s), { kind: "download", bytes: 1600 });
   // the automatic download failed: the default rows offer the retry
   assert.equal(rowAction("embedder", false, { ...s, groups: null }).kind, "failed");
+});
+
+test("refinerView: no graphics card = switch disabled, chip says so, even if it was asked on", () => {
+  const gpu = { enabled: true, state: "ready" as const };
+  assert.deepEqual(refinerView(gpu), { on: true, disabled: false, text: "On", cls: " on" });
+  assert.deepEqual(refinerView({ ...gpu, enabled: false, state: "off" }), { on: false, disabled: false, text: "Off", cls: "" });
+  assert.equal(refinerView({ ...gpu, enabled: false, state: "off" }, true).text, "Warming up");
+  const cpu = { enabled: false, state: "off" as const, reason: "needs a graphics card" };
+  assert.deepEqual(refinerView(cpu), { on: false, disabled: true, text: "Needs a graphics card", cls: "" });
+  assert.equal(refinerView(cpu, true).on, false);
 });
