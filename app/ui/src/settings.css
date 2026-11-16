@@ -51,7 +51,7 @@
 .settings .ibtn { width: 32px; height: 32px; margin-left: -6px; border-radius: 8px; display: grid; place-items: center; color: var(--fg2); flex: none; }
 .settings .ibtn:hover { background: var(--bg3); color: var(--fg); }
 .settings .ibtn:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
-.sfind { width: 260px; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--bg2); display: flex; align-items: center; gap: 8px; box-shadow: inset 0 0 0 1px var(--line); margin-left: auto; cursor: text; flex: none; }
+.sfind { width: 100%; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--bg2); display: flex; align-items: center; gap: 8px; box-shadow: inset 0 0 0 1px var(--line); margin: 0 0 var(--sp-3); cursor: text; flex: none; }
 .sfind:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
 /* same light field recipe as .tbar .field (shell.css): recessed grey, white on focus */
 :root[data-theme="light"] .sfind { background: var(--bg3); }
@@ -63,8 +63,12 @@
 
 .set { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
 /* popup settings gutter: 16px (--sp-4) — sidebar rows, cards, title and footer all start on it.
-   Row look comes from shell.css .nv (36px / 14px / 18px icons), the same recipe as the app sidebar. */
-.snav { grid-row: 1 / 3; padding: var(--sp-1) var(--sp-2) var(--sp-3) var(--sp-4); display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+   Row look comes from shell.css .nv (36px / 14px / 18px icons), the same recipe as the app sidebar.
+   The find field lives at the top of the sidebar (Windows 11 / macOS position); .sres (results
+   dropdown) anchors to this wrapper. */
+.snav-wrap { grid-column: 1; grid-row: 1 / 3; position: relative; display: flex; flex-direction: column; min-height: 0; padding: var(--sp-1) var(--sp-2) var(--sp-3) var(--sp-4); }
+.snav { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
+.snav .nv svg { width: 18px; height: 18px; flex: none; }
 .snav .nv:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 .set-nomatch { padding: 8px 10px; font-size: 12.5px; }
 .scont { grid-column: 2; grid-row: 1; overflow: auto; padding: 0 var(--sp-4) var(--sp-4); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }

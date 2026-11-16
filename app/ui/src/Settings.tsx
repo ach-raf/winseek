@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent, type ReactNode } from "react";
 import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, Tier1Status, UpdateState } from "./types";
 import type { Models } from "./hooks";
 import { rowAction, type RowAction } from "./modelRows";
@@ -18,7 +18,7 @@ import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme"
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
 import { ConfirmButton } from "./Confirm";
-import { IChevL, ISearch } from "./icons";
+import { IChevL, ICmd, IContrast, IFolderStroke, IGear, IGrid, IKeyboard, IPulse, ISearch, ISparkle } from "./icons";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
 const lc = (s: string) => s.toLowerCase();
@@ -676,15 +676,15 @@ function HkRec({ combo, onBlur, onKeyDown }: { combo: string | null; onBlur: () 
 export type { SettingsSection };
 
 /** General first, engine next, add-ons, diagnostics last (the known order); Ctrl+1..8 follow it. */
-const NAV: { id: SettingsSection; label: string }[] = [
-  { id: "general", label: "General" },
-  { id: "appearance", label: "Appearance" },
-  { id: "shortcuts", label: "Shortcuts" },
-  { id: "indexing", label: "Indexing" },
-  { id: "meaning", label: "Search by meaning" },
-  { id: "launcher", label: "Apps and commands" },
-  { id: "agents", label: "AI agents" },
-  { id: "status", label: "Status" },
+const NAV: { id: SettingsSection; label: string; icon: ComponentType }[] = [
+  { id: "general", label: "General", icon: IGear },
+  { id: "appearance", label: "Appearance", icon: IContrast },
+  { id: "shortcuts", label: "Shortcuts", icon: IKeyboard },
+  { id: "indexing", label: "Indexing", icon: IFolderStroke },
+  { id: "meaning", label: "Search by meaning", icon: ISparkle },
+  { id: "launcher", label: "Apps and commands", icon: IGrid },
+  { id: "agents", label: "AI agents", icon: ICmd },
+  { id: "status", label: "Status", icon: IPulse },
 ];
 
 /** A hidden catalog id ("app:d:\\games\\x\\steam.exe", "setting:bluetooth") as a name plus where it is. */
@@ -858,27 +858,30 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           <button className="ibtn" onClick={onClose} title="Back to search (Esc)" aria-label="Back to search"><IChevL size={17} /></button>
         )}
         <h1>Settings</h1>
-        <label className="sfind">
-          <ISearch size={16} />
-          <input ref={findRef} className="sf" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
-                 onChange={(e) => setFind(e.target.value)}
-                 onKeyDown={(e) => {
-                   if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
-                   else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
-                 }} />
-        </label>
         {chrome}
       </header>
       <div className="set">
-        <nav ref={navRef} className="snav" aria-label="Settings sections" onKeyDown={navKey}>
-          {navItems.map((s) => (
-            <button key={s.id} role="tab" aria-selected={section === s.id}
-                    className={"nv" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
-              {s.label}
-            </button>
-          ))}
-          {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
-        </nav>
+        <aside className="snav-wrap">
+          <label className="sfind">
+            <ISearch size={16} />
+            <input ref={findRef} className="sf" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
+                   onChange={(e) => setFind(e.target.value)}
+                   onKeyDown={(e) => {
+                     if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
+                     else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
+                   }} />
+          </label>
+          <nav ref={navRef} className="snav" aria-label="Settings sections" onKeyDown={navKey}>
+            {navItems.map((s) => (
+              <button key={s.id} role="tab" aria-selected={section === s.id}
+                      className={"nv" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
+                <s.icon />
+                {s.label}
+              </button>
+            ))}
+            {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
+          </nav>
+        </aside>
         <div className="scont" ref={bodyRef}>
           {/* one 640px column in every host; the div only caps the width */}
           <div className="scols">

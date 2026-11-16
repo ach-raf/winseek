@@ -52,3 +52,9 @@ export function FileGlyph({ col, lab }: { col: string; lab: string }) {
 }
 export const IGrid = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><rect x="4" y="4" width="7" height="7" rx="1.5" /><rect x="13" y="4" width="7" height="7" rx="1.5" /><rect x="4" y="13" width="7" height="7" rx="1.5" /><rect x="13" y="13" width="7" height="7" rx="1.5" /></S>;
 export const IRows = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><path d="M4 6h16M4 12h16M4 18h16" /></S>;
+/* settings sidebar (stroke set, so the nav reads with the app sidebar) */
+export const IContrast = ({ size, className }: P) => <S size={size} className={className}><circle cx="12" cy="12" r="8.5" /><path d="M12 3.5v17a8.5 8.5 0 0 0 0-17z" /></S>;
+export const IKeyboard = ({ size, className }: P) => <S size={size} className={className}><rect x="3" y="6" width="18" height="12" rx="2.5" /><path d="M7 10h.01M11 10h.01M15 10h.01M7 14h10" /></S>;
+export const ISparkle = ({ size, className }: P) => <S size={size} className={className}><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" /></S>;
+export const IPulse = ({ size, className }: P) => <S size={size} className={className}><path d="M3 12h4l2.5-6 4 12 2.5-6H21" /></S>;
+export const IFolderStroke = ({ size, className }: P) => <S size={size} className={className}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></S>;
