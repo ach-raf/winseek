@@ -70,7 +70,17 @@
 .snav { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow-y: auto; }
 .snav .nv svg { width: 18px; height: 18px; flex: none; }
 .snav .nv:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
-.set-nomatch { padding: 8px 10px; font-size: 12.5px; }
+/* find-a-setting results, anchored to the sidebar's find field (T5): title + section chip */
+.sres { position: absolute; left: var(--sp-4); top: 44px; width: min(320px, calc(100vw - 2 * var(--sp-4))); z-index: 20; background: var(--bg2); border-radius: 12px; box-shadow: 0 8px 28px rgba(0, 0, 0, 0.28), inset 0 0 0 1px var(--line); padding: 4px; margin: 0; list-style: none; }
+.sres li { height: 36px; padding: 0 10px; border-radius: 8px; display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: default; }
+.sres li > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sres li i { margin-left: auto; font-style: normal; font-size: 11.5px; color: var(--fg3); white-space: nowrap; flex: none; }
+.sres li.on { background: var(--bg3); }
+.sres li.none { color: var(--fg3); font-size: 12.5px; }
+/* the row a picked result jumped to flashes once */
+[data-setting].flash { animation: sflash 1.4s var(--ease); }
+@keyframes sflash { 0%, 60% { background: color-mix(in oklab, var(--acc) 22%, transparent); } 100% { background: transparent; } }
+@media (prefers-reduced-motion: reduce) { [data-setting].flash { animation: none; background: color-mix(in oklab, var(--acc) 22%, transparent); } }
 .scont { grid-column: 2; grid-row: 1; overflow: auto; padding: 0 var(--sp-4) var(--sp-4); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 /* one 640px column in every host (the cards' own max-width); no masonry */
 .scols { max-width: 640px; }

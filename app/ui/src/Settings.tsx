@@ -11,7 +11,7 @@ import { Folders } from "./Setup";
 import { pausedText, statusVerdict, waitingText } from "./statusVerdict";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
-import { filterSections, type SettingsSection } from "./settingsNav";
+import { SECTION_LABELS, searchSettings, type SettingEntry, type SettingsSection } from "./settingsNav";
 import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./accent";
 import { OPACITY_MAX, OPACITY_MIN, applyOpacity, loadOpacity, saveOpacity } from "./transparency";
 import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
@@ -62,7 +62,7 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
   const remove = (n: string) => ig && save(ig.list.filter((x) => x !== n));
 
   return (
-    <Grp title="Skipped names" note={<>Skipped anywhere inside your folders. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</>}>
+    <Grp id="ignored" title="Skipped names" note={<>Skipped anywhere inside your folders. <code>*</code> and <code>?</code> are wildcards. Name search still finds them.</>}>
       <div className="grow addrow">
         <input className="gin" value={text} onChange={(e) => { setText(e.target.value); setBad(null); }} placeholder="Add names, e.g. Raw*, scratch" aria-label="Add ignored names"
                spellCheck={false} autoComplete="off"
@@ -108,7 +108,7 @@ function CodeToggle({ backend, onError }: { backend: Backend; onError: (e: unkno
   };
   return (
     <Grp title="Source code">
-      <Row title="Index source code" desc="Search inside code files by what they say. Files ignored by .gitignore are left out. Search them with the code: prefix, e.g. code: parse config; they never show up in other searches.">
+      <Row id="code" title="Index source code" desc="Search inside code files by what they say. Files ignored by .gitignore are left out. Search them with the code: prefix, e.g. code: parse config; they never show up in other searches.">
         <Switch checked={!!on} disabled={on === null} onChange={change} label="Index source code" />
       </Row>
     </Grp>
@@ -123,7 +123,7 @@ function AutostartRow({ backend, onError }: { backend: Backend; onError: (e: unk
     backend.autostartSet(v).then(setOn).catch((e) => { setOn(!v); onError(e); });
   };
   return (
-    <Row title="Start with Windows" desc="Starts in the tray when you sign in, so the shortcut works right away">
+    <Row id="autostart" title="Start with Windows" desc="Starts in the tray when you sign in, so the shortcut works right away">
       <Switch checked={!!on} disabled={on === null} onChange={change} label="Start with Windows" />
     </Row>
   );
@@ -148,7 +148,7 @@ function UpdatesRow({ backend, onError }: { backend: Backend; onError: (e: unkno
     ? `${u.latest} is available.`
     : u && u.last_check > 0 ? `Up to date (checked ${formatDate(u.last_check * 1000)}).` : "Not checked yet.";
   return (
-    <Row title="Check for updates daily"
+    <Row id="updates" title="Check for updates daily"
          desc={`Looks at the public GitHub releases once a day and tells you in the tray. It sends nothing about you or this PC and installs nothing. ${note}`}>
       {u?.latest && <button className="gbtn" onClick={() => backend.updatesOpenPage().catch(onError)}>Open release page</button>}
       <button className="gbtn" disabled={busy || !u} onClick={check}>{busy ? "Checking…" : "Check now"}</button>
@@ -162,7 +162,7 @@ function VersionRow({ backend, onError }: { backend: Backend; onError: (e: unkno
   const [v, setV] = useState<string | null>(null);
   useEffect(() => { backend.appVersion().then(setV).catch(onError); }, [backend, onError]);
   if (!v) return null;
-  return <Row title="Version" desc={`winseek for Windows ${v}`} hint={`winseek v${v}`}><span className="val">{v}</span></Row>;
+  return <Row id="version" title="Version" desc={`winseek for Windows ${v}`} hint={`winseek v${v}`}><span className="val">{v}</span></Row>;
 }
 
 /** Accent colour swatches (Settings › Appearance). Applies at once and is remembered; the other
@@ -175,7 +175,7 @@ function AccentRow() {
     saveAccent(next);
   };
   return (
-    <Row title="Accent colour" desc="The highlight colour across winseek.">
+    <Row id="accent" title="Accent colour" desc="The highlight colour across winseek.">
       <div className="acc-swatches" role="radiogroup" aria-label="Accent colour">
         {ACCENTS.map((a) => (
           <button key={a.id} role="radio" aria-checked={id === a.id} aria-label={a.label}
@@ -197,7 +197,7 @@ function TransparencyRow() {
     saveOpacity(next);
   };
   return (
-    <Row title="Window transparency" desc="How much of the desktop shows through winseek's windows.">
+    <Row id="transparency" title="Window transparency" desc="How much of the desktop shows through winseek's windows.">
       <div className="op-row">
         <input type="range" min={OPACITY_MIN} max={OPACITY_MAX} step={5} value={pct} aria-label="Window transparency"
                onChange={(e) => change(Number(e.target.value))} />
@@ -217,7 +217,7 @@ function ThemeRow() {
     saveTheme(next);
   };
   return (
-    <Row title="Theme" desc="Light or dark, or follow Windows.">
+    <Row id="theme" title="Theme" desc="Light or dark, or follow Windows.">
       <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" />
     </Row>
   );
@@ -240,7 +240,7 @@ function Performance({ backend, onError }: { backend: Backend; onError: (e: unkn
   const shown = p ?? "balanced";
   return (
     <Grp title="Performance" note="Applies to search by meaning: where the models run and how long they stay loaded. Name search is not affected.">
-      <Row title="Background work" desc={PROFILES.find((x) => x.id === shown)?.blurb}>
+      <Row id="profile" title="Background work" desc={PROFILES.find((x) => x.id === shown)?.blurb}>
         <Seg value={shown} options={PROFILES} onChange={change} disabled={p === null} label="Performance profile" />
       </Row>
     </Grp>
@@ -259,7 +259,7 @@ function DefaultViewRow({ backend, onError }: { backend: Backend; onError: (e: u
     backend.viewSetDefault(m).then((s) => setV(s.default_view)).catch((e) => { setV(before); onError(e); });
   };
   return (
-    <Row title="Open as" desc="What the shortcut opens. F11 switches between the two at any time.">
+    <Row id="view" title="Open as" desc="What the shortcut opens. F11 switches between the two at any time.">
       <Seg value={v ?? "compact"} options={VIEW_OPTIONS} onChange={change} disabled={v === null} label="Default view" />
     </Row>
   );
@@ -269,12 +269,14 @@ const engineName = (m: StatusModels) =>
   m.backend === "cpu" ? "the processor" : `${m.gpu ?? "the graphics card"} (${m.backend === "cuda12" ? "CUDA" : "Vulkan"})`;
 
 /** One component: installed status, or what can be done about it (download, progress, retry). */
-function ModelLine({ name, detail, act, optional, label, onGet, onCancel, children }: {
+function ModelLine({ name, detail, act, optional, label, settingId, onGet, onCancel, children }: {
   name: string; detail?: string; act: RowAction;
   /** Missing is fine (pdfium arrives with the first PDF, the parser is an extra): no warning mark. */
   optional?: boolean;
   /** Button verb: "Download" or "Install". */
   label: string;
+  /** "Find a setting" jump target. */
+  settingId?: string;
   onGet: () => void; onCancel: () => void; children: ReactNode;
 }) {
   const ok = act.kind === "installed" ? true : optional ? null : false;
@@ -286,7 +288,7 @@ function ModelLine({ name, detail, act, optional, label, onGet, onCancel, childr
     : act.kind === "failed" ? (paused ? "Download paused. Resume continues where it stopped." : <span className="bad" role="alert">{`Download failed: ${act.error}. Retry continues where it stopped.`}</span>)
     : children;
   return (
-    <div className="grow wrap" role="listitem">
+    <div className="grow wrap" role="listitem" data-setting={settingId}>
       <div className="gtxt">
         <b><i className={"mdot " + (ok === true ? "ok" : ok === false ? "miss" : "opt")} aria-hidden />{name}{detail && <em> · {detail}</em>}</b>
         <span>{desc}</span>
@@ -356,7 +358,7 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
   return (
     <>
       <Grp title="Search by meaning" label="Search by meaning">
-        <Row title="Indexing" desc={<span className={"st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</span>}>
+        <Row id="meaning-status" title="Indexing" desc={<span className={"st-head " + (live ? "s-live" : "s-warn")}><span className="dot" />{head}</span>}>
           {off ? (
             t1?.state === "models_missing" && <button className="gbtn pri" onClick={onSetup}>Set up…</button>
           ) : (
@@ -365,7 +367,7 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
             )
           )}
         </Row>
-        <IndexRow index={st?.index ?? null} />
+        <div data-setting="index-check"><IndexRow index={st?.index ?? null} /></div>
         {s && total > 0 && (
           <div className="grow stack">
             <div className="idx-line">
@@ -405,21 +407,21 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
           <h3>Model downloads</h3>
           <div className="gcard" role="list">
             <ModelLine name={m.model_id} detail={`${m.quant}${embedSize ? `, ${formatSize(embedSize)}` : ""}`}
-                       act={act("embedder", embedOk)} label="Download" onGet={get("embedder")} onCancel={models.cancel}>
+                       act={act("embedder", embedOk)} label="Download" settingId="model-embedder" onGet={get("embedder")} onCancel={models.cancel}>
               {!embedOk ? "Not downloaded"
                 : sv?.running ? `Loaded on ${engineName(m)}`
                 : `Installed · loads on ${engineName(m)} when there is work`}
             </ModelLine>
             <ModelLine name="llama.cpp" detail={m.llama_build}
-                       act={act("llama", m.llama_present)} label="Download" onGet={get("llama")} onCancel={models.cancel}>
+                       act={act("llama", m.llama_present)} label="Download" settingId="model-llama" onGet={get("llama")} onCancel={models.cancel}>
               {m.llama_present ? `Installed · ${m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU"}` : "Not downloaded"}
             </ModelLine>
             <ModelLine name="PDF reader" detail={`pdfium ${m.pdfium.build}`} optional
-                       act={act("pdfium", m.pdfium.present)} label="Download" onGet={get("pdfium")} onCancel={models.cancel}>
+                       act={act("pdfium", m.pdfium.present)} label="Download" settingId="model-pdfium" onGet={get("pdfium")} onCancel={models.cancel}>
               {m.pdfium.present ? "Installed" : "Downloads when a PDF is found"}
             </ModelLine>
             <ModelLine name="Document parser" detail={m.parser.model_id} optional
-                       act={act("parser", m.parser.present)} label="Install" onGet={get("parser")} onCancel={models.cancel}>
+                       act={act("parser", m.parser.present)} label="Install" settingId="model-parser" onGet={get("parser")} onCancel={models.cancel}>
               {!m.parser.present ? "Optional"
                 : pLeft > 0 ? `${m.parser.server.running ? "Loaded" : "Installed"} · ${fmt(lifeDone)} parsed · ${fmt(pLeft)} left${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
                 : lifeTotal > 0 ? `Done · ${fmt(lifeTotal)} pages read${pFailed ? ` · ${fmt(pFailed)} failed` : ""}`
@@ -518,24 +520,24 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
   return (
     <>
       <Grp title="AI agents" label="Agent access">
-        <Row title="Let AI agents search your files" desc="Read-only: agents can search and read, never open, change or delete anything. Every call is logged.">
+        <Row id="a-enabled" title="Let AI agents search your files" desc="Read-only: agents can search and read, never open, change or delete anything. Every call is logged.">
           <Switch checked={!!cfg?.enabled} disabled={cfg === null} onChange={(v) => change({ enabled: v })} label="Let AI agents search with winseek" />
         </Row>
-        <Row title="Let agents read file contents" desc="Applies to reading text, parsing documents and photo details. Name search is always on.">
+        <Row id="a-content" title="Let agents read file contents" desc="Applies to reading text, parsing documents and photo details. Name search is always on.">
           <Seg value={cfg?.content ?? null} disabled={!cfg?.enabled} onChange={(v) => change({ content: v })} label="What agents may read"
                options={[{ id: "indexed", label: "Indexed folders" }, { id: "any", label: "Any file" }]} />
         </Row>
       </Grp>
 
       <Grp title="Command line" label="PATH">
-        <Row title="Use winseek-cli from any terminal" desc="Puts the winseek folder on your PATH (winseek-cli, winseek-mcp). `winseek-cli path add` does the same from a shell.">
+        <Row id="a-path" title="Use winseek-cli from any terminal" desc="Puts the winseek folder on your PATH (winseek-cli, winseek-mcp). `winseek-cli path add` does the same from a shell.">
           <Switch checked={!!path?.user_path || !!path?.machine_path} disabled={path === null || !!path?.machine_path}
                   onChange={changePath} label="Add winseek to the PATH" />
         </Row>
         {path && <div className="grow"><span className="gnote">{pathNote(path)}</span></div>}
       </Grp>
 
-      <Grp title="Connect an agent">
+      <Grp id="a-connect" title="Connect an agent">
         {mcp && !mcp.exists && (
           <div className="grow"><span className="gnote">winseek-mcp.exe is not installed next to the app yet (dev build). The snippets below still show where it will live.</span></div>
         )}
@@ -552,7 +554,7 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
       </Grp>
 
       <Grp title="Activity">
-        <Row title="Last 50 calls" desc="Who called what, and whether it worked. Paths are shown; file contents never are.">
+        <Row id="a-log" title="Last 50 calls" desc="Who called what, and whether it worked. Paths are shown; file contents never are.">
           <ConfirmButton label="Clear log" confirmLabel="Sure? Clear the log"
                          onConfirm={() => backend.agentClearLog().then(reload).catch(onError)} disabled={!log || log.length === 0} />
         </Row>
@@ -621,7 +623,7 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
         const bound = hk?.[row.which] ?? null;
         const recording = rec?.which === row.which;
         return (
-          <Row key={row.which} title={row.label} desc={row.blurb}>
+          <Row key={row.which} id={`hotkey-${row.which}`} title={row.label} desc={row.blurb}>
             {recording ? (
               <span className="hk-line">
                 <HkRec combo={rec.combo} onBlur={() => setRec(null)}
@@ -677,14 +679,14 @@ export type { SettingsSection };
 
 /** General first, engine next, add-ons, diagnostics last (the known order); Ctrl+1..8 follow it. */
 const NAV: { id: SettingsSection; label: string; icon: ComponentType }[] = [
-  { id: "general", label: "General", icon: IGear },
-  { id: "appearance", label: "Appearance", icon: IContrast },
-  { id: "shortcuts", label: "Shortcuts", icon: IKeyboard },
-  { id: "indexing", label: "Indexing", icon: IFolderStroke },
-  { id: "meaning", label: "Search by meaning", icon: ISparkle },
-  { id: "launcher", label: "Apps and commands", icon: IGrid },
-  { id: "agents", label: "AI agents", icon: ICmd },
-  { id: "status", label: "Status", icon: IPulse },
+  { id: "general", label: SECTION_LABELS.general, icon: IGear },
+  { id: "appearance", label: SECTION_LABELS.appearance, icon: IContrast },
+  { id: "shortcuts", label: SECTION_LABELS.shortcuts, icon: IKeyboard },
+  { id: "indexing", label: SECTION_LABELS.indexing, icon: IFolderStroke },
+  { id: "meaning", label: SECTION_LABELS.meaning, icon: ISparkle },
+  { id: "launcher", label: SECTION_LABELS.launcher, icon: IGrid },
+  { id: "agents", label: SECTION_LABELS.agents, icon: ICmd },
+  { id: "status", label: SECTION_LABELS.status, icon: IPulse },
 ];
 
 /** A hidden catalog id ("app:d:\\games\\x\\steam.exe", "setting:bluetooth") as a name plus where it is. */
@@ -740,13 +742,13 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
     <>
       <Grp title="Apps and commands" label="What the search box finds">
         {toggles.map(([key, title, hint]) => (
-          <Row key={key} title={title} desc={hint}>
+          <Row key={key} id={`l-${key === "hide_uninstallers" ? "uninstall" : key}`} title={title} desc={hint}>
             <Switch checked={!!cfg[key]} onChange={(v) => save({ [key]: v })} label={title} />
           </Row>
         ))}
       </Grp>
 
-      <Grp title="Extra program folders" note="Programs here are scanned up to four levels deep. Installing or removing apps re-scans automatically.">
+      <Grp id="l-folders" title="Extra program folders" note="Programs here are scanned up to four levels deep. Installing or removing apps re-scans automatically.">
         {cfg.folders.length > 0 && (
           <div className="glist">
             {cfg.folders.map((p) => (
@@ -767,7 +769,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
       </Grp>
 
       <Grp title="Catalog">
-        <Row title={counts ? `${fmt(counts.apps)} apps · ${fmt(counts.settings)} settings · ${fmt(counts.commands)} commands` : "Counting…"}
+        <Row id="l-reindex" title={counts ? `${fmt(counts.apps)} apps · ${fmt(counts.settings)} settings · ${fmt(counts.commands)} commands` : "Counting…"}
              desc="Refreshes on its own when the Start menu changes">
           <button className="gbtn" disabled={scanning} onClick={() => { setScanning(true); backend.launchReindex(); }}>
             {scanning ? "Scanning…" : "Re-scan apps"}
@@ -781,7 +783,7 @@ function LauncherSection({ backend, onError }: { backend: Backend; onError: (e: 
             </Row>
           );
         })}
-        <Row title="Usage history" desc="Results you pick get a boost next time. Clearing forgets that, not the catalog.">
+        <Row id="l-history" title="Usage history" desc="Results you pick get a boost next time. Clearing forgets that, not the catalog.">
           <ConfirmButton label="Clear" confirmLabel="Sure? Clear history"
                          onConfirm={() => backend.launchClearHistory().catch(onError)} />
         </Row>
@@ -807,7 +809,19 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   const bodyRef = useRef<HTMLDivElement>(null);
   const findRef = useRef<HTMLInputElement>(null);
   const [find, setFind] = useState("");
-  const navItems = useMemo(() => filterSections(NAV, find), [find]);
+  const [active, setActive] = useState(0);
+  // The sidebar always lists every section; the find box searches the rows themselves instead.
+  const results = useMemo(() => searchSettings(find), [find]);
+  // The row a picked result scrolls to and flashes once its section has mounted.
+  const pendingJump = useRef<string | null>(null);
+  const [pendingTick, setPendingTick] = useState(0);
+  const pick = (r: SettingEntry) => {
+    onSection(r.section);
+    setFind("");
+    setActive(0);
+    pendingJump.current = r.id;
+    setPendingTick((t) => t + 1);
+  };
   useEffect(() => {
     // Landing on a section puts the focus on its list entry so the arrow keys work at once; typing in
     // the "find" box keeps its focus.
@@ -815,6 +829,27 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     (navRef.current?.querySelector<HTMLElement>(".nv.on")
       ?? bodyRef.current?.querySelector<HTMLElement>("input, button"))?.focus();
   }, [section]);
+  // A picked result lands after the section switch: wait two frames (the section mounts on the
+  // render), scroll the row to the middle and flash it once. A few retries cover sections whose
+  // rows appear only after their first backend read; silently give up if it never shows.
+  useEffect(() => {
+    const id = pendingJump.current;
+    if (!id) return;
+    const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    let tries = 0, raf = 0, flash = 0;
+    const look = () => {
+      const el = bodyRef.current?.querySelector<HTMLElement>(`[data-setting="${CSS.escape(id)}"]`);
+      if (el) {
+        el.scrollIntoView({ block: "center", behavior: reduced ? "auto" : "smooth" });
+        el.classList.add("flash");
+        flash = window.setTimeout(() => el.classList.remove("flash"), 1400);
+        pendingJump.current = null;
+      } else if (++tries < 3) raf = requestAnimationFrame(look);
+      else pendingJump.current = null;
+    };
+    raf = requestAnimationFrame(() => { raf = requestAnimationFrame(look); });
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(flash); };
+  }, [section, pendingTick]);
   // Arrow keys walk the sidebar; the popup's global key handler skips everything inside panels.
   const navKey = (e: React.KeyboardEvent) => {
     const fwd = e.key === "ArrowDown" || e.key === "ArrowRight", back = e.key === "ArrowUp" || e.key === "ArrowLeft";
@@ -865,21 +900,33 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           <label className="sfind">
             <ISearch size={16} />
             <input ref={findRef} className="sf" value={find} placeholder="Find a setting" aria-label="Find a setting" spellCheck={false} autoComplete="off"
-                   onChange={(e) => setFind(e.target.value)}
+                   onChange={(e) => { setFind(e.target.value); setActive(0); }}
                    onKeyDown={(e) => {
-                     if (e.key === "Enter" && navItems[0]) { e.preventDefault(); onSection(navItems[0].id); setFind(""); }
-                     else if (e.key === "ArrowDown") { e.preventDefault(); navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
+                     if (e.key === "ArrowDown") { e.preventDefault(); if (results.length) setActive((a) => Math.min(a + 1, results.length - 1)); else navRef.current?.querySelector<HTMLElement>(".nv")?.focus(); }
+                     else if (e.key === "ArrowUp") { e.preventDefault(); setActive((a) => Math.max(0, a - 1)); }
+                     else if (e.key === "Enter" && results[active]) { e.preventDefault(); pick(results[active]); }
                    }} />
           </label>
+          {find.trim() !== "" && (
+            <ul className="sres" role="listbox" aria-label="Matching settings">
+              {results.length === 0 && <li className="none">No setting matches</li>}
+              {results.map((r, i) => (
+                <li key={r.id} role="option" aria-selected={i === active} className={i === active ? "on" : ""}
+                    onMouseDown={(e) => { e.preventDefault(); pick(r); }} onMouseEnter={() => setActive(i)}>
+                  <span>{r.title}</span>
+                  <i>{SECTION_LABELS[r.section]}</i>
+                </li>
+              ))}
+            </ul>
+          )}
           <nav ref={navRef} className="snav" aria-label="Settings sections" onKeyDown={navKey}>
-            {navItems.map((s) => (
+            {NAV.map((s) => (
               <button key={s.id} role="tab" aria-selected={section === s.id}
                       className={"nv" + (section === s.id ? " on" : "")} onClick={() => onSection(s.id)}>
                 <s.icon />
                 {s.label}
               </button>
             ))}
-            {navItems.length === 0 && <span className="muted set-nomatch">No section matches</span>}
           </nav>
         </aside>
         <div className="scont" ref={bodyRef}>
@@ -889,7 +936,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           {section === "indexing" && (
             <>
               <p className="gnote gnote-top">These folders also feed Search by meaning.</p>
-              <Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={backend.tier1Estimate} />
+              <div data-setting="folders"><Folders t1={t1} onChange={onFolders} onRemove={onRemoveFolder} estimate={backend.tier1Estimate} /></div>
               <CodeToggle backend={backend} onError={onError} />
               <IgnoredNames backend={backend} onError={onError} />
             </>
@@ -906,7 +953,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
                 <UpdatesRow backend={backend} onError={onError} />
                 <VersionRow backend={backend} onError={onError} />
               </Grp>
-              <Grp title="Library">
+              <Grp id="library" title="Library">
                 <Row title="Photos and clean up" desc="Photos by month, collections, and finding near-duplicates or oversized files">
                   <button className="gbtn" onClick={onLibrary}>Open</button>
                 </Row>

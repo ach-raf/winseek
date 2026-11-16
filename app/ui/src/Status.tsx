@@ -61,7 +61,7 @@ export function Names({ t0, busy, onRescan }: { t0: StatusTier0; busy: Set<strin
     : t0.source === "demo" ? `${t0.service === "not_installed" ? "Not installed" : t0.service === "stopped" ? "Stopped" : "Not running"}. Showing demo data.`
     : "Not answering";
   return (
-    <Grp title="File names" label="Names">
+    <Grp id="s-names" title="File names" label="Names">
       <Row title="Name service" desc={
         <>
           <span className={"st-head " + (t0.source === "searchd" ? "s-live" : "s-warn")}><span className="dot" />{head}</span>
@@ -149,7 +149,7 @@ function stateLine(t: StatusTier1): string {
 export function StatusMeaning({ t1, onSection, onResume, onRetryFfmpeg, onReveal }: { t1: StatusTier1; onSection?: (s: SettingsSection) => void; onResume?: () => void; onRetryFfmpeg?: () => void; onReveal?: (path: string) => void }) {
   const s = t1.stats;
   return (
-    <Grp title="Search by meaning" label="Meaning">
+    <Grp id="s-meaning" title="Search by meaning" label="Meaning">
       <Row title="State" desc={<span className={"st-head " + (t1.state === "indexing" || t1.state === "idle" ? "s-live" : "s-warn")}><span className="dot" />{stateLine(t1)}</span>}>
         {t1.paused_reason === "user" && onResume && <button className="gbtn pri" onClick={onResume}>Resume</button>}
         {t1.ffmpeg?.state === "failed" && onRetryFfmpeg && <button className="gbtn pri" onClick={onRetryFfmpeg}>Retry</button>}
@@ -197,7 +197,7 @@ export function RebuildRow({ canRebuild, rebuilding, onRebuild }: { canRebuild: 
   useEffect(() => { if (!canRebuild) setAsk(false); }, [canRebuild]);
   if (!ask) {
     return (
-      <Row title="Rebuild meaning index" desc="Forget every embedding and index the folders again">
+      <Row id="rebuild" title="Rebuild meaning index" desc="Forget every embedding and index the folders again">
         <button className="gbtn" disabled={!canRebuild || rebuilding} onClick={() => setAsk(true)}
                 title={canRebuild ? "Forget every embedding and index the folders again" : "Search by meaning is not available"}>
           {rebuilding ? "Rebuilding…" : "Rebuild…"}
@@ -345,7 +345,7 @@ export function Models({ m }: { m: StatusModels }) {
   const sv = m.server;
   return (
     <>
-      <Grp title="Models" label="Models">
+      <Grp id="s-models" title="Models" label="Models">
         <Kv k="llama.cpp">
           {m.llama_build} · {backendName(m)}{m.gpu ? ` · ${m.gpu}` : ""}
           {!m.llama_present && <span className="st-miss"> · not installed</span>}

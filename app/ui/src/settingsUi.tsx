@@ -2,10 +2,11 @@ import { cloneElement, isValidElement, useId, type ReactElement, type ReactNode 
 
 /** Shared v4 settings building blocks (prototype .grp / .gcard / .grow / .sw / .seg). Styles: settings.css. */
 
-/** A titled group: h3 + rounded card. `note` is a small hint under the card. */
-export function Grp({ title, note, label, children }: { title: string; note?: ReactNode; label?: string; children: ReactNode }) {
+/** A titled group: h3 + rounded card. `note` is a small hint under the card. `id` marks it as a
+ *  "Find a setting" jump target (data-setting). */
+export function Grp({ title, note, label, id, children }: { title: string; note?: ReactNode; label?: string; id?: string; children: ReactNode }) {
   return (
-    <section className="grp" aria-label={label ?? title}>
+    <section className="grp" aria-label={label ?? title} data-setting={id}>
       <h3>{title}</h3>
       <div className="gcard">{children}</div>
       {note && <p className="gnote">{note}</p>}
@@ -15,16 +16,17 @@ export function Grp({ title, note, label, children }: { title: string; note?: Re
 
 /** One card row: label (+ short description) on the left, the control on the right. When there
  *  is a description it is wired to the control with aria-describedby, so a screen reader reads
- *  the row's explanation when the control gets focus. */
-export function Row({ title, desc, wrap, hint, children }: {
-  title: ReactNode; desc?: ReactNode; wrap?: boolean; hint?: string; children?: ReactNode;
+ *  the row's explanation when the control gets focus. `id` marks it as a "Find a setting" jump
+ *  target (data-setting). */
+export function Row({ title, desc, wrap, hint, id, children }: {
+  title: ReactNode; desc?: ReactNode; wrap?: boolean; hint?: string; id?: string; children?: ReactNode;
 }) {
   const descId = useId();
   const ctl = children != null && isValidElement(children) && desc != null
     ? cloneElement(children as ReactElement<{ "aria-describedby"?: string }>, { "aria-describedby": descId })
     : children;
   return (
-    <div className={"grow" + (wrap ? " wrap" : "")} title={hint}>
+    <div className={"grow" + (wrap ? " wrap" : "")} title={hint} data-setting={id}>
       <div className="gtxt"><b>{title}</b>{desc ? <span id={descId}>{desc}</span> : null}</div>
       {children != null && <div className="gctl">{ctl}</div>}
     </div>

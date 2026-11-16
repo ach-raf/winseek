@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { filterSections, parseSection, SECTION_IDS } from "./settingsNav.ts";
+import { filterSections, parseSection, searchSettings, SECTION_IDS, SETTING_INDEX } from "./settingsNav.ts";
 
 const items = SECTION_IDS.map((id) => ({ id, label: id.charAt(0).toUpperCase() + id.slice(1) }));
 
@@ -38,4 +38,22 @@ test("section labels are searchable", () => {
   assert.deepEqual(filterSections(named, "apps commands").map((s) => s.id), ["launcher"]);
   assert.deepEqual(filterSections(named, "ai").map((s) => s.id), ["agents"]);
   assert.deepEqual(filterSections(named, "by meaning").map((s) => s.id), ["meaning"]);
+});
+
+test("searchSettings: empty finds nothing, ranks, jumps to rows", () => {
+  assert.deepEqual(searchSettings(""), []);
+  assert.equal(searchSettings("rebuild")[0]?.id, "rebuild");
+  assert.ok(searchSettings("download model").some((s) => s.id === "model-embedder"));
+  const accent = searchSettings("accent")[0];
+  assert.equal(accent?.id, "accent");
+  assert.equal(accent?.section, "appearance");
+  assert.ok(searchSettings("gpu").some((s) => s.id === "profile"));
+  assert.deepEqual(searchSettings("zzzz"), []);
+  assert.ok(searchSettings("model", 2).length <= 2);
+});
+
+test("setting index: unique ids, known sections", () => {
+  const ids = new Set(SETTING_INDEX.map((e) => e.id));
+  assert.equal(ids.size, SETTING_INDEX.length);
+  for (const e of SETTING_INDEX) assert.ok((SECTION_IDS as readonly string[]).includes(e.section), e.id);
 });
