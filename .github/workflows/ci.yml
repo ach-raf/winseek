@@ -65,6 +65,17 @@ jobs:
       - name: Formatting
         run: cargo fmt --check
 
+      # tauri-build verifies the bundle resources exist (tauri.conf.json lists the release
+      # binaries). Clippy never ships them, so placeholders satisfy the check; the installer
+      # job builds the real ones.
+      - name: Placeholders for bundled binaries
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force target/release | Out-Null
+          foreach ($f in 'searchd.exe','winseek-mcp.exe','winseek-cli.exe') {
+            if (-not (Test-Path "target/release/$f")) { New-Item -ItemType File "target/release/$f" | Out-Null }
+          }
+
       # -D warnings: the workspace is clippy-clean, so it stays that way.
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
