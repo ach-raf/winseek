@@ -180,13 +180,14 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
       backend.showContextMenu(p, x, y).then((r) => { if (r === "deleted") trashed([p]); }).catch(fail);
     },
     recycle: async (paths) => {
-      if (paths.length === 0) return;
+      if (paths.length === 0) return false;
       // The are-you-sure gate: single hit or whole batch, nothing recycles before it is answered.
-      if (!(await askConfirm(recycleAsk(paths)))) return;
+      if (!(await askConfirm(recycleAsk(paths)))) return false;
       try {
         await backend.recycle(paths);
         trashed(paths);
-      } catch (e) { fail(e); }
+        return true;
+      } catch (e) { fail(e); return false; }
     },
   }), [backend, fail, flash, trashed, askConfirm]);
 

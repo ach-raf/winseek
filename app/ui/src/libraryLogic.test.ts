@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  activeSection, freedBytes, gridCols, groupByMonth, isScreenshot, layoutGrid, moveIndex, pickKeeper, railEntries,
-  rowOfItem, scrollIntoView, packMosaic, mosaicMetrics, moveMosaic, tileSpan, totalReclaimable, uniformRange, visibleRows,
+  activeSection, freedBytes, gridCols, groupByMonth, inBatch, isScreenshot, layoutGrid, moveIndex, pickKeeper, railEntries,
+  rangedBatch, rowOfItem, scrollIntoView, packMosaic, mosaicMetrics, moveMosaic, tileSpan, toggledBatch, totalReclaimable,
+  uniformRange, visibleRows,
 } from "./libraryLogic.ts";
 
 const at = (y: number, m: number, d: number) => new Date(y, m - 1, d, 12).getTime();
@@ -209,4 +210,27 @@ test("parseFoldSet: a JSON array of strings becomes the fold set, junk becomes e
   assert.equal(parseFoldSet("2026-03").size, 0);
   assert.equal(parseFoldSet([1, "2026-03"]).size, 1);
   assert.equal(parseFoldSet(null).size, 0);
+});
+
+test("toggledBatch: adds, removes case-insensitively, keeps real case, may empty", () => {
+  assert.deepEqual(toggledBatch(new Set(), "C:\\a"), ["C:\\a"]);
+  assert.deepEqual(toggledBatch(new Set(["C:\\a"]), "C:\\B"), ["C:\\a", "C:\\B"]);
+  assert.deepEqual(toggledBatch(new Set(["C:\\a", "C:\\B"]), "c:\\A"), ["C:\\B"]);
+  assert.deepEqual(toggledBatch(new Set(["C:\\a"]), "C:\\A"), []); // toggled off: empty, caller falls back to the lead
+});
+
+test("rangedBatch: the shown order between anchor and click, anchor lost means just the click", () => {
+  const order = ["C:\\a", "C:\\b", "C:\\c", "C:\\d"];
+  assert.deepEqual(rangedBatch(order, "C:\\b", "C:\\d"), ["C:\\b", "C:\\c", "C:\\d"]);
+  assert.deepEqual(rangedBatch(order, "C:\\d", "C:\\b"), ["C:\\b", "C:\\c", "C:\\d"]); // backwards works too
+  assert.deepEqual(rangedBatch(order, "C:\\b", "C:\\B"), ["C:\\B"]); // the anchor row itself: just the click
+  assert.deepEqual(rangedBatch(order, "C:\\gone", "C:\\c"), ["C:\\c"]); // anchor left the surface
+  assert.deepEqual(rangedBatch(order, null, "C:\\c"), ["C:\\c"]); // no anchor yet
+});
+
+test("inBatch: batch membership and single-lead fallback, case-insensitive", () => {
+  assert.equal(inBatch(new Set(["C:\\a"]), "c:\\A"), true);
+  assert.equal(inBatch(null, "C:\\a", "C:\\a"), true);
+  assert.equal(inBatch(null, "C:\\a", "c:\\b"), false);
+  assert.equal(inBatch(null, "C:\\a"), false);
 });

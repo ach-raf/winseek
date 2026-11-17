@@ -5,7 +5,7 @@ import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize } from "./format";
 import { IChevL, IUp, IRefresh } from "./icons";
-import { uniformRange, nameMatches } from "./libraryLogic";
+import { uniformRange, nameMatches, rangedBatch, toggledBatch, type SelMod } from "./libraryLogic";
 import { NameFilter } from "./NameFilter";
 import {
   KINDS, chainTo, crumbs, detailWithoutHidden, driveTitle, flattenTree, formatPct, kindTotals, parentPath, pct, squarify, tileItems,
@@ -66,6 +66,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const [root, setRoot] = useState("");          // where the tree starts ("" = the drive list)
   const [focus, setFocus] = useState("");        // the folder the treemap shows
   const [sel, setSel] = useState<string | null>(null);
+  const [multi, setMulti] = useState<ReadonlySet<string> | null>(null); // Ctrl/Shift batch (real-case paths); null = just the lead
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [tab, setTab] = useState<Tab>("tree");
   const [ver, bump] = useState(0);
@@ -74,6 +75,17 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const flying = useRef(new Set<string>());
   const details = useRef(new Map<string, UsageDetail | null>());
   const rootEl = useRef<HTMLDivElement>(null);
+  const rangeAnchor = useRef<string | null>(null);  // where a Shift+click range starts
+  const sizeOf = useRef(new Map<string, number>()); // bytes of every picked item, for the batch total
+  // A batch of two or more replaces the single-selection panel; one item behaves like a plain pick.
+  const batch = multi && multi.size > 1 ? multi : null;
+  const onSet = useMemo(() => {
+    const s = new Set<string>();
+    if (batch) for (const p of batch) s.add(p.toLowerCase()); else if (sel) s.add(sel.toLowerCase());
+    return s;
+  }, [batch, sel]);
+  const isOn = useCallback((p: string) => onSet.has(p.toLowerCase()), [onSet]);
+  const batchBytes = batch ? [...batch].reduce((a, p) => a + (sizeOf.current.get(p) ?? 0), 0) : 0;
 
   const fetchDir = useCallback((p: string, force = false) => {
     if (!force && (cache.current.has(p) || flying.current.has(p))) return;
@@ -134,6 +146,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   }, []);
   const enterRoot = useCallback((p: string, pick?: string) => {
     setRoot(p); setFocus(p); setSel(pick ?? null); setTab("tree");
+    setMulti(null); rangeAnchor.current = null; // a new folder starts a fresh selection
     setOpen(new Set(p ? [p] : []));
     if (p && pick) openChain(pick, p);
   }, [openChain]);
@@ -148,35 +161,61 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   }, [start, homeData, enterRoot]);
   const showFolder = useCallback((p: string) => {
     if (!root || !within(root, p)) { enterRoot(p); return; }
-    setFocus(p); setSel(p); setTab("tree"); openChain(p, root);
+    setFocus(p); setSel(p); setMulti(null); rangeAnchor.current = p; setTab("tree"); openChain(p, root);
     setOpen((s) => new Set(s).add(p));
   }, [root, enterRoot, openChain]);
-  const pick = useCallback((e: { path: string; is_dir: boolean }) => {
+  /** One pick on a row / tile / file. Plain restarts the selection, Ctrl toggles into the batch,
+   *  Shift ranges from the anchor in that surface's shown order. Returns true when the pick was
+   *  plain, so the caller may also do its navigation (move the treemap, expand the row). */
+  const pick = useCallback((e: { path: string; size?: number | null }, mod?: SelMod): boolean => {
+    sizeOf.current.set(e.path, e.size ?? 0);
+    if (mod?.ctx && isOn(e.path)) return false; // right-click on an already selected item keeps the batch
+    // Ctrl/Shift grow the current selection (Explorer): the single lead counts as the batch's seed.
+    const cur = multi ?? (sel ? new Set([sel]) : new Set<string>());
+    if (mod?.ctrl) {
+      const next = toggledBatch(cur, e.path);
+      setSel(e.path);
+      setMulti(next.length > 0 ? new Set(next) : null);
+      return false;
+    }
+    if (mod?.shift) {
+      const next = rangedBatch(mod.order ?? [], rangeAnchor.current, e.path);
+      setSel(e.path);
+      setMulti(next.length > 0 ? new Set(next) : null);
+      return false;
+    }
     setSel(e.path);
-    if (e.is_dir) setFocus(e.path);
-  }, []);
+    setMulti(null);
+    rangeAnchor.current = e.path;
+    return true;
+  }, [multi, sel, isOn]);
   const toggle = useCallback((p: string) => setOpen((s) => { const n = new Set(s); if (n.has(p)) n.delete(p); else n.add(p); return n; }), []);
   const up = useCallback(() => {
     if (!root) return;
-    if (focus !== root) { const p = parentPath(focus); setFocus(p); setSel(focus); return; }
+    if (focus !== root) { const p = parentPath(focus); setFocus(p); setSel(focus); setMulti(null); rangeAnchor.current = focus; return; }
     const p = parentPath(root);
     if (!p) { enterRoot("", root); return; }
     enterRoot(p, root);
   }, [root, focus, enterRoot]);
   const showFile = useCallback((h: Hit) => {
     const dir = parentPath(h.path);
-    setTab("tree"); setFocus(dir); setSel(h.path); if (root) { openChain(h.path, root); }
+    setTab("tree"); setFocus(dir); setSel(h.path); setMulti(null); rangeAnchor.current = h.path; if (root) { openChain(h.path, root); }
   }, [root, openChain]);
 
   // The selection clears only once the recycle really happened (the confirm dialog may answer no).
-  const recycle = async (p: string) => { await actions.recycle([p]); setSel(null); };
+  const recycle = async (paths: string[]) => {
+    if (await actions.recycle(paths)) { setSel(null); setMulti(null); rangeAnchor.current = null; }
+  };
 
   // ---- keyboard (tree) ---------------------------------------------------------------------------------------
   const nodeRows = useMemo(() => rows.filter((r) => r.type === "node"), [rows]);
+  const treeOrder = useMemo(() => nodeRows.map((r) => r.entry!.path), [nodeRows]);
   const selIdx = sel ? nodeRows.findIndex((r) => r.entry!.path.toLowerCase() === sel.toLowerCase()) : -1;
   const goRow = (i: number) => {
     const r = nodeRows[Math.max(0, Math.min(nodeRows.length - 1, i))];
-    if (r) pick(r.entry!);
+    if (!r) return;
+    // Keys always restart the selection (Explorer behaviour) and move the treemap for folders.
+    if (pick(r.entry!)) { if (r.entry!.is_dir) setFocus(r.entry!.path); }
   };
   const onKey = (e: React.KeyboardEvent) => {
     if (e.ctrlKey || e.metaKey) return;
@@ -194,7 +233,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
       else { const pr = parentPath(cur.entry!.path); const i = nodeRows.findIndex((r) => r.entry!.path === pr); if (i >= 0) goRow(i); }
     } else if (e.key === " " && cur?.entry!.is_dir) { e.preventDefault(); toggle(cur.entry!.path); }
     else if (e.key === "Enter" && cur) { e.preventDefault(); if (cur.entry!.is_dir) enterRoot(cur.entry!.path); else actions.open(cur.entry!.path); }
-    else if (e.key === "Delete" && sel) { e.preventDefault(); void recycle(sel); }
+    else if (e.key === "Delete" && (batch || sel)) { e.preventDefault(); void recycle(batch ? [...batch] : [sel!]); }
     else if ((e.key === "Backspace" || (e.altKey && e.key === "ArrowLeft") || e.key === "Escape") && root) { e.preventDefault(); up(); }
   };
 
@@ -214,7 +253,6 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const detail = tab !== "tree" ? details.current.get(focus) : undefined;
   const detailView = detail ? detailWithoutHidden(detail, hidden) : detail;
   const selHit = sel && (tab === "files" || !selRow) ? detailView?.biggest.find((b) => b.path === sel) ?? null : null;
-  const mapSel = shownMap && sel && shownMap.entries.some((e) => e.path.toLowerCase() === sel.toLowerCase()) ? sel : null;
 
   return (
     <div className="su" ref={rootEl} tabIndex={0} data-autofocus onKeyDown={onKey}>
@@ -233,20 +271,34 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             <div className="dseg su-tabs" role="tablist" aria-label="What to list">
               {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>)}
             </div>
-            <Selected
-              entry={selRow} hit={selHit} actions={actions}
-              onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={recycle}
-            />
+            {batch ? (
+              <div className="su-sel">
+                <div className="su-st" title={[...batch].join("\n")}>
+                  <b>{batch.size.toLocaleString("en-US")} selected</b>
+                  <small>{formatSize(batchBytes)} together</small>
+                </div>
+                <div className="su-sb">
+                  <button className="btn sm" onClick={() => { setMulti(null); }} title="Back to a single selection">Clear</button>
+                  <button className="btn sm su-del" onClick={() => void recycle([...batch])} title="Move everything selected to the Recycle Bin (Delete)">Recycle all</button>
+                </div>
+              </div>
+            ) : (
+              <Selected
+                entry={selRow} hit={selHit} actions={actions}
+                onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={(p) => recycle([p])}
+              />
+            )}
           </div>
           {tab === "tree" && (
             <Tree
-              backend={backend} rows={rows} sel={sel} focus={focus}
-              onPick={pick} onToggle={toggle} onEnter={(e) => (e.is_dir ? enterRoot(e.path) : actions.open(e.path))}
+              backend={backend} rows={rows} on={isOn} lead={sel} order={treeOrder} focus={focus}
+              onPick={(e, mod) => { if (pick(e, mod)) { if (e.is_dir) setFocus(e.path); if (e.is_dir && (e.files > 0 || e.folders > 0)) toggle(e.path); } }}
+              onToggle={toggle} onEnter={(e) => (e.is_dir ? enterRoot(e.path) : actions.open(e.path))}
               onMenu={(e, x, y) => actions.menu(e.path, x, y)}
             />
           )}
           {tab === "types" && <div className="su-list"><Types detail={detailView} total={shownMap?.size ?? 0} /></div>}
-          {tab === "files" && <div className="su-list"><Biggest backend={backend} detail={detailView} base={focus} sel={sel} onSel={setSel} onOpen={(h) => actions.open(h.path)} onMenu={(h, x, y) => actions.menu(h.path, x, y)} /></div>}
+          {tab === "files" && <div className="su-list"><Biggest backend={backend} detail={detailView} base={focus} on={isOn} lead={sel} onSel={(h, mod) => { pick(h, mod); }} onOpen={(h) => actions.open(h.path)} onMenu={(h, x, y) => actions.menu(h.path, x, y)} /></div>}
         </aside>
         <section className={"su-map" + (mapPref.open ? "" : " shut")} style={mapPref.open ? { height: mapPref.h } : undefined} aria-label="Treemap">
           {mapPref.open && <div className="su-grip" role="separator" aria-orientation="horizontal" aria-label="Resize the treemap" title="Drag to resize" onPointerDown={dragMap} />}
@@ -257,11 +309,11 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             {shownMap && <Legend data={shownMap} />}
           </div>
           {mapPref.open && (shownMap
-            ? <Treemap data={shownMap} get={get} want={fetchDir} sel={mapSel} dim={!mapData} onSel={(e) => { setSel(e.path); if (root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
+            ? <Treemap data={shownMap} get={get} want={fetchDir} on={isOn} lead={sel} dim={!mapData} onSel={(e, mod) => { if (pick(e, mod) && root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
             : <div className="su-tm"><div className="su-none"><span className="spin" aria-label="Loading" /></div></div>)}
         </section>
       </div>
-      <KeyHints className="su-hints" items={[["↑ ↓", "Move"], ["→ ←", "Expand / collapse"], ["Space", "Expand"], ["↵", "Open"], ["Del", "Recycle"], ["Backspace", "Up a folder"], ["Right-click", "More"]]} />
+      <KeyHints className="su-hints" items={[["↑ ↓", "Move"], ["→ ←", "Expand / collapse"], ["Space", "Expand"], ["↵", "Open"], ["Del", "Recycle"], ["Ctrl+Click", "Select many"], ["Backspace", "Up a folder"], ["Right-click", "More"]]} />
     </div>
   );
 }
@@ -351,9 +403,9 @@ function Drives({ data, onGo }: { data: DiskUsage; onGo: (p: string) => void }) 
 
 // ---- the folder tree --------------------------------------------------------------------------------------------
 
-function Tree({ backend, rows, sel, focus, onPick, onToggle, onEnter, onMenu }: {
-  backend: Backend; rows: TreeRow[]; sel: string | null; focus: string;
-  onPick: (e: UsageEntry) => void; onToggle: (p: string) => void; onEnter: (e: UsageEntry) => void; onMenu: (e: UsageEntry, x: number, y: number) => void;
+function Tree({ backend, rows, on, lead, order, focus, onPick, onToggle, onEnter, onMenu }: {
+  backend: Backend; rows: TreeRow[]; on: (p: string) => boolean; lead: string | null; order: string[]; focus: string;
+  onPick: (e: UsageEntry, mod?: SelMod) => void; onToggle: (p: string) => void; onEnter: (e: UsageEntry) => void; onMenu: (e: UsageEntry, x: number, y: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [top, setTop] = useState(0);
@@ -366,15 +418,15 @@ function Tree({ backend, rows, sel, focus, onPick, onToggle, onEnter, onMenu }: 
     return () => ro.disconnect();
   }, []);
 
-  const selLow = sel?.toLowerCase();
-  const idx = selLow ? rows.findIndex((r) => r.type === "node" && r.entry!.path.toLowerCase() === selLow) : -1;
+  const leadLow = lead?.toLowerCase();
+  const idx = leadLow ? rows.findIndex((r) => r.type === "node" && r.entry!.path.toLowerCase() === leadLow) : -1;
   // keep the selection on screen when it moves (keyboard, a treemap click, "show in folder")
   useEffect(() => {
     const el = box.current;
     if (!el || idx < 0) return;
     if (idx * ROW_H < el.scrollTop) el.scrollTop = idx * ROW_H;
     else if ((idx + 1) * ROW_H > el.scrollTop + el.clientHeight) el.scrollTop = (idx + 1) * ROW_H - el.clientHeight;
-  }, [idx, sel]);
+  }, [idx, lead]);
 
   const [from, to] = uniformRange(rows.length, ROW_H, top, h);
   return (
@@ -387,14 +439,15 @@ function Tree({ backend, rows, sel, focus, onPick, onToggle, onEnter, onMenu }: 
           if (r.type === "more") return <div key={r.key} className="su-tr dim" style={{ top: y, height: ROW_H, ...pad }}><span className="su-car" />+ {num(r.more!.count)} smaller items · {formatSize(r.more!.size)}</div>;
           const e = r.entry!;
           const p = pct(e.size, r.base);
-          const on = e.path.toLowerCase() === selLow;
+          const picked = on(e.path);
+          const isLead = lead != null && e.path.toLowerCase() === leadLow;
           return (
             <div
-              key={r.key} role="treeitem" aria-expanded={e.is_dir ? !!r.open : undefined} aria-selected={on}
-              className={"su-tr" + (on ? " on" : "") + (e.path === focus ? " foc" : "")}
+              key={r.key} role="treeitem" aria-expanded={e.is_dir ? !!r.open : undefined} aria-selected={picked}
+              className={"su-tr" + (picked ? " on" : "") + (isLead ? " lead" : "") + (e.path === focus ? " foc" : "")}
               style={{ top: y, height: ROW_H, ...pad, ...kc(e.kind) }}
-              onClick={() => { onPick(e); if (e.is_dir && (e.files > 0 || e.folders > 0)) onToggle(e.path); }} onDoubleClick={() => onEnter(e)}
-              onContextMenu={(ev) => { ev.preventDefault(); onPick(e); onMenu(e, ev.clientX, ev.clientY); }}
+              onClick={(ev) => onPick(e, { ctrl: ev.ctrlKey, shift: ev.shiftKey, order })} onDoubleClick={() => onEnter(e)}
+              onContextMenu={(ev) => { ev.preventDefault(); onPick(e, { ctx: true, order }); onMenu(e, ev.clientX, ev.clientY); }}
               title={`${e.path}\n${formatSize(e.size)} · ${num(e.files)} file${e.files === 1 ? "" : "s"}`}
             >
               {e.is_dir && (e.files > 0 || e.folders > 0)
@@ -446,9 +499,9 @@ function layoutTree(data: DiskUsage, get: (p: string) => DiskUsage | undefined, 
   return { nodes, need: [...need] };
 }
 
-function Treemap({ data, get, want, sel, dim, onSel, onOpen, onMenu }: {
-  data: DiskUsage; get: (p: string) => DiskUsage | undefined; want: (p: string) => void; sel: string | null; dim: boolean;
-  onSel: (e: UsageEntry) => void; onOpen: (e: UsageEntry) => void; onMenu: (e: UsageEntry, x: number, y: number) => void;
+function Treemap({ data, get, want, on, lead, dim, onSel, onOpen, onMenu }: {
+  data: DiskUsage; get: (p: string) => DiskUsage | undefined; want: (p: string) => void; on: (p: string) => boolean; lead: string | null; dim: boolean;
+  onSel: (e: UsageEntry, mod?: SelMod) => void; onOpen: (e: UsageEntry) => void; onMenu: (e: UsageEntry, x: number, y: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [d, setD] = useState({ w: 0, h: 0 });
@@ -462,7 +515,7 @@ function Treemap({ data, get, want, sel, dim, onSel, onOpen, onMenu }: {
 
   const lay = useMemo(() => layoutTree(data, get, { x: 0, y: 0, w: d.w, h: d.h }), [data, get, d.w, d.h]);
   useEffect(() => { lay.need.forEach(want); }, [lay, want]);
-  const selLow = sel?.toLowerCase();
+  const leadLow = lead?.toLowerCase();
 
   return (
     <div className={"su-tm" + (dim ? " dim" : "")} ref={box}>
@@ -477,23 +530,24 @@ function Treemap({ data, get, want, sel, dim, onSel, onOpen, onMenu }: {
           );
         }
         const e = n.e!;
-        const on = e.path.toLowerCase() === selLow;
+        const picked = on(e.path);
+        const isLead = lead != null && e.path.toLowerCase() === leadLow;
         const tip = `${e.name}\n${formatSize(e.size)} · ${formatPct(pct(e.size, data.size))} of this folder${e.is_dir ? ` · ${num(e.files)} files` : ""}`;
         const common = {
           title: tip, tabIndex: -1,
-          onClick: (ev: React.MouseEvent) => { ev.stopPropagation(); onSel(e); },
+          onClick: (ev: React.MouseEvent) => { ev.stopPropagation(); onSel(e, { ctrl: ev.ctrlKey }); },
           onDoubleClick: (ev: React.MouseEvent) => { ev.stopPropagation(); onOpen(e); },
-          onContextMenu: (ev: React.MouseEvent) => { ev.preventDefault(); ev.stopPropagation(); onSel(e); onMenu(e, ev.clientX, ev.clientY); },
+          onContextMenu: (ev: React.MouseEvent) => { ev.preventDefault(); ev.stopPropagation(); onSel(e, { ctx: true }); onMenu(e, ev.clientX, ev.clientY); },
         };
         if (n.frame) {
           return (
-            <div key={n.key} className={"su-frame" + (on ? " on" : "")} style={{ ...st, ...kc(e.kind) }} {...common}>
+            <div key={n.key} className={"su-frame" + (picked ? " on" : "") + (isLead ? " lead" : "")} style={{ ...st, ...kc(e.kind) }} {...common}>
               <span className="su-fh"><b>{e.name}</b><em>{formatSize(e.size)}</em></span>
             </div>
           );
         }
         return (
-          <button key={n.key} style={{ ...st, ...kc(e.kind) }} className={"su-tile" + (e.is_dir ? " dir" : "") + (on ? " on" : "")} {...common}>
+          <button key={n.key} style={{ ...st, ...kc(e.kind) }} className={"su-tile" + (e.is_dir ? " dir" : "") + (picked ? " on" : "") + (isLead ? " lead" : "")} {...common}>
             {n.w > 56 && n.h > 28 && (
               <span className="su-tl">
                 <b>{e.name}</b>
@@ -540,9 +594,9 @@ function Types({ detail, total }: { detail: UsageDetail | null | undefined; tota
   );
 }
 
-function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
-  backend: Backend; detail: UsageDetail | null | undefined; base: string; sel: string | null;
-  onSel: (p: string) => void; onOpen: (h: Hit) => void; onMenu: (h: Hit, x: number, y: number) => void;
+function Biggest({ backend, detail, base, on, lead, onSel, onOpen, onMenu }: {
+  backend: Backend; detail: UsageDetail | null | undefined; base: string; on: (p: string) => boolean; lead: string | null;
+  onSel: (h: Hit, mod?: SelMod) => void; onOpen: (h: Hit) => void; onMenu: (h: Hit, x: number, y: number) => void;
 }) {
   const [q, setQ] = useState("");
   if (detail === undefined) return <div className="su-none"><span className="spin" aria-label="Loading" /></div>;
@@ -557,6 +611,7 @@ function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
       </>
     );
   }
+  const shownPaths = shown.map((h) => h.path);
   return (
     <>
       <NameFilter value={q} onChange={setQ} label="Filter the biggest files by name" />
@@ -564,12 +619,14 @@ function Biggest({ backend, detail, base, sel, onSel, onOpen, onMenu }: {
       {shown.map((h) => {
         const rel = h.path.slice(cut0);
         const cut = rel.lastIndexOf("\\");
+        const picked = on(h.path);
+        const isLead = lead != null && lead.toLowerCase() === h.path.toLowerCase();
         return (
           <div
-            key={h.path} role="option" aria-selected={sel === h.path}
-            className={"su-row" + (sel === h.path ? " on" : "")}
-            onClick={() => onSel(h.path)} onDoubleClick={() => onOpen(h)}
-            onContextMenu={(ev) => { ev.preventDefault(); onSel(h.path); onMenu(h, ev.clientX, ev.clientY); }}
+            key={h.path} role="option" aria-selected={picked}
+            className={"su-row" + (picked ? " on" : "") + (isLead ? " lead" : "")}
+            onClick={(ev) => onSel(h, { ctrl: ev.ctrlKey, shift: ev.shiftKey, order: shownPaths })} onDoubleClick={() => onOpen(h)}
+            onContextMenu={(ev) => { ev.preventDefault(); onSel(h, { ctx: true, order: shownPaths }); onMenu(h, ev.clientX, ev.clientY); }}
           >
             <FileIcon name={h.name} isDir={false} src={backend.iconUrl(h.path, false, false)} />
             <span className="su-rn"><b title={h.name}>{h.name}</b><small title={h.path}>{cut > 0 ? rel.slice(0, cut) : "In this folder"}</small></span>

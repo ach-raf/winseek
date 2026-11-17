@@ -410,3 +410,44 @@ export function parseFoldSet(v: unknown): Set<string> {
   if (!Array.isArray(v)) return new Set();
   return new Set(v.filter((x): x is string => typeof x === "string"));
 }
+
+// ---- multi-select (Ctrl+click toggle, Shift+click range) ----------------------------------------------------
+
+/** What a click meant: the held modifiers plus, for Shift, the order the rows are shown in right now. */
+export interface SelMod {
+  ctrl?: boolean;
+  shift?: boolean;
+  /** Context-menu click: an already-selected item keeps the whole batch (Explorer behaviour). */
+  ctx?: boolean;
+  /** The visible order of keys (paths) in the surface that was clicked, for Shift ranges. */
+  order?: readonly string[];
+}
+
+/** Is `path` one of the batch keys? Paths compare case-insensitively (Windows paths). */
+export function inBatch(batch: ReadonlySet<string> | null, path: string, lead?: string | null): boolean {
+  const p = path.toLowerCase();
+  if (batch) { for (const x of batch) if (x.toLowerCase() === p) return true; return false; }
+  return lead !== undefined && lead !== null && lead.toLowerCase() === p;
+}
+
+/** Ctrl+click: add or remove one key from the batch (membership ignores case; the stored paths keep
+ *  their real case, they are what a batch action hands to the backend). Toggling off may empty the
+ *  batch — the caller then falls back to the single-lead selection. */
+export function toggledBatch(cur: ReadonlySet<string>, key: string): string[] {
+  const k = key.toLowerCase();
+  const out: string[] = [];
+  let had = false;
+  for (const x of cur) { if (x.toLowerCase() === k) had = true; else out.push(x); }
+  if (!had) out.push(key);
+  return out;
+}
+
+/** Shift+click: everything between the anchor and the clicked key in the order shown now;
+ *  an anchor that is no longer on screen (or none yet) means just the clicked key. */
+export function rangedBatch(order: readonly string[], anchor: string | null, key: string): string[] {
+  const b = order.indexOf(key);
+  const a = anchor ? order.findIndex((x) => x.toLowerCase() === anchor.toLowerCase()) : -1;
+  if (a < 0 || b < 0 || a === b) return [key];
+  const [lo, hi] = a < b ? [a, b] : [b, a];
+  return order.slice(lo, hi + 1);
+}

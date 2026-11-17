@@ -5,7 +5,7 @@ import { FileIcon } from "./FileIcon";
 import { ThumbImg } from "./ThumbImg";
 import { IGrid, IRows } from "./icons";
 import { formatDate, formatSize, kindOf, splitDir } from "./format";
-import { activeSection, moveMosaic, mosaicMetrics, packMosaic, parseFoldSet, railEntries, tileBox, type GalleryView } from "./libraryLogic";
+import { activeSection, inBatch, moveMosaic, mosaicMetrics, packMosaic, parseFoldSet, railEntries, rangedBatch, tileBox, toggledBatch, type GalleryView, type SelMod } from "./libraryLogic";
 
 const PAD = 22;
 const GAP = 4;
@@ -53,8 +53,9 @@ export interface LibActions {
   /** Copy the file's full path to the clipboard. */
   copy(path: string): void;
   menu(path: string, x: number, y: number): void;
-  /** Recycle Bin (with the undo toast). Never a hard delete. */
-  recycle(paths: string[]): Promise<void>;
+  /** Recycle Bin (with the undo toast and the are-you-sure gate). Never a hard delete.
+   *  Resolves true only when the recycle really happened — a "no" on the confirm keeps the selection. */
+  recycle(paths: string[]): Promise<boolean>;
 }
 
 /** One more thing a grid can do with the selected file (a collection's "Not in this collection"). */
@@ -105,6 +106,10 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const [scrollTop, setScrollTop] = useState(0);
   const [size, setSize] = useState({ w: 900, h: 600 });
   const [sel, setSel] = useState(0);
+  // Ctrl/Shift batch: real-case paths of every selected item; null = just the `sel` index.
+  const [multi, setMulti] = useState<ReadonlySet<string> | null>(null);
+  const rangeAnchor = useRef<string | null>(null); // where a Shift+click range starts
+  const batch = multi && multi.size > 1 ? multi : null;
   // With a permanent preview pane (collections) it starts open; Space collapses and reopens it.
   const [pvOpen, setPvOpen] = useState(preview);
   const [pvItem, setPvItem] = useState<GridItem | null>(null);
@@ -128,6 +133,8 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const secBytes = useMemo(() => sections.map((s) => s.items.reduce((a, i) => a + (i.size ?? 0), 0)), [sections]);
 
   const flat = useMemo(() => eff.flatMap((s) => s.items), [eff]);
+  const flatPaths = useMemo(() => flat.map((i) => i.path), [flat]);
+  const byPath = useMemo(() => new Map(flat.map((i) => [i.path, i])), [flat]);
   const isEmpty = flat.length === 0;
   const sectionStart = useMemo(() => {
     const out: number[] = [];
@@ -230,7 +237,42 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     return () => window.clearTimeout(t);
   }, [pvOpen, curPath, pvItem]);
 
-  const move = useCallback((i: number) => { toScroll.current = true; setSel(i); }, []);
+  // The lead item is the keyboard/preview selection; everything in the batch is "on" too.
+  const isOn = useCallback((p: string) => inBatch(batch, p, flat[sel]?.path), [batch, flat, sel]);
+  const batchBytes = useMemo(
+    () => (batch ? [...batch].reduce((a, p) => a + (byPath.get(p)?.size ?? 0), 0) : 0),
+    [batch, byPath],
+  );
+
+  /** One click on a tile/row: plain restarts, Ctrl toggles into the batch, Shift ranges from the
+   *  anchor in the shown order. Returns true when the pick was plain (the caller then sets the
+   *  index and re-focuses the grid). */
+  const pickItem = useCallback((it: GridItem, mod?: SelMod): boolean => {
+    if (mod?.ctx && isOn(it.path)) return false; // right-click on an already selected item keeps the batch
+    const leadTo = (path: string) => {
+      const idx = flatPaths.indexOf(path);
+      if (idx >= 0) setSel(idx);
+    };
+    // Ctrl/Shift grow the current selection (Explorer): the single lead counts as the batch's seed.
+    const cur = multi ?? (flat[sel] ? new Set([flat[sel]!.path]) : new Set<string>());
+    if (mod?.ctrl) {
+      const next = toggledBatch(cur, it.path);
+      leadTo(it.path);
+      setMulti(next.length > 0 ? new Set(next) : null);
+      return false;
+    }
+    if (mod?.shift) {
+      const next = rangedBatch(mod.order ?? flatPaths, rangeAnchor.current, it.path);
+      leadTo(it.path);
+      setMulti(next.length > 0 ? new Set(next) : null);
+      return false;
+    }
+    setMulti(null);
+    rangeAnchor.current = it.path;
+    return true;
+  }, [multi, sel, flat, isOn, flatPaths]);
+
+  const move = useCallback((i: number) => { toScroll.current = true; setSel(i); setMulti(null); }, []);
 
   const onKey = (e: React.KeyboardEvent) => {
     if (e.ctrlKey && e.key === "Enter") { if (cur) { e.preventDefault(); actions.reveal(cur.path); } return; }
@@ -257,7 +299,14 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
       case " ": e.preventDefault(); if (cur) setPvOpen((o) => !o); break;
       case "Escape": if (pvOpen) { e.preventDefault(); setPvOpen(false); } break;
       case "Enter": if (cur) { e.preventDefault(); actions.open(cur.path); } break;
-      case "Delete": if (cur) { e.preventDefault(); actions.recycle([cur.path]); } break;
+      case "Delete": {
+        const paths = batch ? [...batch] : cur ? [cur.path] : [];
+        if (paths.length > 0) {
+          e.preventDefault();
+          void actions.recycle(paths).then((ok) => { if (ok) setMulti(null); });
+        }
+        break;
+      }
       default:
         if (extra && cur && e.key.toLowerCase() === extra.key.toLowerCase()) { e.preventDefault(); extra.run(cur); }
         break;
@@ -273,7 +322,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     if (sk && folds.has(sk)) toggleFold(sk);
     el.scrollTop = (view === "list" ? listMetrics.top[section] : metrics.top[section]) ?? 0;
     const first = sectionStart[section];
-    if (first !== undefined) setSel(first);
+    if (first !== undefined) { setSel(first); setMulti(null); }
     root.current?.focus({ preventScroll: true });
   };
 
@@ -327,14 +376,15 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
                   const it = flat[k];
                   if (!it) continue;
                   const { tail } = splitDir(it.path);
+                  const picked = isOn(it.path);
                   rows.push(
-                    <div key={it.path} role="option" aria-selected={k === sel}
-                         className={"lg-row" + (k === sel ? " sel" : "")}
+                    <div key={it.path} role="option" aria-selected={picked}
+                         className={"lg-row" + (picked ? " sel" : "") + (k === sel ? " lead" : "")}
                          style={{ top: head + ri * LIST_H, height: LIST_H }}
                          title={`${it.path}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}`}
-                         onClick={() => { setSel(k); root.current?.focus({ preventScroll: true }); }}
+                         onClick={(ev) => { if (pickItem(it, { ctrl: ev.ctrlKey, shift: ev.shiftKey, order: flatPaths })) { setSel(k); root.current?.focus({ preventScroll: true }); } }}
                          onDoubleClick={() => actions.open(it.path)}
-                         onContextMenu={(e) => { e.preventDefault(); setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}>
+                         onContextMenu={(e) => { e.preventDefault(); if (pickItem(it, { ctx: true, order: flatPaths })) setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}>
                       <span className="lg-rth"><Thumb backend={backend} item={it} px={48} /></span>
                       <span className="lg-rn">{it.name}</span>
                       <span className="lg-rd">{tail}</span>
@@ -361,18 +411,19 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
                 if (top + b.y + b.h < lo || top + b.y > hi) continue;
                 const it = flat[k];
                 if (!it) continue;
+                const picked = isOn(it.path);
                 tiles.push(
                   <button
                     key={it.path}
                     role="option"
-                    aria-selected={k === sel}
-                    className={"tl" + (t.w === 2 && t.h === 2 ? " w2" : t.w === 2 ? " wide" : "") + (isDocTile(it.name) ? " doc" : "") + (k === sel ? " sel" : "")}
+                    aria-selected={picked}
+                    className={"tl" + (t.w === 2 && t.h === 2 ? " w2" : t.w === 2 ? " wide" : "") + (isDocTile(it.name) ? " doc" : "") + (picked ? " sel" : "") + (k === sel ? " lead" : "")}
                     style={{ left: PAD + t.col * (cell + GAP), top: b.y, width: t.w * cell + (t.w - 1) * GAP, height: b.h }}
                     tabIndex={-1}
                     title={`${it.name}${it.score !== undefined ? ` · match ${it.score.toFixed(2)}` : ""}${it.mtime ? ` · ${formatDate(it.mtime)}` : ""}`}
-                    onClick={() => { setSel(k); root.current?.focus({ preventScroll: true }); }}
+                    onClick={(ev) => { if (pickItem(it, { ctrl: ev.ctrlKey, shift: ev.shiftKey, order: flatPaths })) { setSel(k); root.current?.focus({ preventScroll: true }); } }}
                     onDoubleClick={() => actions.open(it.path)}
-                    onContextMenu={(e) => { e.preventDefault(); setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}
+                    onContextMenu={(e) => { e.preventDefault(); if (pickItem(it, { ctx: true, order: flatPaths })) setSel(k); actions.menu(it.path, e.clientX, e.clientY); }}
                   >
                     <Thumb backend={backend} item={it} px={t.w === 2 ? 480 : 256} />
                     <span className="lg-name">{it.name}</span>
@@ -390,6 +441,11 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
         </div>
         <div className="lg-info" aria-live="polite">
           <span>{flat.length.toLocaleString("en-US")} {noun}{flat.length === 1 ? "" : "s"}</span>
+          {batch && (
+            <span className="lg-selcnt" title={[...batch].join("\n")}>
+              {batch.size.toLocaleString("en-US")} selected{batchBytes > 0 ? ` · ${formatSize(batchBytes)}` : ""}
+            </span>
+          )}
           {cur && (
             <span className="lg-cur" title={cur.path}>
               {cur.name}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}
@@ -408,6 +464,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
             <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
             <span><kbd>Shift F10</kbd> More</span>
             <span><kbd>Del</kbd> Recycle</span>
+            <span><kbd>Ctrl·Click</kbd> Select many</span>
           </span>
         </div>
       </div>
