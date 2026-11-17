@@ -351,28 +351,40 @@ fn search_files(deps: &Deps, args: &Value) -> Result<Value, String> {
 /// RA5: keep list-shaped results under ~1 MB by cutting the `hits` list, flagging truncated.
 fn cap_size(mut v: Value) -> Value {
     const CAP: usize = 1_000_000;
-    if serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(CAP + 1) <= CAP {
+    let total = serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(CAP + 1);
+    if total <= CAP {
         return v;
     }
     // Take `hits` out of `v` so the size probe can read the rest without a borrow conflict.
     let mut hits = v.get_mut("hits").map(Value::take).unwrap_or(Value::Null);
-    // Shorten the list until the whole payload fits again (shortest borrow per step).
+    let len = hits.as_array().map(Vec::len).unwrap_or(0);
+    if len > 1 {
+        // Estimate how many rows fit from the average row cost, then fix up by halving:
+        // one serialisation plus a couple of probes, instead of re-serialising the whole
+        // payload once per dropped row (thousands of rows used to mean hundreds of passes).
+        let rest = serde_json::to_vec(&v).map(|b| b.len()).unwrap_or(total);
+        let row_avg = (total.saturating_sub(rest) / len).max(1);
+        let keep = CAP.saturating_sub(rest) / row_avg;
+        hits.as_array_mut().unwrap().truncate(keep.clamp(1, len));
+        while serde_json::to_vec(&(&v, &hits))
+            .map(|b| b.len())
+            .unwrap_or(CAP + 1)
+            > CAP
+        {
+            let n = hits.as_array().map(Vec::len).unwrap_or(0);
+            if n <= 1 {
+                break;
+            }
+            hits.as_array_mut().unwrap().truncate(n / 2);
+        }
+        v["truncated"] = json!(true);
+    }
     if serde_json::to_vec(&(&v, &hits))
         .map(|b| b.len())
         .unwrap_or(CAP + 1)
         > CAP
     {
-        loop {
-            let len = hits.as_array().map(Vec::len).unwrap_or(0);
-            let over = serde_json::to_vec(&(&v, &hits))
-                .map(|b| b.len())
-                .unwrap_or(CAP + 1)
-                > CAP;
-            if !over || len <= 1 {
-                break;
-            }
-            hits.as_array_mut().unwrap().pop();
-        }
+        // Nothing left to cut (a single oversized row, or no list at all): still flag it.
         v["truncated"] = json!(true);
     }
     v["hits"] = hits;
