@@ -176,33 +176,47 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, flat.length - 1))); }, [flat.length]);
   useEffect(() => { root.current?.focus({ preventScroll: true }); }, [isEmpty]);
 
-  // Keep the selected item on screen (below the sticky heading), in either view.
+  // Moving the selection (keys, rail) scrolls it into view below the sticky heading. A layout
+  // change under a stationary selection — preview pane open/close, window resize, folded month,
+  // filter — instead re-anchors the scroll to the item's old viewport spot: toggling the preview
+  // moves the pane, never the results, so the tile the user is looking at does not jump out of
+  // view (and does not "come back" on close either).
   const toScroll = useRef(false);
-  useEffect(() => {
-    const el = box.current;
-    if (!el || !toScroll.current) return;
-    toScroll.current = false;
-    let y: number, ih: number;
+  // Which index sat where in the viewport after the last settle. A geometry change re-anchors
+  // only when it is still the same item — a click on another tile must never scroll.
+  const anchor = useRef<{ sel: number; rel: number } | null>(null);
+  // Document-space top and height of the selected item under the current metrics (either view).
+  const selBox = useCallback((): { y: number; h: number } | null => {
     if (view === "list") {
       let si = -1;
       for (let i = sectionStart.length - 1; i >= 0; i--) if ((sectionStart[i] ?? 0) <= sel) { si = i; break; }
-      if (si < 0) return;
+      if (si < 0) return null;
       const head = eff[si]?.label ? HEAD_H : NO_HEAD;
-      y = (listMetrics.top[si] ?? 0) + head + (sel - (sectionStart[si] ?? 0)) * LIST_H;
-      ih = LIST_H;
-    } else {
-      const t = mosaic.tiles[sel];
-      if (!t) return;
-      const b = tileBox(t, rowH, GAP, metrics.head[t.section] ?? 0);
-      y = (metrics.top[t.section] ?? 0) + b.y;
-      ih = b.h;
+      return { y: (listMetrics.top[si] ?? 0) + head + (sel - (sectionStart[si] ?? 0)) * LIST_H, h: LIST_H };
     }
-    const margin = 8, headroom = HEAD_H + margin;
-    let next = el.scrollTop;
-    if (y - headroom < next) next = Math.max(0, y - headroom);
-    else if (y + ih + margin > next + el.clientHeight) next = y + ih + margin - el.clientHeight;
-    if (next !== el.scrollTop) el.scrollTop = next;
-  }, [sel, view, mosaic, metrics, listMetrics, sectionStart, eff]);
+    const t = mosaic.tiles[sel];
+    if (!t) return null;
+    const b = tileBox(t, rowH, GAP, metrics.head[t.section] ?? 0);
+    return { y: (metrics.top[t.section] ?? 0) + b.y, h: b.h };
+  }, [view, sectionStart, eff, listMetrics, sel, mosaic, rowH, metrics]);
+  useLayoutEffect(() => {
+    const el = box.current;
+    if (!el) { anchor.current = null; return; }
+    const sb = selBox();
+    if (!sb) { anchor.current = null; return; }
+    if (toScroll.current) {
+      toScroll.current = false;
+      const margin = 8, headroom = HEAD_H + margin;
+      let next = el.scrollTop;
+      if (sb.y - headroom < next) next = Math.max(0, sb.y - headroom);
+      else if (sb.y + sb.h + margin > next + el.clientHeight) next = sb.y + sb.h + margin - el.clientHeight;
+      if (next !== el.scrollTop) el.scrollTop = next;
+    } else if (anchor.current?.sel === sel) {
+      const next = sb.y - anchor.current.rel;
+      if (next !== el.scrollTop) el.scrollTop = next; // keep the item's exact viewport spot
+    }
+    anchor.current = { sel, rel: sb.y - el.scrollTop };
+  }, [sel, selBox]);
 
   const cur = flat[sel] ?? null;
   // The preview follows the selection once it settles (arrowing must not load every file).
@@ -277,7 +291,13 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   return (
     <div className="lg" ref={root} tabIndex={0} data-autofocus onKeyDown={onKey} role="listbox" aria-label="Photos">
       <div className="lg-main">
-        <div className="lg-scroll" ref={box} onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}>
+        <div className="lg-scroll" ref={box} onScroll={(e) => {
+          setScrollTop(e.currentTarget.scrollTop);
+          // Manual scrolling moves the viewport, not the layout: re-record where the selection
+          // sits so a later geometry change (preview pane, resize) re-anchors from the new spot.
+          const sb = selBox();
+          if (sb) anchor.current = { sel, rel: sb.y - e.currentTarget.scrollTop };
+        }}>
           <div className="lg-space" style={{ height: view === "list" ? listMetrics.total : metrics.total }}>
             {eff.map((s, si) => {
               const top = (view === "list" ? listMetrics.top[si] : metrics.top[si]) ?? 0;
