@@ -1,0 +1,70 @@
+import { QueryClient } from "@tanstack/react-query";
+
+/**
+ * The react-query layer: client defaults, the query-key factory and the invalidation entry points,
+ * in one place. Everything that reads a query and everything that invalidates it uses the same
+ * factory, so a key can never drift between the two (single source of truth per data type).
+ */
+
+/** One client per window: the popup and the library window load the bundle separately, so each
+ *  JS context gets its own cache. Defaults mirror how winseek's local IPC behaves: answers come
+ *  from our own process and only change when the app itself says so — no retries, no refetch on
+ *  focus/reconnect; staleness is decided by explicit invalidation, never by time. */
+export function createQueryClient(): QueryClient {
+  return new QueryClient({
+    defaultOptions: {
+      queries: {
+        retry: false,
+        refetchOnWindowFocus: false,
+        refetchOnReconnect: false,
+        staleTime: Infinity,
+      },
+    },
+  });
+}
+
+/** The query keys. */
+export const qk = {
+  /** Semantic-layer status, polled (1 s with a setup panel open, 10 s otherwise). One shared entry
+   *  for every consumer — the popup and the Library used to poll independently. */
+  t1: ["t1"] as const,
+  /** The Library's picture list. */
+  libImages: ["library", "images"] as const,
+  /** Exact duplicate groups. */
+  libDups: ["library", "dups"] as const,
+  /** The largest files. */
+  libBig: ["library", "big"] as const,
+  /** The saved collection definitions (only ever written by `librarySetCollections`). */
+  libColls: ["library", "colls"] as const,
+  /** One query collection's evaluated hits; `sig` pins query/threshold/exclusions/generation/state. */
+  collEval: (name: string, sig: string) => ["library", "collEval", name, sig] as const,
+  /** Image dimensions for one duplicate group (keyed by the member paths). */
+  dims: (pathsKey: string) => ["library", "dims", pathsKey] as const,
+  /** The standalone library window's volume poll. */
+  libStatus: ["library", "status"] as const,
+  /** One meaning-search answer (popup), pinned to the popup epoch (re-show), the typed text and the plan. */
+  sem: (epoch: number, q: string, planKey: string) => ["sem", epoch, q, planKey] as const,
+} as const;
+
+/** The index lists that can change while the Library is hidden (files deleted in the search
+ *  popup): re-read when the Library becomes the visible page again (the old `reveal` bump).
+ *  Collection evaluations are deliberately not here — they re-run only when their inputs change. */
+export function refreshLibraryIndex(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: qk.libImages });
+  qc.invalidateQueries({ queryKey: qk.libDups });
+  qc.invalidateQueries({ queryKey: qk.libBig });
+}
+
+/** New embeddings arrived (the settled `done` count moved): the picture list and dup groups are
+ *  read again; collections re-key themselves because the generation is part of their sig. */
+export function refreshLibraryEmbeddings(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: qk.libImages });
+  qc.invalidateQueries({ queryKey: qk.libDups });
+}
+
+/** An undo put files back: the index lists and every collection's evaluated hits are read again
+ *  (the collection definitions themselves are only ever written from this window's saves). */
+export function refreshLibraryAfterUndo(qc: QueryClient): void {
+  refreshLibraryIndex(qc);
+  qc.invalidateQueries({ queryKey: ["library", "collEval"] });
+}

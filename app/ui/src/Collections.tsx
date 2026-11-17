@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { Backend, Collection, LibImage, SemanticHit, Tier1Status } from "./types";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Backend, Collection, LibImage, SemanticHit, SemanticResult, Tier1Status } from "./types";
 import { Gallery, GalleryViewToggle, type GallerySection, type GridExtra, type GridItem, type LibActions } from "./Gallery";
 import { NameFilter } from "./NameFilter";
 import { KeyHints } from "./Hint";
@@ -7,6 +8,7 @@ import { baseName } from "./Semantic";
 import { kindOf } from "./format";
 import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./libraryLogic";
 import { useStoredValue } from "./hooks";
+import { qk } from "./qk";
 import { IChevL, IPlus } from "./icons";
 
 interface Eval {
@@ -25,7 +27,11 @@ const CAP = 500;
 const THRESHOLD_MIN = 0.4;
 const THRESHOLD_MAX = 0.9;
 const NEW_THRESHOLD = 0.62;
-const sigOf = (c: Collection, gen: number) => `${c.query}|${c.threshold}|${c.graphics ? 1 : 0}|${(c.exclude ?? []).join("\n")}|${gen}`;
+/** What a collection's evaluation depends on: a change in any of these re-keys the query (a fresh
+ *  fetch). The generation (new embeddings) and the meaning-search state (models arriving turn "off"
+ *  collections on) are part of it, so both re-evaluate without any manual bookkeeping. */
+const sigOf = (c: Collection, gen: number, t1state: string | undefined) =>
+  `${c.query}|${c.threshold}|${c.graphics ? 1 : 0}|${(c.exclude ?? []).join("\n")}|${gen}|${t1state ?? ""}`;
 
 interface Draft {
   /** Name of the collection being edited; null = new. */
@@ -37,7 +43,7 @@ interface Draft {
   exclude: string[];
 }
 
-export function Collections({ backend, images, hidden, t1, gen, epoch, actions, onError, active }: {
+export function Collections({ backend, images, hidden, t1, gen, actions, onError, active }: {
   backend: Backend;
   /** The user's own pictures, app graphics left out (for the screenshots collection). */
   images: LibImage[];
@@ -45,46 +51,55 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   t1: Tier1Status | null;
   /** Bumps when new embeddings arrived (collections are evaluated again). */
   gen: number;
-  epoch: number;
   actions: LibActions;
   onError: (e: unknown) => void;
   /** This tab is the visible one (Library keep-alive): false mutes the window key handling. */
   active: boolean;
 }) {
-  const [list, setList] = useState<Collection[] | null>(null);
-  const [evals, setEvals] = useState<Record<string, Eval>>({});
+  const qc = useQueryClient();
   const [selName, setSelName] = useState<string | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [confirmDel, setConfirmDel] = useState(false);
   const [formErr, setFormErr] = useState<string | null>(null);
-  const run = useRef(0);
-  const sigs = useRef<Record<string, string>>({});
 
-  useEffect(() => { backend.libraryCollections().then(setList).catch(onError); }, [backend, onError]);
+  // The collection definitions, owned by react-query: cached across keep-alive (tab switches and
+  // page round-trips never refetch), written only through `save` below.
+  const listQ = useQuery({ queryKey: qk.libColls, queryFn: () => backend.libraryCollections() });
+  const list = listQ.data ?? null;
 
-  // (Re)evaluate every query collection: on open, when it changed, when new embeddings arrived, after an undo.
-  const evalAll = useCallback(async (cs: Collection[]) => {
-    const my = ++run.current;
-    for (const c of cs) {
-      if (c.rule) continue;
-      const sig = sigOf(c, gen);
-      if (sigs.current[c.name] === sig) continue;
-      setEvals((m) => ({ ...m, [c.name]: { status: "loading", hits: m[c.name]?.hits ?? [], sig } }));
-      try {
-        const r = await backend.libraryCollection(c.query, c.threshold, CAP, c.exclude ?? [], c.graphics ?? false);
-        if (run.current !== my) return;
-        const off = r.state === "models_missing" || r.state === "unavailable";
-        if (!off) sigs.current[c.name] = sig; // "off" is re-asked next time (the models may arrive)
-        setEvals((m) => ({ ...m, [c.name]: { status: off ? "off" : "ready", hits: r.hits, sig } }));
-      } catch (e) {
-        if (run.current !== my) return;
-        setEvals((m) => ({ ...m, [c.name]: { status: "error", hits: [], error: errText(e), sig } }));
+  // (Re)evaluate every query collection: on open, when it changed, when new embeddings arrived,
+  // when the models arrived, after an undo (the undo invalidates these queries). One query per
+  // collection keyed by its sig — an in-flight eval can never land in another collection's view,
+  // and a re-eval keeps the previous hits on screen (placeholderData) instead of blanking.
+  const evalTargets = useMemo(() => (list ?? []).filter((c) => !c.rule), [list]);
+  const evalQueries = useQueries({
+    queries: evalTargets.map((c) => {
+      const sig = sigOf(c, gen, t1?.state);
+      return {
+        queryKey: qk.collEval(c.name, sig),
+        queryFn: () => backend.libraryCollection(c.query, c.threshold, CAP, c.exclude ?? [], c.graphics ?? false),
+        placeholderData: (prev: SemanticResult | undefined) => prev,
+        retry: 1, // a one-off hiccup from the local service is worth one quiet retry
+        retryDelay: 500,
+      };
+    }),
+  });
+  // useQueries answers in input order: zip results back to their collection.
+  const evals: Record<string, Eval> = useMemo(() => {
+    const m: Record<string, Eval> = {};
+    evalQueries.forEach((q, i) => {
+      const c = evalTargets[i];
+      if (!c) return;
+      const sig = sigOf(c, gen, t1?.state);
+      if (q.isError) m[c.name] = { status: "error", hits: [], error: errText(q.error), sig };
+      else if (!q.data) m[c.name] = { status: "loading", hits: [], sig };
+      else {
+        const off = q.data.state === "models_missing" || q.data.state === "unavailable";
+        m[c.name] = { status: off ? "off" : "ready", hits: q.data.hits, sig };
       }
-    }
-  }, [backend, gen]);
-
-  useEffect(() => { sigs.current = {}; }, [epoch]);
-  useEffect(() => { if (list) void evalAll(list); }, [list, evalAll, epoch]);
+    });
+    return m;
+  }, [evalQueries, evalTargets, gen, t1?.state]);
 
   // A collection that vanished (deleted) closes its viewer.
   useEffect(() => {
@@ -135,14 +150,18 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
 
   const save = useCallback(async (next: Collection[]): Promise<boolean> => {
     try {
-      setList(await backend.librarySetCollections(next));
+      // The backend answers with the saved list; it becomes the query's data directly (one write path).
+      qc.setQueryData(qk.libColls, await backend.librarySetCollections(next));
       setFormErr(null);
       return true;
     } catch (e) {
       setFormErr(errText(e));
       return false;
     }
-  }, [backend]);
+  }, [backend, qc]);
+
+  // A failed first read surfaces once, like the old .catch(onError) did.
+  useEffect(() => { if (listQ.error) onError(listQ.error); }, [listQ.error, onError]);
 
   // The threshold slider commits shortly after it stops moving.
   const [thr, setThr] = useState<number | null>(null);

@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { Backend, LibImage, VolumeStatus } from "./types";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import type { Backend } from "./types";
 import { TIMELINE_VIEWS, countViews, inView, nameMatches, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
+import { qk, refreshLibraryAfterUndo, refreshLibraryEmbeddings, refreshLibraryIndex } from "./qk";
 import { useStoredValue } from "./hooks";
 import { Gallery, GalleryViewToggle, type GallerySection, type LibActions } from "./Gallery";
 import { NameFilter } from "./NameFilter";
@@ -62,12 +64,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     return TABS.includes(t as LibTab) ? (t as LibTab) : "timeline";
   });
   const tab: LibTab = embedded ? (tabProp ?? "timeline") : ownTab;
-  const [epoch, setEpoch] = useState(0); // bumped after an undo: every list is read again
-  // Bumped every time the Library becomes the visible page again (embedded keep-alive). The image list,
-  // dup groups and big files re-read so files deleted elsewhere (e.g. Del in the search popup) are gone;
-  // Collections' evaluated hits follow the embedding generation instead.
-  const [reveal, setReveal] = useState(0);
-  useEffect(() => { if (active) setReveal((r) => r + 1); }, [active]);
+  const [epoch, setEpoch] = useState(0); // bumped after an undo: the background scans (Similar / Disk space) start over
   // Settings inside this window: the sidebar's Settings item used to bounce back to the popup.
   const [showSettings, setShowSettings] = useState(false);
   // The last section is remembered across sessions (the popup uses the same storage key).
@@ -78,10 +75,14 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     setSettingsSectionRaw(s);
     try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
   }, []);
-  const [t1, refreshT1] = useTier1(backend, showSettings, epoch);
+  const [t1, refreshT1] = useTier1(backend, showSettings);
   const models = useModels(backend, refreshT1);
-  const [images, setImages] = useState<LibImage[] | null>(null);
-  const [loadErr, setLoadErr] = useState<string | null>(null);
+  // The Library's own data, owned by react-query: cached across the keep-alive (tab switches and
+  // page round-trips never refetch), re-read only when the inputs change (see the effects below).
+  const qc = useQueryClient();
+  const imagesQ = useQuery({ queryKey: qk.libImages, queryFn: () => backend.libraryImages() });
+  const images = useMemo(() => (imagesQ.isError ? [] : imagesQ.data ?? null), [imagesQ.isError, imagesQ.data]);
+  const loadErr = imagesQ.isError ? errText(imagesQ.error) : null;
   // Files sent to the Recycle Bin from here. They vanish from every list at once; an undo brings them back.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   // What the timeline shows: your pictures by default; app graphics only when asked for.
@@ -100,7 +101,6 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
   const [cheat, setCheat] = useState(false); // F1 / Ctrl+/
-  const [status, setStatus] = useState<VolumeStatus[]>([]);
   // The "are you sure" gate for destructive actions: every recycle in this window asks here first.
   // Destructured so callers depend on the stable functions, not the fresh-each-render object.
   const { open: confirmOpen, askIt: askConfirm, dismiss: dismissConfirm, node: confirmNode } = useConfirm();
@@ -113,23 +113,19 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     document.title = "winseek Library";
   }, [embedded]);
 
-  // The standalone window has its own sidebar, so it reads the volume status itself (shallow-compared).
-  useEffect(() => {
-    if (embedded) return;
-    let live = true;
-    const poll = () => backend.status().then((st) => {
-      if (live) setStatus((prev) => (JSON.stringify(prev) === JSON.stringify(st) ? prev : st));
-    }).catch(() => {});
-    poll();
-    const t = window.setInterval(poll, 2000);
-    return () => { live = false; window.clearInterval(t); };
-  }, [backend, embedded]);
+  // The standalone window has its own sidebar, so it reads the volume status itself (polled; react-query's
+  // structural sharing keeps unchanged polls from re-rendering, the old shallow JSON compare did this by hand).
+  const statusQ = useQuery({ queryKey: qk.libStatus, queryFn: () => backend.status(), refetchInterval: 2000, enabled: !embedded });
+  const status = statusQ.data ?? [];
 
-  useEffect(() => {
-    let live = true;
-    backend.libraryImages().then((r) => { if (live) { setImages(r); setLoadErr(null); } }).catch((e) => { if (live) { setImages((x) => x ?? []); setLoadErr(errText(e)); } });
-    return () => { live = false; };
-  }, [backend, epoch, gen, reveal]);
+  // The Library becomes the visible page again (embedded keep-alive): the index lists re-read so
+  // files deleted elsewhere (e.g. Del in the search popup) are gone. Collection evaluations follow
+  // their own inputs (the sig), not the reveal.
+  useEffect(() => { if (active) refreshLibraryIndex(qc); }, [active, qc]);
+  // New embeddings arrived (the settled done-count moved): picture list and dup groups re-read;
+  // collections re-key themselves because the generation is part of their sig.
+  const gen0 = useRef(gen);
+  useEffect(() => { if (gen !== gen0.current) refreshLibraryEmbeddings(qc); }, [gen, qc]);
 
   const flash = useCallback((msg: string, undo = false, ms = undo ? 7000 : 2500) => {
     setToast({ msg, undo });
@@ -170,10 +166,11 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     try {
       const n = await backend.restoreRecycled(paths);
       setHidden((h) => { const x = new Set(h); paths.forEach((p) => x.delete(p)); return x; });
-      setEpoch((e) => e + 1);
+      setEpoch((e) => e + 1); // the background scans (Similar / Disk space) start over
+      refreshLibraryAfterUndo(qc); // index lists + every collection's evaluated hits are read again
       flash(n > 0 ? "Restored" : "Nothing to restore");
     } catch (e) { fail(e); }
-  }, [backend, flash, fail]);
+  }, [backend, flash, fail, qc]);
 
   const actions: LibActions = useMemo(() => ({
     open: (p) => { backend.openPath(p).catch(fail); },
@@ -277,7 +274,8 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   // A visited tab stays mounted (hidden): switching back neither refetches its data nor loses its
   // place — Cleanup keeps its dup groups and drill-in, Collections keeps its evaluated hits and the
-  // open collection, the gallery keeps its scroll. `reveal` above re-reads what can change outside.
+  // open collection, the gallery keeps its scroll. The reveal effect above re-reads what can change
+  // outside (via the react-query cache).
   // State, not a ref, and marked during render: the newly picked tab must mount in THIS commit — a
   // ref flip would wait for the next unrelated render, leaving the body empty for seconds.
   const [seen, setSeen] = useState<Record<LibTab, boolean>>({ timeline: true, collections: false, cleanup: false });
@@ -310,10 +308,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
       <main className="lib-body">
         {seen.timeline && keep("timeline", <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} view={gview} />)}
         {seen.collections && keep("collections", (
-          <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} active={tab === "collections"} />
+          <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} actions={actions} onError={fail} active={tab === "collections"} />
         ))}
         {seen.cleanup && keep("cleanup", (
-          <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} reveal={reveal} onError={fail} drive={drive} active={tab === "cleanup"} />
+          <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} onError={fail} drive={drive} active={tab === "cleanup"} />
         ))}
       </main>
       {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}

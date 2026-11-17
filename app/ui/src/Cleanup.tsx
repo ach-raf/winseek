@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { Backend, DupGroup, DupMember, Hit, LibImage, NearState } from "./types";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { baseName } from "./Semantic";
 import { formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
+import { qk } from "./qk";
 import { IChevL, ICheck } from "./icons";
 import { NameFilter } from "./NameFilter";
 import { KeyHints } from "./Hint";
@@ -33,17 +35,14 @@ const dirName = (p: string) => {
   return parts.length >= 2 ? parts[parts.length - 2] : parts[0] ?? "";
 };
 
-export function Cleanup({ backend, images, hidden, actions, epoch, gen, reveal, onError, drive, active }: {
+export function Cleanup({ backend, images, hidden, actions, epoch, onError, drive, active }: {
   backend: Backend;
   /** The user's own pictures (app graphics left out, recycled files already gone). */
   images: LibImage[];
   hidden: ReadonlySet<string>;
   actions: LibActions;
+  /** Bumped after an undo: the background scans (similar photos, disk space) start over. */
   epoch: number;
-  /** Bumps when new embeddings arrived. */
-  gen: number;
-  /** Bumps when the Library page is shown again (keep-alive): the index lists are read again. */
-  reveal: number;
   onError: (e: unknown) => void;
   /** Show Disk space for this drive (a click on a drive in the side rail); `n` changes on every request. */
   drive?: { letter: string; n: number };
@@ -56,19 +55,15 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, reveal, 
   useEffect(() => { backend.diskUsage("").catch(() => {}); }, [backend]);
   const [view, setView] = useState<View>("home");
   const [openGroup, setOpenGroup] = useState<string | null>(null);
-  const [groups, setGroups] = useState<DupGroup[] | null>(null);
-  const [files, setFiles] = useState<Hit[] | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    backend.libraryDupGroups().then((g) => { if (live) setGroups(g); }).catch((e) => { if (live) { setGroups([]); onError(e); } });
-    return () => { live = false; };
-  }, [backend, epoch, gen, reveal, onError]);
-  useEffect(() => {
-    let live = true;
-    backend.libraryBigFiles(BIG_N).then((r) => { if (live) setFiles(r); }).catch((e) => { if (live) { setFiles([]); onError(e); } });
-    return () => { live = false; };
-  }, [backend, epoch, reveal, onError]);
+  // The index lists, owned by react-query: cached across keep-alive (tab switches never refetch),
+  // re-read when the Library invalidates them (reveal, undo, new embeddings).
+  const dupsQ = useQuery({ queryKey: qk.libDups, queryFn: () => backend.libraryDupGroups() });
+  const bigQ = useQuery({ queryKey: qk.libBig, queryFn: () => backend.libraryBigFiles(BIG_N) });
+  useEffect(() => { if (dupsQ.error) onError(dupsQ.error); }, [dupsQ.error, onError]);
+  useEffect(() => { if (bigQ.error) onError(bigQ.error); }, [bigQ.error, onError]);
+  // The old effects answered [] on failure; keep that (an empty list renders the empty states).
+  const groups = useMemo(() => (dupsQ.isError ? [] : dupsQ.data ?? null), [dupsQ.isError, dupsQ.data]);
+  const files = useMemo(() => (bigQ.isError ? [] : bigQ.data ?? null), [bigQ.isError, bigQ.data]);
 
   const vis = useMemo(() => (groups ? visibleGroups(groups, hidden) : null), [groups, hidden]);
   const rows = useMemo(() => (files ? files.filter((f) => !hidden.has(f.path)) : null), [files, hidden]);
@@ -188,10 +183,26 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
   const [picked, setPicked] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
 
+  // Image dimensions for the keeper suggestion across every group, one query keyed by the group
+  // list's identity (ids are content hashes, so the same groups never refetch). Before it lands
+  // pickKeeper falls back to size/newest/shortest-path, exactly as it always did cold.
+  const allPaths = useMemo(() => Array.from(new Set((groups ?? []).flatMap((g) => g.members.map((m) => m.path)))), [groups]);
+  const groupsKey = useMemo(() => (groups ?? []).map((g) => g.id).join("|"), [groups]);
+  const homeDimsQ = useQuery({
+    queryKey: qk.dims("home:" + groupsKey),
+    queryFn: () => backend.libraryDims(allPaths),
+    enabled: allPaths.length > 0,
+  });
+  const homeDims = useMemo(() => {
+    const m = new Map<string, [number, number] | null>();
+    (homeDimsQ.data ?? []).forEach((d, i) => m.set(allPaths[i]!, d));
+    return m;
+  }, [homeDimsQ.data, allPaths]);
+
   const dupInfo = useMemo(() => {
     const m = new Map<string, { keep: number; doomed: string[]; freed: number }>();
     for (const g of groups ?? []) {
-      const keep = pickKeeper(g.members.map((x) => ({ ...x, width: dimCache.get(x.path)?.[0] ?? null, height: dimCache.get(x.path)?.[1] ?? null })));
+      const keep = pickKeeper(g.members.map((x) => ({ ...x, width: homeDims.get(x.path)?.[0] ?? null, height: homeDims.get(x.path)?.[1] ?? null })));
       m.set(g.id, {
         keep,
         doomed: g.members.filter((_, i) => i !== keep).map((x) => x.path),
@@ -199,7 +210,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
       });
     }
     return m;
-  }, [groups]);
+  }, [groups, homeDims]);
 
   const dupRows: PickRow[] = useMemo(() => (groups ?? []).slice(0, HOME_ROWS).map((g) => {
     const info = dupInfo.get(g.id)!;
@@ -571,30 +582,17 @@ function GrThumb({ backend, m, size, cls }: { backend: Backend; m: DupMember; si
     : <span className={cls + " ph"}><FileIcon name={baseName(m.path)} isDir={false} src={null} /></span>;
 }
 
-const dimCache = new Map<string, [number, number] | null>();
-
 function GroupDetail({ backend, group, kind, actions }: { backend: Backend; group: DupGroup; kind: "exact" | "near"; actions: LibActions }) {
   const members = group.members;
-  const [dims, setDims] = useState<Record<string, [number, number] | null>>({});
+  // Image dimensions for the keep suggestion, owned by react-query: one cache entry per group (the
+  // member paths are the key), kept for the session — the old module-level map did this by hand.
+  const pathsKey = members.map((m) => m.path).join("|");
+  const dimsQ = useQuery({ queryKey: qk.dims(pathsKey), queryFn: () => backend.libraryDims(members.map((m) => m.path)) });
+  const dims = useMemo(() => Object.fromEntries(members.map((m, i) => [m.path, dimsQ.data?.[i] ?? null])), [members, dimsQ.data]);
   const [keepPath, setKeepPath] = useState<string | null>(null);
   const [bPath, setBPath] = useState<string | null>(null);
   const [extraKeep, setExtraKeep] = useState<ReadonlySet<string>>(new Set());
   const [busy, setBusy] = useState(false);
-
-  const paths = members.map((m) => m.path).join("|");
-  useEffect(() => {
-    let live = true;
-    const need = members.map((m) => m.path).filter((p) => !dimCache.has(p));
-    const have = () => Object.fromEntries(members.map((m) => [m.path, dimCache.get(m.path) ?? null]));
-    setDims(have());
-    if (need.length === 0) return;
-    backend.libraryDims(need).then((r) => {
-      need.forEach((p, i) => dimCache.set(p, r[i] ?? null));
-      if (live) setDims(have());
-    }).catch(() => {});
-    return () => { live = false; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [backend, paths]);
 
   const cand = members.map((m) => ({ ...m, width: dims[m.path]?.[0] ?? null, height: dims[m.path]?.[1] ?? null }));
   const auto = pickKeeper(cand);

@@ -1,8 +1,10 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
+import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import Library from "./Library";
 import { ErrorBoundary } from "./ErrorBoundary";
+import { createQueryClient } from "./qk";
 import { applyAccent, loadAccent } from "./accent";
 import { applyTheme, loadTheme, watchSystemTheme } from "./theme";
 import { applyOpacity, loadOpacity } from "./transparency";
@@ -36,7 +38,15 @@ window.addEventListener("storage", (e) => {
 watchSystemTheme(() => { if (loadTheme() === "system") applyTheme("system"); });
 
 loadBackend().then((backend) => {
+  // One client per window: the popup and the library window are separate JS contexts.
+  const queryClient = createQueryClient();
   createRoot(document.getElementById("root")!).render(
-    <StrictMode><ErrorBoundary>{library ? <Library backend={backend} /> : <App backend={backend} />}</ErrorBoundary></StrictMode>,
+    <StrictMode>
+      <ErrorBoundary>
+        <QueryClientProvider client={queryClient}>
+          {library ? <Library backend={backend} /> : <App backend={backend} />}
+        </QueryClientProvider>
+      </ErrorBoundary>
+    </StrictMode>,
   );
 });
