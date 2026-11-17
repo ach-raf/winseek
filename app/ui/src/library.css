@@ -453,8 +453,9 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
    / preview item) gets the accent edge so arrows stay findable in a batch. */
 .lg-row.lead { box-shadow: inset 2px 0 0 var(--acc); }
 .tl.lead.sel::after { box-shadow: inset 0 0 0 3px var(--acc), inset 0 0 0 5px rgba(0,0,0,.45); }
-.lg-selcnt { color: var(--acc); font-weight: 600; white-space: nowrap; }
 .su-tr.lead::before { box-shadow: inset 0 0 0 1px var(--acc); }
 .su-tile.on.lead { outline-color: var(--acc); }
 .su-frame.on.lead { box-shadow: inset 0 0 0 3px var(--acc); }
 .su-row.lead { box-shadow: inset 0 0 0 1px var(--acc); }
+/* .cl carries no gutter (the bar's own --gut margin provides it); .su already has the padding. */
+.su > .selbar { margin: 0 0 2px; }

@@ -243,6 +243,11 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     () => (batch ? [...batch].reduce((a, p) => a + (byPath.get(p)?.size ?? 0), 0) : 0),
     [batch, byPath],
   );
+  const allOn = useMemo(() => (batch ? flatPaths.length > 0 && flatPaths.every((p) => isOn(p)) : false), [batch, flatPaths, isOn]);
+  /** One recycle call for the whole batch; the selection clears only when it really happened. */
+  const recycleBatch = useCallback((paths: string[]) => {
+    void actions.recycle(paths).then((ok) => { if (ok) setMulti(null); });
+  }, [actions]);
 
   /** One click on a tile/row: plain restarts, Ctrl toggles into the batch, Shift ranges from the
    *  anchor in the shown order. Returns true when the pick was plain (the caller then sets the
@@ -301,10 +306,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
       case "Enter": if (cur) { e.preventDefault(); actions.open(cur.path); } break;
       case "Delete": {
         const paths = batch ? [...batch] : cur ? [cur.path] : [];
-        if (paths.length > 0) {
-          e.preventDefault();
-          void actions.recycle(paths).then((ok) => { if (ok) setMulti(null); });
-        }
+        if (paths.length > 0) { e.preventDefault(); recycleBatch(paths); }
         break;
       }
       default:
@@ -441,11 +443,6 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
         </div>
         <div className="lg-info" aria-live="polite">
           <span>{flat.length.toLocaleString("en-US")} {noun}{flat.length === 1 ? "" : "s"}</span>
-          {batch && (
-            <span className="lg-selcnt" title={[...batch].join("\n")}>
-              {batch.size.toLocaleString("en-US")} selected{batchBytes > 0 ? ` · ${formatSize(batchBytes)}` : ""}
-            </span>
-          )}
           {cur && (
             <span className="lg-cur" title={cur.path}>
               {cur.name}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}
@@ -467,6 +464,15 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
             <span><kbd>Ctrl·Click</kbd> Select many</span>
           </span>
         </div>
+        {/* The batch lives in the same bottom selection bar the Clean up suggestions use. */}
+        {batch && (
+          <div className="selbar" role="region" aria-label="Selection">
+            <span>{batch.size.toLocaleString("en-US")} selected</span>
+            <button className="btn sm ghost" disabled={allOn} onClick={() => setMulti(new Set(flatPaths))}>Select all</button>
+            <button className="btn sm ghost" onClick={() => { setMulti(null); }}>Clear</button>
+            <button className="btn danger" onClick={() => recycleBatch([...batch])}>Move {formatSize(batchBytes)} to Recycle Bin</button>
+          </div>
+        )}
       </div>
       {pvOpen && (preview || pvItem) && (pvItem ? (
         <div className={"lg-pv" + (rail ? " lg-pv-r" : "")}>

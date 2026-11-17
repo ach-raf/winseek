@@ -139,6 +139,18 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const lastMap = useRef<DiskUsage | undefined>(undefined);
   if (mapData) lastMap.current = mapData;
   const shownMap = mapData ?? (root ? lastMap.current : undefined);
+  // "Select all" = everything selectable right now: the tree rows, the treemap's tiles and,
+  // on the files tab, the biggest-files list — one deduped set of the surfaces the user can see.
+  const allPaths = useMemo(() => {
+    const out: string[] = [];
+    const seen = new Set<string>();
+    const add = (p: string) => { const k = p.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(p); } };
+    for (const r of rows) if (r.type === "node") add(r.entry!.path);
+    if (shownMap) for (const e of shownMap.entries) add(e.path);
+    if (tab === "files") for (const b of details.current.get(focus)?.biggest ?? []) add(b.path);
+    return out;
+  }, [rows, shownMap, tab, focus]);
+  const allOn = allPaths.length > 0 && allPaths.every((p) => onSet.has(p.toLowerCase()));
 
   // ---- navigation ---------------------------------------------------------------------------------------------
   const openChain = useCallback((path: string, rootPath: string) => {
@@ -271,23 +283,12 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             <div className="dseg su-tabs" role="tablist" aria-label="What to list">
               {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>)}
             </div>
-            {batch ? (
-              <div className="su-sel">
-                <div className="su-st" title={[...batch].join("\n")}>
-                  <b>{batch.size.toLocaleString("en-US")} selected</b>
-                  <small>{formatSize(batchBytes)} together</small>
-                </div>
-                <div className="su-sb">
-                  <button className="btn sm" onClick={() => { setMulti(null); }} title="Back to a single selection">Clear</button>
-                  <button className="btn sm su-del" onClick={() => void recycle([...batch])} title="Move everything selected to the Recycle Bin (Delete)">Recycle all</button>
-                </div>
-              </div>
-            ) : (
-              <Selected
-                entry={selRow} hit={selHit} actions={actions}
-                onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={(p) => recycle([p])}
-              />
-            )}
+            {/* The per-item panel follows the lead; the batch itself lives in the bottom bar (.selbar),
+                the same selection bar the Clean up suggestions use. */}
+            <Selected
+              entry={selRow} hit={selHit} actions={actions}
+              onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={(p) => recycle([p])}
+            />
           </div>
           {tab === "tree" && (
             <Tree
@@ -314,6 +315,14 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
         </section>
       </div>
       <KeyHints className="su-hints" items={[["↑ ↓", "Move"], ["→ ←", "Expand / collapse"], ["Space", "Expand"], ["↵", "Open"], ["Del", "Recycle"], ["Ctrl+Click", "Select many"], ["Backspace", "Up a folder"], ["Right-click", "More"]]} />
+      {batch && (
+        <div className="selbar" role="region" aria-label="Selection">
+          <span>{batch.size.toLocaleString("en-US")} selected</span>
+          <button className="btn sm ghost" disabled={allOn} onClick={() => setMulti(new Set(allPaths))}>Select all</button>
+          <button className="btn sm ghost" onClick={() => { setMulti(null); }}>Clear</button>
+          <button className="btn danger" onClick={() => void recycle([...batch])}>Move {formatSize(batchBytes)} to Recycle Bin</button>
+        </div>
+      )}
     </div>
   );
 }
