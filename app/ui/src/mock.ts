@@ -728,7 +728,7 @@ export const mockBackend: Backend = {
         const name = `file ${String(n).padStart(8, "0")}.txt`;
         hits.push({ name, path: `C:\\Data\\bucket ${Math.floor(n / 1000)}\\${name}`, is_dir: false, size: (big - n) * 3, mtime: Date.now() - n * 60_000 });
       }
-      await sleep(8);
+      await sleep(Number(params.get("slow") ?? 8)); // ?slow=ms makes the index answer slowly (jank tests)
       return { total: big, hits, elapsed_us: Math.round((performance.now() - t0) * 1000) };
     }
     const all = query.toLowerCase().split(/\s+/).filter(Boolean);
@@ -748,7 +748,7 @@ export const mockBackend: Backend = {
       m.sort((a, b) => (ty(a).localeCompare(ty(b)) || a.lower.localeCompare(b.lower)) * (s === "type" ? 1 : -1));
     }
     else m.sort((a, b) => Number(b.lower.startsWith(terms[0] ?? "")) - Number(a.lower.startsWith(terms[0] ?? "")) || a.lower.length - b.lower.length); // "rel" only gets here with terms (empty became "date" above)
-    await sleep(8);
+    await sleep(Number(params.get("slow") ?? 8)); // ?slow=ms makes the index answer slowly (jank tests)
     return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
   },
   async driveSpace(letters) {
@@ -1191,3 +1191,17 @@ export const mockBackend: Backend = {
   async onOpenStatus() { return () => {}; },
   async onUpdateState() { return () => {}; },
 };
+
+// Verification hook (browser/dev only — the Tauri app never loads this module): counts the calls the
+// library round-trips make, so a Playwright round can assert that switching screens does not refetch
+// everything. Kept in mock.ts so the shipped app carries no counting code.
+export const mockCalls: Record<string, number> = {};
+const COUNTED = ["libraryImages", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage"] as const;
+for (const m of COUNTED) {
+  const fn = mockBackend[m].bind(mockBackend) as (...args: unknown[]) => unknown;
+  (mockBackend as unknown as Record<string, (...args: unknown[]) => unknown>)[m] = (...args: unknown[]) => {
+    mockCalls[m] = (mockCalls[m] ?? 0) + 1;
+    return fn(...args);
+  };
+}
+if (typeof window !== "undefined") (window as unknown as Record<string, unknown>).__mockCalls = mockCalls;
