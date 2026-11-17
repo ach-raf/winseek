@@ -135,7 +135,9 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const flat = useMemo(() => eff.flatMap((s) => s.items), [eff]);
   const flatPaths = useMemo(() => flat.map((i) => i.path), [flat]);
   const byPath = useMemo(() => new Map(flat.map((i) => [i.path, i])), [flat]);
-  const isEmpty = flat.length === 0;
+  // Empty = no real items anywhere. Folds do not count: a folded section keeps its heading (so it
+  // can be reopened), and folding every section must never read as an empty gallery.
+  const isEmpty = sections.every((s) => s.items.length === 0);
   const sectionStart = useMemo(() => {
     const out: number[] = [];
     let n = 0;
