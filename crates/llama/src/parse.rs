@@ -5,7 +5,11 @@
 //!
 //! Bboxes come back normalised to 0-1000, not in pixels.
 
+use std::any::Any;
 use std::io::Read;
+use std::panic::{catch_unwind, AssertUnwindSafe};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::Duration;
 
 use base64::engine::general_purpose::STANDARD;
@@ -24,9 +28,24 @@ pub const MAX_LOCATOR_BOXES: usize = 300;
 const BOX_TEXT_CHARS: usize = 200;
 /// Categories that go after the body in plain text (page furniture).
 const FURNITURE: [&str; 3] = ["header", "footer", "page_footnote"];
+/// Upper bound on parse requests in flight: llama-server decodes across its `-np` slots,
+/// so more concurrency than that only queues requests and hammers the server (one OS
+/// thread per page used to make a 200-page PDF spawn 200 threads).
+const MAX_PAGES_IN_FLIGHT: usize = 4;
 
 fn parse_err(msg: impl Into<String>) -> Error {
     Error::Parse(msg.into())
+}
+
+/// The message of an uncaught panic, for reporting instead of propagating.
+fn panic_text(p: &(dyn Any + Send)) -> String {
+    if let Some(s) = p.downcast_ref::<&str>() {
+        (*s).to_string()
+    } else if let Some(s) = p.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
 }
 
 /// One layout element. `bbox` is `[x1, y1, x2, y2]` in 0-1000, clamped and ordered.
@@ -109,19 +128,43 @@ impl ParseClient {
         })
     }
 
-    /// Several page images at once: one request each, sent in parallel so the server decodes them
-    /// together across its slots (`-np`). Results are in input order; a failed page does not
-    /// affect the others.
+    /// Several page images at once: one request each, sent in parallel so the server decodes
+    /// them together across its slots (`-np`), with at most [`MAX_PAGES_IN_FLIGHT`] in
+    /// flight. Results are in input order; a failed (or panicking) page becomes that page's
+    /// error and never takes the others down.
     pub fn parse_image_jpegs(&self, jpegs: &[&[u8]]) -> Vec<Result<Parsed>> {
+        let workers = jpegs.len().clamp(1, MAX_PAGES_IN_FLIGHT);
+        let next = AtomicUsize::new(0);
+        let slots: Mutex<Vec<Option<Result<Parsed>>>> =
+            Mutex::new((0..jpegs.len()).map(|_| None).collect());
         std::thread::scope(|s| {
-            jpegs
-                .iter()
-                .map(|j| s.spawn(|| self.parse_image_jpeg(j)))
-                .collect::<Vec<_>>()
-                .into_iter()
-                .map(|h| h.join().expect("parse request thread panicked"))
-                .collect()
-        })
+            for _ in 0..workers {
+                s.spawn(|| loop {
+                    let i = next.fetch_add(1, Ordering::Relaxed);
+                    if i >= jpegs.len() {
+                        break;
+                    }
+                    let jpeg = jpegs[i];
+                    let r = match catch_unwind(AssertUnwindSafe(|| self.parse_image_jpeg(jpeg))) {
+                        Ok(r) => r,
+                        Err(p) => Err(parse_err(format!(
+                            "page {} request panicked: {}",
+                            i + 1,
+                            panic_text(&p)
+                        ))),
+                    };
+                    slots.lock().unwrap_or_else(|e| e.into_inner())[i] = Some(r);
+                });
+            }
+        });
+        slots
+            .into_inner()
+            .unwrap_or_else(|e| e.into_inner())
+            .into_iter()
+            .map(|slot| {
+                slot.unwrap_or_else(|| Err(parse_err("page was never picked up by a worker")))
+            })
+            .collect()
     }
 }
 
@@ -434,6 +477,21 @@ mod tests {
         assert!(PARSE_PROMPT.starts_with("Extract layout information"));
         assert!(PARSE_PROMPT.ends_with("must be a single JSON object."));
         assert_eq!(PARSE_PROMPT_VERSION, "doc2json-v1");
+    }
+
+    #[test]
+    fn batch_survives_a_dead_server() {
+        // Port 1 refuses connections: six pages (> the in-flight cap) fail fast without
+        // hanging, panicking or taking each other down, and all six answers come back.
+        let c = ParseClient::new("http://127.0.0.1:1", "k");
+        let pages: Vec<&[u8]> = vec![b"a", b"b", b"c", b"d", b"e", b"f"];
+        let out = c.parse_image_jpegs(&pages);
+        assert_eq!(out.len(), 6);
+        assert!(
+            out.iter().all(|r| r.is_err()),
+            "a dead server must fail every page, got {:?}",
+            out.iter().filter(|r| r.is_ok()).count()
+        );
     }
 
     #[test]
