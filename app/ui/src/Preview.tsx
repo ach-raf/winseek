@@ -139,11 +139,7 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
             <span className="pv-pct" title="How closely this file matches what you typed">{matchPct}% match{page ? ` · page ${page}` : ""}</span>
           )}
         </div>
-        <div className="crumbs" title={hit.path}>
-          {crumbs.map((p, i) => i === crumbs.length - 1
-            ? <b key={i}>{p}</b>
-            : <span key={i} className="cr"><span>{p}</span><i>›</i></span>)}
-        </div>
+        <Crumbs key={hit.path} parts={crumbs} path={hit.path} />
         {snippet && (
           <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
         )}
@@ -163,7 +159,41 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
   );
 }
 
-/** Compact facts, two per row, so the pane fits without a scrollbar. Noise is left out: the drive
+/** Where the file lives, on ONE row. A short path shows every folder; a long one keeps the drive,
+ *  a "…+N" chip and the last two folders (the part that says "where"), and the chip opens the full
+ *  path wrapped in place — nothing is ever cut off for good. */
+function Crumbs({ parts, path }: { parts: string[]; path: string }) {
+  const [open, setOpen] = useState(false);
+  const long = parts.length > 4;
+  const item = (p: string, i: number, last: boolean) => last
+    ? <b key={i}>{p}</b>
+    : <span key={i} className="cr"><span>{p}</span><i>›</i></span>;
+  let body: React.ReactNode;
+  if (!long || open) {
+    body = parts.map((p, i) => item(p, i, i === parts.length - 1));
+  } else {
+    const hidden = parts.length - 3;
+    body = [
+      item(parts[0]!, 0, false),
+      <span key="more" className="cr">
+        <button type="button" className="cr-more" tabIndex={-1} onMouseDown={(e) => e.preventDefault()}
+                onClick={() => setOpen(true)} title={"Show the full path\n" + path}>…&thinsp;+{hidden}</button><i>›</i>
+      </span>,
+      item(parts[parts.length - 2]!, parts.length - 2, false),
+      item(parts[parts.length - 1]!, parts.length - 1, true),
+    ];
+  }
+  return (
+    <div className={"crumbs" + (open ? " open" : "") + (long && !open ? " collapsed" : "")} title={path}>
+      {body}
+      {long && open && (
+        <button type="button" className="cr-less" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => setOpen(false)}>Collapse</button>
+      )}
+    </div>
+  );
+}
+
+/** Compact facts as one wrapping strip (label dim, value bold), so the stage keeps the height. Noise is left out: the drive
  *  letter is already the first crumb, and "EXIF: None" / "GPS: No" say nothing worth a row. */
 function Meta({ info, folderSize, dim }: { info: PreviewInfo; folderSize?: number | null; dim?: boolean }) {
   const cells: [string, string][] = [];
@@ -181,8 +211,8 @@ function Meta({ info, folderSize, dim }: { info: PreviewInfo; folderSize?: numbe
   if (ex?.camera) cells.push(["Camera", ex.camera]);
   return (
     <dl className={"meta" + (dim ? " stale" : "")}>
-      {cells.map(([k, v], i) => (
-        <div key={k} className={i === cells.length - 1 && cells.length % 2 === 1 ? "wide" : undefined}>
+      {cells.map(([k, v]) => (
+        <div key={k}>
           <dt>{k}</dt><dd>{v}</dd>
         </div>
       ))}
