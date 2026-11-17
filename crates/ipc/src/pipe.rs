@@ -446,8 +446,7 @@ mod tests {
         write_message(&mut c, &Request::Status { id: 3 }).unwrap();
         let e = c
             .read_message_timeout::<Response>(Duration::from_millis(120))
-            .err()
-            .expect("the read must time out");
+            .expect_err("the read must time out");
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
         t.join().unwrap();
     }
