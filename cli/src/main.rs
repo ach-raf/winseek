@@ -400,25 +400,20 @@ fn state_text(s: &VolumeState) -> String {
     }
 }
 
-/// Unix ms -> `YYYY-MM-DD HH:MM` (UTC).
+/// The `--long` timestamp shape: `YYYY-MM-DD HH:MM`, local time.
+const WHEN_FMT: &str = "%Y-%m-%d %H:%M";
+
+/// Unix ms -> `YYYY-MM-DD HH:MM` in the machine's local timezone. The previous
+/// hand-rolled civil-from-days ran in UTC, so `--long` showed modified times an hour
+/// (or more) off for anyone not on UTC; jiff reads the system zone (registry on Windows)
+/// and falls back to UTC itself if no zone can be determined.
 fn when(ms: i64) -> String {
-    let secs = ms.div_euclid(1000);
-    let (days, rem) = (secs.div_euclid(86_400), secs.rem_euclid(86_400));
-    // civil-from-days (Howard Hinnant)
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
-    format!(
-        "{y:04}-{m:02}-{d:02} {:02}:{:02}",
-        rem / 3600,
-        rem % 3600 / 60
-    )
+    let Ok(ts) = jiff::Timestamp::from_millisecond(ms) else {
+        return String::new(); // absurd mtime: show an empty cell
+    };
+    ts.to_zoned(jiff::tz::TimeZone::system())
+        .strftime(WHEN_FMT)
+        .to_string()
 }
 
 fn size_text(n: u64) -> String {
@@ -1186,8 +1181,17 @@ mod tests {
 
     #[test]
     fn formats() {
-        assert_eq!(when(1_700_000_000_000), "2023-11-14 22:13");
-        assert_eq!(when(0), "1970-01-01 00:00");
+        // The machine's zone decides the wall clock, so the expected strings come from the
+        // same library — what this pins is the shape and the zone wiring, not a zone.
+        let expect = |ms: i64| {
+            jiff::Timestamp::from_millisecond(ms)
+                .unwrap()
+                .to_zoned(jiff::tz::TimeZone::system())
+                .strftime(WHEN_FMT)
+                .to_string()
+        };
+        assert_eq!(when(1_700_000_000_000), expect(1_700_000_000_000));
+        assert_eq!(when(0), expect(0));
         assert_eq!(size_text(1023), "1023 B");
         assert_eq!(size_text(1536), "1.5 KB");
     }

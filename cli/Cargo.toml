@@ -9,6 +9,7 @@ description = "winseek command line: search the name index and rescan volumes ov
 serde = { workspace = true }
 serde_json = { workspace = true }
 winseek-ipc = { path = "../crates/ipc" }
+jiff = "0.2"
 
 [[bin]]
 name = "winseek-cli"

@@ -5096,6 +5096,7 @@ dependencies = [
 name = "winseek-cli"
 version = "0.2.38"
 dependencies = [
+ "jiff",
  "serde",
  "serde_json",
  "winseek-ipc",
