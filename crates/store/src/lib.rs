@@ -1524,11 +1524,19 @@ impl Store {
 
     /// A message or a code: a code is stored as is, a message becomes its code with the text as detail.
     fn set_state(&mut self, id: FileId, state: i64, msg: &str) -> Result<()> {
-        let kind: String = self
+        let kind: Option<String> = self
             .conn
             .query_row("SELECT kind FROM files WHERE id = ?1", [id.0], |r| r.get(0))
-            .optional()?
-            .unwrap_or_default();
+            .optional()?;
+        let Some(kind) = kind else {
+            // No row: fail fast instead of classifying the message against a fabricated
+            // kind (the UPDATE below would report NoSuchFile anyway).
+            eprintln!(
+                "winseek-store: set_state for missing file {}; nothing written",
+                id.0
+            );
+            return Err(Error::NoSuchFile(id));
+        };
         let (code, detail) = reason::split(msg, &kind);
         self.set_state_detail(id, state, code, detail.as_deref())
     }
@@ -1641,18 +1649,23 @@ impl Store {
         top.sort_by(|a, b| b.cmp(a));
         let mut out = Vec::with_capacity(top.len());
         for s in top {
-            let path = by_hash[&s.hash]
-                .iter()
-                .find(|(f, _)| *f == s.file)
-                .map(|(_, p)| p.clone())
-                .unwrap_or_default();
+            // Every scored file comes from `by_hash`, so the lookup cannot miss; if that
+            // invariant ever breaks, skip the hit instead of surfacing a ghost with an
+            // empty path.
+            let Some((_, path)) = by_hash[&s.hash].iter().find(|(f, _)| *f == s.file) else {
+                eprintln!(
+                    "winseek-store: vector hit for file {} has no file row; skipped",
+                    s.file.0
+                );
+                continue;
+            };
             let locator: Option<String> = self
                 .conn
                 .prepare_cached("SELECT locator FROM vectors WHERE hash=?1 AND chunk=?2")?
                 .query_row(params![s.hash, s.chunk], |r| r.get(0))?;
             out.push(VecHit {
                 file_id: s.file,
-                path,
+                path: path.clone(),
                 chunk: s.chunk,
                 locator,
                 score: s.score,
