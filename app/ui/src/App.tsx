@@ -106,6 +106,10 @@ export default function App({ backend }: { backend: Backend }) {
   const [pin, setPin] = useState<number | null>(null);
   const [scrolling, setScrolling] = useState(false);
   const [loadErr, setLoadErr] = useState(false); // rows on screen could not be fetched (the service kept answering nothing)
+  // A scope switch (type tab / drive / sort / date-size chips) is being fetched: the list shows
+  // skeletons and the overview stays blank until the answer lands. Typing does NOT set this —
+  // the name index answers in a few ms, and skeletons on every keystroke would flicker.
+  const [pending, setPending] = useState(false);
   // Row density of the full window's file list, remembered.
   const [compactRows, setCompactRows] = useState(() => {
     try { return localStorage.getItem("winseek.density") === "compact"; } catch { return false; }
@@ -162,6 +166,12 @@ export default function App({ backend }: { backend: Backend }) {
   const full = viewMode === "full";
   // Full window: which page the sidebar shows (the compact popup is always "search").
   const [page, setPage] = useState<Page>("search");
+  // Once a library page has been opened, the Library stays mounted (hidden while other pages show):
+  // remounting it refetched the whole image list, dup groups and collection results on every switch,
+  // which is what made rapid moves between Search / Clean up / Collections feel broken.
+  const [libSeen, setLibSeen] = useState(false);
+  const libPage = page === "timeline" || page === "collections" || page === "cleanup";
+  useEffect(() => { if (full && libPage) setLibSeen(true); }, [full, libPage]);
   // Drive scope (the segmented control): "" = all drives, else one letter.
   const [drive, setDrive] = useState("");
   // Per-type result counts of the typed query (the numbers on the filter chips).
@@ -411,11 +421,25 @@ export default function App({ backend }: { backend: Backend }) {
   const ovItem: OvItem | undefined = overview ? ov.flat[osel] : undefined;
 
   // ---- data loading --------------------------------------------------------
+  const scopeRef = useRef<string | null>(null);
   useEffect(() => {
     const my = ++seq.current;
     inflight.current.clear();
     emptyTries.current.clear();
     setLoadErr(false);
+    // A changed scope (type tab / drive / sort / date-size chips) shows skeletons right away: the
+    // previous scope's rows must not sit under the new tab until the answer arrives. Typing keeps
+    // the previous rows visible instead — per-keystroke skeletons would flicker.
+    const sk = `${effFilter}\u0000${drive}\u0000${sort}\u0000${rangeKey}`;
+    if (scopeRef.current !== null && scopeRef.current !== sk) {
+      setPending(true);
+      setSel(0);
+      pinRef.current = null;
+      setPin(null);
+      setScrollTop(0);
+      if (listRef.current) listRef.current.scrollTop = 0;
+    }
+    scopeRef.current = sk;
     (async () => {
       if (isRecent) {
         const all = await backend.recent(drive ? 300 : 40);
@@ -434,6 +458,7 @@ export default function App({ backend }: { backend: Backend }) {
         setData({ total: r.total, rows, elapsedMs: r.elapsed_us / 1000, recent: false, full: false, partial: false, ver: 0 });
       }
       setLoaded(true);
+      setPending(false);
       setSel(0);
       setScrollTop(0);
       pinRef.current = null;
@@ -1356,7 +1381,7 @@ export default function App({ backend }: { backend: Backend }) {
   const visible = useMemo(() => {
     const out: React.ReactNode[] = [];
     for (let i = first; i <= last; i++) {
-      const h = data.rows[i];
+      const h = pending ? undefined : data.rows[i];
       if (!h) {
         out.push(
           <div key={i} className="row skeleton" style={{ transform: `translateY(${vl.top + i * rowH - vl.voff}px)` }}>
@@ -1373,7 +1398,7 @@ export default function App({ backend }: { backend: Backend }) {
       );
     }
     return out;
-  }, [first, last, vl.voff, vl.top, rowH, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]); // eslint-disable-line react-hooks/exhaustive-deps -- data.ver counts in-place mutations of the sparse rows array
+  }, [first, last, vl.voff, vl.top, rowH, pending, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]); // eslint-disable-line react-hooks/exhaustive-deps -- data.ver counts in-place mutations of the sparse rows array
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -1411,7 +1436,7 @@ export default function App({ backend }: { backend: Backend }) {
 
   // Result stat in the search bar: "N results · 0.4 ms" (not on home).
   const statTotal = overview ? ov.sections.reduce((a, x) => a + x.total, 0) : data.total;
-  const statEl = !showPanel && !isRecent && loaded ? (
+  const statEl = !showPanel && !isRecent && loaded && !pending ? (
     <span className="stat">
       {statTotal.toLocaleString("en-US")}{data.partial ? "+" : ""} result{statTotal === 1 && !data.partial ? "" : "s"}
       {data.elapsedMs !== null && <> {"·"} <b>{fmtMs(data.elapsedMs)} ms</b></>}
@@ -1739,7 +1764,7 @@ export default function App({ backend }: { backend: Backend }) {
 
             <div className={"list vlist" + (dense ? " dense" : "")} hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
               <div className="spacer-v" style={{ height: vl.height }}>{visible}</div>
-              {loaded && data.total === 0 && (
+              {!pending && loaded && data.total === 0 && (
                 <div className="none">
                   <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>
                   {fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try fewer words."}
@@ -1761,7 +1786,9 @@ export default function App({ backend }: { backend: Backend }) {
               </div>
             )}
 
-            {!showPanel && overview && (ov.flat.length > 0 || isRecent ? (
+            {!showPanel && overview && (pending ? (
+              <div className="list ov" /> // a scope switch is being fetched: blank beats the old scope's rows under the new tab
+            ) : ov.flat.length > 0 || isRecent ? (
               <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (
@@ -1819,9 +1846,10 @@ export default function App({ backend }: { backend: Backend }) {
                     section={settingsSection} onSection={setSettingsSection} onError={fail} embedded chrome={winControls} />
         </div>
       )}
-      {full && (page === "timeline" || page === "collections" || page === "cleanup") && (
-        <div className="main-col">
-          <Library backend={backend} embedded tab={page} drive={spaceAt} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
+      {full && libSeen && (
+        <div className="main-col" hidden={!libPage}>
+          <Library backend={backend} embedded tab={libPage ? page : "timeline"} active={libPage}
+                   drive={spaceAt} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
         </div>
       )}
 

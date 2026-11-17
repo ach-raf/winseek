@@ -104,15 +104,20 @@ export function useSemantic(backend: Backend, query: string, enabled: boolean, f
   const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs" || filter === "video" || filter === "audio");
   const plan = semPlan(q, filter, filtered, all);
   const { key, paged, k } = plan;
+  const qRef = useRef(q);
   useEffect(() => {
     const my = ++seq.current;
     if (!active) {
       setState((s) => (s.hits.length || s.loading ? NO_HITS : s));
       return;
     }
+    // Typing debounces; a changed scope (tab / chip / reload) starts right away — the user already
+    // decided, and waiting out a typing pause that never comes makes every tab switch feel laggy.
+    const delay = qRef.current === q ? 0 : DEBOUNCE_MS;
+    qRef.current = q;
     const t = window.setTimeout(() => {
       void runSemantic(backend, q, { key, paged, k }, () => my === seq.current, setState);
-    }, DEBOUNCE_MS);
+    }, delay);
     return () => window.clearTimeout(t);
   }, [backend, q, active, reload, key, paged, k]);
   return active ? semView(state, q, plan) : NO_HITS;

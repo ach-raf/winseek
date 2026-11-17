@@ -37,7 +37,7 @@ interface Draft {
   exclude: string[];
 }
 
-export function Collections({ backend, images, hidden, t1, gen, epoch, actions, onError }: {
+export function Collections({ backend, images, hidden, t1, gen, epoch, actions, onError, active }: {
   backend: Backend;
   /** The user's own pictures, app graphics left out (for the screenshots collection). */
   images: LibImage[];
@@ -48,6 +48,8 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   epoch: number;
   actions: LibActions;
   onError: (e: unknown) => void;
+  /** This tab is the visible one (Library keep-alive): false mutes the window key handling. */
+  active: boolean;
 }) {
   const [list, setList] = useState<Collection[] | null>(null);
   const [evals, setEvals] = useState<Record<string, Eval>>({});
@@ -231,6 +233,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
   // Esc inside a collection goes back to the card grid (the form and the gallery's preview handle their own Esc first).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!active) return; // hidden behind another Library tab (keep-alive): no keys to own
       const t = e.target as HTMLElement | null;
       if (e.defaultPrevented || !sel || draft) return;
       if (t && /^(INPUT|TEXTAREA)$/.test(t.tagName)) return;
@@ -241,7 +244,7 @@ export function Collections({ backend, images, hidden, t1, gen, epoch, actions, 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, draft, confirmDel, list]);
+  }, [sel, draft, confirmDel, list, active]);
 
   /** Up to four thumbnails for a card. */
   const peek = (c: Collection): GridItem[] => {

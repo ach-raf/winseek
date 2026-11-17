@@ -51,15 +51,23 @@ export interface LibraryProps {
   onBack?: () => void;
   /** Clean up > Disk space should show this drive (a click on a drive in the side rail). */
   drive?: { letter: string; n: number };
+  /** The Library is the visible page. Embedded, it stays mounted while other pages show (keep-alive);
+   *  false mutes its window key handling and autofocus. Data still refreshes: `reveal` bumps on show. */
+  active?: boolean;
 }
 
-export default function Library({ backend, embedded = false, tab: tabProp, chrome, onBack, drive }: LibraryProps) {
+export default function Library({ backend, embedded = false, tab: tabProp, chrome, onBack, drive, active = true }: LibraryProps) {
   const [ownTab, setOwnTab] = useState<LibTab>(() => {
     const t = new URLSearchParams(location.search).get("tab");
     return TABS.includes(t as LibTab) ? (t as LibTab) : "timeline";
   });
   const tab: LibTab = embedded ? (tabProp ?? "timeline") : ownTab;
   const [epoch, setEpoch] = useState(0); // bumped after an undo: every list is read again
+  // Bumped every time the Library becomes the visible page again (embedded keep-alive). The image list,
+  // dup groups and big files re-read so files deleted elsewhere (e.g. Del in the search popup) are gone;
+  // Collections' evaluated hits follow the embedding generation instead.
+  const [reveal, setReveal] = useState(0);
+  useEffect(() => { if (active) setReveal((r) => r + 1); }, [active]);
   // Settings inside this window: the sidebar's Settings item used to bounce back to the popup.
   const [showSettings, setShowSettings] = useState(false);
   // The last section is remembered across sessions (the popup uses the same storage key).
@@ -121,7 +129,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     let live = true;
     backend.libraryImages().then((r) => { if (live) { setImages(r); setLoadErr(null); } }).catch((e) => { if (live) { setImages((x) => x ?? []); setLoadErr(errText(e)); } });
     return () => { live = false; };
-  }, [backend, epoch, gen]);
+  }, [backend, epoch, gen, reveal]);
 
   const flash = useCallback((msg: string, undo = false, ms = undo ? 7000 : 2500) => {
     setToast({ msg, undo });
@@ -187,6 +195,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      if (!active) return; // hidden behind another page (embedded keep-alive): no keys to own
       const t = e.target as HTMLElement | null;
       if (combos("library.cheatsheet").some((c) => matches(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (cheat && e.key === "Escape") { e.preventDefault(); setCheat(false); return; }
@@ -215,14 +224,15 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [doUndo, goBack, cheat, embedded, showSettings, confirmOpen, dismissConfirm]);
+  }, [doUndo, goBack, cheat, embedded, showSettings, confirmOpen, dismissConfirm, active]);
 
   // A tab switch puts the keyboard on the tab's main widget (gallery, first collection, cleanup list).
   useEffect(() => {
+    if (!active) return;
     requestAnimationFrame(() => {
-      document.querySelector<HTMLElement>(".lib-body [data-autofocus], .lib-body [tabindex='0']")?.focus({ preventScroll: true });
+      document.querySelector<HTMLElement>(".lib-body [data-active] [data-autofocus], .lib-body [data-active] [tabindex='0']")?.focus({ preventScroll: true });
     });
-  }, [tab]);
+  }, [tab, active]);
 
   const visible = useMemo(() => (images ?? []).filter((i) => !hidden.has(i.path)), [images, hidden]);
   // Your own pictures: what collections and clean-up work on (app graphics are never offered there).
@@ -265,6 +275,17 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     else goBack(); // "search": back to the popup
   };
 
+  // A visited tab stays mounted (hidden): switching back neither refetches its data nor loses its
+  // place — Cleanup keeps its dup groups and drill-in, Collections keeps its evaluated hits and the
+  // open collection, the gallery keeps its scroll. `reveal` above re-reads what can change outside.
+  // State, not a ref, and marked during render: the newly picked tab must mount in THIS commit — a
+  // ref flip would wait for the next unrelated render, leaving the body empty for seconds.
+  const [seen, setSeen] = useState<Record<LibTab, boolean>>({ timeline: true, collections: false, cleanup: false });
+  if (!seen[tab]) setSeen((s) => ({ ...s, [tab]: true }));
+  const keep = (t: LibTab, node: ReactNode) => (
+    <div className="lib-keep" hidden={tab !== t} data-active={tab === t ? "" : undefined}>{node}</div>
+  );
+
   const main = (
     <div className="lib-main">
       <div className="tbar">
@@ -287,11 +308,13 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {chrome}
       </div>
       <main className="lib-body">
-        {tab === "timeline" && <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} view={gview} />}
-        {tab === "collections" && (
-          <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} />
-        )}
-        {tab === "cleanup" && <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} onError={fail} drive={drive} />}
+        {seen.timeline && keep("timeline", <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} view={gview} />)}
+        {seen.collections && keep("collections", (
+          <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} epoch={epoch} actions={actions} onError={fail} active={tab === "collections"} />
+        ))}
+        {seen.cleanup && keep("cleanup", (
+          <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} gen={gen} reveal={reveal} onError={fail} drive={drive} active={tab === "cleanup"} />
+        ))}
       </main>
       {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
       {confirmNode}

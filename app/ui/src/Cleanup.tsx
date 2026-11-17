@@ -33,7 +33,7 @@ const dirName = (p: string) => {
   return parts.length >= 2 ? parts[parts.length - 2] : parts[0] ?? "";
 };
 
-export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError, drive }: {
+export function Cleanup({ backend, images, hidden, actions, epoch, gen, reveal, onError, drive, active }: {
   backend: Backend;
   /** The user's own pictures (app graphics left out, recycled files already gone). */
   images: LibImage[];
@@ -42,9 +42,13 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError,
   epoch: number;
   /** Bumps when new embeddings arrived. */
   gen: number;
+  /** Bumps when the Library page is shown again (keep-alive): the index lists are read again. */
+  reveal: number;
   onError: (e: unknown) => void;
   /** Show Disk space for this drive (a click on a drive in the side rail); `n` changes on every request. */
   drive?: { letter: string; n: number };
+  /** This tab is the visible one (Library keep-alive): false mutes the window key handling. */
+  active: boolean;
 }) {
   const [mode, setMode] = useState<"tidy" | "space">(drive ? "space" : "tidy");
   useEffect(() => { if (drive) setMode("space"); }, [drive]);
@@ -59,12 +63,12 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError,
     let live = true;
     backend.libraryDupGroups().then((g) => { if (live) setGroups(g); }).catch((e) => { if (live) { setGroups([]); onError(e); } });
     return () => { live = false; };
-  }, [backend, epoch, gen, onError]);
+  }, [backend, epoch, gen, reveal, onError]);
   useEffect(() => {
     let live = true;
     backend.libraryBigFiles(BIG_N).then((r) => { if (live) setFiles(r); }).catch((e) => { if (live) { setFiles([]); onError(e); } });
     return () => { live = false; };
-  }, [backend, epoch, onError]);
+  }, [backend, epoch, reveal, onError]);
 
   const vis = useMemo(() => (groups ? visibleGroups(groups, hidden) : null), [groups, hidden]);
   const rows = useMemo(() => (files ? files.filter((f) => !hidden.has(f.path)) : null), [files, hidden]);
@@ -75,7 +79,7 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError,
 
   // Esc inside a drill-in goes back to the overview (the window-level handler in Library yields to a handled key).
   useEffect(() => {
-    if (view === "home") return;
+    if (view === "home" || !active) return; // hidden behind another Library tab (keep-alive): no keys to own
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (e.defaultPrevented || (t && /^(INPUT|TEXTAREA)$/.test(t.tagName))) return;
@@ -83,7 +87,7 @@ export function Cleanup({ backend, images, hidden, actions, epoch, gen, onError,
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [view]);
+  }, [view, active]);
 
   const home = () => setView("home");
   const bar = (title: string, summary: string, extra?: React.ReactNode) => (
