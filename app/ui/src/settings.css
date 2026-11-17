@@ -82,8 +82,11 @@
 @keyframes sflash { 0%, 60% { background: color-mix(in oklab, var(--acc) 22%, transparent); } 100% { background: transparent; } }
 @media (prefers-reduced-motion: reduce) { [data-setting].flash { animation: none; background: color-mix(in oklab, var(--acc) 22%, transparent); } }
 .scont { grid-column: 2; grid-row: 1; overflow: auto; padding: 0 var(--sp-4) var(--sp-4); scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
-/* one 640px column in every host (the cards' own max-width); no masonry */
+/* one 640px column in the popup (the cards' own max-width); no masonry */
 .scols { max-width: 640px; }
+/* Full-window hosts use the room they have: cards grow past the popup's 640px measure so the
+   rows stop wrapping and the dead space right of the column goes away. The popup keeps 640. */
+.settings.embedded .scols, .settings.embedded .grp { max-width: 920px; }
 .scont::-webkit-scrollbar { width: 10px; }
 .scont::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
 .scont::-webkit-scrollbar-thumb:hover { background: var(--fg3); background-clip: content-box; border: 3px solid transparent; }
