@@ -207,8 +207,8 @@ function TransparencyRow() {
   );
 }
 
-/** Light, dark, or following Windows (Settings › Appearance). Applies at once and is remembered;
- *  the other window follows through the storage event (main.tsx). */
+/** Light, dark, Catppuccin Latte or Mocha, or following Windows (Settings › Appearance). Applies
+ *  at once and is remembered; the other window follows through the storage event (main.tsx). */
 function ThemeRow() {
   const [id, setId] = useState<ThemeId>(() => loadTheme());
   const change = (next: ThemeId) => {
@@ -217,7 +217,7 @@ function ThemeRow() {
     saveTheme(next);
   };
   return (
-    <Row id="theme" title="Theme" desc="Light or dark, or follow Windows.">
+    <Row id="theme" title="Theme" desc="Light, dark, Catppuccin Latte or Mocha — or follow Windows.">
       <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" />
     </Row>
   );

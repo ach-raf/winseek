@@ -1,17 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { loadTheme, resolveTheme, saveTheme, THEMES, type ThemeId } from "./theme.ts";
+import { loadTheme, resolveTheme, saveTheme, themeMode, THEMES, type ThemeId } from "./theme.ts";
 
-test("THEMES offers exactly system / light / dark with labels", () => {
-  assert.deepEqual(THEMES.map((t) => t.id), ["system", "light", "dark"]);
-  assert.deepEqual(THEMES.map((t) => t.label), ["System", "Light", "Dark"]);
+test("THEMES offers system, the two originals, and the Catppuccin pair, with labels", () => {
+  assert.deepEqual(THEMES.map((t) => t.id), ["system", "light", "dark", "latte", "mocha"]);
+  assert.deepEqual(THEMES.map((t) => t.label), ["System", "Light", "Dark", "Latte", "Mocha"]);
 });
 
-test("resolveTheme: explicit light/dark win, system follows the OS", () => {
+test("themeMode: originals and Catppuccin sit in their families", () => {
+  assert.equal(themeMode("light"), "light");
+  assert.equal(themeMode("latte"), "light");
+  assert.equal(themeMode("dark"), "dark");
+  assert.equal(themeMode("mocha"), "dark");
+});
+
+test("resolveTheme: explicit palettes win, system follows the OS to the family original", () => {
   assert.equal(resolveTheme("light", true), "light");
   assert.equal(resolveTheme("light", false), "light");
   assert.equal(resolveTheme("dark", false), "dark");
   assert.equal(resolveTheme("dark", true), "dark");
+  assert.equal(resolveTheme("latte", false), "latte");
+  assert.equal(resolveTheme("latte", true), "latte");
+  assert.equal(resolveTheme("mocha", true), "mocha");
+  assert.equal(resolveTheme("mocha", false), "mocha");
   assert.equal(resolveTheme("system", true), "dark");
   assert.equal(resolveTheme("system", false), "light");
 });
