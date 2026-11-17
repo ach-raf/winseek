@@ -6,6 +6,8 @@ use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 use std::time::{Duration, Instant};
 
+use serde::de::DeserializeOwned;
+
 type Handle = *mut c_void;
 type Bool = i32;
 
@@ -63,6 +65,14 @@ extern "system" {
     ) -> Handle;
     fn WaitNamedPipeW(name: *const u16, timeout_ms: u32) -> Bool;
     fn ReadFile(h: Handle, buf: *mut u8, n: u32, read: *mut u32, overlapped: *mut c_void) -> Bool;
+    fn PeekNamedPipe(
+        h: Handle,
+        data: *mut u8,
+        size: u32,
+        read: *mut u32,
+        avail: *mut u32,
+        left: *mut u32,
+    ) -> Bool;
     fn WriteFile(
         h: Handle,
         buf: *const u8,
@@ -131,6 +141,65 @@ impl Write for PipeConn {
     }
     fn flush(&mut self) -> io::Result<()> {
         Ok(()) // FlushFileBuffers would block until the peer drained; done in Drop instead.
+    }
+}
+
+impl PipeConn {
+    /// Block until at least one byte is readable or `deadline` passes. A broken pipe
+    /// reports ready, so the following read surfaces the EOF as usual.
+    fn wait_readable(&self, deadline: Instant) -> io::Result<()> {
+        loop {
+            let mut avail = 0u32;
+            // SAFETY: valid handle; the out-pointer is valid for one u32.
+            let ok =
+                unsafe { PeekNamedPipe(self.h, null_mut(), 0, null_mut(), &mut avail, null_mut()) };
+            if ok == 0 {
+                let e = io::Error::last_os_error();
+                if e.raw_os_error() == Some(ERROR_BROKEN_PIPE) {
+                    return Ok(()); // peer gone: let read() report the EOF
+                }
+                return Err(e);
+            }
+            if avail > 0 {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err(io::Error::new(
+                    io::ErrorKind::TimedOut,
+                    "pipe read timed out waiting for a reply",
+                ));
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    /// Read into `buf`, giving up once `deadline` passes. Returns however many bytes
+    /// arrived (0 = EOF). Data was just peeked, so ReadFile does not block (single reader).
+    fn read_deadline(&mut self, buf: &mut [u8], deadline: Instant) -> io::Result<usize> {
+        self.wait_readable(deadline)?;
+        self.read(buf)
+    }
+
+    /// One framed JSON message with a hard deadline. Plain [`crate::read_message`] waits
+    /// forever on a wedged backend, which is exactly what a CLI must not do.
+    pub fn read_message_timeout<T: DeserializeOwned>(
+        &mut self,
+        timeout: Duration,
+    ) -> io::Result<T> {
+        struct Bounded<'a> {
+            c: &'a mut PipeConn,
+            at: Instant,
+        }
+        impl Read for Bounded<'_> {
+            fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+                self.c.read_deadline(buf, self.at)
+            }
+        }
+        let mut r = Bounded {
+            c: self,
+            at: Instant::now() + timeout,
+        };
+        crate::read_message(&mut r)
     }
 }
 
@@ -361,6 +430,50 @@ mod tests {
             .err()
             .unwrap();
         assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+    }
+
+    #[test]
+    fn read_message_timeout_gives_up_on_a_silent_server() {
+        let name = unique();
+        let mut server = PipeServer::bind(&name).expect("bind");
+        let t = std::thread::spawn(move || {
+            let mut c = server.accept().unwrap();
+            let _req: Request = read_message(&mut c).unwrap();
+            // Read the request, then deliberately never answer.
+            std::thread::sleep(Duration::from_millis(400));
+        });
+        let mut c = connect(&name, Duration::from_secs(5)).unwrap();
+        write_message(&mut c, &Request::Status { id: 3 }).unwrap();
+        let e = c
+            .read_message_timeout::<Response>(Duration::from_millis(120))
+            .err()
+            .expect("the read must time out");
+        assert_eq!(e.kind(), io::ErrorKind::TimedOut);
+        t.join().unwrap();
+    }
+
+    #[test]
+    fn read_message_timeout_still_roundtrips() {
+        let name = unique();
+        let mut server = PipeServer::bind(&name).expect("bind");
+        let t = std::thread::spawn(move || {
+            let mut c = server.accept().unwrap();
+            let req: Request = read_message(&mut c).unwrap();
+            write_message(
+                &mut c,
+                &Response::StatusResult {
+                    id: req.id(),
+                    volumes: vec![],
+                    uptime_s: 1,
+                },
+            )
+            .unwrap();
+        });
+        let mut c = connect(&name, Duration::from_secs(5)).unwrap();
+        write_message(&mut c, &Request::Status { id: 4 }).unwrap();
+        let r: Response = c.read_message_timeout(Duration::from_secs(5)).unwrap();
+        assert!(matches!(r, Response::StatusResult { id: 4, .. }));
+        t.join().unwrap();
     }
 
     #[test]

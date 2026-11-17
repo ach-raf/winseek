@@ -23,14 +23,14 @@
 //! to stderr. Exit code: 0 ok, 1 failed (service/app not running, bad volume...), 2 bad usage.
 
 use std::io::{self, Write};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 use winseek_ipc::pipe::connect;
 use winseek_ipc::{
-    add_to_path, agent_pipe_name, path_contains, path_raw, read_message, remove_from_path,
-    write_message, AgentRequest, AgentResponse, Hit, Request, Response, Sort, VolumeState,
-    VolumeStatus, PIPE_NAME,
+    add_to_path, agent_pipe_name, path_contains, path_raw, remove_from_path, write_message,
+    AgentRequest, AgentResponse, Hit, Request, Response, Sort, VolumeState, VolumeStatus,
+    PIPE_NAME,
 };
 
 const USAGE: &str = "\
@@ -39,7 +39,7 @@ winseek-cli - winseek from a terminal
 USAGE
   winseek-cli search <query...> [-n N] [--sort ORDER] [--long] [--json]
   winseek-cli status [--json]
-  winseek-cli index [VOLUME | --all] [--wait]
+  winseek-cli index [VOLUME | --all] [--wait] [--timeout SECS]
   winseek-cli meaning <query...> [-n N] [--long] [--json]
   winseek-cli read <path> [--page N] [--max N] [--json]
   winseek-cli recent [-n N] [--json]
@@ -52,7 +52,9 @@ search   Name search with the same syntax as the app (ext:pdf, size:>10mb, dm:to
          --long      add size and modified date
          --json      JSON array of {name, path, is_dir, size, mtime}
 status   Volumes, file counts and state of the name index.
-index    Rescan a volume (C or C:) or all of them from the file table. --wait polls until it is live again.
+index    Rescan a volume (C or C:) or all of them from the file table. --wait polls until it is live again;
+         the poller also gives up when a scan shows no progress for 10 minutes (30 without per-file
+         counts) or hits --timeout SECS, so a wedged scan cannot hang the command forever.
 meaning  Search documents, screenshots and photos by what they CONTAIN (semantic index).
          Same -n / --json; --long adds score and snippet. Needs the winseek app running.
 read     Extract the text of a file (PDF, Office, image OCR already parsed, code, ...).
@@ -92,6 +94,8 @@ enum Cmd {
     Index {
         volumes: Option<char>,
         wait: bool,
+        /// Total wait cap for --wait, in seconds (from --timeout; None = unbounded).
+        timeout: Option<u64>,
     },
     Meaning {
         query: String,
@@ -199,11 +203,19 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
             _ => Err("usage: winseek-cli status [--json]".into()),
         },
         "index" | "rescan" => {
-            let (mut vol, mut all, mut wait) = (None, false, false);
-            for a in rest {
+            let (mut vol, mut all, mut wait, mut timeout) = (None, false, false, None);
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
                 match a.as_str() {
                     "--all" => all = true,
                     "--wait" => wait = true,
+                    "--timeout" => {
+                        let v = it.next().ok_or("usage: index --timeout SECS")?;
+                        timeout = Some(
+                            v.parse::<u64>()
+                                .map_err(|_| format!("--timeout: not a number: {v}"))?,
+                        );
+                    }
                     v if v.trim_end_matches(':').chars().count() == 1
                         && v.trim_end_matches(':')
                             .chars()
@@ -211,13 +223,17 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
                     {
                         vol = Some(v.chars().next().unwrap().to_ascii_uppercase());
                     }
-                    other => return Err(format!("not a volume: {other}")),
+                    other => return Err(format!("not a volume or option: {other}")),
                 }
             }
             match (vol, all) {
                 (Some(_), true) => Err("give a volume or --all, not both".into()),
                 (None, false) => Err("index needs a volume (C or C:) or --all".into()),
-                (v, _) => Ok(Cmd::Index { volumes: v, wait }),
+                (v, _) => Ok(Cmd::Index {
+                    volumes: v,
+                    wait,
+                    timeout,
+                }),
             }
         }
         "meaning" | "m" => {
@@ -355,6 +371,10 @@ fn parse(args: &[String]) -> Result<Cmd, String> {
 type Send<'a> = dyn FnMut(Request) -> io::Result<Response> + 'a;
 /// One request/response round trip to the app's agent pipe.
 type AgentSend<'a> = dyn FnMut(AgentRequest) -> io::Result<AgentResponse> + 'a;
+
+/// Hard cap on one request/response round trip: a wedged backend must not hang the CLI
+/// forever (a healthy searchd answers in milliseconds, agent reads in well under a second).
+const ROUND_TRIP: Duration = Duration::from_secs(30);
 
 fn fail(e: impl std::fmt::Display) -> String {
     e.to_string()
@@ -590,7 +610,11 @@ fn run(cmd: Cmd, send: &mut Send, out: &mut dyn Write, err: &mut dyn Write) -> R
                 Ok(())
             }
         }
-        Cmd::Index { volumes, wait } => {
+        Cmd::Index {
+            volumes,
+            wait,
+            timeout,
+        } => {
             let letters: Vec<char> = match volumes {
                 Some(v) => vec![v],
                 None => expect_status(send(Request::Status { id: 1 }).map_err(fail)?)?
@@ -611,7 +635,7 @@ fn run(cmd: Cmd, send: &mut Send, out: &mut dyn Write, err: &mut dyn Write) -> R
                 }
             }
             if wait {
-                wait_live(send, &letters, err)?;
+                wait_live(send, &letters, err, timeout.map(Duration::from_secs))?;
             }
             Ok(())
         }
@@ -792,9 +816,59 @@ fn run_path(cmd: Cmd, out: &mut dyn Write, err: &mut dyn Write) -> Result<(), St
     }
 }
 
-/// Poll until none of `letters` is scanning or rescanning (or errored).
-fn wait_live(send: &mut Send, letters: &[char], err: &mut dyn Write) -> Result<(), String> {
+/// A scanning volume stuck on one status line for this long is wedged, not working:
+/// `done/total` counts change as a healthy scan progresses.
+const STALL_COUNTED: Duration = Duration::from_secs(600);
+/// Same for states with no per-file counts to watch (e.g. "rescanning").
+const STALL_BLIND: Duration = Duration::from_secs(1800);
+const POLL: Duration = Duration::from_millis(1000);
+
+/// Tunables for [`wait_live_with`], injectable so the wedged-scan paths are testable.
+struct WaitPolicy {
+    /// Stall window when per-file counts are visible.
+    stall_counted: Duration,
+    /// Stall window without counts (the status line is static by design).
+    stall_blind: Duration,
+    /// How often to ask the service for status.
+    poll: Duration,
+    /// Total wait cap (from --timeout); `None` = unbounded.
+    cap: Option<Duration>,
+}
+
+/// Poll until none of `letters` is scanning or rescanning (or errored). A status line that
+/// stops changing for the stall window — or the `--timeout` cap, when set — ends the wait
+/// with an error, so `--wait` cannot hang forever on a wedged scan.
+fn wait_live(
+    send: &mut Send,
+    letters: &[char],
+    err: &mut dyn Write,
+    cap: Option<Duration>,
+) -> Result<(), String> {
+    wait_live_with(
+        send,
+        letters,
+        err,
+        WaitPolicy {
+            stall_counted: STALL_COUNTED,
+            stall_blind: STALL_BLIND,
+            poll: POLL,
+            cap,
+        },
+        Instant::now,
+    )
+}
+
+/// [`wait_live`] with injectable policy and clock.
+fn wait_live_with(
+    send: &mut Send,
+    letters: &[char],
+    err: &mut dyn Write,
+    p: WaitPolicy,
+    now: fn() -> Instant,
+) -> Result<(), String> {
     let mut last = String::new();
+    let mut last_change = now();
+    let started = last_change;
     loop {
         let vols = expect_status(send(Request::Status { id: 2 }).map_err(fail)?)?;
         let mine: Vec<&VolumeStatus> = vols
@@ -823,9 +897,35 @@ fn wait_live(send: &mut Send, letters: &[char], err: &mut dyn Write) -> Result<(
         let line = busy.join("  ");
         if line != last {
             let _ = writeln!(err, "{line}");
-            last = line;
+            last = line.clone();
+            last_change = now();
         }
-        std::thread::sleep(Duration::from_millis(1000));
+        // A scan whose counts are visible changes the line as it progresses; without counts
+        // the line is static by design, so give it a wider window.
+        let counted = mine
+            .iter()
+            .any(|v| matches!(&v.state, VolumeState::Scanning { total, .. } if *total > 0));
+        let stall = if counted {
+            p.stall_counted
+        } else {
+            p.stall_blind
+        };
+        if now().duration_since(last_change) > stall {
+            return Err(format!(
+                "no progress for {} min ({line}) — the scan looks wedged; \
+                 check the winseek app or re-run without --wait",
+                stall.as_secs() / 60
+            ));
+        }
+        if let Some(cap) = p.cap {
+            if now().duration_since(started) > cap {
+                return Err(format!(
+                    "still not live after {} s ({line}); re-run with a larger --timeout",
+                    cap.as_secs()
+                ));
+            }
+        }
+        std::thread::sleep(p.poll);
     }
 }
 
@@ -884,7 +984,7 @@ fn main() {
         };
         let mut send = |req: AgentRequest| -> io::Result<AgentResponse> {
             write_message(&mut conn, &req)?;
-            read_message(&mut conn)
+            conn.read_message_timeout(ROUND_TRIP)
         };
         if let Err(e) = run_agent(cmd, &mut send, &mut out, &mut err) {
             let _ = writeln!(err, "winseek-cli: {e}");
@@ -901,7 +1001,7 @@ fn main() {
     };
     let mut send = |req: Request| -> io::Result<Response> {
         write_message(&mut conn, &req)?;
-        read_message(&mut conn)
+        conn.read_message_timeout(ROUND_TRIP)
     };
     if let Err(e) = run(cmd, &mut send, &mut out, &mut err) {
         let _ = writeln!(err, "winseek-cli: {e}");
@@ -913,6 +1013,7 @@ fn main() {
 mod tests {
     use super::*;
     use winseek_ipc::pipe::PipeServer;
+    use winseek_ipc::read_message;
 
     fn a(s: &str) -> Vec<String> {
         s.split_whitespace().map(String::from).collect()
@@ -966,23 +1067,36 @@ mod tests {
             parse(&a("index c:")).unwrap(),
             Cmd::Index {
                 volumes: Some('C'),
-                wait: false
+                wait: false,
+                timeout: None
             }
         );
         assert_eq!(
             parse(&a("index D --wait")).unwrap(),
             Cmd::Index {
                 volumes: Some('D'),
-                wait: true
+                wait: true,
+                timeout: None
             }
         );
         assert_eq!(
             parse(&a("index --all")).unwrap(),
             Cmd::Index {
                 volumes: None,
-                wait: false
+                wait: false,
+                timeout: None
             }
         );
+        assert_eq!(
+            parse(&a("index C --wait --timeout 600")).unwrap(),
+            Cmd::Index {
+                volumes: Some('C'),
+                wait: true,
+                timeout: Some(600)
+            }
+        );
+        assert!(parse(&a("index C --timeout")).is_err());
+        assert!(parse(&a("index C --timeout soon")).is_err());
         assert!(parse(&a("index")).is_err());
         assert!(parse(&a("index C --all")).is_err());
         assert!(parse(&a("index C:\\Users")).is_err());
@@ -1218,6 +1332,7 @@ mod tests {
             Cmd::Index {
                 volumes: None,
                 wait: true,
+                timeout: None,
             },
             &mut send,
             &mut out,
@@ -1248,9 +1363,61 @@ mod tests {
                 uptime_s: 1,
             })
         };
-        assert!(wait_live(&mut send, &['C'], &mut Vec::new())
+        assert!(wait_live(&mut send, &['C'], &mut Vec::new(), None)
             .unwrap_err()
             .contains("access denied"));
+    }
+
+    #[test]
+    fn wait_gives_up_when_a_scan_stalls() {
+        let mut send = |_| {
+            Ok(Response::StatusResult {
+                id: 2,
+                volumes: vec![vol('C', VolumeState::Scanning { done: 3, total: 0 })],
+                uptime_s: 1,
+            })
+        };
+        let tiny = Duration::from_millis(30);
+        let e = wait_live_with(
+            &mut send,
+            &['C'],
+            &mut Vec::new(),
+            WaitPolicy {
+                stall_counted: tiny,
+                stall_blind: tiny,
+                poll: Duration::from_millis(5),
+                cap: None,
+            },
+            Instant::now,
+        )
+        .unwrap_err();
+        assert!(e.contains("no progress"), "{e}");
+    }
+
+    #[test]
+    fn wait_respects_the_timeout_cap() {
+        let mut send = |_| {
+            Ok(Response::StatusResult {
+                id: 2,
+                volumes: vec![vol('C', VolumeState::Rescanning)],
+                uptime_s: 1,
+            })
+        };
+        let huge = Duration::from_secs(3600);
+        let e = wait_live_with(
+            &mut send,
+            &['C'],
+            &mut Vec::new(),
+            WaitPolicy {
+                stall_counted: huge,
+                stall_blind: huge,
+                poll: Duration::from_millis(5),
+                cap: Some(Duration::from_millis(40)),
+            },
+            Instant::now,
+        )
+        .unwrap_err();
+        assert!(e.contains("still not live"), "{e}");
     }
 
     #[test]
@@ -1555,7 +1722,7 @@ mod tests {
         let mut conn = connect(&name, Duration::from_secs(2)).unwrap();
         let mut send = |req: AgentRequest| -> io::Result<AgentResponse> {
             write_message(&mut conn, &req)?;
-            read_message(&mut conn)
+            conn.read_message_timeout(ROUND_TRIP)
         };
         let mut out = Vec::new();
         run_agent(
