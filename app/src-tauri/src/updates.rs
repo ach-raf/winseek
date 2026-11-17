@@ -63,15 +63,10 @@ fn load() -> Prefs {
 }
 
 fn save(p: &Prefs) -> Result<(), String> {
+    // Atomic: a truncated updates.json must not read back as defaults (check re-enabled).
     let f = path().ok_or("no %LOCALAPPDATA%")?;
-    if let Some(d) = f.parent() {
-        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
-    }
-    std::fs::write(
-        f,
-        serde_json::to_string_pretty(p).map_err(|e| e.to_string())?,
-    )
-    .map_err(|e| e.to_string())
+    let json = serde_json::to_string_pretty(p).map_err(|e| e.to_string())?;
+    crate::fsutil::write_atomic(&f, json.as_bytes()).map_err(|e| e.to_string())
 }
 
 /// `v0.2.19`, `0.2.19-beta.1` -> (0, 2, 19). The pre-release suffix is ignored.

@@ -116,8 +116,9 @@ pub fn init_default() {
         }
         Err(_) => {
             if write_value(true).is_ok() {
-                let _ = std::fs::create_dir_all(&root);
-                let _ = std::fs::write(marker, b"on");
+                if let Err(e) = crate::fsutil::write_atomic(&marker, b"on") {
+                    eprintln!("winseek: could not write the autostart marker ({e})");
+                }
             }
         }
     }
@@ -132,8 +133,12 @@ pub fn autostart_get() -> bool {
 pub fn autostart_set(on: bool) -> Result<bool, String> {
     write_value(on)?;
     if let Some(root) = tier1::data_root() {
-        let _ = std::fs::create_dir_all(&root);
-        let _ = std::fs::write(root.join(MARKER), if on { &b"on"[..] } else { &b"off"[..] });
+        if let Err(e) = crate::fsutil::write_atomic(
+            &root.join(MARKER),
+            if on { &b"on"[..] } else { &b"off"[..] },
+        ) {
+            eprintln!("winseek: could not write the autostart marker ({e})");
+        }
     }
     Ok(enabled())
 }

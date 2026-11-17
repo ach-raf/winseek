@@ -525,13 +525,8 @@ fn thumb_bytes(path: &str, size: u32) -> Option<Vec<u8>> {
     let (w, h, px) = path_icon_px(path, size, true).or_else(|| decode_small(path, size))?;
     let bytes = encode_thumb(w, h, &px)?;
     if let Some(f) = file {
-        if let Some(dir) = f.parent() {
-            let _ = std::fs::create_dir_all(dir);
-            let tmp = f.with_extension(format!("tmp{}", std::process::id()));
-            if std::fs::write(&tmp, &bytes).is_ok() && std::fs::rename(&tmp, &f).is_err() {
-                let _ = std::fs::remove_file(&tmp);
-            }
-        }
+        // Best effort: the thumbnail is already in hand, the cache only speeds up next time.
+        let _ = crate::fsutil::write_atomic(&f, &bytes);
     }
     Some(bytes)
 }

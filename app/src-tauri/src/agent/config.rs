@@ -54,9 +54,9 @@ pub fn load(root: &Path) -> AgentConfig {
 }
 
 pub fn save(root: &Path, cfg: &AgentConfig) -> Result<(), String> {
-    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    // Atomic: a crash mid-save must not truncate the file and silently turn agent access off.
     let json = serde_json::to_vec_pretty(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(path(root), json).map_err(|e| e.to_string())
+    crate::fsutil::write_atomic(&path(root), &json).map_err(|e| e.to_string())
 }
 
 #[cfg(test)]

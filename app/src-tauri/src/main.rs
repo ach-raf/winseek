@@ -3,6 +3,7 @@
 mod agent;
 mod autostart;
 mod commands;
+mod fsutil;
 mod hotkeys;
 mod launch;
 mod libwindow;
