@@ -7,8 +7,11 @@
 .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--acc); color: var(--acc-ink); display: grid; place-items: center; }
 .nv { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--fg2); text-align: left; width: 100%; }
 .nv svg { width: 18px; height: 18px; color: var(--fg3); }
-.nv:hover { background: var(--bg3); }
-.nv.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 0 0 1px var(--line), 0 1px 2px rgba(0,0,0,.06); }
+/* Hover/selected ride as translucent ink overlays, not bg steps: the rail carries its own
+   surface per theme (light flat grey, dark tinted graphite), and a bg3-keyed row would blend
+   into it in either ramp. */
+.nv:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
+.nv.on { background: color-mix(in oklab, var(--fg) 12%, transparent); color: var(--fg); font-weight: 600; }
 .nv.on svg { color: var(--fg); }
 .nv i { margin-left: auto; font-style: normal; font-size: 12px; color: var(--fg3); font-weight: 400; }
 .nlab { padding: 16px 10px 6px; font-size: 12px; font-weight: 600; color: var(--fg3); }
@@ -17,22 +20,14 @@
 .idx .d { display: grid; grid-template-columns: 20px 1fr 44px; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg3); }
 .idx .d b { color: var(--fg2); font-weight: 600; }
 .idx .d span { text-align: right; font-variant-numeric: tabular-nums; }
-.meter { height: 5px; border-radius: 3px; background: var(--bg3); overflow: hidden; }
+.meter { height: 5px; border-radius: 3px; background: var(--meter-track); overflow: hidden; }
 .meter i { display: block; height: 100%; width: calc(var(--u) * 100%); border-radius: 3px; background: var(--fg3); }
-/* On the lifted tinted rail, bg3-keyed hover/selected would blend in; use fg overlays. */
-:root[data-theme="dark"] .nv:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
-:root[data-theme="dark"] .nv.on { background: color-mix(in oklab, var(--fg) 12%, transparent); box-shadow: none; }
-:root[data-theme="dark"] .idx .meter { background: var(--bg); }
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tbar { height: 60px; flex: none; display: flex; align-items: center; gap: 10px; padding: 0 var(--sp-2) 0 var(--sp-5); }
 .tbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
 .tbar .hsub { font-size: 13px; color: var(--fg3); margin-left: 4px; }
-.tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 var(--sp-3); border-radius: 11px; background: var(--bg2); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
-.tbar .field:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
-/* Light: recessed grey well on the grey toolbar, brightening to white on focus (the dark
-   bg2→bg direction, realized with the inverted light ramp). */
-:root[data-theme="light"] .tbar .field { background: var(--bg3); }
-:root[data-theme="light"] .tbar .field:focus-within { background: var(--bg2); }
+.tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 var(--sp-3); border-radius: 11px; background: var(--well); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
+.tbar .field:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--well-focus); }
 .wc { display: flex; margin-left: 6px; }
 .wc button { width: 40px; height: 32px; display: grid; place-items: center; color: var(--fg3); border-radius: 6px; }
 .wc button:hover { background: var(--bg3); color: var(--fg); }

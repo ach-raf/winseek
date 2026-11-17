@@ -33,16 +33,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* popup gutter: chips start at var(--sp-4), the same x as the search field above and the rows below */
 .frow { display: flex; align-items: center; gap: 6px; flex: none; padding: 0 var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--line); }
 /* .fc (filter chip) lives in base.css — one definition for the archetype; active = the row's only accent */
-.dseg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--bg2); }
+.dseg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--seg-track); }
 .dseg button { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 12px; font-weight: 600; color: var(--fg3); }
-.dseg button.on { background: var(--bg); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
+.dseg button.on { background: var(--seg-on); color: var(--fg); box-shadow: 0 1px 2px rgba(0,0,0,.18); }
 .sortb { height: 28px; padding: 0 8px; display: inline-flex; align-items: center; gap: 4px; border-radius: 8px; font-size: 12px; font-weight: 500; color: var(--fg3); white-space: nowrap; }
 .sortb:hover { background: var(--bg3); color: var(--fg); }
-:root[data-theme="dark"] .dseg button.on { background: var(--bg3); }
-/* Light: grey track, white raised segment (macOS segmented control); the dark ramp does the
-   inverse (dark track on bg2, lighter bg3 segment). */
-:root[data-theme="light"] .dseg { background: var(--bg3); }
-:root[data-theme="light"] .dseg button.on { background: var(--bg2); }
 
 /* ---- results ---- */
 /* Row math: row text x = list padding + row padding. Popup: 8 + 8 = 16 (--sp-4). Full window:
@@ -63,23 +58,25 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sh .back i.busy::before { content: "\00b7  "; }
 /* Windowed lists (Overview's Windowed): spacers stand in for the rows that are not drawn. */
 .win-pad { grid-column: 1 / -1; pointer-events: none; }
-.list.ov { overflow-anchor: none; }
 /* The overview sheet (home suggestions, results) reuses .ov, whose dark veil + white ink exists
- * for captions over photos and video. As a page surface it follows the theme instead. */
-:root[data-theme="light"] .list.ov {
-  background: var(--bg2);
+ * for captions over photos and video. As a page surface it follows the theme instead: --sheet
+ * colors it (dark the canvas grey, light the paper white), and --ov-inset/--ov-border/--ov-radius
+ * say how much it detaches (light floats it as a card, dark keeps it full-bleed). Its shadow is
+ * the shared --card-shadow (none in dark, lift in light); the .ov veil's backdrop blur is moot
+ * under an opaque sheet and switched off. */
+.list.ov {
+  overflow-anchor: none;
+  background: var(--sheet);
   color: var(--fg);
-  /* A real card inside the window: gutters on every side + a true border, so no edge is flush
-     with (and clipped by) the window or the footer. */
-  margin: var(--sp-2) var(--sp-3) var(--sp-2);
-  border: 1px solid var(--line);
-  border-radius: 14px;
-  box-shadow: 0 1px 2px rgba(24,32,48,.10);
+  backdrop-filter: none;
+  margin: var(--ov-inset);
+  border: var(--ov-border);
+  border-radius: var(--ov-radius);
+  box-shadow: var(--card-shadow);
 }
-/* Dark: the black veil is too heavy for a page surface — use the same grey as the preview pane. */
-:root[data-theme="dark"] .list.ov { background: var(--bg); backdrop-filter: none; box-shadow: none; }
-/* On the white overview sheet a white hover vanishes, so rows dim to the soft grey instead. */
-:root[data-theme="light"] .list.ov .row:hover { background: var(--bg3); }
+/* Rows hover one step off the sheet (--ov-row-hover): on light's paper sheet the plain --bg2
+ * hover would vanish. */
+.list.ov .row:hover { background: var(--ov-row-hover); }
 
 /* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
  * Chips are buttons that act on the query — never filter chips (.fc), never info chips (.qchip). */
@@ -145,16 +142,15 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .ic { width: 36px; height: 36px; display: grid; place-items: center; position: relative; flex: none; }
 .ic > svg { width: 100%; height: 100%; }
 .ic.plate { border-radius: 22.37%; overflow: hidden; background: linear-gradient(160deg, var(--pa, var(--bg3)), var(--pb, var(--bg3)));
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28); }
-:root[data-theme="light"] .ic.plate { box-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16); }
+  box-shadow: var(--plate-shadow); }
 .ic.plate img { width: 68%; height: 68%; object-fit: contain; display: block; filter: drop-shadow(0 1px 1.5px rgba(0,0,0,.28)); }
 .ic.plate.bleed img { width: 100%; height: 100%; object-fit: cover; filter: none; }
 .ic.sicon img { width: 84%; height: 84%; object-fit: contain; display: block; }
 .ic.ph { border-radius: 8px; overflow: hidden; background: var(--bg3); box-shadow: inset 0 0 0 1px rgba(0,0,0,.06); }
 .ic.ph img, .tile img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 .ic.app { border-radius: 27%; background: linear-gradient(150deg, var(--a), var(--b)); color: #fff; font-weight: 700; font-size: 15px; letter-spacing: -.03em; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 1px 2px rgba(0,0,0,.25); transform: scale(.92); }
-.ic.sys { border-radius: 27%; background: linear-gradient(150deg, #8d93a1, #5b606c); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 1px 2px rgba(0,0,0,.25); transform: scale(.92); }
-.ic.sys.cmd { background: linear-gradient(150deg, #3d414b, #1f2127); }
+.ic.sys { border-radius: 27%; background: var(--sys-ic); color: #fff; box-shadow: inset 0 1px 0 rgba(255,255,255,.3), 0 1px 2px rgba(0,0,0,.25); transform: scale(.92); }
+.ic.sys.cmd { background: var(--sys-ic-cmd); }
 .ic.sys > svg { width: 56%; height: 56%; }
 
 /* ---- grids: most-used apps, photos ---- */
@@ -274,9 +270,9 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 }
 .ctx-menu:popover-open { display: flex; }
 .ctx-menu button { text-align: left; font-size: 13px; padding: 7px 10px; border-radius: 6px; color: var(--fg); }
-.ctx-menu button:hover, .ctx-menu button:focus-visible { background: var(--bg3); outline: 0; }
-/* the light menu sits on the grey canvas: hover raises to white instead of dimming to bg3 */
-:root[data-theme="light"] .ctx-menu button:hover { background: var(--bg2); }
+/* this menu sits on the canvas (--bg), so its hover is --menu-hover: one step off the canvas in
+   whichever direction the theme raises (menus on --bg2 hover --bg3 instead — one step off theirs) */
+.ctx-menu button:hover, .ctx-menu button:focus-visible { background: var(--menu-hover); outline: 0; }
 
 /* filter row must never push the drive selector out of the window */
 .frow { gap: 4px; }
