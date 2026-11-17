@@ -1,7 +1,8 @@
 /* ===== winseek v4 design tokens =====
    A theme is exactly one palette block: light (Porcelain) ships as :root, and every other
-   palette — dark graphite, Catppuccin Latte (light family), Catppuccin Mocha (dark family) —
-   is its own :root[data-theme="…"] block overriding the same names. Every color a component rule needs must come from a token here — component CSS
+   palette — the dark graphite original plus six loved community palettes (Catppuccin Latte +
+   Mocha, Dracula, Tokyo Night, Rosé Pine Dawn, Flexoki) — is its own :root[data-theme="…"]
+   block overriding the same names. Every color a component rule needs must come from a token here — component CSS
    never keys off data-theme and never hardcodes a hex (the one sanctioned exception: ink drawn
    over arbitrary content — .ov, tile captions, treemap tiles — is constant by design, since it
    must read on photos and video frames in either theme). Palettes swap VALUES only: structure
@@ -15,7 +16,10 @@
    Catppuccin's ramp on the roles (Latte: crust canvas / base cards / surface0 controls /
    surface1 hairlines; Mocha: base canvas / mantle recessed / surface0 controls / surface1
    hairlines) and Catppuccin's own syntax hues; Mocha's --side steps adapt the graphite deltas
-   to its hue. Accent is the demo's amber (#ffc533, dark ink); accent.ts re-themes
+   to its hue. Dracula, Tokyo Night, Rosé Pine Dawn and Flexoki (added with them, official
+   values) follow the same rule — family recipe first, the palette's own ramp on the roles,
+   its own syntax hues — with the few adapted steps noted in their block comments.
+   Accent is the demo's amber (#ffc533, dark ink); accent.ts re-themes
    --acc/--acc-ink inline and everything derived follows through color-mix.
    Light is "Porcelain" (user-judged variant, design-mockups/light-variant-porcelain.html): the
    iOS/macOS grouped-list recipe on a cool grey canvas (--bg) that off-white surfaces (--bg2)
@@ -133,6 +137,80 @@
   --tok-class: #df8e1d; --tok-deleted: #d20f39; --tok-inserted: #179299;
   --hover: color-mix(in oklab, var(--fg) 6%, transparent);
 }
+/* Rosé Pine Dawn — light family, mirrors :root one-for-one: base canvas, surface cards float
+   lighter, overlay controls sit one step darker, highlight-low is the fold. Dawn's hairlines
+   run one step softer than Porcelain's (highlight-high is the crisp-est tone the palette
+   ships) — that softness is Dawn's identity, not a missing edge. Official syntax hues. */
+:root[data-theme="dawn"] {
+  color-scheme: light;
+  --bg-0: #faf4ed; --bg2-0: #fffaf3; --bg3-0: #f2e9e1; --line: #cecacd;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
+  --fg: #575279; --fg2: #797593; --fg3: #9893a5;
+  --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
+  --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
+  --paper: #fffaf3; --paper-line: #cecacd; --fold: #f4ede8;
+  --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
+  --card-border: 1px solid var(--line);
+  --card-shadow: 0 1px 2px rgba(24,32,48,.10), 0 8px 18px -10px rgba(24,32,48,.30);
+  --pop-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
+  --side-0: #f2e9e1;
+  --side: color-mix(in srgb, var(--side-0) calc(var(--win-alpha) * 100%), transparent);
+  --side-card: var(--bg2);
+
+  /* ---- semantic roles, the light recipe ---- */
+  --well: var(--bg3); --well-focus: var(--bg2);
+  --seg-track: var(--bg3); --seg-on: var(--bg2);
+  --menu-hover: var(--bg2);
+  --meter-track: var(--bg3);
+  --plate-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(255,255,255,.35); --ghost-hover: rgba(255,255,255,.14);
+  --switch-knob: #ffffff;
+  --tok-keyword: #286983; --tok-string: #ea9d34; --tok-number: #d7827e; --tok-function: #56949f;
+  --tok-class: #907aa9; --tok-deleted: #b4637a; --tok-inserted: #286983;
+  --hover: color-mix(in oklab, var(--fg) 6%, transparent);
+}
+/* Flexoki — light family ("ink on warm paper"): paper cards float on a base-50 canvas,
+   base-100 controls, base-200 hairlines, base-150 fold. Flexoki ships no light syntax ramp,
+   so the roles take the 600 accents (insertions the 400 green, kept apart from the 600
+   green strings). */
+:root[data-theme="flexoki"] {
+  color-scheme: light;
+  --bg-0: #f2f0e5; --bg2-0: #fffcf0; --bg3-0: #e6e4d9; --line: #cecdc3;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
+  --fg: #100f0f; --fg2: #6f6e69; --fg3: #9f9d96;
+  --sel: color-mix(in oklab, var(--acc) 24%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 55%, var(--bg));
+  --mark: color-mix(in oklab, var(--acc) 48%, transparent); --mark-fg: inherit;
+  --paper: #fffcf0; --paper-line: #cecdc3; --fold: #dad8ce;
+  --shadow: 0 0 0 1px rgba(10,12,18,.10), 0 2px 6px rgba(10,12,18,.10), 0 28px 70px -18px rgba(10,12,18,.55);
+  --card-border: 1px solid var(--line);
+  --card-shadow: 0 1px 2px rgba(24,32,48,.10), 0 8px 18px -10px rgba(24,32,48,.30);
+  --pop-shadow: 0 0 0 1px var(--line), 0 2px 6px rgba(24,28,36,.08), 0 18px 44px -12px rgba(24,28,36,.28);
+  --side-0: #e6e4d9;
+  --side: color-mix(in srgb, var(--side-0) calc(var(--win-alpha) * 100%), transparent);
+  --side-card: var(--bg2);
+
+  /* ---- semantic roles, the light recipe ---- */
+  --well: var(--bg3); --well-focus: var(--bg2);
+  --seg-track: var(--bg3); --seg-on: var(--bg2);
+  --menu-hover: var(--bg2);
+  --meter-track: var(--bg3);
+  --plate-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(255,255,255,.35); --ghost-hover: rgba(255,255,255,.14);
+  --switch-knob: #ffffff;
+  --tok-keyword: #5e409d; --tok-string: #66800b; --tok-number: #24837b; --tok-function: #205ea6;
+  --tok-class: #a02f6f; --tok-deleted: #af3029; --tok-inserted: #879a39;
+  --hover: color-mix(in oklab, var(--fg) 6%, transparent);
+}
 :root[data-theme="dark"] {
   color-scheme: dark;
   --bg-0: #1b1c21; --bg2-0: #151619; --bg3-0: #282a31; --line: #2d2f37;
@@ -197,6 +275,77 @@
   --switch-knob: #fdfdfe;
   --tok-keyword: #cba6f7; --tok-string: #a6e3a1; --tok-number: #fab387; --tok-function: #89b4fa;
   --tok-class: #f9e2af; --tok-deleted: #f38ba8; --tok-inserted: #94e2d5;
+}
+/* Dracula — dark family, mirrors the dark block one-for-one: the official bg canvas, the
+   port-standard #21222c as the recessed step and #343746 as controls (preserving graphite's
+   exact controls→hairline brightness relationship with the official Selection #44475a as the
+   hairline). The palette ships no mid-fg or side steps, so those carry the graphite deltas
+   over with Dracula's violet cast. Official syntax hues, role-mapped. */
+:root[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg-0: #282a36; --bg2-0: #21222c; --bg3-0: #343746; --line: #44475a;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
+  --fg: #f8f8f2; --fg2: #c3c2d1; --fg3: #6272a4;
+  --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
+  --mark: transparent; --mark-fg: var(--acc);
+  --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
+  --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+  --card-border: 1px solid transparent; --card-shadow: none;
+  --pop-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 14px 34px -8px rgba(0,0,0,.55);
+  --side-0: #31333f; --side-card-0: #44475a;
+  --side: color-mix(in srgb, color-mix(in oklab, var(--acc) 5%, var(--side-0)) calc(var(--win-alpha) * 100%), transparent);
+  --side-card: color-mix(in srgb, color-mix(in oklab, var(--acc) 6%, var(--side-card-0)) calc(var(--win-alpha) * 100%), transparent);
+
+  /* ---- semantic roles, dark counterparts of the :root set above ---- */
+  --well: var(--bg2); --well-focus: var(--bg);
+  --seg-on: var(--bg); /* --seg-track stays the :root token: it must read on canvas and cards */
+  --menu-hover: var(--bg3);
+  --meter-track: var(--bg);
+  --plate-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(0,0,0,.18); --ghost-hover: rgba(0,0,0,.08);
+  --switch-knob: #fdfdfe;
+  --tok-keyword: #ff79c6; --tok-string: #f1fa8c; --tok-number: #bd93f9; --tok-function: #ffb86c;
+  --tok-class: #8be9fd; --tok-deleted: #ff5555; --tok-inserted: #50fa7b;
+}
+/* Tokyo Night — dark family (the night flavor), mirrors the dark block one-for-one: bg canvas,
+   bg_dark recessed, bg_highlight controls, terminal_black hairlines. Its own sidebar runs
+   DARKER than the canvas — inverted here to keep graphite's lifted-rail recipe; --side steps
+   are the adapted deltas. Official syntax hues. */
+:root[data-theme="tokyo"] {
+  color-scheme: dark;
+  --bg-0: #1a1b26; --bg2-0: #16161e; --bg3-0: #292e42; --line: #414868;
+  --bg: color-mix(in srgb, var(--bg-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg2: color-mix(in srgb, var(--bg2-0) calc(var(--win-alpha) * 100%), transparent);
+  --bg3: color-mix(in srgb, var(--bg3-0) calc(var(--win-alpha) * 100%), transparent);
+  --fg: #c0caf5; --fg2: #a9b1d6; --fg3: #565f89;
+  --sel: color-mix(in oklab, var(--acc) 17%, var(--bg));
+  --sel-line: color-mix(in oklab, var(--acc) 38%, var(--bg));
+  --mark: transparent; --mark-fg: var(--acc);
+  --paper: #f1f2f5; --paper-line: #f1f2f5; --fold: #c9ccd4;
+  --shadow: 0 0 0 1px rgba(255,255,255,.09), 0 2px 6px rgba(0,0,0,.4), 0 28px 70px -18px rgba(0,0,0,.85);
+  --card-border: 1px solid transparent; --card-shadow: none;
+  --pop-shadow: 0 0 0 1px rgba(255,255,255,.07), 0 14px 34px -8px rgba(0,0,0,.55);
+  --side-0: #23242f; --side-card-0: #292e42;
+  --side: color-mix(in srgb, color-mix(in oklab, var(--acc) 5%, var(--side-0)) calc(var(--win-alpha) * 100%), transparent);
+  --side-card: color-mix(in srgb, color-mix(in oklab, var(--acc) 6%, var(--side-card-0)) calc(var(--win-alpha) * 100%), transparent);
+
+  /* ---- semantic roles, dark counterparts of the :root set above ---- */
+  --well: var(--bg2); --well-focus: var(--bg);
+  --seg-on: var(--bg); /* --seg-track stays the :root token: it must read on canvas and cards */
+  --menu-hover: var(--bg3);
+  --meter-track: var(--bg);
+  --plate-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(0,0,0,.18); --ghost-hover: rgba(0,0,0,.08);
+  --switch-knob: #fdfdfe;
+  --tok-keyword: #bb9af7; --tok-string: #9ece6a; --tok-number: #ff9e64; --tok-function: #7aa2f7;
+  --tok-class: #7dcfff; --tok-deleted: #f7768e; --tok-inserted: #73daca;
 }
 
 * { box-sizing: border-box; }

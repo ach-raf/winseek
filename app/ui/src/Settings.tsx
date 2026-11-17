@@ -207,8 +207,9 @@ function TransparencyRow() {
   );
 }
 
-/** Light, dark, Catppuccin Latte or Mocha, or following Windows (Settings › Appearance). Applies
- *  at once and is remembered; the other window follows through the storage event (main.tsx). */
+/** Light, dark, or one of the loved palettes; or following Windows (Settings › Appearance).
+ *  Applies at once and is remembered; the other window follows through the storage event
+ *  (main.tsx). Nine options: the wrapped-pill Seg variant. */
 function ThemeRow() {
   const [id, setId] = useState<ThemeId>(() => loadTheme());
   const change = (next: ThemeId) => {
@@ -217,8 +218,8 @@ function ThemeRow() {
     saveTheme(next);
   };
   return (
-    <Row id="theme" title="Theme" desc="Light, dark, Catppuccin Latte or Mocha — or follow Windows.">
-      <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" />
+    <Row id="theme" title="Theme" desc="Light, dark, and the loved palettes — or follow Windows.">
+      <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" className="multi" />
     </Row>
   );
 }

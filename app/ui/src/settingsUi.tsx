@@ -41,11 +41,12 @@ export const Switch = ({ checked, disabled, onChange, label }: {
   </label>
 );
 
-export function Seg<T extends string>({ value, options, onChange, disabled, label }: {
+export function Seg<T extends string>({ value, options, onChange, disabled, label, className }: {
   value: T | null; options: { id: T; label: string }[]; onChange: (v: T) => void; disabled?: boolean; label: string;
+  className?: string;
 }) {
   return (
-    <div className="seg" role="radiogroup" aria-label={label}>
+    <div className={className ? `seg ${className}` : "seg"} role="radiogroup" aria-label={label}>
       {options.map((o) => (
         <button key={o.id} role="radio" aria-checked={o.id === value} disabled={disabled}
                 className={o.id === value ? "on" : ""} onClick={() => onChange(o.id)}>{o.label}</button>

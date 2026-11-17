@@ -191,6 +191,13 @@ details.reasons button.exfile:hover { color: var(--fg); }
 /* the dseg recipe (search.css): --seg-track grey, active segment --seg-on */
 .firstrun.settings .scont .seg button.on { background: var(--seg-on); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
 .firstrun.settings .scont .seg button:disabled { opacity: .5; }
+/* .seg.multi (the nine-option theme row): too many pills for one track — they wrap as
+   standalone pills, right-aligned. Fill = --seg-track, hover darkens it, active = --seg-on
+   under the PRD B8 accent ring. */
+.firstrun.settings .scont .seg.multi { display: inline-flex; flex-wrap: wrap; gap: 4px; padding: 0; border-radius: 9px; background: none; flex: none; max-width: 348px; justify-content: flex-end; }
+.firstrun.settings .scont .seg.multi button { height: 28px; padding: 0 11px; border-radius: 9px; background: var(--seg-track); }
+.firstrun.settings .scont .seg.multi button:hover:not(.on) { color: var(--fg); background: color-mix(in oklab, var(--seg-track) 86%, var(--fg)); }
+.firstrun.settings .scont .seg.multi button.on { background: var(--seg-on); box-shadow: inset 0 0 0 2px var(--acc); }
 
 /* buttons: .gbtn 30px / radius 8 / bg3 / 600 */
 .gbtn { height: 30px; padding: 0 12px; border-radius: 8px; background: var(--bg3); font-size: 12.5px; font-weight: 600; color: var(--fg); white-space: nowrap; flex: none; }

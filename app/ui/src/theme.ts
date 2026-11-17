@@ -1,8 +1,9 @@
 // Theme registry (Settings › Appearance › Theme). "system" follows Windows; every other entry
 // names one concrete palette, and each palette declares the mode it belongs to — applyTheme
 // sets `data-theme` on <html> to that resolved palette id, which is what the palette blocks in
-// base.css key off ("light" and "dark" are palettes too, the originals; "latte" and "mocha" are
-// the Catppuccin pair). "system" itself never lands in data-theme: it is resolved here, through
+// base.css key off ("light" and "dark" are palettes too, the originals; "latte"/"mocha" are the
+// Catppuccin pair, "dracula"/"tokyo" the dark classics, "dawn"/"flexoki" more light takes).
+// "system" itself never lands in data-theme: it is resolved here, through
 // matchMedia, to the original palette of the OS's mode, so the OS choice stays live (see
 // watchSystemTheme). The choice is remembered in localStorage ("winseek.theme") and applied at
 // boot by both windows; a storage event carries a change made in one window to the other
@@ -15,6 +16,10 @@ export const THEMES = [
   { id: "dark", label: "Dark" },
   { id: "latte", label: "Latte" },
   { id: "mocha", label: "Mocha" },
+  { id: "dracula", label: "Dracula" },
+  { id: "tokyo", label: "Tokyo Night" },
+  { id: "dawn", label: "Dawn" },
+  { id: "flexoki", label: "Flexoki" },
 ] as const;
 
 export type ThemeId = (typeof THEMES)[number]["id"];
@@ -23,7 +28,8 @@ export type ConcreteTheme = Exclude<ThemeId, "system">;
 /** Which family a concrete palette belongs to: "system" resolves to the family's original
  *  ("light" or "dark"), and the native window chrome follows the mode. */
 const MODE: Record<ConcreteTheme, "light" | "dark"> = {
-  light: "light", latte: "light", dark: "dark", mocha: "dark",
+  light: "light", latte: "light", dawn: "light", flexoki: "light",
+  dark: "dark", mocha: "dark", dracula: "dark", tokyo: "dark",
 };
 
 export function themeMode(id: ConcreteTheme): "light" | "dark" {

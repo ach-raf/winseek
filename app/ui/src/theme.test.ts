@@ -2,16 +2,22 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { loadTheme, resolveTheme, saveTheme, themeMode, THEMES, type ThemeId } from "./theme.ts";
 
-test("THEMES offers system, the two originals, and the Catppuccin pair, with labels", () => {
-  assert.deepEqual(THEMES.map((t) => t.id), ["system", "light", "dark", "latte", "mocha"]);
-  assert.deepEqual(THEMES.map((t) => t.label), ["System", "Light", "Dark", "Latte", "Mocha"]);
+test("THEMES offers system, the two originals, and six loved palettes, with labels", () => {
+  assert.deepEqual(THEMES.map((t) => t.id),
+    ["system", "light", "dark", "latte", "mocha", "dracula", "tokyo", "dawn", "flexoki"]);
+  assert.deepEqual(THEMES.map((t) => t.label),
+    ["System", "Light", "Dark", "Latte", "Mocha", "Dracula", "Tokyo Night", "Dawn", "Flexoki"]);
 });
 
-test("themeMode: originals and Catppuccin sit in their families", () => {
+test("themeMode: every palette sits in its family", () => {
   assert.equal(themeMode("light"), "light");
   assert.equal(themeMode("latte"), "light");
+  assert.equal(themeMode("dawn"), "light");
+  assert.equal(themeMode("flexoki"), "light");
   assert.equal(themeMode("dark"), "dark");
   assert.equal(themeMode("mocha"), "dark");
+  assert.equal(themeMode("dracula"), "dark");
+  assert.equal(themeMode("tokyo"), "dark");
 });
 
 test("resolveTheme: explicit palettes win, system follows the OS to the family original", () => {
