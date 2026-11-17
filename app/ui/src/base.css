@@ -1,7 +1,13 @@
 /* ===== winseek v4 design tokens =====
-   Light ships as :root; :root[data-theme="dark"] swaps the dark values. The attribute is set
-   by theme.ts from the System/Light/Dark setting ("system" = whatever the OS says), so both
-   palettes resolve without media queries. Accent is the demo's amber (#ffc533, dark ink).
+   A theme is exactly one palette block: light ships as :root, :root[data-theme="dark"] swaps
+   the dark values, and a future theme adds its own :root[data-theme="…"] block overriding the
+   same names. Every color a component rule needs must come from a token here — component CSS
+   never keys off data-theme and never hardcodes a hex (the one sanctioned exception: ink drawn
+   over arbitrary content — .ov, tile captions, treemap tiles — is constant by design, since it
+   must read on photos and video frames in either theme). The attribute is set by theme.ts from
+   the System/Light/Dark setting ("system" = whatever the OS says), so both palettes resolve
+   without media queries. Accent is the demo's amber (#ffc533, dark ink); accent.ts re-themes
+   --acc/--acc-ink inline and everything derived follows through color-mix.
    Light is "Porcelain" (user-judged variant, design-mockups/light-variant-porcelain.html): the
    iOS/macOS grouped-list recipe on a cool grey canvas (--bg) that off-white surfaces (--bg2)
    float on, lifted by --card-shadow; dark is layered graphite with recessed cards, so the same
@@ -52,6 +58,44 @@
   --side-0: #cdd3dd;
   --side: color-mix(in srgb, var(--side-0) calc(var(--win-alpha) * 100%), transparent);
   --side-card: var(--bg2);
+
+  /* ---- semantic roles (the theme contract: every palette block below must define these) ----
+     --well / --well-focus: a recessed input field on a card or toolbar (rest → focused).
+     --seg-track / --seg-on: segmented control (dseg family): the grey track and the active
+       segment. The track is the same token in both themes because the control must read on the
+       canvas AND inside cards; only the active segment swaps.
+     --sheet / --sheet-ring: a document-like surface laid over the canvas (overview list, text
+       and docx panes, modal dialogs); the ring is light's stand-in for dark's bg-vs-bg2 contrast.
+     --ov-inset / --ov-border / --ov-radius: how much the overview sheet detaches from the window
+       (light: a floating card; dark: full-bleed).
+     --ov-row-hover: row hover ON the overview sheet (plain .row:hover --bg2 vanishes on it).
+     --menu-hover: hover inside a menu that sits on the canvas (ctx-menu; menus on --bg2 hover
+       --bg3 directly, one step off their own sheet in either ramp).
+     --meter-track: the sidebar index card's meter rail (dark's tinted card needs the darker bg).
+     --plate-shadow: icon plate (ic.plate) inner highlight + drop.
+     --sys-ic / --sys-ic-cmd: generic system-app / command icon gradients (constant greys today,
+       defined per palette so a theme may cool or warm them).
+     --ghost-ring / --ghost-hover: outline buttons on the inverted selection strip, where the
+       strip color itself flips between themes.
+     --switch-knob: the iOS switch knob riding the themed track.
+     Syntax colors (--tok-*): calm IDE hues fitted to each palette. */
+  --well: var(--bg3); --well-focus: var(--bg2);
+  --seg-track: var(--bg3); --seg-on: var(--bg2);
+  --sheet: var(--bg2); --sheet-ring: inset 0 0 0 1px var(--line);
+  --ov-inset: var(--sp-2) var(--sp-3) var(--sp-2);
+  --ov-border: 1px solid var(--line); --ov-radius: 14px;
+  --ov-row-hover: var(--bg3);
+  --menu-hover: var(--bg2);
+  --meter-track: var(--bg3);
+  --plate-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(255,255,255,.35); --ghost-hover: rgba(255,255,255,.14);
+  --switch-knob: #ffffff;
+  --tok-keyword: #a8591c; --tok-string: #2f7a3d; --tok-number: #0e8377; --tok-function: #8f6f00;
+  --tok-class: #2069b4; --tok-deleted: #b23b32; --tok-inserted: #22742f;
+  /* Neutral hover wash for quiet/secondary buttons — derived from fg, identical in both ramps. */
+  --hover: color-mix(in oklab, var(--fg) 6%, transparent);
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -70,14 +114,23 @@
   --side-0: #23252c; --side-card-0: #2f323b;
   --side: color-mix(in srgb, color-mix(in oklab, var(--acc) 5%, var(--side-0)) calc(var(--win-alpha) * 100%), transparent);
   --side-card: color-mix(in srgb, color-mix(in oklab, var(--acc) 6%, var(--side-card-0)) calc(var(--win-alpha) * 100%), transparent);
-}
-/* Legacy names still used by not-yet-ported rules; they alias the v4 tokens. Do not add new uses. */
-:root {
-  --bg-solid: var(--bg); --fg-2: var(--fg2); --fg-3: var(--fg3);
-  --accent: var(--acc); --accent-fg: var(--acc-ink);
-  --hover: color-mix(in oklab, var(--fg) 6%, transparent);
-  --select: var(--sel); --chip: var(--bg3); --kbd-bg: var(--bg3); --group: var(--bg2); --pane: var(--bg2);
-  --sel-bg: var(--sel); --sel-fg: var(--fg);
+
+  /* ---- semantic roles, dark counterparts of the :root set above ---- */
+  --well: var(--bg2); --well-focus: var(--bg);
+  --seg-on: var(--bg); /* --seg-track stays the :root token: it must read on canvas and cards */
+  --sheet: var(--bg); --sheet-ring: none;
+  --ov-inset: 0;
+  --ov-border: none; --ov-radius: 0;
+  --ov-row-hover: var(--bg2);
+  --menu-hover: var(--bg3);
+  --meter-track: var(--bg);
+  --plate-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28);
+  --sys-ic: linear-gradient(150deg, #8d93a1, #5b606c);
+  --sys-ic-cmd: linear-gradient(150deg, #3d414b, #1f2127);
+  --ghost-ring: rgba(0,0,0,.18); --ghost-hover: rgba(0,0,0,.08);
+  --switch-knob: #fdfdfe;
+  --tok-keyword: #d98e5c; --tok-string: #9cc98a; --tok-number: #6fc7b6; --tok-function: #d9b86c;
+  --tok-class: #74b3dc; --tok-deleted: #e2706e; --tok-inserted: #7dbb72;
 }
 
 * { box-sizing: border-box; }
@@ -139,15 +192,15 @@ html.web .shell { box-shadow: var(--shadow); }
 .list::-webkit-scrollbar-thumb, .ov::-webkit-scrollbar-thumb, .set-body::-webkit-scrollbar-thumb,
 .lg-scroll::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
 .list::-webkit-scrollbar-thumb:hover, .ov::-webkit-scrollbar-thumb:hover, .set-body::-webkit-scrollbar-thumb:hover,
-.lg-scroll::-webkit-scrollbar-thumb:hover { background: var(--fg-3); background-clip: content-box; border: 3px solid transparent; }
+.lg-scroll::-webkit-scrollbar-thumb:hover { background: var(--fg3); background-clip: content-box; border: 3px solid transparent; }
 /* ---- buttons ---- */
 .btn {
   display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px;
   border-radius: 6px; font-weight: 600; font-size: 13px; border: 1px solid transparent;
 }
-.btn.primary { background: var(--accent); color: var(--accent-fg); }
-.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--accent) 88%, var(--accent-fg)); }
-.btn.primary:active:not(:disabled) { background: color-mix(in srgb, var(--accent) 76%, var(--accent-fg)); }
+.btn.primary { background: var(--acc); color: var(--acc-ink); }
+.btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--acc) 88%, var(--acc-ink)); }
+.btn.primary:active:not(:disabled) { background: color-mix(in srgb, var(--acc) 76%, var(--acc-ink)); }
 .btn.primary:disabled { opacity: 0.75; }
 /* destructive: the only red-filled button; reserved for the verb of a confirm gate and the like.
    Affirmative stays .primary (accent), Cancel stays neutral (.secondary / .quiet). */
@@ -156,10 +209,10 @@ html.web .shell { box-shadow: var(--shadow); }
 .btn.danger:active:not(:disabled) { background: color-mix(in srgb, var(--danger) 78%, #000); }
 .btn.danger:focus-visible { outline-color: var(--danger); }
 .btn.danger:disabled { opacity: 0.75; }
-.btn.secondary { color: var(--fg); font-weight: 500; background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
+.btn.secondary { color: var(--fg); font-weight: 500; background: var(--bg3); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
 .btn.secondary:hover:not(:disabled) { background: var(--hover); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 30%, transparent); }
 .btn.secondary:active:not(:disabled) { background: color-mix(in srgb, var(--hover) 60%, var(--fg) 8%); }
-.btn.quiet { color: var(--fg-2); font-weight: 500; }
+.btn.quiet { color: var(--fg2); font-weight: 500; }
 .btn.quiet:hover:not(:disabled) { background: var(--hover); color: var(--fg); }
 .btn:disabled { cursor: default; }
 /* ---- overlays over arbitrary content ---- */
@@ -173,13 +226,13 @@ html.web .shell { box-shadow: var(--shadow); }
   backdrop-filter: blur(6px);
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.35);
 }
-.btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 /* PRD B8: everything inside panels shows the accent ring when keyboard-focused. */
-input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 0; }
+input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px solid var(--acc); outline-offset: 0; }
 /* the searchbar input is always focused; the caret is its indicator, a ring would sit there permanently */
 .searchbar input:focus-visible { outline: 0; }
-.seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-[role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.seg button:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
+[role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 .btn .shield { flex: none; }
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: spin 800ms linear infinite; flex: none; }
 .fr-error { color: var(--danger); font-size: 12.5px; max-width: 520px; }
@@ -188,19 +241,19 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .switch {
   position: relative; flex: none; display: inline-block;
   width: 40px; height: 24px; border-radius: 12px;
-  background: var(--chip); box-shadow: inset 0 0 0 1px var(--line);
+  background: var(--bg3); box-shadow: inset 0 0 0 1px var(--line);
   transition: background 180ms var(--ease), box-shadow 180ms var(--ease);
 }
 .switch input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; }
 .switch::after {
   content: ""; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; border-radius: 50%;
-  background: #fdfdfe;
+  background: var(--switch-knob);
   box-shadow: 0 1.5px 4px rgba(0, 0, 0, 0.25), 0 0 0 0.5px rgba(0, 0, 0, 0.05);
   transition: transform 200ms var(--ease);
 }
-.switch:has(input:checked) { background: var(--accent); box-shadow: none; }
+.switch:has(input:checked) { background: var(--acc); box-shadow: none; }
 .switch:has(input:checked)::after { transform: translateX(16px); }
-.switch:has(input:focus-visible) { outline: 2px solid var(--accent); outline-offset: 2px; }
+.switch:has(input:focus-visible) { outline: 2px solid var(--acc); outline-offset: 2px; }
 .switch:has(input:disabled) { opacity: 0.5; }
 
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -215,18 +268,14 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 
 /* Name filter field (Library timeline, Collections, Clean up lists, Disk space files): one shared
    recipe, same anatomy as the settings find field — inset hairline, accent on focus, clear button. */
-.nfilter { height: 30px; padding: 0 6px 0 10px; border-radius: 9px; background: var(--bg2); display: inline-flex; align-items: center; gap: 7px; box-shadow: inset 0 0 0 1px var(--line); flex: none; }
-.nfilter:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
+.nfilter { height: 30px; padding: 0 6px 0 10px; border-radius: 9px; background: var(--well); display: inline-flex; align-items: center; gap: 7px; box-shadow: inset 0 0 0 1px var(--line); flex: none; }
+.nfilter:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--well-focus); }
 .nfilter > svg { width: 14px; height: 14px; color: var(--fg3); flex: none; }
 .nfilter input { width: 150px; font: inherit; font-size: 13px; color: var(--fg); background: none; border: 0; outline: 0; padding: 0; user-select: text; caret-color: var(--acc); }
 .nfilter input:focus-visible { outline: 0; }
 .nfilter input::placeholder { color: var(--fg3); }
 .nfilter .nfx { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; border: 0; background: none; color: var(--fg3); cursor: pointer; padding: 0; flex: none; }
 .nfilter .nfx:hover { color: var(--fg); background: var(--bg3); }
-/* In light the field sits on the grey canvas as a recessed well (dark's --bg2 role) and
-   brightens to white when focused; on a white sheet the --bg2/--bg defaults already do that. */
-:root[data-theme="light"] .nfilter { background: var(--bg3); }
-:root[data-theme="light"] .nfilter:focus-within { background: var(--bg2); }
 
 /* ---- chips: exactly two archetypes, defined here once ----
  * Filter chips (.fc) are CONTROLS that narrow the results: squared like the tabs they are, they

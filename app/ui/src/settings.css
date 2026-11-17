@@ -1,5 +1,6 @@
 /* ===== Settings / Setup / first-run / status panels (v4). Classes: (.set .snav .scont .grp .gcard .grow .sw .seg .gbtn .sfind) =====
-   Light + dark come from the base.css tokens; nothing here hard-codes a theme colour except the switch knob. */
+   Light + dark both come from the base.css token palettes; nothing here hard-codes a theme
+   colour or keys off data-theme. */
 
 /* ---- shared panel shell: first-run counter, name-service setup, Settings ---- */
 .firstrun { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 44px 12px; gap: var(--sp-3); animation: fade 200ms var(--ease); outline: 0; }
@@ -51,11 +52,8 @@
 .settings .ibtn { width: 32px; height: 32px; margin-left: -6px; border-radius: 8px; display: grid; place-items: center; color: var(--fg2); flex: none; }
 .settings .ibtn:hover { background: var(--bg3); color: var(--fg); }
 .settings .ibtn:focus-visible { outline: 2px solid var(--acc); outline-offset: 1px; }
-.sfind { width: 100%; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--bg2); display: flex; align-items: center; gap: 8px; box-shadow: inset 0 0 0 1px var(--line); margin: 0 0 var(--sp-3); cursor: text; flex: none; }
-.sfind:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--bg); }
-/* same light field recipe as .tbar .field (shell.css): recessed grey, white on focus */
-:root[data-theme="light"] .sfind { background: var(--bg3); }
-:root[data-theme="light"] .sfind:focus-within { background: var(--bg2); }
+.sfind { width: 100%; height: 36px; padding: 0 12px; border-radius: 10px; background: var(--well); display: flex; align-items: center; gap: 8px; box-shadow: inset 0 0 0 1px var(--line); margin: 0 0 var(--sp-3); cursor: text; flex: none; }
+.sfind:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--well-focus); }
 .sfind svg { width: 16px; height: 16px; color: var(--fg3); }
 .sfind input { flex: 1; min-width: 0; font: inherit; font-size: 13.5px; color: var(--fg); background: none; border: 0; outline: 0; padding: 0; user-select: text; cursor: text; caret-color: var(--acc); }
 .sfind input:focus-visible { outline: 0; }
@@ -187,12 +185,11 @@ details.reasons button.exfile:hover { color: var(--fg); }
 .settings .switch:has(input:checked)::after, .setup .switch:has(input:checked)::after { transform: translateX(16px); }
 
 /* segmented control: padding 2, radius 9, active segment on --bg. Prefixed to beat the popup filter row's .seg and .shell.full .seg */
-.firstrun.settings .scont .seg { display: inline-flex; flex-direction: row; align-items: stretch; gap: 0; padding: 2px; border-radius: 9px; background: var(--bg3); flex: none; }
+.firstrun.settings .scont .seg { display: inline-flex; flex-direction: row; align-items: stretch; gap: 0; padding: 2px; border-radius: 9px; background: var(--seg-track); flex: none; }
 .firstrun.settings .scont .seg button { height: 26px; padding: 0 12px; border-radius: 7px; font-size: 12.5px; font-weight: 500; color: var(--fg2); text-align: center; box-shadow: none; background: none; white-space: nowrap; }
 .firstrun.settings .scont .seg button:hover:not(.on) { color: var(--fg); background: none; }
-.firstrun.settings .scont .seg button.on { background: var(--bg); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
-/* light: white raised segment on the grey track (the dseg recipe, search.css) */
-:root[data-theme="light"] .firstrun.settings .scont .seg button.on { background: var(--bg2); }
+/* the dseg recipe (search.css): --seg-track grey, active segment --seg-on */
+.firstrun.settings .scont .seg button.on { background: var(--seg-on); color: var(--fg); font-weight: 600; box-shadow: 0 1px 2px rgba(0,0,0,.18); }
 .firstrun.settings .scont .seg button:disabled { opacity: .5; }
 
 /* buttons: .gbtn 30px / radius 8 / bg3 / 600 */
@@ -282,7 +279,7 @@ code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; backgro
 dialog.cheat {
   width: min(760px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - 48px));
   padding: 0;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
 }
 dialog.cheat[open] { display: flex; flex-direction: column; }
@@ -290,13 +287,11 @@ dialog.cheat::backdrop {
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(6px);
 }
-/* a modal reads as a document, not a canvas: white sheet in light (dark keeps --bg) */
-:root[data-theme="light"] dialog.cheat { background: var(--bg2); }
 /* the shared "are you sure" dialog (recycle, folder removal): one question, Esc / Cancel = no */
 dialog.confirm {
   width: min(440px, calc(100vw - 48px));
   padding: 0;
-  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
 }
 dialog.confirm[open] { display: block; }
@@ -304,7 +299,6 @@ dialog.confirm::backdrop {
   background: color-mix(in srgb, var(--bg) 55%, transparent);
   backdrop-filter: blur(6px);
 }
-:root[data-theme="light"] dialog.confirm { background: var(--bg2); }
 .confirm-body { padding: var(--sp-4) var(--sp-4) 6px; display: flex; flex-direction: column; gap: 8px; }
 .confirm-body h3 { margin: 0; font-size: 13.5px; }
 .confirm-body .cpath { font-size: 12px; color: var(--fg2); overflow-wrap: anywhere; }

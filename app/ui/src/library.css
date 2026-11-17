@@ -24,7 +24,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
    rule would otherwise paint every button (confirm verb AND Cancel) the same grey */
 .lib-main .btn.danger { background: var(--danger); color: #fff; }
 .lib-main .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 82%, #000); }
-.lib-main .btn.secondary { color: var(--fg); font-weight: 500; background: var(--chip); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
+.lib-main .btn.secondary { color: var(--fg); font-weight: 500; background: var(--bg3); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--fg) 18%, transparent); }
 .lib-main .btn.secondary:hover:not(:disabled) { background: var(--hover); }
 .lib-main .btn.sm { height: 30px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
 .lib-main .btn:disabled { opacity: .5; }
@@ -99,12 +99,9 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .co-err { padding: var(--sp-2) var(--gut); font-size: 12.5px; color: var(--danger); }
 .co-form { display: flex; flex-direction: column; gap: var(--sp-4); padding: var(--sp-4) 0; max-width: 520px; }
 .co-form label { display: flex; flex-direction: column; gap: 6px; font-size: 12.5px; font-weight: 500; color: var(--fg2); }
-.co-form input:not([type=range]) { height: 40px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--bg2); color: var(--fg); font: inherit; font-size: 14px; box-shadow: inset 0 0 0 1px var(--line); user-select: text; cursor: text; }
+.co-form input:not([type=range]) { height: 40px; padding: 0 12px; border: 0; border-radius: 10px; background: var(--well); color: var(--fg); font: inherit; font-size: 14px; box-shadow: inset 0 0 0 1px var(--line); user-select: text; cursor: text; }
 .co-form input:not([type=range])::placeholder { color: var(--fg3); }
-.co-form input:not([type=range]):focus-visible { outline: 0; background: var(--bg); box-shadow: inset 0 0 0 2px var(--acc); }
-/* light: inside the white card the input is the recessed grey well (like .gin), white on focus */
-:root[data-theme="light"] .co-form input:not([type=range]) { background: var(--bg3); }
-:root[data-theme="light"] .co-form input:not([type=range]):focus-visible { background: var(--bg2); }
+.co-form input:not([type=range]):focus-visible { outline: 0; background: var(--well-focus); box-shadow: inset 0 0 0 2px var(--acc); }
 .co-form .co-btns { margin-top: 4px; }
 
 .co-form label small, .co-check small { font-size: 12px; font-weight: 400; color: var(--fg3); line-height: 1.4; }
@@ -160,8 +157,10 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib-main .selbar .btn:hover:not(:disabled) { background: color-mix(in oklab, var(--acc) 88%, #000); }
 .lib-main .selbar .btn.danger { background: var(--danger); color: #fff; }
 .lib-main .selbar .btn.danger:hover:not(:disabled) { background: color-mix(in oklab, var(--danger) 82%, #000); }
-.selbar .btn.ghost, .lib-main .selbar .btn.ghost { background: none; color: inherit; height: 26px; font-size: 12.5px; box-shadow: inset 0 0 0 1px rgba(255,255,255,.3); }
-.selbar .btn.ghost:hover:not(:disabled), .lib-main .selbar .btn.ghost:hover:not(:disabled) { background: rgba(255,255,255,.14); }
+/* Ghost buttons ride the inverted selection strip: the strip is --fg and flips between themes,
+   so its outline buttons need the strip's own ink (--ghost-*) from base.css, not white. */
+.selbar .btn.ghost, .lib-main .selbar .btn.ghost { background: none; color: inherit; height: 26px; font-size: 12.5px; box-shadow: inset 0 0 0 1px var(--ghost-ring); }
+.selbar .btn.ghost:hover:not(:disabled), .lib-main .selbar .btn.ghost:hover:not(:disabled) { background: var(--ghost-hover); }
 .cl-sub { display: flex; align-items: center; gap: var(--sp-3); padding: var(--sp-1) var(--gut) var(--sp-3); flex: none; }
 .cl-sub b { font-size: 15px; font-weight: 700; }
 .cl-sumtxt { font-size: 12.5px; color: var(--fg3); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -431,9 +430,7 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 /* The grid/list switch (same segmented family as the other dseg controls, icon-only). */
 .gv-seg { flex: none; }
 .gv-seg button { display: grid; place-items: center; width: 30px; height: 26px; padding: 0; color: var(--fg3); }
-.gv-seg button.on { color: var(--fg); background: var(--bg3); }
-/* light: white raised segment on the grey dseg track (would else equal the track's own bg3) */
-:root[data-theme="light"] .gv-seg button.on { background: var(--bg2); }
+.gv-seg button.on { color: var(--fg); background: var(--seg-on); }
 .gv-seg button:hover { color: var(--fg); }
 .tbar .nfilter { margin-right: 8px; }
 
