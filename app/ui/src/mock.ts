@@ -1196,7 +1196,7 @@ export const mockBackend: Backend = {
 // library round-trips make, so a Playwright round can assert that switching screens does not refetch
 // everything. Kept in mock.ts so the shipped app carries no counting code.
 export const mockCalls: Record<string, number> = {};
-const COUNTED = ["libraryImages", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage"] as const;
+const COUNTED = ["libraryImages", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage", "status"] as const;
 for (const m of COUNTED) {
   const fn = mockBackend[m].bind(mockBackend) as (...args: unknown[]) => unknown;
   (mockBackend as unknown as Record<string, (...args: unknown[]) => unknown>)[m] = (...args: unknown[]) => {

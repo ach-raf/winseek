@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { NO_HITS, runSemantic, semPlan, semView, type SemanticState } from "./semanticLogic.ts";
+import { NO_HITS, runSemantic, semPlaceholder, semPlan, semView, type SemanticState } from "./semanticLogic.ts";
 import { kindScope, parseQuery } from "./filters.ts";
 import type { SemanticHit } from "./types";
 
@@ -93,4 +93,21 @@ test("a superseded run emits nothing; a failed one answers empty for its own pla
   await runSemantic(bad, "q1", plan, () => true, (s) => out.push(s));
   assert.equal(out[0]?.key, plan.key);
   assert.equal(out[0]?.hits.length, 0);
+});
+
+test("semPlaceholder: typing keeps the previous hits, a scope change never does", () => {
+  const prevPlan = semPlan("addiction", "all", false, false);
+  const prev: SemanticState = { query: "addiction", key: prevPlan.key, hits: [{ path: "a" } as SemanticHit], more: false, loading: false };
+  const nextPlan = semPlan("addictions", "all", false, false);
+  // typing on within the same paged-ness: the previous answer stays on screen while the new computes
+  assert.equal(semPlaceholder(prev, prevPlan.key, "addictions", nextPlan), prev);
+  // a scope change with the same text: pending, never another scope's hits
+  const scopedPlan = semPlan("addiction", "audio", false, false);
+  assert.equal(semPlaceholder(prev, prevPlan.key, "addiction", scopedPlan), undefined);
+  // a different paged-ness is never held over (a top-k must not fill a full-list shape)
+  const pagedPlan = semPlan("addictions", "all", false, true); // showAll: the full list shape
+  assert.equal(semPlaceholder(prev, prevPlan.key, "addictions", pagedPlan), undefined);
+  // nothing previous: no placeholder
+  assert.equal(semPlaceholder(undefined, prevPlan.key, "addictions", nextPlan), undefined);
+  assert.equal(semPlaceholder(prev, undefined, "addictions", nextPlan), undefined);
 });
