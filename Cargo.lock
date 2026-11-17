@@ -5127,6 +5127,7 @@ version = "0.2.38"
 dependencies = [
  "serde",
  "serde_json",
+ "winreg",
 ]
 
 [[package]]

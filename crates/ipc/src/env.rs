@@ -1,27 +1,35 @@
 //! PATH-environment helpers shared by `winseek-cli path …` and the app's Settings toggle:
 //! add / remove a directory from the user (HKCU) or machine (HKLM) PATH and announce the
-//! change so running shells pick it up for new children. Registry access is hand-rolled FFI
-//! like the rest of this crate (no `windows` crate, no new dependencies).
+//! change so running shells pick it up for new children. Registry access goes through the
+//! `winreg` crate: the previous hand-rolled FFI opened keys with `RegCreateKeyExW` (so a
+//! status *read* created the key) and rewrote every Path as REG_EXPAND_SZ (so a REG_SZ
+//! Path holding a literal `%` changed meaning).
 //!
 //! The pure string half ([`path_contains`], [`path_with`]) is where the tests live; the
-//! registry wrappers around it are thin.
+//! registry wrappers around it are thin. Reads never create anything; writes keep the
+//! value's stored type and are retried with a re-read between attempts, so a concurrent
+//! installer write converges instead of dropping an entry.
 
 use std::ffi::c_void;
 use std::io;
+use std::time::Duration;
+
+use winreg::enums::{HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_SET_VALUE, REG_EXPAND_SZ, REG_SZ};
+use winreg::types::{FromRegValue, ToRegValue};
+use winreg::{RegKey, RegValue};
 
 type Handle = *mut c_void;
 
-const HKEY_CURRENT_USER: Handle = handle(0x8000_0001u64);
-const HKEY_LOCAL_MACHINE: Handle = handle(0x8000_0002u64);
 const USER_SUBKEY: &str = "Environment";
 const MACHINE_SUBKEY: &str = "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Environment";
 const VALUE_NAME: &str = "Path";
 
-const KEY_READ: u32 = 0x0002_0019;
-const KEY_WRITE: u32 = 0x0002_0006;
-const REG_EXPAND_SZ: u32 = 2;
-const ERROR_SUCCESS: i32 = 0;
-const ERROR_FILE_NOT_FOUND: i32 = 2;
+/// Read-modify-write is not atomic in the registry: an installer and `winseek-cli path add`
+/// racing one another can lose an entry. A few attempts that re-read between tries converge
+/// (if the other side already added the same directory, the next attempt reports "already
+/// there" instead of writing a duplicate).
+const WRITE_ATTEMPTS: u32 = 3;
+const RETRY_BACKOFF: Duration = Duration::from_millis(150);
 
 const HWND_BROADCAST: Handle = handle(0xffff);
 const WM_SETTINGCHANGE: u32 = 0x001a;
@@ -34,38 +42,6 @@ const fn handle(v: u64) -> Handle {
 
 fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-#[link(name = "advapi32")]
-extern "system" {
-    fn RegCreateKeyExW(
-        key: Handle,
-        subkey: *const u16,
-        reserved: u32,
-        class: *const u16,
-        options: u32,
-        access: u32,
-        security: *mut c_void,
-        out: *mut Handle,
-        disposition: *mut u32,
-    ) -> i32;
-    fn RegQueryValueExW(
-        key: Handle,
-        name: *const u16,
-        reserved: *mut u32,
-        kind: *mut u32,
-        data: *mut u8,
-        len: *mut u32,
-    ) -> i32;
-    fn RegSetValueExW(
-        key: Handle,
-        name: *const u16,
-        reserved: u32,
-        kind: u32,
-        data: *const u8,
-        len: u32,
-    ) -> i32;
-    fn RegCloseKey(key: Handle) -> i32;
 }
 
 #[link(name = "kernel32")]
@@ -154,122 +130,110 @@ pub fn expand_env(s: &str) -> String {
 
 // ---------------------------------------------------------------- registry half
 
-fn err(op: &str, code: i32) -> io::Error {
-    io::Error::other(format!("{op} failed (winerror {code})"))
-}
-
-fn read_path_raw(machine: bool) -> io::Result<String> {
-    let (root, subkey) = root_and_key(machine);
-    let subkey = wide(subkey);
-    let name = wide(VALUE_NAME);
-    let mut key: Handle = std::ptr::null_mut();
-    let r = unsafe {
-        RegCreateKeyExW(
-            root,
-            subkey.as_ptr(),
-            0,
-            std::ptr::null(),
-            0,
-            KEY_READ,
-            std::ptr::null_mut(),
-            &mut key,
-            std::ptr::null_mut(),
-        )
-    };
-    if r != ERROR_SUCCESS {
-        return Err(err("open the PATH key", r));
-    }
-    let out = (|| {
-        let mut kind = 0u32;
-        let mut len = 0u32;
-        let r = unsafe {
-            RegQueryValueExW(
-                key,
-                name.as_ptr(),
-                std::ptr::null_mut(),
-                &mut kind,
-                std::ptr::null_mut(),
-                &mut len,
-            )
-        };
-        if r == ERROR_FILE_NOT_FOUND {
-            return Ok(String::new()); // no Path value yet: an empty PATH
-        }
-        if r != ERROR_SUCCESS {
-            return Err(err("size the Path value", r));
-        }
-        let mut buf = vec![0u8; len as usize];
-        let r = unsafe {
-            RegQueryValueExW(
-                key,
-                name.as_ptr(),
-                std::ptr::null_mut(),
-                &mut kind,
-                buf.as_mut_ptr(),
-                &mut len,
-            )
-        };
-        if r != ERROR_SUCCESS {
-            return Err(err("read the Path value", r));
-        }
-        let bytes = &buf[..len as usize];
-        let units: Vec<u16> = (0..bytes.len() / 2)
-            .map(|i| u16::from_le_bytes([bytes[i * 2], bytes[i * 2 + 1]]))
-            .collect();
-        let end = units.iter().position(|&c| c == 0).unwrap_or(units.len());
-        Ok(String::from_utf16_lossy(&units[..end]))
-    })();
-    unsafe { RegCloseKey(key) };
-    out
-}
-
-fn write_path_raw(machine: bool, raw: &str) -> io::Result<()> {
-    let (root, subkey) = root_and_key(machine);
-    let subkey = wide(subkey);
-    let name = wide(VALUE_NAME);
-    let mut key: Handle = std::ptr::null_mut();
-    let r = unsafe {
-        RegCreateKeyExW(
-            root,
-            subkey.as_ptr(),
-            0,
-            std::ptr::null(),
-            0,
-            KEY_WRITE,
-            std::ptr::null_mut(),
-            &mut key,
-            std::ptr::null_mut(),
-        )
-    };
-    if r != ERROR_SUCCESS {
-        return Err(err("open the PATH key for write", r));
-    }
-    // REG_EXPAND_SZ keeps %VAR% entries working; for a plain PATH it behaves like REG_SZ.
-    let mut data = wide(raw);
-    data.pop(); // RegSetValueExW takes the byte count without the terminating nul.
-    let r = unsafe {
-        RegSetValueExW(
-            key,
-            name.as_ptr(),
-            0,
-            REG_EXPAND_SZ,
-            data.as_ptr().cast(),
-            (data.len() * 2) as u32,
-        )
-    };
-    unsafe { RegCloseKey(key) };
-    if r != ERROR_SUCCESS {
-        return Err(err("write the Path value", r));
-    }
-    Ok(())
-}
-
-fn root_and_key(machine: bool) -> (Handle, &'static str) {
+fn subkey(machine: bool) -> &'static str {
     if machine {
-        (HKEY_LOCAL_MACHINE, MACHINE_SUBKEY)
+        MACHINE_SUBKEY
     } else {
-        (HKEY_CURRENT_USER, USER_SUBKEY)
+        USER_SUBKEY
     }
+}
+
+/// Open the Environment key read-only; `None` when it does not exist (reads never create).
+fn open_read(machine: bool) -> io::Result<Option<RegKey>> {
+    let hk = if machine {
+        HKEY_LOCAL_MACHINE
+    } else {
+        HKEY_CURRENT_USER
+    };
+    match RegKey::predef(hk).open_subkey(subkey(machine)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
+        r => r.map(Some),
+    }
+}
+
+/// The raw (unexpanded) PATH string; `""` when the key or the Path value does not exist.
+/// Opening is read-only, so a status read never creates anything.
+fn read_path_raw(machine: bool) -> io::Result<String> {
+    let Some(key) = open_read(machine)? else {
+        return Ok(String::new());
+    };
+    let v = match key.get_raw_value(VALUE_NAME) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(String::new()),
+        r => r?,
+    };
+    if v.vtype != REG_SZ && v.vtype != REG_EXPAND_SZ {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("PATH value is {:?}, not a string", v.vtype),
+        ));
+    }
+    String::from_reg_value(&v)
+}
+
+/// Write the whole PATH string, keeping the stored value type — rewriting a REG_SZ Path
+/// as REG_EXPAND_SZ would turn every literal `%` into a variable reference. A missing
+/// key or value is created REG_EXPAND_SZ, which is what Windows itself stores.
+fn write_path_raw(machine: bool, raw: &str) -> io::Result<()> {
+    let hk = if machine {
+        HKEY_LOCAL_MACHINE
+    } else {
+        HKEY_CURRENT_USER
+    };
+    let key = match RegKey::predef(hk).open_subkey_with_flags(subkey(machine), KEY_SET_VALUE) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            RegKey::predef(hk).create_subkey(subkey(machine))?.0
+        }
+        r => r?,
+    };
+    let expand = match key.get_raw_value(VALUE_NAME) {
+        Ok(v) => v.vtype != REG_SZ,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => true, // fresh value
+        Err(e) => return Err(e),
+    };
+    let value = if expand {
+        expand_sz(raw)
+    } else {
+        raw.to_reg_value()
+    };
+    key.set_raw_value(VALUE_NAME, &value)
+}
+
+/// A REG_EXPAND_SZ [`RegValue`] holding `s` (NUL-terminated UTF-16, the registry convention).
+fn expand_sz(s: &str) -> RegValue<'static> {
+    let mut bytes = Vec::with_capacity((s.len() + 1) * 2);
+    for u in s.encode_utf16().chain(std::iter::once(0)) {
+        bytes.extend_from_slice(&u.to_le_bytes());
+    }
+    RegValue {
+        bytes: bytes.into(),
+        vtype: REG_EXPAND_SZ,
+    }
+}
+
+/// One read-modify-write attempt; `Ok(false)` means nothing would change.
+fn try_update_path(dir: &str, machine: bool, add: bool) -> io::Result<bool> {
+    let raw = read_path_raw(machine)?;
+    let Some(next) = path_with(&raw, dir, add) else {
+        return Ok(false);
+    };
+    write_path_raw(machine, &next)?;
+    announce();
+    Ok(true)
+}
+
+fn update_path(dir: &str, machine: bool, add: bool) -> io::Result<bool> {
+    let mut last: Option<io::Error> = None;
+    for attempt in 1..=WRITE_ATTEMPTS {
+        match try_update_path(dir, machine, add) {
+            Ok(changed) => return Ok(changed),
+            Err(e) => {
+                eprintln!("winseek: PATH update attempt {attempt}/{WRITE_ATTEMPTS} failed ({e})");
+                last = Some(e);
+                std::thread::sleep(RETRY_BACKOFF * attempt);
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| io::Error::other("PATH update failed")))
 }
 
 /// Tell running shells (Explorer and friends) that the environment changed, so *new*
@@ -293,24 +257,12 @@ fn announce() {
 /// Add `dir` to the PATH (user PATH unless `machine`). Returns whether it changed, so the
 /// caller can report "already there" instead of a fake success. Idempotent by design.
 pub fn add_to_path(dir: &str, machine: bool) -> io::Result<bool> {
-    let raw = read_path_raw(machine)?;
-    let Some(next) = path_with(&raw, dir, true) else {
-        return Ok(false);
-    };
-    write_path_raw(machine, &next)?;
-    announce();
-    Ok(true)
+    update_path(dir, machine, true)
 }
 
 /// Remove `dir` from the PATH. Returns whether it changed.
 pub fn remove_from_path(dir: &str, machine: bool) -> io::Result<bool> {
-    let raw = read_path_raw(machine)?;
-    let Some(next) = path_with(&raw, dir, false) else {
-        return Ok(false);
-    };
-    write_path_raw(machine, &next)?;
-    announce();
-    Ok(true)
+    update_path(dir, machine, false)
 }
 
 /// The raw PATH string as stored (unexpanded), for status displays.
