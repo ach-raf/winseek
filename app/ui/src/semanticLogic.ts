@@ -48,6 +48,24 @@ export function semView(state: SemanticState, q: string, plan: SemPlan): Semanti
   return state.query !== q && prevPaged === plan.paged ? state : { ...NO_HITS, query: "" };
 }
 
+/** [`semView`]'s decision as a react-query `placeholderData` policy: while the new answer is being
+ *  computed, keep the previous one on screen if the user is typing (a different query within the
+ *  same paged-ness — per-keystroke blanking would flicker); a changed scope never shows another
+ *  scope's answer and gets the pending state instead. `prevPlanKey` is the previous fetch's
+ *  `SemPlan.key`, carried in the query key; `undefined` anything means no placeholder. */
+export function semPlaceholder(
+  prev: SemanticState | undefined,
+  prevPlanKey: string | undefined,
+  q: string,
+  plan: SemPlan,
+): SemanticState | undefined {
+  if (!prev || prevPlanKey === undefined) return undefined;
+  if (prevPlanKey === plan.key) return prev;
+  const prevQ = prevPlanKey.slice(0, prevPlanKey.lastIndexOf("\u0000"));
+  const prevPaged = prevPlanKey.endsWith("\u0000all");
+  return prevQ !== q && prevPaged === plan.paged ? prev : undefined;
+}
+
 /** Runs one plan to completion (first page at once, the rest behind it). `live()` false = superseded: drop everything. */
 export async function runSemantic(
   backend: Pick<Backend, "semanticSearch">,

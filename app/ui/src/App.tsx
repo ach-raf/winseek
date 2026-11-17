@@ -288,7 +288,7 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
 
   // ---- search by meaning ---------------------------------------------------
-  const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen || (full && page === "settings"), epoch);
+  const [t1, refreshT1] = useTier1(backend, setupOpen || settingsOpen || (full && page === "settings"));
   const models = useModels(backend, refreshT1);
   const t1Off = !!t1 && (t1.state === "models_missing" || t1.state === "unavailable");
   // Text found inside files (documents, PDFs, screenshot OCR) is searchable before the models exist, so the

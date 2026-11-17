@@ -1,22 +1,20 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_GROUPS } from "./modelRows";
-import { NO_HITS, runSemantic, semPlan, semView, type SemanticState } from "./semanticLogic";
+import { NO_HITS, runSemantic, semPlan, semPlaceholder, type SemanticState } from "./semanticLogic";
+import { qk } from "./qk";
 import type { Backend, Filter, ModelGroup, ModelsPlan, ModelsProgress, Tier1Status } from "./types";
 
 const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
-/** Tier 1 (semantic layer) status. Polls every 10 s, or every second while `fast` (setup panel open). */
-export function useTier1(backend: Backend, fast: boolean, epoch: number): [Tier1Status | null, () => void] {
-  const [st, setSt] = useState<Tier1Status | null>(null);
-  const refresh = useCallback(() => {
-    backend.tier1Status().then((n) => setSt((p) => (JSON.stringify(p) === JSON.stringify(n) ? p : n))).catch(() => {});
-  }, [backend]);
-  useEffect(() => {
-    refresh();
-    const t = window.setInterval(refresh, fast ? 1000 : 10000);
-    return () => window.clearInterval(t);
-  }, [refresh, fast, epoch]);
-  return [st, refresh];
+/** Tier 1 (semantic layer) status, owned by react-query: one shared cache entry for every consumer
+ *  (the popup and the Library used to poll independently, two fetches for one answer). Polls every
+ *  10 s, or every second while `fast` (setup panel open). */
+export function useTier1(backend: Backend, fast: boolean): [Tier1Status | null, () => void] {
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: qk.t1, queryFn: () => backend.tier1Status(), refetchInterval: fast ? 1000 : 10000 });
+  const refresh = useCallback(() => { void qc.invalidateQueries({ queryKey: qk.t1 }); }, [qc]);
+  return [q.data ?? null, refresh];
 }
 
 export interface Models {
@@ -90,37 +88,60 @@ export function useModels(backend: Backend, onDone: () => void): Models {
 const DEBOUNCE_MS = 150;
 export type { SemanticState } from "./semanticLogic";
 
+/** The text a meaning search actually fetches for: typing waits out the debounce; a changed scope
+ *  (same text, different plan / reload) fetches at once — the user already decided, and waiting out
+ *  a typing pause that never comes makes every tab switch feel laggy. Deactivated (popup empty or
+ *  a name-only scope) resets to "" so the next activation starts fresh. */
+function useDebouncedScope(active: boolean, q: string, planKey: string, reload: number): string {
+  const [eff, setEff] = useState(active ? q : "");
+  const lastQ = useRef(q);
+  useEffect(() => {
+    if (!active) { setEff(""); return; }
+    const sameQ = lastQ.current === q;
+    lastQ.current = q;
+    if (sameQ) { setEff(q); return; }
+    const t = window.setTimeout(() => setEff(q), DEBOUNCE_MS);
+    return () => window.clearTimeout(t);
+  }, [q, active, planKey, reload]);
+  return eff;
+}
+
 /**
- * Semantic hits for the query, ~150 ms after typing stops. While a new query is computed the previous
- * hits stay on screen (no flicker); a changed scope (tab / chip) never shows another scope's hits.
- * The result is a function of (query, scope, ranges, showAll) only, see `semPlan`.
- * `reload` re-runs the search for the same query (popup re-shown, file deleted).
+ * Semantic hits for the query, owned by react-query: every (epoch, text, plan) is a cache entry, so
+ * an in-flight fetch can never land in another scope's view and answers survive scope round-trips.
+ * While a new query is computed the previous hits stay on screen (no flicker, `semPlaceholder`);
+ * a changed scope (tab / chip) never shows another scope's hits. The result is a function of
+ * (query, scope, ranges, showAll) only, see `semPlan`.
+ * `reload` re-runs the search for the same query (popup re-shown, file deleted) by pinning a fresh
+ * epoch into the key.
  */
 export function useSemantic(backend: Backend, query: string, enabled: boolean, filter: Filter, reload: number, filtered = false, all = false): SemanticState {
-  const [state, setState] = useState<SemanticState>(NO_HITS);
-  const seq = useRef(0);
+  const qc = useQueryClient();
   const q = query.trim();
   // Every kind the meaning index holds; folders, apps and settings are found by name only.
   const active = enabled && q.length >= 2 && (filter === "all" || filter === "images" || filter === "docs" || filter === "video" || filter === "audio");
   const plan = semPlan(q, filter, filtered, all);
-  const { key, paged, k } = plan;
-  const qRef = useRef(q);
-  useEffect(() => {
-    const my = ++seq.current;
-    if (!active) {
-      setState((s) => (s.hits.length || s.loading ? NO_HITS : s));
-      return;
-    }
-    // Typing debounces; a changed scope (tab / chip / reload) starts right away — the user already
-    // decided, and waiting out a typing pause that never comes makes every tab switch feel laggy.
-    const delay = qRef.current === q ? 0 : DEBOUNCE_MS;
-    qRef.current = q;
-    const t = window.setTimeout(() => {
-      void runSemantic(backend, q, { key, paged, k }, () => my === seq.current, setState);
-    }, delay);
-    return () => window.clearTimeout(t);
-  }, [backend, q, active, reload, key, paged, k]);
-  return active ? semView(state, q, plan) : NO_HITS;
+  const eff = useDebouncedScope(active, q, plan.key, reload);
+  // The fetch runs for the effective text; the plan must come from the same text, or the debounce
+  // window would key old text together with the new scope's shape.
+  const effPlan = semPlan(eff, filter, filtered, all);
+  const semQuery = useQuery({
+    queryKey: qk.sem(reload, eff, effPlan.key),
+    queryFn: (ctx) => {
+      // The paged reads stream into the cache as they land (runSemantic emits partial states), so
+      // "Show all" fills progressively instead of holding an empty list until the last page.
+      let last = NO_HITS;
+      return runSemantic(backend, eff, effPlan, () => !ctx.signal.aborted, (s) => {
+        last = s;
+        qc.setQueryData(ctx.queryKey, s);
+      }).then(() => last);
+    },
+    enabled: active && eff.length >= 2,
+    placeholderData: (prev, prevQuery) => semPlaceholder(prev, prevQuery?.queryKey[2] as string | undefined, eff, effPlan),
+    staleTime: 0, // a cached answer is shown instantly, then re-checked in the background
+    gcTime: 60_000,
+  });
+  return active ? semQuery.data ?? NO_HITS : NO_HITS;
 }
 
 /** A small preference mirrored into localStorage (best-effort: with storage off, the choice just is
