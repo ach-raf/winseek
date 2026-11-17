@@ -82,8 +82,9 @@ function Thumb({ backend, item, px }: { backend: Backend; item: GridItem; px: nu
 }
 
 /** The v4 mosaic: sticky month headings, 8 columns of 104px rows with 2x2 / 2x1 feature tiles. Virtualized.
- *  `preview` = the search-style preview pane on the right, open by default (collections); Space collapses
- *  and reopens it, and an empty pane shows a hint instead of vanishing.
+ *  `preview` = the floating preview pane over the grid's right edge, open by default (collections); Space
+ *  collapses and reopens it, and an empty pane shows a hint instead of vanishing. The pane takes no
+ *  layout width, so toggling it can never re-tile the mosaic or move the scroll.
  *  `view` switches the same sections between the tile mosaic and dense list rows (the owner keeps the choice). */
 export function Gallery({ backend, sections, rail, actions, empty, preview = false, extra, noun = "photo", view = "grid" }: {
   backend: Backend;
@@ -412,12 +413,12 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
         </div>
       </div>
       {pvOpen && (preview || pvItem) && (pvItem ? (
-        <div className="lg-pv">
+        <div className={"lg-pv" + (rail ? " lg-pv-r" : "")}>
           <Preview backend={backend} hit={toHit(pvItem)} query="" snippet={pvItem.snippet} page={pvItem.page} start={pvItem.at ?? undefined} boxes={pvItem.boxes}
                    onOpen={() => actions.open(pvItem.path)} onReveal={() => actions.reveal(pvItem.path)} onCopyPath={() => actions.copy(pvItem.path)} />
         </div>
       ) : (
-        <aside className="lg-pv lg-pv-empty">
+        <aside className={"lg-pv lg-pv-empty" + (rail ? " lg-pv-r" : "")}>
           <b>Nothing selected</b>
           <span>Pick a photo or document to see it here.</span>
         </aside>

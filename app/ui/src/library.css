@@ -33,7 +33,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 /* min-width: 0 — the status bar's current-file line (nowrap) must not push the selected file's
  * name length up through the flex chain: without it, .lg-main grows per selection, the mosaic
  * repacks (tiles swell and shrink), and the fixed 380px preview pane is shoved out of the window. */
-.lg { flex: 1; min-height: 0; min-width: 0; display: flex; outline: 0; }
+.lg { flex: 1; min-height: 0; min-width: 0; display: flex; outline: 0; position: relative; }
 .lg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .lg-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .lg-space { position: relative; width: 100%; }
@@ -57,7 +57,13 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lg-empty strong { color: var(--fg2); font-weight: 600; font-size: 15px; }
 .lg-empty span { font-size: 12.5px; max-width: 420px; }
 .lg-empty .btn { margin-top: 10px; }
-.lg-pv { flex: none; width: 380px; display: flex; border-left: 1px solid var(--line); min-height: 0; background: var(--bg2); }
+/* The preview pane floats OVER the grid (Quick Look style): it takes no layout width, so
+ * opening/closing it can never re-tile the mosaic, resize tiles or move the scroll. It stops
+ * above the 36px status bar (the hints stay readable) and, in the timeline, clear of the
+ * 54px month rail. --pop-shadow is the app's token for surfaces that detach entirely. */
+.lg-pv { position: absolute; top: 0; right: 0; bottom: 36px; width: 380px; z-index: 6; display: flex; min-height: 0; background: var(--bg2); box-shadow: var(--pop-shadow); animation: pv-in 130ms ease-out; }
+.lg-pv-r { right: 54px; }
+@keyframes pv-in { from { transform: translateX(12px); opacity: 0; } }
 .lg-pv-empty { flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--fg3); padding: 24px; }
 .lg-pv-empty b { color: var(--fg2); font-size: 14px; }
 .lg-pv-empty span { font-size: 12.5px; max-width: 260px; }
