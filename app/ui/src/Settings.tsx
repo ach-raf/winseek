@@ -479,7 +479,7 @@ function StatusSection({ backend, onError, onSection }: { backend: Backend; onEr
     backend.rescanVolume(letter).then(reload).catch(() => {}).finally(() => {
       setBusy((b) => { const n = new Set(b); n.delete(letter); return n; });
     });
-  }, [backend, reload, onError]);
+  }, [backend, reload]);
 
   if (!page) {
     return err

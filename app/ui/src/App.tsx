@@ -1162,7 +1162,7 @@ export default function App({ backend }: { backend: Backend }) {
         case "Enter":
           if (setupOpenRef.current) {
             if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
-            e.preventDefault(); setupPrimaryRef.current(); break;
+            e.preventDefault(); setupPrimaryRef.current?.(); break;
           }
           if (showPanelRef.current) {
             if ((e.target as HTMLElement | null)?.closest?.("button")) break; // native click
@@ -1258,7 +1258,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, launchMenu, refocus, pvOpen, full, page, gridCols, changeSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, changeSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();

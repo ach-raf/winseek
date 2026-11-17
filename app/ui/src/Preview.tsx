@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useMemo, useRef, useState } from "react";
 import Markdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Highlight } from "prism-react-renderer";
@@ -61,18 +61,17 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
   // Children (PDF view, image stage, parse bar) contribute their piece of the keyboard API.
   const apiParts = useRef<Partial<PreviewApi>>({});
   const registerApi = useCallback((patch: Partial<PreviewApi>) => { apiParts.current = { ...apiParts.current, ...patch }; }, []);
-  useEffect(() => {
-    if (!apiRef) return;
-    apiRef.current = {
-      page: (d) => apiParts.current.page?.(d),
-      zoom: (f) => apiParts.current.zoom?.(f),
-      fit: () => apiParts.current.fit?.(),
-      pan: (dx, dy) => apiParts.current.pan?.(dx, dy),
-      extract: () => apiParts.current.extract?.(),
-      copyText: () => apiParts.current.copyText?.(),
-    };
-    return () => { if (apiRef) apiRef.current = null; };
-  }, [apiRef]);
+  // The parent's api ref is filled with forwarding closures over the children's registered parts;
+  // useImperativeHandle is the sanctioned way to write a parent-provided ref (null ref = no-op),
+  // and it clears the ref on unmount exactly like the manual cleanup did.
+  useImperativeHandle(apiRef ?? null, () => ({
+    page: (d) => apiParts.current.page?.(d),
+    zoom: (f) => apiParts.current.zoom?.(f),
+    fit: () => apiParts.current.fit?.(),
+    pan: (dx, dy) => apiParts.current.pan?.(dx, dy),
+    extract: () => apiParts.current.extract?.(),
+    copyText: () => apiParts.current.copyText?.(),
+  }));
   const [info, setInfo] = useState<PreviewInfo | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);

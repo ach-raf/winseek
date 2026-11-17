@@ -228,8 +228,7 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
     if (!pvOpen) { setPvItem(null); return; }
     const t = window.setTimeout(() => setPvItem(curRef.current), pvItem ? 120 : 0);
     return () => window.clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pvOpen, curPath]);
+  }, [pvOpen, curPath, pvItem]);
 
   const move = useCallback((i: number) => { toScroll.current = true; setSel(i); }, []);
 

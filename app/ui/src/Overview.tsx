@@ -370,13 +370,16 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
   /** Static content above the sections (the home's search suggestions); scrolls with the list. */
   lead?: ReactNode;
 }) {
-  let base = 0;
+  // Section offsets, derived up front: a mutation inside the JSX map closure would be a
+  // render-phase write the React compiler can't prove (and would flag).
+  const starts: number[] = [];
+  let acc = 0;
+  for (const s of sections) { starts.push(acc); acc += s.items.length; }
   return (
     <div className="list ov" ref={scrollRef} role="listbox" aria-label="Results">
       {lead}
-      {sections.map((s) => {
-        const start = base;
-        base += s.items.length;
+      {sections.map((s, si) => {
+        const start = starts[si]!; // one offset per section, always in range
         const first = s.items[0];
         if (s.id === "top" && first?.calc !== undefined) {
           return <CalcCard key={s.id} it={first} i={start} sel={start === sel} expr={query.trim()} h={handlers} />;

@@ -502,6 +502,9 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
   const [h, setH] = useState(500);
   const list = useRef<HTMLDivElement>(null);
 
+  // The observer re-attaches when the list element itself appears or disappears (empty/loading
+  // render different subtrees), so the effect keys on that one fact.
+  const groupsEmpty = groups === null || groups.length === 0;
   useEffect(() => {
     const el = list.current;
     if (!el) return;
@@ -509,7 +512,7 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
     ro.observe(el);
     setH(el.clientHeight);
     return () => ro.disconnect();
-  }, [groups === null || groups.length === 0]);
+  }, [groupsEmpty]);
 
   // Arriving with a group picked on the overview: scroll it into view once.
   const jumped = useRef(false);
@@ -718,6 +721,8 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
   const [q, setQ] = useState("");
   const box = useRef<HTMLDivElement>(null);
 
+  // Same re-attach key as the groups list above: the element appears or it doesn't.
+  const rowsEmpty = rows === null || rows.length === 0;
   useEffect(() => {
     const el = box.current;
     if (!el) return;
@@ -725,7 +730,7 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
     ro.observe(el);
     setH(el.clientHeight);
     return () => ro.disconnect();
-  }, [rows === null || rows.length === 0]);
+  }, [rowsEmpty]);
   const shown = useMemo(() => (rows ?? []).filter((f) => nameMatches(f.name, q)), [rows, q]);
   const n = shown.length;
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, n - 1))); }, [n]);

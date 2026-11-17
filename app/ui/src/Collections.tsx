@@ -221,16 +221,18 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
     if (await save(next)) { setSelName(c.name.trim()); setDraft(null); }
   };
 
-  const del = async () => {
+  // Stable identities: the window keydown effect below depends on these, so plain per-render
+  // functions would re-register the listener every render.
+  const del = useCallback(async () => {
     if (!sel || !list) return;
     if (await save(list.filter((c) => c.name !== sel.name))) { setSelName(null); setConfirmDel(false); }
-  };
+  }, [sel, list, save]);
 
   const newCollection = () => { setDraft({ orig: null, name: "", query: "", threshold: NEW_THRESHOLD, graphics: false, exclude: [] }); setFormErr(null); };
-  const editCollection = (c: Collection) => {
+  const editCollection = useCallback((c: Collection) => {
     setDraft({ orig: c.name, name: c.name, query: c.query, threshold: c.threshold, graphics: c.graphics ?? false, exclude: c.exclude ?? [] });
     setFormErr(null);
-  };
+  }, []);
 
   const gridRef = useRef<HTMLDivElement>(null);
   // The card grid is a keyboard widget: arrows move between cards, Enter opens one, Ctrl+N starts a new collection.
@@ -262,8 +264,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [sel, draft, confirmDel, list, active]);
+  }, [sel, draft, confirmDel, list, active, editCollection, del]);
 
   /** Up to four thumbnails for a card. */
   const peek = (c: Collection): GridItem[] => {

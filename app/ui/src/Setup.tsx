@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { Models } from "./hooks";
 import type { FolderEstimate, ModelsPlan, Tier1Status } from "./types";
 import { estimateText } from "./estimateLogic";
@@ -161,7 +161,11 @@ export function Setup({ t1, models, indexed, onFolders, onRemoveFolder, onPause,
   const parserBytes = optMissing.reduce((a, i) => a + (i.bytes ?? 0), 0);
   const missing = plan ? plan.items.some((i) => !i.present && !i.optional) : false;
   const phase = running ? "downloading" : !plan ? "loading" : missing ? (interrupted ? "interrupted" : "choose") : "indexing";
-  primaryRef.current = () => { if (phase === "choose" || phase === "interrupted") models.start(includeParser); else if (phase === "indexing") onClose(); };
+  // The parent's Enter handler calls this ref; useImperativeHandle is the sanctioned way to write
+  // a parent-provided ref during the commit (a render-phase write would trip the React compiler).
+  useImperativeHandle(primaryRef, () => () => {
+    if (phase === "choose" || phase === "interrupted") models.start(includeParser); else if (phase === "indexing") onClose();
+  }, [phase, includeParser, models, onClose]);
   const root = useRef<HTMLElement>(null);
   const overall = progress && progress.overall_total > 0 ? progress.overall_downloaded / progress.overall_total : null;
   const cancelled = interrupted === "cancelled";

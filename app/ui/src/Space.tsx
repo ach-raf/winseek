@@ -112,13 +112,16 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     return () => window.clearTimeout(t);
   }, [hiddenCount, again]);
 
-  // `ver` changes whenever a folder arrives, which is what makes these re-read the cache.
+  // `get` reads the mutably-updated cache ref; the version counter that forces re-derivation
+  // lives on the memo below (in-place refetches bump `ver`, which must re-run `flattenTree`).
   const get = useCallback((p: string): DiskUsage | undefined => {
     const d = cache.current.get(p);
     return d ? withoutHidden(d, hidden) : undefined;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hidden, ver]);
-  const rows = useMemo(() => (root ? flattenTree(root, get, open) : []), [root, open, get]);
+  }, [hidden]);
+  const rows = useMemo(() => {
+    void ver;
+    return root ? flattenTree(root, get, open) : [];
+  }, [root, open, get, ver]);
   const homeData = get("");
   const mapData = root ? get(focus) : undefined;
   const lastMap = useRef<DiskUsage | undefined>(undefined);
