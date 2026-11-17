@@ -4,8 +4,10 @@
    same names. Every color a component rule needs must come from a token here — component CSS
    never keys off data-theme and never hardcodes a hex (the one sanctioned exception: ink drawn
    over arbitrary content — .ov, tile captions, treemap tiles — is constant by design, since it
-   must read on photos and video frames in either theme). The attribute is set by theme.ts from
-   the System/Light/Dark setting ("system" = whatever the OS says), so both palettes resolve
+   must read on photos and video frames in either theme). Palettes swap VALUES only: structure
+   (fills, borders, radii, shadows, margins) is identical across themes — a surface that exists
+   in one theme must exist, with the same recipe, in the other. The attribute is set by theme.ts
+   from the System/Light/Dark setting ("system" = whatever the OS says), so both palettes resolve
    without media queries. Accent is the demo's amber (#ffc533, dark ink); accent.ts re-themes
    --acc/--acc-ink inline and everything derived follows through color-mix.
    Light is "Porcelain" (user-judged variant, design-mockups/light-variant-porcelain.html): the
@@ -64,11 +66,6 @@
      --seg-track / --seg-on: segmented control (dseg family): the grey track and the active
        segment. The track is the same token in both themes because the control must read on the
        canvas AND inside cards; only the active segment swaps.
-     --sheet / --sheet-ring: a document-like surface laid over the canvas (overview list, text
-       and docx panes, modal dialogs); the ring is light's stand-in for dark's bg-vs-bg2 contrast.
-     --ov-inset / --ov-border / --ov-radius: how much the overview sheet detaches from the window
-       (light: a floating card; dark: full-bleed).
-     --ov-row-hover: row hover ON the overview sheet (plain .row:hover --bg2 vanishes on it).
      --menu-hover: hover inside a menu that sits on the canvas (ctx-menu; menus on --bg2 hover
        --bg3 directly, one step off their own sheet in either ramp).
      --meter-track: the sidebar index card's meter rail (dark's tinted card needs the darker bg).
@@ -81,10 +78,6 @@
      Syntax colors (--tok-*): calm IDE hues fitted to each palette. */
   --well: var(--bg3); --well-focus: var(--bg2);
   --seg-track: var(--bg3); --seg-on: var(--bg2);
-  --sheet: var(--bg2); --sheet-ring: inset 0 0 0 1px var(--line);
-  --ov-inset: var(--sp-2) var(--sp-3) var(--sp-2);
-  --ov-border: 1px solid var(--line); --ov-radius: 14px;
-  --ov-row-hover: var(--bg3);
   --menu-hover: var(--bg2);
   --meter-track: var(--bg3);
   --plate-shadow: inset 0 0 0 1px rgba(10,12,18,.08), 0 1px 3px rgba(10,12,18,.16);
@@ -118,10 +111,6 @@
   /* ---- semantic roles, dark counterparts of the :root set above ---- */
   --well: var(--bg2); --well-focus: var(--bg);
   --seg-on: var(--bg); /* --seg-track stays the :root token: it must read on canvas and cards */
-  --sheet: var(--bg); --sheet-ring: none;
-  --ov-inset: 0;
-  --ov-border: none; --ov-radius: 0;
-  --ov-row-hover: var(--bg2);
   --menu-hover: var(--bg3);
   --meter-track: var(--bg);
   --plate-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 1px 3px rgba(0,0,0,.28);

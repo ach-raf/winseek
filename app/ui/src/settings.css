@@ -279,7 +279,7 @@ code { font: 11.5px/1 var(--mono); padding: 1px 5px; border-radius: 5px; backgro
 dialog.cheat {
   width: min(760px, calc(100vw - 48px)); max-height: min(560px, calc(100vh - 48px));
   padding: 0;
-  background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
 }
 dialog.cheat[open] { display: flex; flex-direction: column; }
@@ -291,7 +291,7 @@ dialog.cheat::backdrop {
 dialog.confirm {
   width: min(440px, calc(100vw - 48px));
   padding: 0;
-  background: var(--sheet); border: 1px solid var(--line); border-radius: 14px;
+  background: var(--bg); border: 1px solid var(--line); border-radius: 14px;
   box-shadow: 0 18px 50px rgb(0 0 0 / 0.25); overflow: hidden;
 }
 dialog.confirm[open] { display: block; }

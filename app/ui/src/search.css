@@ -58,25 +58,18 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sh .back i.busy::before { content: "\00b7  "; }
 /* Windowed lists (Overview's Windowed): spacers stand in for the rows that are not drawn. */
 .win-pad { grid-column: 1 / -1; pointer-events: none; }
-/* The overview sheet (home suggestions, results) reuses .ov, whose dark veil + white ink exists
- * for captions over photos and video. As a page surface it follows the theme instead: --sheet
- * colors it (dark the canvas grey, light the paper white), and --ov-inset/--ov-border/--ov-radius
- * say how much it detaches (light floats it as a card, dark keeps it full-bleed). Its shadow is
- * the shared --card-shadow (none in dark, lift in light); the .ov veil's backdrop blur is moot
- * under an opaque sheet and switched off. */
+/* The overview list (home suggestions, results) reuses .ov, whose dark veil + white ink exists
+ * for captions over photos and video. As a page surface it follows the theme instead — and it
+ * is NOT a card: it reads flat on the canvas in BOTH themes (background --bg, no inset, no
+ * border), exactly as dark always rendered it. Any detachment light might add would be a
+ * structural divergence, not a palette swap. The .ov veil's backdrop blur is moot under the
+ * opaque surface and switched off. */
 .list.ov {
   overflow-anchor: none;
-  background: var(--sheet);
+  background: var(--bg);
   color: var(--fg);
   backdrop-filter: none;
-  margin: var(--ov-inset);
-  border: var(--ov-border);
-  border-radius: var(--ov-radius);
-  box-shadow: var(--card-shadow);
 }
-/* Rows hover one step off the sheet (--ov-row-hover): on light's paper sheet the plain --bg2
- * hover would vanish. */
-.list.ov .row:hover { background: var(--ov-row-hover); }
 
 /* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
  * Chips are buttons that act on the query — never filter chips (.fc), never info chips (.qchip). */
