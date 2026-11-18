@@ -77,6 +77,8 @@ export interface SemanticHit {
   page?: number | null;
   /** Audio / video: the moment (seconds) the matching window or frame starts; the preview seeks there. */
   at?: number | null;
+  /** Code hit: the 1-based line the matching stretch starts at; Enter opens the file there (VS Code / Notepad++). */
+  line?: number | null;
   /** "text": found in the extracted text only (e.g. before the models are installed); "code": a hit of a `code:` query (separate code index); default "meaning". */
   source?: "meaning" | "text" | "code";
   /** Where the query words sit on the image / PDF page (fractions 0-1); only boxes that contain a query word. */

@@ -220,6 +220,8 @@ pub struct SemanticHit {
     /// The reranker's relevance for this file, 0..1 (`None`: not reranked). The UI shows it as the
     /// match badge when present.
     pub rerank: Option<f32>,
+    /// Code hit: the 1-based line to open the file at, from the chunk locator.
+    pub line: Option<u32>,
 }
 
 /// Result of the on-demand "Extract text" in the preview.
@@ -246,6 +248,13 @@ pub fn locator_page(locator: Option<&str>) -> Option<u32> {
     u32::try_from(v.get("page")?.as_u64()?)
         .ok()
         .filter(|p| *p > 0)
+}
+
+/// The 1-based line to open at, from a code chunk's locator (`{"loc":12,"loc_end":40}`).
+pub fn locator_code_line(locator: Option<&str>) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
+    let loc = |k: &str| u32::try_from(v.get(k)?.as_u64()?).ok().filter(|l| *l > 0);
+    loc("loc").or_else(|| loc("loc_end"))
 }
 
 /// The saved performance profile (`balanced` when unset or unreadable).
@@ -328,6 +337,7 @@ impl SemRow {
             source: self.source,
             boxes: hitbox::hit_boxes(self.locator.as_deref(), q),
             rerank: self.rerank,
+            line: locator_code_line(self.locator.as_deref()),
         }
     }
 }
@@ -443,6 +453,7 @@ impl Tier1 {
         if defaulted {
             let _ = lock(&t.store).set_scopes(&scopes);
         }
+        t.check_code_chunker();
         t.note_index_stamp(false); // the status page shows which version last verified the index
         Ok(t)
     }
@@ -560,6 +571,12 @@ impl Tier1 {
                 store
                     .remove_kind(crawler::KIND_CODE)
                     .map_err(|e| e.to_string())?;
+            } else {
+                // Nothing indexed under an older chunker can remain after a fresh opt-in.
+                let _ = store.set_setting(
+                    winseek_store::SETTING_CODE_CHUNKER,
+                    Some(chunk::CODE_CHUNKER_FINGERPRINT),
+                );
             }
         }
         let mut snap = self.snap.write().unwrap_or_else(|e| e.into_inner());
@@ -810,6 +827,37 @@ impl Tier1 {
         Ok(())
     }
 
+    /// The code chunker changed since the code index was built: forget the indexed code files once
+    /// so the crawler re-chunks and re-embeds them under the current stretch shape (DigUp's
+    /// fingerprint gate). Without this, old char-offset and new line locators would mix.
+    fn check_code_chunker(&self) {
+        let mut s = lock(&self.store);
+        if !s.get_index_code().unwrap_or(false) {
+            return; // nothing indexed under any chunker
+        }
+        let stored = s
+            .get_setting(winseek_store::SETTING_CODE_CHUNKER)
+            .ok()
+            .flatten();
+        if stored.as_deref() == Some(chunk::CODE_CHUNKER_FINGERPRINT) {
+            return;
+        }
+        match s.remove_kind(crawler::KIND_CODE) {
+            Ok(n) => eprintln!(
+                "winseek: code chunker changed ({} -> {}); {n} code file(s) re-index with line locators",
+                stored.as_deref().unwrap_or("none"),
+                chunk::CODE_CHUNKER_FINGERPRINT
+            ),
+            Err(e) => eprintln!("winseek: could not forget code for re-chunking: {e}"),
+        }
+        if let Err(e) = s.set_setting(
+            winseek_store::SETTING_CODE_CHUNKER,
+            Some(chunk::CODE_CHUNKER_FINGERPRINT),
+        ) {
+            eprintln!("winseek: could not record the code chunker fingerprint: {e}");
+        }
+    }
+
     /// Record which app version last opened / verified this index, and when its current content
     /// was created or re-stamped (both for the index-status row in Settings). `restamped` marks a
     /// fresh index or a re-stamp after a verified build change: the stamp time is renewed.
@@ -1026,7 +1074,7 @@ impl Tier1 {
                 rerank: None,
                 score: 0.0,
                 rank: 0.0,
-                locator: None,
+                locator: h.locator,
                 snippet: Some(h.snippet).filter(|s| s.contains('[')),
                 source: "code",
             })
@@ -2569,6 +2617,85 @@ mod tests {
         );
         // The same file found by a plain word keeps the old order: meaning first, words after.
         assert_eq!(names("invoice"), ["something.jpg", "inv.txt"]);
+    }
+
+    /// A done code file with one stretch: `hot` is the query direction its vector points at
+    /// (`unit(hot)`), `loc` the stretch's line locator.
+    fn add_code(t: &Tier1, n: u64, path: &str, hot: usize, body: &str, loc: Option<&str>) {
+        let mut s = lock(&t.store);
+        let id = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "{v}".into(),
+                    frn: n,
+                },
+                path,
+                1,
+                1,
+                "code",
+            )
+            .unwrap();
+        let v = vec![ChunkVec {
+            chunk: 0,
+            kind: VecKind::Text,
+            locator: loc.map(str::to_owned),
+            vec: unit(hot),
+        }];
+        s.complete(id, &format!("hc{n}"), &v, &[(0, body.into())])
+            .unwrap();
+    }
+
+    /// A `code:` hit knows its line: the stretch locator rides through to the hit.
+    #[test]
+    fn code_hits_carry_their_line() {
+        let t = tier(Box::new(Q), &[r"C:\Code"]);
+        assert_eq!(t.set_index_code(true), Ok(true));
+        add_code(
+            &t,
+            1,
+            r"C:\Code\util.rs",
+            0,
+            "pub fn retry_with_backoff() {\n    nap();\n}\n",
+            Some(r#"{"loc":1,"loc_end":3}"#),
+        );
+        let hits = t
+            .semantic_search("code: retry_with_backoff", 5)
+            .unwrap()
+            .hits;
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].line, Some(1));
+        assert!(hits[0].snippet.as_deref().unwrap().contains('['));
+        assert!(t
+            .semantic_search("retry", 5)
+            .unwrap()
+            .hits
+            .iter()
+            .all(|h| h.source != "code"), "code never mixes into a general search");
+    }
+
+    /// The chunker fingerprint gate: stretches cut by an older chunker are forgotten once, so the
+    /// crawler re-chunks them (old char offsets must never mix with new line locators).
+    #[test]
+    fn a_code_chunker_change_reindexes_the_code_partition() {
+        let t = tier(Box::new(Q), &[r"C:\Code"]);
+        assert_eq!(t.set_index_code(true), Ok(true));
+        add_code(&t, 1, r"C:\Code\a.rs", 0, "fn a() {}\n", Some(r#"{"loc":1,"loc_end":1}"#));
+        lock(&t.store)
+            .set_setting(winseek_store::SETTING_CODE_CHUNKER, Some("old"))
+            .unwrap();
+        t.check_code_chunker();
+        {
+            let s = lock(&t.store);
+            assert_eq!(s.stats().unwrap().done, 0, "the old-stretch file was forgotten");
+            assert_eq!(
+                s.get_setting(winseek_store::SETTING_CODE_CHUNKER)
+                    .unwrap()
+                    .as_deref(),
+                Some(chunk::CODE_CHUNKER_FINGERPRINT)
+            );
+        }
+        t.check_code_chunker(); // again: nothing left to forget
+        assert_eq!(lock(&t.store).stats().unwrap().done, 0);
     }
 
     #[test]

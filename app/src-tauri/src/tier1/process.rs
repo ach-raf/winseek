@@ -20,7 +20,7 @@ use winseek_store::{
 };
 
 use super::chunk::{self, Chunk};
-use super::crawler::{KIND_AUDIO, KIND_IMAGE, KIND_PDF, KIND_VIDEO};
+use super::crawler::{KIND_AUDIO, KIND_CODE, KIND_IMAGE, KIND_PDF, KIND_VIDEO};
 use super::embedder::{is_gpu_busy, EmbedError, Embedder};
 use super::extract::{self, ExtractError};
 use super::file_title;
@@ -640,7 +640,12 @@ impl Processor {
                     return guard::fail_file(store, f.id, &f.path, &msg)
                 }
             };
-            text_items(chunk::chunk(&doc), 0)
+            // Code is chunked by whole lines (the locator points at lines, not chars).
+            if f.kind == KIND_CODE {
+                text_items(chunk::chunk_code(&doc.text), 0)
+            } else {
+                text_items(chunk::chunk(&doc), 0)
+            }
         };
         drop(bytes);
         if items.is_empty() {

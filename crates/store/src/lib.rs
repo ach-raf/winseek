@@ -491,6 +491,10 @@ pub const SETTING_PROVENANCE_VERDICT: &str = "provenance_verdict";
 pub const SETTING_INDEX_APP_VERSION: &str = "index_app_version";
 /// Settings key: unix seconds when the current index content was created or re-stamped.
 pub const SETTING_INDEX_STAMPED_UNIX: &str = "index_stamped_unix";
+/// Settings key: fingerprint of the code chunker that produced the indexed code stretches
+/// (`tier1::chunk::CODE_CHUNKER_FINGERPRINT`). While it differs from the running one, indexed
+/// code files are forgotten once so the new chunking (and its line locators) applies whole.
+pub const SETTING_CODE_CHUNKER: &str = "code_chunker";
 
 /// One queued item for the document parser. `page` 0 is a standalone image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1905,13 +1909,16 @@ impl Store {
     }
 
     /// Full-text search over the *code* partition only (`code:` queries). Same shape as
-    /// [`Store::search_text`]; code never appears in any other search.
+    /// [`Store::search_text`]; code never appears in any other search. The hit's locator carries
+    /// the chunk's 1-based `loc` / `loc_end` lines, so a hit can open at its line.
     pub fn search_code(&self, fts_query: &str, k: usize) -> Result<Vec<TextHit>> {
         if k == 0 {
             return Ok(Vec::new());
         }
         let mut st = self.conn.prepare_cached(
-            "SELECT files.id, files.path, texts.chunk, snippet(texts, 2, '[', ']', '…', 12), bm25(texts)
+            "SELECT files.id, files.path, texts.chunk, snippet(texts, 2, '[', ']', '…', 12), bm25(texts),
+                    COALESCE((SELECT v.locator FROM vectors v WHERE v.hash = texts.hash AND v.chunk = texts.chunk),
+                             (SELECT p.locator FROM pending_vecs p WHERE p.hash = texts.hash AND p.chunk = texts.chunk))
              FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
              WHERE texts MATCH ?1
              ORDER BY bm25(texts) LIMIT ?2",
@@ -1923,7 +1930,7 @@ impl Store {
                 chunk: r.get(2)?,
                 snippet: r.get(3)?,
                 rank: r.get(4)?,
-                locator: None,
+                locator: r.get(5)?,
             })
         })?;
         let mut seen = std::collections::HashSet::new();

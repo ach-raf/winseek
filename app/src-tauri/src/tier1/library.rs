@@ -475,6 +475,7 @@ impl Tier1 {
                     source: "meaning",
                     boxes: None,
                     rerank: None,
+                    line: None,
                 }
             })
             .collect();

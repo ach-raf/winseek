@@ -748,11 +748,12 @@ export default function App({ backend }: { backend: Backend }) {
 
   const curSnippet = semSel?.snippet ?? (current ? semMap.get(pathKey(current.path))?.snippet : null) ?? null;
   const curPage = semSel?.page ?? (current ? semMap.get(pathKey(current.path))?.page : null) ?? null;
+  const curLine = semSel?.line ?? (current ? semMap.get(pathKey(current.path))?.line : null) ?? null;
   const curBoxes = semSel?.boxes ?? (current ? semMap.get(pathKey(current.path))?.boxes : null) ?? null;
   const curAt = semSel?.at ?? (current ? semMap.get(pathKey(current.path))?.at : null) ?? null;
   // A picture tile carries its own final score (meaning + name); everything else the meaning hit's.
   const curPct = ovItem?.pct !== undefined ? ovItem.pct : matchPct(semSel ?? (current ? semMap.get(pathKey(current.path)) : undefined));
-  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}|${curPct ?? ""}` : "";
+  const curKey = current ? `${current.path}|${curSnippet ?? ""}|${curPage ?? ""}|${curLine ?? ""}|${curAt ?? ""}|${curBoxes?.length ?? 0}|${curPct ?? ""}` : "";
   const pctRef = useRef(curPct);
   pctRef.current = curPct;
   const currentRef = useRef(current);
@@ -761,6 +762,8 @@ export default function App({ backend }: { backend: Backend }) {
   snippetRef.current = curSnippet;
   const pageRef = useRef(curPage);
   pageRef.current = curPage;
+  const lineRef = useRef(curLine);
+  lineRef.current = curLine;
   const boxesRef = useRef(curBoxes);
   boxesRef.current = curBoxes;
   const atRef = useRef(curAt);
@@ -781,9 +784,13 @@ export default function App({ backend }: { backend: Backend }) {
     try {
       if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
       if (kind === "open") {
-        // A PDF hit found on a page opens on that page when the viewer can be steered; anything else opens the plain way.
+        // A PDF hit found on a page opens on that page when the viewer can be steered; a code hit
+        // with a line opens there (VS Code / Notepad++); anything else opens the plain way.
         const pg = /\.pdf$/i.test(h.path) ? pageRef.current : null;
-        if (pg && pg > 0) await backend.openAt(h.path, { page: pg }); else await backend.openPath(h.path);
+        const ln = pg ? null : lineRef.current;
+        if (pg && pg > 0) await backend.openAt(h.path, { page: pg });
+        else if (ln && ln > 0) await backend.openAt(h.path, { line: ln });
+        else await backend.openPath(h.path);
       } else await backend.revealPath(h.path);
       await backend.hide();
     } catch (e) { fail(e); }

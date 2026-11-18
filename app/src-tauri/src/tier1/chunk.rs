@@ -14,6 +14,21 @@ pub const TARGET_CHARS: usize = 1500;
 pub const OVERLAP_CHARS: usize = 150;
 pub const MAX_CHUNKS: usize = 64;
 
+/// Code stretches (`chunk_code`): 1800 characters of whole lines (DigUp's measured sweet spot:
+/// 1200 / 3600 were worse), a single longer line is a stretch of its own cut at 4000.
+pub const CODE_STRETCH: usize = 1800;
+pub const CODE_MAX_PIECE: usize = 4000;
+/// A code file contributes at most this many stretches — the same bound the rest of the index
+/// keeps per file.
+pub const CODE_MAX_CHUNKS: usize = 64;
+
+/// Fingerprint of the code chunker. Stored per index; a change forgets the indexed code so it is
+/// re-chunked and re-embedded whole instead of mixing locator generations.
+pub const CODE_CHUNKER_FINGERPRINT: &str = "code1 lines1800";
+
+/// Lines that close a block (shell, Ruby, Lua, Objective-C, the C preprocessor).
+const CODE_CLOSERS: &[&str] = &["end", "fi", "done", "esac", "@end", "#endif", "end;", "end)"];
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
     pub text: String,
@@ -137,6 +152,134 @@ pub fn chunk_page(text: &str, page: u32, max_chunks: usize) -> Vec<Chunk> {
             start: s,
             end: e,
             locator: page_locator(page, s, e),
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------- source code
+
+/// A stretch of whole lines: 0-based `first`/`last` (exclusive) indexes into `lines`, plus the
+/// char range of the kept body.
+struct Stretch {
+    text: String,
+    first: usize,
+    last: usize,
+    char_start: usize,
+    char_end: usize,
+}
+
+fn code_blank(line: &str) -> bool {
+    line.chars().all(char::is_whitespace)
+}
+
+/// A line that starts a new block at the left margin; a closing line belongs to the block above it.
+fn code_starts_block(line: &str) -> bool {
+    let Some(first) = line.chars().next() else {
+        return false;
+    };
+    if first.is_whitespace() || "})]".contains(first) {
+        return false;
+    }
+    let trimmed = line.trim();
+    !CODE_CLOSERS.contains(&trimmed)
+}
+
+/// Stretches of whole lines, each at most `size` characters (a longer line is a stretch of its
+/// own, cut at [`CODE_MAX_PIECE`]). A stretch ends, when it can, where the code does: before a
+/// line that starts a new block after a blank line first, then after a blank line or at a new
+/// block — both only in its last 60%. One that had to stop mid-block hands its last two lines on
+/// to the next, so whatever spans the cut is read whole once. `text` is `\n`-normalised upstream.
+///
+/// Port of DigUp's `CodeExtractor.lines` (the measured configuration: 1800-char stretches).
+fn code_stretches(text: &str, size: usize) -> Vec<Stretch> {
+    let mut lines: Vec<&str> = text.split('\n').collect();
+    if lines.last().is_some_and(|l| l.is_empty()) {
+        lines.pop(); // the final newline
+    }
+    let count = lines.len();
+    // Characters before each line, each line counted with its newline.
+    let mut offsets = Vec::with_capacity(count + 1);
+    offsets.push(0usize);
+    for line in &lines {
+        offsets.push(offsets.last().unwrap() + line.chars().count() + 1);
+    }
+    let mut pieces: Vec<Stretch> = Vec::new();
+    let mut start = 0usize;
+    while start < count && pieces.len() < CODE_MAX_CHUNKS {
+        while start < count && code_blank(lines[start]) {
+            start += 1;
+        }
+        if start >= count {
+            break;
+        }
+        let mut end = start + 1; // the stretch is lines[start..<end]
+        while end < count && offsets[end + 1] - offsets[start] <= size {
+            end += 1;
+        }
+        let mut natural = end >= count;
+        if !natural {
+            let floor = offsets[start] + size * 2 / 5;
+            let last_break = |pred: &dyn Fn(usize) -> bool| -> Option<usize> {
+                let mut line = end;
+                while line > start + 1 && offsets[line] >= floor {
+                    if pred(line) {
+                        return Some(line);
+                    }
+                    line -= 1;
+                }
+                None
+            };
+            if let Some(cut) = last_break(&|l| code_starts_block(lines[l]) && code_blank(lines[l - 1]))
+                .or_else(|| last_break(&|l| code_blank(lines[l - 1]) || code_starts_block(lines[l])))
+            {
+                end = cut;
+                natural = true;
+            }
+        }
+        let mut last = end;
+        while last > start + 1 && code_blank(lines[last - 1]) {
+            last -= 1; // blank lines at its end don't count
+        }
+        let mut body = lines[start..last].join("\n");
+        if body.chars().count() > CODE_MAX_PIECE {
+            body = body.chars().take(CODE_MAX_PIECE).collect();
+        }
+        if !body.is_empty() {
+            pieces.push(Stretch {
+                char_start: offsets[start],
+                char_end: offsets[last - 1] + lines[last - 1].chars().count(),
+                text: body,
+                first: start,
+                last,
+            });
+        }
+        if pieces.len() >= CODE_MAX_CHUNKS {
+            break;
+        }
+        start = if natural {
+            end
+        } else {
+            end.saturating_sub(2).max(start + 1)
+        };
+    }
+    pieces
+}
+
+/// Locator of a code stretch: the 1-based lines it spans, so a hit opens there.
+fn code_locator(first: usize, last: usize) -> String {
+    json!({"loc": first + 1, "loc_end": last}).to_string()
+}
+
+/// Chunk source code into stretches of whole lines (see [`code_stretches`]); at most
+/// [`CODE_MAX_CHUNKS`]. The locator carries 1-based `loc` / `loc_end`.
+pub fn chunk_code(text: &str) -> Vec<Chunk> {
+    code_stretches(text, CODE_STRETCH)
+        .into_iter()
+        .map(|p| Chunk {
+            text: p.text.trim().to_owned(),
+            start: p.char_start,
+            end: p.char_end,
+            locator: code_locator(p.first, p.last),
         })
         .collect()
 }
@@ -324,5 +467,72 @@ mod tests {
         )
         .is_empty());
         assert_eq!(chunk_page(&long, 1, 3).len(), 3, "per-page cap");
+    }
+
+    fn locs(cs: &[Chunk]) -> Vec<(u32, u32)> {
+        cs.iter().map(|c| code_span(c)).collect()
+    }
+
+    /// The 1-based `(first, last)` lines of a code chunk's locator.
+    fn code_span(c: &Chunk) -> (u32, u32) {
+        let v: Value = serde_json::from_str(&c.locator).unwrap();
+        (
+            v["loc"].as_u64().unwrap() as u32,
+            v["loc_end"].as_u64().unwrap() as u32,
+        )
+    }
+
+    #[test]
+    fn code_short_file_is_one_stretch_with_line_locator() {
+        let cs = chunk_code("fn main() {\n    println!(\"hi\");\n}\n");
+        assert_eq!(cs.len(), 1);
+        assert_eq!(locs(&cs), [(1, 3)]);
+        assert_eq!(cs[0].text, "fn main() {\n    println!(\"hi\");\n}");
+    }
+
+    #[test]
+    fn code_stretches_break_on_blank_line_before_a_new_block() {
+        let mut text = String::new();
+        for i in 0..60 {
+            text.push_str(&format!("pub fn item{i}() {{ do_work({i}); }}\n"));
+            if i % 5 == 4 {
+                text.push('\n');
+            }
+        }
+        let cs = chunk_code(&text);
+        assert!(cs.len() > 1, "60 lines of ~30 chars cannot fit one stretch");
+        for w in cs.windows(2) {
+            let (f0, l0) = code_span(&w[0]);
+            let (f1, _) = code_span(&w[1]);
+            assert!(f1 > f0, "progress");
+            // A mid-block cut hands its last two lines on to the next stretch.
+            assert!(f1 - l0 <= 2, "overlap is 2 lines at most");
+        }
+        let (_, last_line) = code_span(cs.last().unwrap());
+        assert_eq!(last_line, 71, "the trailing blank is dropped (60 code + 11 blanks before it)");
+        for c in &cs {
+            assert!(c.text.chars().count() <= CODE_STRETCH, "each stretch fits the size");
+        }
+    }
+
+    #[test]
+    fn code_long_single_line_is_cut_to_its_own_stretch() {
+        let line = "x".repeat(6000);
+        let cs = chunk_code(&format!("fn a() {{}}\n{line}\nfn b() {{}}\n"));
+        assert!(cs.len() >= 3);
+        let big = cs.iter().find(|c| c.text.chars().count() == CODE_MAX_PIECE);
+        assert!(big.is_some(), "the long line is cut at the piece cap");
+        assert!(cs.iter().any(|c| c.text == "fn b() {}"), "the rest survives");
+    }
+
+    #[test]
+    fn code_chunk_cap_and_progress() {
+        let text = "let x = 1;\n".repeat(20_000);
+        let cs = chunk_code(&text);
+        assert_eq!(cs.len(), CODE_MAX_CHUNKS, "the file offers far more than the cap");
+        for w in cs.windows(2) {
+            assert!(code_span(&w[1]).0 > code_span(&w[0]).0, "progress");
+        }
+        assert!(chunk_code("  \n\n").is_empty(), "blank-only text gives nothing");
     }
 }
