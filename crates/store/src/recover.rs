@@ -121,10 +121,14 @@ fn damage(conn: &Connection) -> Damage {
     d
 }
 
-/// The problems `integrity_check` reports (empty when the answer is "ok").
+/// The problems `integrity_check` reports (empty when the answer is "ok"). The table name is
+/// interpolated into SQL, so only a plain identifier may pass: a damaged (or tampered) database
+/// can carry arbitrary names in `sqlite_master`, and anything unusual fails the check for that
+/// table — the caller marks it damaged, which is the safe direction.
 fn check(conn: &Connection, table: Option<&str>) -> rusqlite::Result<Vec<String>> {
     let sql = match table {
-        Some(t) => format!("PRAGMA integrity_check(\"{}\")", t.replace('"', "\"\"")),
+        Some(t) if is_plain_ident(t) => format!("PRAGMA integrity_check(\"{t}\")"),
+        Some(t) => return Err(rusqlite::Error::InvalidParameterName(t.to_owned())),
         None => "PRAGMA integrity_check(100)".to_string(),
     };
     let mut st = conn.prepare(&sql)?;
@@ -135,6 +139,12 @@ fn check(conn: &Connection, table: Option<&str>) -> rusqlite::Result<Vec<String>
         .into_iter()
         .filter(|m| m != "ok" && !m.starts_with("*** in database"))
         .collect())
+}
+
+/// Only `[A-Za-z0-9_]` (no quotes, no whitespace, nothing empty): every object name winseek
+/// creates matches, so the whitelist never trips on a healthy store.
+fn is_plain_ident(t: &str) -> bool {
+    !t.is_empty() && t.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 impl Store {
@@ -378,6 +388,20 @@ mod tests {
         FileKey {
             vol_guid: "{vol}".into(),
             frn: n,
+        }
+    }
+
+    #[test]
+    fn pragma_table_names_are_whitelisted() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE t1 (x); CREATE TABLE \"weird name\" (x);")
+            .unwrap();
+        assert!(check(&conn, Some("t1")).unwrap().is_empty());
+        assert!(check(&conn, None).unwrap().is_empty());
+        // Anything but a plain identifier never reaches the PRAGMA: the check refuses instead
+        // (the caller reads that as damage, which is the safe direction).
+        for hostile in ["weird name", "t\"; DROP TABLE t1--", "t1)", "", "t\x27"] {
+            assert!(check(&conn, Some(hostile)).is_err(), "{hostile:?}");
         }
     }
 
