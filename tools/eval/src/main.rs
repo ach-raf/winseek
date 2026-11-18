@@ -22,8 +22,8 @@ use std::process::ExitCode;
 use metrics::{diff, format_summary_table, Report, RECALL5_GATE};
 
 const USAGE: &str = "usage:
-  winseek-eval gen <dir> [--titles]
-  winseek-eval cases [--titles]
+  winseek-eval gen <dir> [--titles|--code]
+  winseek-eval cases [--titles|--code]
   winseek-eval run --corpus <dir> --cases <cases.json> --models <dir> --llama <dir> [--url <http://127.0.0.1:PORT>] [--api-key <key>] [--hybrid] [--titles] [--out <results.json>]
   winseek-eval diff <a.json> <b.json>
   winseek-eval route --set <dir with doc/<cat>/ and other/<cat>/> --models <dir> --llama <dir> [--url <u>] [--max-fp <rate, default 0.01>] [--current <min,margin>] [--out <scores.json>]
@@ -31,7 +31,9 @@ const USAGE: &str = "usage:
 
 `--titles` embeds every text file as `title: {file name} | text: {body}` instead of the
 untitled form; `gen --titles` adds the meaningfully named title notes, and their cases
-live in eval/title-cases.json.";
+live in eval/title-cases.json. `--code` writes the deterministic code repo (`gen --code`)
+and prints the code cases with `path@first-last` expectations; a code corpus is detected
+by its corpus.json kinds and runs through the app's code search.";
 
 fn flag(args: &[String], name: &str) -> Option<String> {
     args.iter()
@@ -54,24 +56,30 @@ fn real_main(args: Vec<String>) -> Result<ExitCode, String> {
         Some("gen") => {
             let dir = args.get(1).ok_or(USAGE)?;
             let titles = args.iter().any(|a| a == "--titles");
-            let n = (if titles {
+            let code = args.iter().any(|a| a == "--code");
+            let n = if code {
+                corpus::generate_code(std::path::Path::new(dir))
+            } else if titles {
                 corpus::generate_with_titles(std::path::Path::new(dir))
             } else {
                 corpus::generate(std::path::Path::new(dir))
-            })
+            }
             .map_err(|e| e.to_string())?;
             println!(
-                "wrote {n} files + corpus.json to {dir}{}",
+                "wrote {n} files + corpus.json to {dir}{}{}",
                 if titles {
                     " (titled notes included)"
                 } else {
                     ""
-                }
+                },
+                if code { " (code repo)" } else { "" }
             );
             Ok(ExitCode::SUCCESS)
         }
         Some("cases") => {
-            let json = if args.iter().any(|a| a == "--titles") {
+            let json = if args.iter().any(|a| a == "--code") {
+                corpus::code_cases()
+            } else if args.iter().any(|a| a == "--titles") {
                 corpus::title_cases()
             } else {
                 corpus::cases()

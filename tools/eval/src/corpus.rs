@@ -699,3 +699,182 @@ mod tests {
         }
     }
 }
+
+// ------------------------------------------------------------------ code corpus
+
+/// A small, fully deterministic repository for the code cases: an image-thumbnailing service
+/// across Rust / Python / TypeScript / Go, its build files and its docs. Every file fits one
+/// stretch except the SQL tokenizer, which crosses one, so line-range expectations exercise
+/// multi-stretch files too.
+pub static CODE_FILES: &[(&str, &str)] = &[
+    (
+        "src/net/retry.py",
+        "\"\"\"Retrying calls that fail: exponential backoff with jitter, and a breaker.\"\"\"\nimport random\nimport time\n\n\ndef retry_with_backoff(call, tries=5, base=0.2, cap=8.0):\n    \"\"\"Run `call` until it works, waiting longer each time it fails.\n\n    The wait grows exponentially from `base` seconds up to `cap`, with full\n    jitter so a hundred callers never line up and stampede together.\n    \"\"\"\n    for attempt in range(tries):\n        try:\n            return call()\n        except TransientError:\n            if attempt == tries - 1:\n                raise\n            wait = min(cap, base * 2 ** attempt)\n            time.sleep(random.uniform(0.0, wait))\n\n\nclass CircuitBreaker:\n    \"\"\"Stop calling a dependency that keeps failing, and let it heal.\"\"\"\n\n    def __init__(self, threshold=5, cooldown=30.0):\n        self.failures = 0\n        self.threshold = threshold\n        self.cooldown = cooldown\n        self.opened_at = None\n\n    def allow(self):\n        if self.opened_at is None:\n            return True\n        if time.monotonic() - self.opened_at >= self.cooldown:\n            self.opened_at = None  # half-open: one probe may go through\n            return True\n        return False\n\n    def record(self, ok):\n        if ok:\n            self.failures = 0\n            self.opened_at = None\n            return\n        self.failures += 1\n        if self.failures >= self.threshold:\n            self.opened_at = time.monotonic()\n\n",
+    ),
+    (
+        "src/net/gateway.py",
+        "\"\"\"The payment gateway: charging cards, refunds, declines.\"\"\"\nfrom dataclasses import dataclass\n\n\n@dataclass\nclass PaymentDeclined(Exception):\n    \"\"\"The bank refused the charge; `reason` carries its code.\"\"\"\n\n    reason: str\n\n\ndef charge_card(card, amount_cents, currency=\"usd\"):\n    \"\"\"Charge a customer's card and return the provider's charge id.\n\n    A decline is not an error to retry blindly: the bank said no, and\n    retrying the same card makes the decline score worse.\n    \"\"\"\n    reply = provider.authorize(card, amount_cents, currency)\n    if reply.status == \"declined\":\n        raise PaymentDeclined(reply.reason)\n    provider.capture(reply.charge_id)\n    return reply.charge_id\n\n\ndef refund(charge_id, amount_cents=None):\n    \"\"\"Give a customer their money back, fully or in part.\"\"\"\n    return provider.reverse(charge_id, amount_cents or FULL)\n\n",
+    ),
+    (
+        "src/auth.rs",
+        "//! Sessions: log in, keep the tokens fresh, log out.\n\nuse std::time::{Duration, Instant};\n\n/// A signed session: who it belongs to and when it stops being valid.\npub struct Session {\n    pub user: String,\n    pub access_token: String,\n    pub refresh_token: String,\n    pub expires_at: Instant,\n}\n\n/// Log a user in and start a signed session.\npub fn login(user: &str, password: &str) -> Result<Session, AuthError> {\n    let proof = verifier.check(user, password)?;\n    let access_token = signer.sign(&proof, Duration::from_secs(600));\n    let refresh_token = signer.sign(&proof, Duration::from_secs(30 * 24 * 3600));\n    Ok(Session {\n        user: user.to_owned(),\n        access_token,\n        refresh_token,\n        expires_at: Instant::now() + Duration::from_secs(600),\n    })\n}\n\n/// Issue a fresh access token when the session expires; the refresh token\n/// is single use, and using it again revokes the whole session.\npub fn refresh_token(session: &Session) -> Result<Session, AuthError> {\n    let proof = verifier.verify_refresh(&session.refresh_token)?;\n    let access_token = signer.sign(&proof, Duration::from_secs(600));\n    Ok(Session {\n        refresh_token: proof.rotated(),\n        access_token,\n        ..session.clone()\n    })\n}\n\n/// Log out: both tokens stop working at once.\npub fn logout(session: &Session) {\n    verifier.revoke(&session.refresh_token);\n}\n\n",
+    ),
+    (
+        "src/thumbs.rs",
+        "//! Thumbnails: shrink a picture to fit its box without distorting it.\n\nuse image::{DynamicImage, ImageError};\n\n/// The biggest box a thumbnail may fill.\npub const BOX: u32 = 320;\n\n/// Decode `bytes` and render a thumbnail that fits [`BOX`] on the long side,\n/// keeping the aspect ratio so nothing is squashed or stretched.\npub fn thumbnail(bytes: &[u8]) -> Result<DynamicImage, ImageError> {\n    let img = image::load_from_memory(bytes)?;\n    Ok(fit_inside(&img, BOX, BOX))\n}\n\n/// Scale `img` down until both sides fit the box; an image smaller than the\n/// box is returned untouched (never upscaled).\nfn fit_inside(img: &DynamicImage, max_w: u32, max_h: u32) -> DynamicImage {\n    let (w, h) = (img.width(), img.height());\n    let scale = (max_w as f32 / w as f32).min(max_h as f32 / h as f32).min(1.0);\n    if scale >= 1.0 {\n        return img.clone();\n    }\n    img.resize_exact(\n        ((w as f32 * scale).round() as u32).max(1),\n        ((h as f32 * scale).round() as u32).max(1),\n        image::imageops::FilterType::Lanczos3,\n    )\n}\n\n",
+    ),
+    (
+        "src/parse/sql.rs",
+        "//! Tokenizing SQL: a SELECT statement becomes keywords, names, strings and numbers.\n\n#[derive(Debug, Clone, PartialEq)]\npub enum Tok {\n    Keyword(String),\n    Name(String),\n    Str(String),\n    Num(String),\n    Punct(char),\n}\n\n/// Where a token starts and ends in the statement it came from.\n#[derive(Debug, Clone, PartialEq)]\npub struct Spanned {\n    pub tok: Tok,\n    pub start: usize,\n    pub end: usize,\n}\n\nconst KEYWORDS: &[&str] = &[\n    \"select\", \"from\", \"where\", \"group\", \"by\", \"order\", \"limit\", \"having\", \"as\", \"and\", \"or\",\n    \"not\", \"in\", \"join\", \"left\", \"inner\", \"on\", \"distinct\",\n];\n\n/// Break a select statement into keywords and values, keeping each token's\n/// character span so a hit can underline exactly what matched.\npub fn tokenize(sql: &str) -> Vec<Spanned> {\n    let chars: Vec<char> = sql.chars().collect();\n    let mut out = Vec::new();\n    let mut i = 0usize;\n    while i < chars.len() {\n        let c = chars[i];\n        if c.is_whitespace() {\n            i += 1;\n            continue;\n        }\n        let start = i;\n        if c == '\\'' {\n            // A string literal runs to the closing quote; '' inside is an escaped quote.\n            i += 1;\n            while i < chars.len() {\n                if chars[i] == '\\'' {\n                    if chars.get(i + 1) == Some(&'\\'') {\n                        i += 2; // escaped ''\n                        continue;\n                    }\n                    break;\n                }\n                i += 1;\n            }\n            i = (i + 1).min(chars.len());\n            let end = i.saturating_sub(1).max(start + 1);\n            let text: String = chars[start + 1..end].iter().collect();\n            out.push(Spanned { tok: Tok::Str(text), start, end: i });\n            continue;\n        }\n        if c.is_ascii_digit() {\n            while i < chars.len() && (chars[i].is_ascii_digit() || chars[i] == '.') {\n                i += 1;\n            }\n            let text: String = chars[start..i].iter().collect();\n            out.push(Spanned { tok: Tok::Num(text), start, end: i });\n            continue;\n        }\n        if c.is_alphabetic() || c == '_' {\n            while i < chars.len() && (chars[i].is_alphanumeric() || chars[i] == '_') {\n                i += 1;\n            }\n            let text: String = chars[start..i].iter().collect();\n            let tok = if KEYWORDS.contains(&text.to_lowercase().as_str()) {\n                Tok::Keyword(text.to_lowercase())\n            } else {\n                Tok::Name(text)\n            };\n            out.push(Spanned { tok, start, end: i });\n            continue;\n        }\n        i += 1;\n        out.push(Spanned { tok: Tok::Punct(c), start, end: i });\n    }\n    out\n}\n\n",
+    ),
+    (
+        "core/cache.go",
+        "// Package cache: a tiny LRU the API reads through before touching the database.\npackage cache\n\nimport \"container/list\"\n\n// LRU keeps at most `cap` entries; the least recently used one is evicted.\ntype LRU struct {\n    cap  int\n    ll   *list.List\n    item map[string]*list.Element\n}\n\ntype entry struct {\n    key string\n    val any\n}\n\n// NewLRU makes a cache that holds `cap` entries at most.\nfunc NewLRU(cap int) *LRU {\n    return &LRU{cap: cap, ll: list.New(), item: make(map[string]*list.Element, cap)}\n}\n\nfunc (c *LRU) Get(key string) (any, bool) {\n    el, ok := c.item[key]\n    if !ok {\n        return nil, false\n    }\n    c.ll.MoveToFront(el)\n    return el.Value.(*entry).val, true\n}\n\nfunc (c *LRU) Set(key string, val any) {\n    if el, ok := c.item[key]; ok {\n        c.ll.MoveToFront(el)\n        el.Value.(*entry).val = val\n        return\n    }\n    c.item[key] = c.ll.PushFront(&entry{key, val})\n    if c.ll.Len() > c.cap {\n        c.evict()\n    }\n}\n\n// evict drops the least recently used entry; the list's back is exactly that.\nfunc (c *LRU) evict() {\n    el := c.ll.Back()\n    if el == nil {\n        return\n    }\n    c.ll.Remove(el)\n    delete(c.item, el.Value.(*entry).key)\n}\n\n",
+    ),
+    (
+        "web/app.tsx",
+        "import { useEffect, useRef, useState } from \"react\";\n\n/** Wait for the user to stop typing before searching: the query only fires\n * once `ms` milliseconds pass without a keystroke. */\nexport function useDebouncedQuery(query: string, ms = 250) {\n  const [ready, setReady] = useState(query);\n  useEffect(() => {\n    const t = setTimeout(() => setReady(query), ms);\n    return () => clearTimeout(t);\n  }, [query, ms]);\n  return ready;\n}\n\n/** The header search box: debounced, cancellable, keyboard first. */\nexport function SearchBar({ onSearch }: { onSearch: (q: string) => void }) {\n  const [text, setText] = useState(\"\");\n  const q = useDebouncedQuery(text);\n  useEffect(() => {\n    if (q.trim()) onSearch(q.trim());\n  }, [q, onSearch]);\n  return (\n    <div className=\"search-bar\">\n      <input\n        value={text}\n        onChange={(e) => setText(e.target.value)}\n        placeholder=\"Search\"\n        autoFocus\n      />\n    </div>\n  );\n}\n\n",
+    ),
+    (
+        "web/styles.css",
+        "/* The header search box and its states. */\n\n.search-bar {\n  display: flex;\n  align-items: center;\n  border: 1px solid var(--line);\n  border-radius: 10px;\n  padding: 4px 10px;\n  background: var(--bg);\n}\n\n.search-bar input {\n  border: none;\n  outline: none;\n  flex: 1;\n  font: inherit;\n}\n\n.search-bar:focus-within {\n  border-color: var(--accent);\n}\n\n",
+    ),
+    (
+        "Makefile",
+        "# Pixelforge: build, test, lint. `make` alone does a debug build.\n.PHONY: build test lint clean\n\nbuild:\n\\tcargo build --workspace\n\ntest:\n\\tcargo test --workspace -- --test-threads=1\n\\tnpm --prefix web run test\n\nlint:\n\\tcargo clippy --workspace -- -D warnings\n\\tnpm --prefix web run lint\n\nclean:\n\\tcargo clean\n\n",
+    ),
+    (
+        "Dockerfile",
+        "# Multi-stage: build the web bundle with node, ship it under nginx.\nFROM node:20-slim AS web\nWORKDIR /app\nCOPY web/package.json web/package-lock.json ./\nRUN npm ci\nCOPY web/ .\nRUN npm run build\n\nFROM nginx:1.27-alpine\nCOPY --from=web /app/dist /usr/share/nginx/html\nEXPOSE 80\n\n",
+    ),
+    (
+        "deploy/Jenkinsfile",
+        "// Continuous delivery: build, test, push the image, roll it out.\npipeline {\n  agent any\n  stages {\n    stage('build') { steps { sh 'make build' } }\n    stage('test') { steps { sh 'make test' } }\n    stage('lint') { steps { sh 'make lint' } }\n    stage('image') { steps { sh 'docker build -t pixelforge:$GIT_COMMIT .' } }\n    stage('deploy') { steps { sh './scripts/rollout.sh pixelforge:$GIT_COMMIT' } }\n  }\n  post { failure { slackSend channel: '#deploys', message: \"pixelforge failed: ${BUILD_URL}\" } }\n}\n\n",
+    ),
+    (
+        "docs/architecture.md",
+        "# Pixelforge architecture\n\n## Surviving a flaky dependency\n\nEvery call that crosses the network goes through the retry wrapper: a failed\ncall is retried with exponential backoff and full jitter (see\n`retry_with_backoff`), because retries without jitter arrive in waves and\nflatten the very service they are trying to reach. When failures keep piling\nup the circuit breaker opens and the call fails fast for a cool-down instead\nof piling onto a dependency that is already drowning.\n\n## Why reads go through the cache\n\nThumbnails and session lookups are read far more often than they change, so\nevery read passes through the LRU cache first and only a miss reaches the\ndatabase. The cache is bounded on purpose: an unbounded cache is a memory\nleak with good manners, and the eviction of the least recently used entry\nkeeps the hot set in memory at a fixed price.\n\n## Layout\n\n`src/` is the Rust service, `web/` the React bundle, `core/` the Go cache\nlibrary, `deploy/` the delivery pipeline.\n\n",
+    ),
+];
+
+/// The code eval cases, tagged like DigUp's evals: `code` asks for behaviour in words,
+/// `code-name` looks up an identifier as written, `code-doc` asks the repo's prose.
+/// Expectations are `path@first-last` — the path (glob) of the answering stretch and the lines
+/// it must overlap; a bare path accepts any stretch in the file.
+pub fn code_cases() -> Vec<Case> {
+    [
+        (
+            "retry a failed call with exponential backoff and jitter",
+            "code",
+            "src/net/retry.py@6-18",
+        ),
+        (
+            "stop calling a service that keeps failing until it heals",
+            "code",
+            "src/net/retry.py@22-35",
+        ),
+        (
+            "charge a customer's card and handle the bank declining it",
+            "code",
+            "src/net/gateway.py@12-22",
+        ),
+        (
+            "give a customer their money back",
+            "code",
+            "src/net/gateway.py@25-26",
+        ),
+        (
+            "log a user in and start a signed session",
+            "code",
+            "src/auth.rs@14-25",
+        ),
+        (
+            "issue a fresh access token when the session expires",
+            "code",
+            "src/auth.rs@28-38",
+        ),
+        (
+            "shrink a picture to fit its box without distorting it",
+            "code",
+            "src/thumbs.rs@10-15",
+        ),
+        (
+            "drop the least recently used entry when the cache is full",
+            "code",
+            "core/cache.go@45-51",
+        ),
+        (
+            "wait for the user to stop typing before searching",
+            "code",
+            "web/app.tsx@5-13",
+        ),
+        (
+            "break a select statement into keywords and quoted values",
+            "code",
+            "src/parse/sql.rs@27-36",
+        ),
+        (
+            "style the search box with a rounded border",
+            "code",
+            "web/styles.css@3-10",
+        ),
+        (
+            "multi-stage container image that builds the web bundle",
+            "code",
+            "Dockerfile@2-8",
+        ),
+        (
+            "continuous delivery pipeline that builds, tests and deploys",
+            "code",
+            "deploy/Jenkinsfile@2-9",
+        ),
+        (
+            "how does the service survive a dependency that keeps timing out",
+            "code-doc",
+            "docs/architecture.md@3-10",
+        ),
+        (
+            "why does every read go through the cache first",
+            "code-doc",
+            "docs/architecture.md@12-18",
+        ),
+        ("retry_with_backoff", "code-name", "src/net/retry.py@6-18"),
+        ("CircuitBreaker", "code-name", "src/net/retry.py@22-24"),
+        ("PaymentDeclined", "code-name", "src/net/gateway.py"),
+        ("useDebouncedQuery", "code-name", "web/app.tsx@5-12"),
+        ("NewLRU", "code-name", "core/cache.go@19-21"),
+        ("fit_inside", "code-name", "src/thumbs.rs@17-28"),
+    ]
+    .iter()
+    .map(|(q, tag, expect)| Case {
+        q: (*q).into(),
+        tag: (*tag).into(),
+        expect: vec![(*expect).into()],
+    })
+    .collect()
+}
+
+/// Write the code corpus into `dir` (relative paths preserved) + corpus.json. Returns the
+/// number of files written.
+pub fn generate_code(dir: &Path) -> std::io::Result<usize> {
+    std::fs::create_dir_all(dir)?;
+    for (name, text) in CODE_FILES {
+        let p = dir.join(name);
+        std::fs::create_dir_all(p.parent().unwrap())?;
+        std::fs::write(p, text)?;
+    }
+    let idx = CorpusIndex {
+        version: 1,
+        files: CODE_FILES
+            .iter()
+            .map(|(name, _)| CorpusFile {
+                name: (*name).into(),
+                kind: "code".into(),
+                desc: String::new(),
+            })
+            .collect(),
+    };
+    let json = serde_json::to_string_pretty(&idx).expect("serialise");
+    std::fs::write(dir.join("corpus.json"), json + "\n")?;
+    Ok(CODE_FILES.len())
+}

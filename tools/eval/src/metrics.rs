@@ -65,6 +65,54 @@ pub fn rank_of(ranked: &[String], expect: &[String]) -> Option<usize> {
         .map(|i| i + 1)
 }
 
+/// 1-based rank of the first ranked (relative path, stretch locator) matching any expectation.
+/// An expectation is a path glob (case-insensitive, `*` / `?`) optionally `@first-last`: the
+/// range of lines the answering stretch must overlap (a bare glob accepts any stretch). The
+/// locator is the stretch's `{"loc":..,"loc_end":..}` / `{"line":..}` JSON — the same shape a
+/// code hit carries into the app.
+pub fn rank_code(ranked: &[(String, Option<String>)], expect: &[String]) -> Option<usize> {
+    ranked
+        .iter()
+        .position(|(path, locator)| {
+            expect.iter().any(|e| {
+                let (glob, range) = match e.split_once('@') {
+                    Some((g, r)) => (g, Some(r)),
+                    None => (e.as_str(), None),
+                };
+                glob_match(glob, path) && range.is_none_or(|r| lines_overlap(locator, r))
+            })
+        })
+        .map(|i| i + 1)
+}
+
+/// Does the stretch locator overlap the `first-last` line range?
+fn lines_overlap(locator: &Option<String>, range: &str) -> bool {
+    let Some(loc) = locator else {
+        return false;
+    };
+    let (lo, hi) = match range.split_once('-') {
+        Some((a, b)) => match (a.parse::<u64>(), b.parse::<u64>()) {
+            (Ok(a), Ok(b)) => (a, b),
+            _ => return false,
+        },
+        None => return false,
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(loc) else {
+        return false;
+    };
+    let span = match (v.get("loc"), v.get("loc_end")) {
+        (Some(a), Some(b)) => match (a.as_u64(), b.as_u64()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => return false,
+        },
+        _ => match v.get("line").and_then(|l| l.as_u64()) {
+            Some(l) => (l, l),
+            None => return false,
+        },
+    };
+    span.0 <= hi && span.1 >= lo
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CaseResult {
     pub q: String,
@@ -216,6 +264,45 @@ pub fn diff(a: &Report, b: &Report) -> Diff {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn code_expectations_check_path_glob_and_line_range() {
+        let ranked = vec![
+            (
+                "src/net/other.py".to_string(),
+                Some(r#"{"loc":1,"loc_end":20}"#.to_string()),
+            ),
+            (
+                "src/net/retry.py".to_string(),
+                Some(r#"{"loc":6,"loc_end":21}"#.to_string()),
+            ),
+        ];
+        let e = |s: &str| vec![s.to_string()];
+        assert_eq!(rank_code(&ranked, &e("src/net/retry.py@8-16")), Some(2));
+        assert_eq!(
+            rank_code(&ranked, &e("src/net/retry.py@100-120")),
+            None,
+            "path matches but the lines do not overlap"
+        );
+        assert_eq!(
+            rank_code(&ranked, &e("src/net/retry.py")),
+            Some(2),
+            "bare path"
+        );
+        assert_eq!(
+            rank_code(&ranked, &e("*.py@1-5")),
+            Some(1),
+            "any stretch overlapping"
+        );
+        let line_only = vec![("a.rs".to_string(), Some(r#"{"line":7}"#.to_string()))];
+        assert_eq!(rank_code(&line_only, &e("a.rs@7-7")), Some(1));
+        let no_loc = vec![("a.rs".to_string(), None)];
+        assert_eq!(
+            rank_code(&no_loc, &e("a.rs@1-2")),
+            None,
+            "no locator, no verdict"
+        );
+    }
     use super::*;
 
     fn names(v: &[&str]) -> Vec<String> {
