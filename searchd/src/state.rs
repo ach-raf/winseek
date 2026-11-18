@@ -4,6 +4,11 @@
 //! write lock, so readers (pipe connections, the snapshot saver) only contend with short
 //! batches. A volume replace builds the new index under a *read* lock and takes the write
 //! lock only for the pointer swap.
+//!
+//! Locks here are taken with `unwrap()` on purpose (fail-fast): a panicked writer would leave
+//! the index inconsistent, so poisoning the lock — every later query panics too, the process
+//! exits, the next start reloads the snapshot — beats silently answering from broken state.
+//! Deliberate; do not add poison recovery or swap in `parking_lot`.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
