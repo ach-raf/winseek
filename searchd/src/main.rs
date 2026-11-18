@@ -17,7 +17,7 @@ mod worker;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{mpsc, Arc};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -256,25 +256,44 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
 
     // Volume arrival/removal: CM_Register_Notification on the volume device interface (no
     // window needed, works as a service and in --console), plus a slow poll as a backstop.
-    let drives_changed = Arc::new(AtomicBool::new(false));
+    // The callback signals the loop over a channel, so a drive event wakes it at once; when the
+    // registration is unavailable the sender drops and the backstop poll does all the work.
+    let (drive_tx, drive_rx) = mpsc::channel::<()>();
     let _arrivals = {
-        let flag = drives_changed.clone();
-        watch_volume_interfaces(Box::new(move || flag.store(true, Ordering::SeqCst)))
-            .map_err(|e| {
-                warn!(
-                    "no volume arrival notifications ({e}); polling every {}s",
-                    VOLUME_POLL.as_secs()
-                )
-            })
-            .ok()
+        watch_volume_interfaces(Box::new(move || {
+            let _ = drive_tx.send(());
+        }))
+        .map_err(|e| {
+            warn!(
+                "no volume arrival notifications ({e}); polling every {}s",
+                VOLUME_POLL.as_secs()
+            )
+        })
+        .ok()
     };
     info!("ready; serving {PIPE_NAME} (Ctrl+C to stop)");
     ready();
 
+    /// The periodic tick (trim / refresh / save checks); also the longest the loop waits.
+    const TICK: Duration = Duration::from_millis(200);
+    /// After an arrival notification, look once more: the letter may not be mounted yet.
+    const RECHECK_DELAY: Duration = Duration::from_secs(2);
     let mut last_save = Instant::now();
     let mut last_poll = Instant::now();
+    let mut recheck: Option<Instant> = None;
     while !stop.load(Ordering::SeqCst) {
-        std::thread::sleep(Duration::from_millis(200));
+        let notified = match drive_rx.recv_timeout(TICK) {
+            Ok(()) => {
+                // Collapse a burst (one drive event can fire several callbacks) into one reconcile.
+                while drive_rx.try_recv().is_ok() {}
+                true
+            }
+            Err(RecvTimeoutError::Timeout) => false,
+            Err(RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(TICK); // no notification source: keep the tick cadence anyway
+                false
+            }
+        };
         sh.trim_query_cache();
         sh.refresh_folder_sizes();
         sh.refresh_usage();
@@ -282,15 +301,13 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
             save_snapshot(&sh, &snap_path);
             last_save = Instant::now();
         }
-        let notified = drives_changed.swap(false, Ordering::SeqCst);
-        if notified || last_poll.elapsed() >= VOLUME_POLL {
+        if notified
+            || recheck.is_some_and(|t| Instant::now() >= t)
+            || last_poll.elapsed() >= VOLUME_POLL
+        {
             reconcile_volumes(&sh, &tx, want, &mut workers);
-            // after a notification, look again shortly: the letter may not be mounted yet
-            last_poll = if notified {
-                Instant::now() - VOLUME_POLL + Duration::from_secs(2)
-            } else {
-                Instant::now()
-            };
+            last_poll = Instant::now();
+            recheck = notified.then(|| Instant::now() + RECHECK_DELAY);
         }
     }
 
