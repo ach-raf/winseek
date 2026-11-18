@@ -13,6 +13,7 @@ pub mod embedder;
 pub mod estimate;
 pub mod extract;
 pub mod feed;
+pub mod git;
 pub mod gitignore;
 pub mod gpu_phase;
 pub mod guard;

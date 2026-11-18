@@ -17,6 +17,7 @@ use winseek_store::{in_scope_with, Scopes};
 
 use super::crawler::{kind_of, skip_attrs, KIND_CODE, KIND_DOC, KIND_IMAGE, KIND_PDF};
 use super::extract::extract_file;
+use super::git::RepoCtx;
 use super::gitignore::Chain;
 use super::identity::ATTR_DIRECTORY;
 use super::{lock, Handle, Tier1};
@@ -153,13 +154,22 @@ fn walk(
     use std::os::windows::fs::MetadataExt;
     let mut counts = Counts::default();
     let mut samples = Samples::default();
-    let mut stack: Vec<(PathBuf, Chain)> = vec![(root.to_path_buf(), Chain::default())];
+    let mut stack: Vec<(PathBuf, Chain, RepoCtx)> = vec![(
+        root.to_path_buf(),
+        Chain::default(),
+        RepoCtx::for_root(root),
+    )];
     let mut seen = 0u32;
-    while let Some((dir, parent)) = stack.pop() {
+    while let Some((dir, parent, parent_repo)) = stack.pop() {
         let chain = if index_code {
             parent.descend(&dir)
         } else {
             parent
+        };
+        let repo = if index_code {
+            RepoCtx::descend(&dir, &parent_repo)
+        } else {
+            parent_repo
         };
         let Ok(rd) = std::fs::read_dir(&dir) else {
             continue;
@@ -178,7 +188,7 @@ fn walk(
             let ps = path.to_string_lossy();
             if attrs & ATTR_DIRECTORY != 0 {
                 if in_scope_with(scopes, ignore, &ps) {
-                    stack.push((path, chain.clone()));
+                    stack.push((path, chain.clone(), repo.clone()));
                 }
                 continue;
             }
@@ -186,7 +196,7 @@ fn walk(
                 continue;
             };
             if !in_scope_with(scopes, ignore, &ps)
-                || (kind == KIND_CODE && chain.ignored(&ps, false))
+                || (kind == KIND_CODE && repo.excludes(&ps, || chain.ignored(&ps, false)))
             {
                 continue;
             }

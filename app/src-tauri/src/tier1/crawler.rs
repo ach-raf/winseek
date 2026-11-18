@@ -9,6 +9,7 @@ use std::sync::Mutex;
 
 use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
+use super::git::RepoCtx;
 use super::gitignore::Chain;
 use super::guard;
 use super::identity::{file_info, ATTR_DIRECTORY, ATTR_HIDDEN, ATTR_REPARSE_POINT, ATTR_SYSTEM};
@@ -166,7 +167,7 @@ pub fn crawl(
 ) -> CrawlStats {
     let mut st = CrawlStats::default();
     // (directory, .gitignore chain, inside a code project, is an include root)
-    let mut stack: Vec<(std::path::PathBuf, Chain, bool, bool)> = scopes
+    let mut stack: Vec<(std::path::PathBuf, Chain, bool, bool, RepoCtx)> = scopes
         .include
         .iter()
         .map(|r| {
@@ -180,10 +181,16 @@ pub fn crawl(
                 "{}\\x",
                 p.to_string_lossy().trim_end_matches('\\')
             ));
-            (p, Chain::default(), in_project, true)
+            // A root inside a repo (the include root below the repo root) inherits its rules.
+            let repo = if index_code {
+                RepoCtx::for_root(&p)
+            } else {
+                RepoCtx::Outside
+            };
+            (p, Chain::default(), in_project, true, repo)
         })
         .collect();
-    while let Some((dir, parent_chain, parent_in_project, is_root)) = stack.pop() {
+    while let Some((dir, parent_chain, parent_in_project, is_root, parent_repo)) = stack.pop() {
         if stop() {
             break;
         }
@@ -191,6 +198,13 @@ pub fn crawl(
             parent_chain.descend(&dir)
         } else {
             parent_chain
+        };
+        // A directory holding .git starts its own repository (nested repos, submodules,
+        // worktrees); otherwise the walk carries the enclosing one.
+        let repo = if index_code {
+            RepoCtx::descend(&dir, &parent_repo)
+        } else {
+            parent_repo
         };
         let Ok(rd) = std::fs::read_dir(&dir) else {
             st.errors += 1;
@@ -240,7 +254,7 @@ pub fn crawl(
             let ps = path.to_string_lossy();
             if attrs & ATTR_DIRECTORY != 0 {
                 if in_scope_with(scopes, ignore, &ps) {
-                    stack.push((path, chain.clone(), in_project, false));
+                    stack.push((path, chain.clone(), in_project, false, repo.clone()));
                 }
                 continue;
             }
@@ -248,7 +262,7 @@ pub fn crawl(
                 continue;
             };
             if !in_scope_with(scopes, ignore, &ps)
-                || (kind == KIND_CODE && chain.ignored(&ps, false))
+                || (kind == KIND_CODE && repo.excludes(&ps, || chain.ignored(&ps, false)))
             {
                 continue;
             }
@@ -617,6 +631,61 @@ mod tests {
             .collect();
         assert!(kinds.contains(&("main.rs".into(), "code".into())));
         assert!(kinds.contains(&("notes.txt".into(), "doc".into())));
+    }
+
+    #[test]
+    fn crawl_lets_git_decide_inside_a_repository() {
+        if !std::process::Command::new("git")
+            .arg("--version")
+            .output()
+            .is_ok_and(|o| o.status.success())
+        {
+            eprintln!("skipping: no git binary");
+            return;
+        }
+        let d = crate::tier1::test_tmp();
+        let r = d.path();
+        let st = std::process::Command::new("git")
+            .args(["init", "-q"])
+            .current_dir(r)
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "git init failed");
+        let files = [
+            ("main.rs", "n"),
+            ("gen/out.rs", "n"),
+            ("notes.txt", "n"),
+            // Only git knows this one: .git/info/exclude is invisible to the .gitignore chain.
+            (".git/info/exclude", "gen/\n"),
+        ];
+        for (f, c) in files {
+            let p = r.join(f);
+            fs::create_dir_all(p.parent().unwrap()).unwrap();
+            fs::write(p, c).unwrap();
+        }
+        let scopes = Scopes {
+            include: vec![r.to_string_lossy().into_owned()],
+            exclude: vec![],
+            ..Default::default()
+        };
+        let rel = |s: &Mutex<Store>| -> Vec<String> {
+            paths(s)
+                .into_iter()
+                .map(|p| {
+                    p.strip_prefix(&*r.to_string_lossy())
+                        .unwrap()
+                        .trim_start_matches('\\')
+                        .to_string()
+                })
+                .collect()
+        };
+        let on = store();
+        crawl(&on, &scopes, &Ignore::defaults(), true, &|| false);
+        assert_eq!(
+            rel(&on),
+            ["main.rs", "notes.txt"],
+            "git's info/exclude keeps gen/ out even though no .gitignore mentions it"
+        );
     }
 
     #[test]

@@ -13,6 +13,8 @@ use winseek_ipc::pipe::connect;
 use winseek_ipc::{read_message, write_message, ChangeKind, Request, Response, PIPE_NAME};
 use winseek_store::{in_scope_with, Ignore, Scopes, Store};
 
+use super::git;
+
 use super::crawler::{crawl, kind_in, kind_of, skip_attrs, KIND_CODE, KIND_IMAGE};
 use super::gitignore;
 use super::guard;
@@ -359,7 +361,7 @@ pub fn real_apply(t: &Tier1, ops: &[StoreOp]) -> usize {
     };
     let ops = if snap.index_code {
         drop_gitignored(ops.to_vec(), &|p| {
-            gitignore::is_ignored(&snap.scopes.include, p)
+            git::check_ignored(p).unwrap_or_else(|| gitignore::is_ignored(&snap.scopes.include, p))
         })
     } else {
         ops.to_vec()
