@@ -55,11 +55,32 @@ fn path() -> Option<PathBuf> {
     crate::tier1::data_root().map(|d| d.join(FILE))
 }
 
-fn load() -> Prefs {
-    path()
-        .and_then(|p| std::fs::read_to_string(p).ok())
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_default()
+/// Prefs from disk. A missing file is "never configured" (defaults); a file that exists but
+/// cannot be read or parsed is an error, NOT defaults — defaults have `enabled: true`, so
+/// treating one transient read problem (a locked file, a truncated write) as defaults would
+/// silently re-enable the check and overwrite the user's "off".
+fn load() -> Result<Prefs, String> {
+    match path() {
+        None => Ok(Prefs::default()), // no %LOCALAPPDATA%: never configured, and nothing to save to
+        Some(f) => load_from(&f),
+    }
+}
+
+fn load_from(f: &std::path::Path) -> Result<Prefs, String> {
+    match std::fs::read_to_string(f) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Prefs::default()),
+        Err(e) => Err(format!("cannot read {} ({e})", f.display())),
+        Ok(s) => serde_json::from_str(&s).map_err(|e| format!("cannot parse {}: {e}", f.display())),
+    }
+}
+
+/// Defaults for display paths only (tray label, open release page): a transient read problem
+/// shows the idle state instead of failing the caller.
+fn load_or_default() -> Prefs {
+    load().unwrap_or_else(|e| {
+        eprintln!("winseek: {e}; using default update prefs");
+        Prefs::default()
+    })
 }
 
 fn save(p: &Prefs) -> Result<(), String> {
@@ -174,7 +195,7 @@ fn check(app: &AppHandle) -> Result<Prefs, String> {
     let _g = gate.0.lock().unwrap_or_else(|e| e.into_inner());
     let current = app.package_info().version.to_string();
     let found = fetch()?;
-    let mut p = load();
+    let mut p = load()?;
     p.last_check = now_secs();
     match found.filter(|r| is_newer(&r.tag, &current)) {
         Some(r) => {
@@ -194,7 +215,7 @@ fn check(app: &AppHandle) -> Result<Prefs, String> {
 
 /// Open the release page of the known newer version (or the releases page).
 pub fn open_release_page(app: &AppHandle) {
-    let p = load();
+    let p = load_or_default();
     let url = p
         .url
         .filter(|u| u.starts_with(PAGE_PREFIX))
@@ -205,7 +226,7 @@ pub fn open_release_page(app: &AppHandle) {
 
 /// Tray click on the update item: open the page when an update is known, else check now.
 pub fn tray_clicked(app: &AppHandle) {
-    if load().latest.is_some() {
+    if load_or_default().latest.is_some() {
         open_release_page(app);
         return;
     }
@@ -224,15 +245,21 @@ pub fn tray_clicked(app: &AppHandle) {
 /// Start the daily checker. Does nothing on the network while the check is off.
 pub fn spawn(app: AppHandle) {
     app.manage(Gate(Mutex::new(())));
-    refresh_tray(&app, &load());
+    refresh_tray(&app, &load_or_default());
     std::thread::spawn(move || {
         std::thread::sleep(FIRST_DELAY);
         loop {
-            let p = load();
-            if p.enabled && due(p.last_check, now_secs()) {
-                if let Err(e) = check(&app) {
-                    eprintln!("winseek: update check failed: {e}"); // retried at the next poll
+            // Fail closed: an unreadable prefs file must not read as defaults, or one transient
+            // lock would re-enable the check and overwrite the user's "off".
+            match load() {
+                Ok(p) => {
+                    if p.enabled && due(p.last_check, now_secs()) {
+                        if let Err(e) = check(&app) {
+                            eprintln!("winseek: update check failed: {e}"); // retried at the next poll
+                        }
+                    }
                 }
+                Err(e) => eprintln!("winseek: {e}; skipping the update check"),
             }
             std::thread::sleep(POLL);
         }
@@ -260,12 +287,14 @@ fn state(app: &AppHandle, p: Prefs) -> UpdateState {
 
 #[tauri::command]
 pub fn updates_get(app: AppHandle) -> UpdateState {
-    state(&app, load())
+    state(&app, load_or_default())
 }
 
 #[tauri::command]
 pub fn updates_set_enabled(app: AppHandle, enabled: bool) -> Result<UpdateState, String> {
-    let mut p = load();
+    // Strict: flipping the switch must not start from defaults, or a transient read error
+    // would overwrite the stored prefs with them (re-enabling the check).
+    let mut p = load()?;
     p.enabled = enabled;
     save(&p)?;
     Ok(state(&app, p))
@@ -350,5 +379,23 @@ mod tests {
             ..Prefs::default()
         };
         assert!(tray_label(&q).contains("v0.2.19"));
+    }
+
+    #[test]
+    fn load_distinguishes_missing_from_broken() {
+        let d = std::env::temp_dir().join(format!("winseek-updates-{}", std::process::id()));
+        std::fs::create_dir_all(&d).unwrap();
+        let f = d.join("updates.json");
+        let _ = std::fs::remove_file(&f);
+        // Missing: never configured -> defaults.
+        assert_eq!(load_from(&f).unwrap(), Prefs::default());
+        // A stored "off" round-trips.
+        std::fs::write(&f, r#"{"enabled":false}"#).unwrap();
+        assert!(!load_from(&f).unwrap().enabled);
+        // Existing but unparsable (a truncated write, an AV holding it): an error, NOT defaults —
+        // defaults would flip `enabled` back to true and overwrite the user's choice.
+        std::fs::write(&f, "{oops").unwrap();
+        assert!(load_from(&f).is_err());
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
