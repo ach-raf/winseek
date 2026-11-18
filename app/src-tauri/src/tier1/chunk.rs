@@ -22,12 +22,16 @@ pub const CODE_MAX_PIECE: usize = 4000;
 /// keeps per file.
 pub const CODE_MAX_CHUNKS: usize = 64;
 
-/// Fingerprint of the code chunker. Stored per index; a change forgets the indexed code so it is
-/// re-chunked and re-embedded whole instead of mixing locator generations.
-pub const CODE_CHUNKER_FINGERPRINT: &str = "code1 lines1800";
+/// Fingerprint of the code chunker and embedding shape. Stored per index; a change forgets the
+/// indexed code so it is re-chunked and re-embedded whole instead of mixing locator or vector
+/// generations ("titled": stretches embed under their repo-relative path, code queries in the
+/// code retrieval task form — the corpus re-embeds once so both sides share the new space).
+pub const CODE_CHUNKER_FINGERPRINT: &str = "code1 lines1800 titled";
 
 /// Lines that close a block (shell, Ruby, Lua, Objective-C, the C preprocessor).
-const CODE_CLOSERS: &[&str] = &["end", "fi", "done", "esac", "@end", "#endif", "end;", "end)"];
+const CODE_CLOSERS: &[&str] = &[
+    "end", "fi", "done", "esac", "@end", "#endif", "end;", "end)",
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -229,8 +233,10 @@ fn code_stretches(text: &str, size: usize) -> Vec<Stretch> {
                 }
                 None
             };
-            if let Some(cut) = last_break(&|l| code_starts_block(lines[l]) && code_blank(lines[l - 1]))
-                .or_else(|| last_break(&|l| code_blank(lines[l - 1]) || code_starts_block(lines[l])))
+            if let Some(cut) =
+                last_break(&|l| code_starts_block(lines[l]) && code_blank(lines[l - 1])).or_else(
+                    || last_break(&|l| code_blank(lines[l - 1]) || code_starts_block(lines[l])),
+                )
             {
                 end = cut;
                 natural = true;
@@ -509,9 +515,15 @@ mod tests {
             assert!(f1 - l0 <= 2, "overlap is 2 lines at most");
         }
         let (_, last_line) = code_span(cs.last().unwrap());
-        assert_eq!(last_line, 71, "the trailing blank is dropped (60 code + 11 blanks before it)");
+        assert_eq!(
+            last_line, 71,
+            "the trailing blank is dropped (60 code + 11 blanks before it)"
+        );
         for c in &cs {
-            assert!(c.text.chars().count() <= CODE_STRETCH, "each stretch fits the size");
+            assert!(
+                c.text.chars().count() <= CODE_STRETCH,
+                "each stretch fits the size"
+            );
         }
     }
 
@@ -522,17 +534,27 @@ mod tests {
         assert!(cs.len() >= 3);
         let big = cs.iter().find(|c| c.text.chars().count() == CODE_MAX_PIECE);
         assert!(big.is_some(), "the long line is cut at the piece cap");
-        assert!(cs.iter().any(|c| c.text == "fn b() {}"), "the rest survives");
+        assert!(
+            cs.iter().any(|c| c.text == "fn b() {}"),
+            "the rest survives"
+        );
     }
 
     #[test]
     fn code_chunk_cap_and_progress() {
         let text = "let x = 1;\n".repeat(20_000);
         let cs = chunk_code(&text);
-        assert_eq!(cs.len(), CODE_MAX_CHUNKS, "the file offers far more than the cap");
+        assert_eq!(
+            cs.len(),
+            CODE_MAX_CHUNKS,
+            "the file offers far more than the cap"
+        );
         for w in cs.windows(2) {
             assert!(code_span(&w[1]).0 > code_span(&w[0]).0, "progress");
         }
-        assert!(chunk_code("  \n\n").is_empty(), "blank-only text gives nothing");
+        assert!(
+            chunk_code("  \n\n").is_empty(),
+            "blank-only text gives nothing"
+        );
     }
 }

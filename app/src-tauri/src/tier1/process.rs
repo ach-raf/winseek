@@ -23,12 +23,12 @@ use super::chunk::{self, Chunk};
 use super::crawler::{KIND_AUDIO, KIND_CODE, KIND_IMAGE, KIND_PDF, KIND_VIDEO};
 use super::embedder::{is_gpu_busy, EmbedError, Embedder};
 use super::extract::{self, ExtractError};
-use super::file_title;
 use super::guard;
 use super::media::{self, Ffmpeg, MediaTool};
 use super::ocr::{self, Ocr, OcrError, OcrText, WinOcr};
 use super::pdf::{self, PdfError};
 use super::route;
+use super::{code_title, file_title};
 
 pub const BATCH: usize = 16;
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
@@ -652,11 +652,18 @@ impl Processor {
             return lock(store).skip(f.id, "no_text").map_err(db);
         }
         let texts = item_texts(&items);
+        // A code stretch embeds under its path in the repo (where it lives is context; DigUp's
+        // measured title shape), a document under its bare name.
+        let title = if f.kind == KIND_CODE {
+            code_title(&f.path)
+        } else {
+            file_title(&f.path)
+        };
         let stored = match embedder {
             None => lock(store)
                 .complete_text_only(f.id, &hash, &item_pending(&items), &texts)
                 .map_err(db),
-            Some(embedder) => match embed_items(embedder, &items, &file_title(&f.path)) {
+            Some(embedder) => match embed_items(embedder, &items, &title) {
                 Ok(vectors) => lock(store)
                     .complete(f.id, &hash, &vectors, &texts)
                     .map_err(db),

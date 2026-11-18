@@ -75,7 +75,9 @@ pub fn identifier(query: &str) -> Option<Vec<String>> {
         name.chars().skip(1).any(char::is_uppercase) && name.chars().any(char::is_lowercase);
     // DigUp counts `_` and `$` inside a word as name marks too, not just the joining separators.
     let marked = has_sep
-        || name.chars().any(|c| matches!(c, '_' | '$' | '.' | ':' | '>' | '#'));
+        || name
+            .chars()
+            .any(|c| matches!(c, '_' | '$' | '.' | ':' | '>' | '#'));
     let digit = name.chars().any(|c| c.is_ascii_digit());
     if !marked && !camel && !digit {
         return None;
@@ -157,13 +159,33 @@ mod tests {
     #[test]
     fn identifier_reads_names_not_sentences() {
         let words = |q: &str| identifier(q).map(|w| w.join(" "));
-        assert_eq!(words("quantize_row_q8_0_ref").as_deref(), Some("quantize row q8 0 ref"));
-        assert_eq!(words("retryWithBackoff").as_deref(), Some("retrywithbackoff"));
-        assert_eq!(words("CodeExtractor.lines").as_deref(), Some("codeextractor lines"));
+        assert_eq!(
+            words("quantize_row_q8_0_ref").as_deref(),
+            Some("quantize row q8 0 ref")
+        );
+        assert_eq!(
+            words("retryWithBackoff").as_deref(),
+            Some("retrywithbackoff")
+        );
+        assert_eq!(
+            words("CodeExtractor.lines").as_deref(),
+            Some("codeextractor lines")
+        );
         assert_eq!(words("std::vec::Vec").as_deref(), Some("std vec vec"));
-        assert_eq!(words("useLocalStorage()").as_deref(), Some("uselocalstorage"));
-        assert_eq!(words("v1_2").as_deref(), Some("v1 2"), "digits qualify a bare word");
-        assert_eq!(identifier("retry backoff"), None, "plain words are not a name");
+        assert_eq!(
+            words("useLocalStorage()").as_deref(),
+            Some("uselocalstorage")
+        );
+        assert_eq!(
+            words("v1_2").as_deref(),
+            Some("v1 2"),
+            "digits qualify a bare word"
+        );
+        assert_eq!(
+            identifier("retry backoff"),
+            None,
+            "plain words are not a name"
+        );
         assert_eq!(identifier("Renamer"), None);
         assert_eq!(identifier("a..b"), None);
         assert_eq!(identifier("fn main"), None, "two words, no name shape");
@@ -173,7 +195,11 @@ mod tests {
     #[test]
     fn terms_are_the_content_words() {
         assert_eq!(terms("Retry with Backoff!"), ["retry", "with", "backoff"]);
-        assert_eq!(terms("a I"), Vec::<String>::new(), "one-letter words are noise");
+        assert_eq!(
+            terms("a I"),
+            Vec::<String>::new(),
+            "one-letter words are noise"
+        );
         assert_eq!(terms("code code"), ["code"], "no repeats");
     }
 
@@ -205,7 +231,10 @@ mod tests {
         assert!(!is_lookup(&terms("INV-2024-00817")));
         assert!(is_lookup(&terms("0x80070005")));
         assert!(is_lookup(&terms("KB5034441")));
-        assert!(is_lookup(&terms("2024")), "a word of four digits is exact enough");
+        assert!(
+            is_lookup(&terms("2024")),
+            "a word of four digits is exact enough"
+        );
         assert!(!is_lookup(&terms("42")), "a short bare number is not");
         assert!(!is_lookup(&terms("retry with backoff")));
         assert!(!is_lookup(&[]));
@@ -222,7 +251,10 @@ mod tests {
         // A lookup: meaning halves (z 4 -> 2) and the words weigh double (2.0 at full coverage):
         // z 4 + full coverage scores the same as before, z alone drops under a full-coverage file.
         assert!((score(Some(4.0), 1.0, true) - 4.0).abs() < 1e-5);
-        assert!((score(Some(4.0), 0.0, true) - 2.0).abs() < 1e-5, "meaning halves");
+        assert!(
+            (score(Some(4.0), 0.0, true) - 2.0).abs() < 1e-5,
+            "meaning halves"
+        );
         assert!(
             score(Some(5.0), 0.0, true) > score(None, 1.0, true),
             "a strong meaning match still beats full word coverage"

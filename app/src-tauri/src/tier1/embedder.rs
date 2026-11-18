@@ -84,6 +84,13 @@ pub trait Embedder {
     }
     /// One 768-d L2-normalised query vector.
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>>;
+    /// One 768-d L2-normalised query vector for `code:` searches, embedded in the code
+    /// retrieval task form (a different vector space than the generic query form — code
+    /// corpus and code queries must answer in the same one). Defaults to the generic form;
+    /// the real backend overrides it.
+    fn embed_code_query(&mut self, q: &str) -> Result<Vec<f32>> {
+        self.embed_query(q)
+    }
     /// One 768-d vector per `(title, text)` document, in order; an empty title embeds the
     /// untitled form (`title: none | text: …`). Backends without text embedding keep the
     /// default error; callers treat that as "no text vector".
@@ -484,6 +491,17 @@ impl Embedder for LlamaEmbedder {
 
     fn embed_query(&mut self, q: &str) -> Result<Vec<f32>> {
         let raw = self.text_client()?.embed_queries(&[q]).map_err(other)?;
+        finish(raw)?
+            .into_iter()
+            .next()
+            .ok_or_else(|| EmbedError::Other("empty embedding response".into()))
+    }
+
+    fn embed_code_query(&mut self, q: &str) -> Result<Vec<f32>> {
+        let raw = self
+            .text_client()?
+            .embed_queries_code(&[q])
+            .map_err(other)?;
         finish(raw)?
             .into_iter()
             .next()

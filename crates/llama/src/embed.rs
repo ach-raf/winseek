@@ -15,6 +15,9 @@ use crate::{Error, Result};
 
 pub const DOC_PREFIX: &str = "title: none | text: ";
 pub const QUERY_PREFIX: &str = "task: search result | query: ";
+/// Code queries embed in their own task form (DigUp's measured prompt: MRR 0.79 against
+/// 0.75 for the generic search form on the code evals).
+pub const CODE_QUERY_PREFIX: &str = "task: code retrieval | query: ";
 /// Matryoshka sizes EmbeddingGemma-2 supports.
 pub const MATRYOSHKA_DIMS: [usize; 4] = [768, 512, 256, 128];
 
@@ -71,6 +74,10 @@ pub fn document_input_titled(title: &str, text: &str) -> String {
 
 pub fn query_input(text: &str) -> String {
     format!("{QUERY_PREFIX}{text}")
+}
+
+pub fn query_code_input(text: &str) -> String {
+    format!("{CODE_QUERY_PREFIX}{text}")
 }
 
 /// One image input object (JPEG bytes -> data URL).
@@ -294,6 +301,12 @@ impl EmbedClient {
         self.post_embeddings(&text_body(&inputs), inputs.len())
     }
 
+    /// Raw code-retrieval query embeddings ([`CODE_QUERY_PREFIX`] form, [`query_code_input`]).
+    pub fn embed_queries_code(&self, queries: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let inputs: Vec<String> = queries.iter().map(|q| query_code_input(q)).collect();
+        self.post_embeddings(&text_body(&inputs), inputs.len())
+    }
+
     /// Raw image embeddings (no prefix). Callers should canonicalise images to
     /// 768 px long side first and check [`vision_enabled`](Self::vision_enabled).
     pub fn embed_images_jpeg(&self, jpegs: &[&[u8]]) -> Result<Vec<Vec<f32>>> {
@@ -344,6 +357,10 @@ mod tests {
         let docs = vec![document_input("hello"), document_input("")];
         assert_eq!(docs[0], "title: none | text: hello");
         assert_eq!(query_input("cats"), "task: search result | query: cats");
+        assert_eq!(
+            query_code_input("cats"),
+            "task: code retrieval | query: cats"
+        );
         assert_eq!(
             text_body(&docs),
             json!({"input": ["title: none | text: hello", "title: none | text: "]})

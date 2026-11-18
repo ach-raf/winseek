@@ -349,10 +349,10 @@ fn dir_is_project_root(dir: &Path) -> bool {
     is_project_root(&names)
 }
 
-/// Some ancestor directory of `path` is a code project root. The drive root and the user profile
-/// folder never count, so a dotfiles repo in a home folder does not turn every document into
-/// "project content".
-pub fn in_code_project(path: &str) -> bool {
+/// The nearest ancestor of `path` that is a code project root (the repo / project the file
+/// lives in). The drive root and the user profile folder never count, so a dotfiles repo in a
+/// home folder does not turn every document into "project content".
+pub fn code_project_root(path: &str) -> Option<std::path::PathBuf> {
     let profile = std::env::var("USERPROFILE")
         .unwrap_or_default()
         .trim_end_matches('\\')
@@ -363,14 +363,19 @@ pub fn in_code_project(path: &str) -> bool {
             || (!profile.is_empty()
                 && d.to_string_lossy().trim_end_matches('\\').to_lowercase() == profile)
         {
-            return false;
+            return None;
         }
         if dir_is_project_root(d) {
-            return true;
+            return Some(d.to_path_buf());
         }
         p = d.parent();
     }
-    false
+    None
+}
+
+/// Some ancestor directory of `path` is a code project root.
+pub fn in_code_project(path: &str) -> bool {
+    code_project_root(path).is_some()
 }
 
 const VENDORED_DIRS: &[&str] = &[

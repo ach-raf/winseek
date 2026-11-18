@@ -244,6 +244,34 @@ pub fn file_title(path: &str) -> String {
         .unwrap_or_default()
 }
 
+/// A code file's `title:` half: its path from the project's folder, the project's name first
+/// (`"wineseek_app/app/src-tauri/src/tier1/mod.rs"` — where the file lives in the repo is
+/// context the model can use; DigUp measured +0.10 MRR over the bare name). Outside any
+/// project: the folder and the file, as written.
+pub fn code_title(path: &str) -> String {
+    if let Some(root) = guard::code_project_root(path) {
+        let root = root
+            .to_string_lossy()
+            .trim_end_matches(['\\', '/'])
+            .to_owned();
+        let rel = path
+            .strip_prefix(&root)
+            .map(|r| r.trim_start_matches(['\\', '/']))
+            .filter(|r| !r.is_empty());
+        if let (Some(repo), Some(rel)) = (
+            std::path::Path::new(&root)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned()),
+            rel,
+        ) {
+            return format!("{repo}\\{rel}");
+        }
+    }
+    let comps: Vec<&str> = path.split(['\\', '/']).filter(|c| !c.is_empty()).collect();
+    let n = comps.len();
+    comps[n.saturating_sub(2)..].join("\\")
+}
+
 /// The `page` of a chunk locator (`{"page":3,"chars":[0,90]}`).
 pub fn locator_page(locator: Option<&str>) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
@@ -1064,7 +1092,11 @@ impl Tier1 {
     /// meaning scale among the code vectors, and how much of the query the file contains as words
     /// — an identifier is searched as one phrase, as written. Code is never part of any other
     /// search.
-    fn code_rows(&self, q: &str, limit: Option<usize>) -> Result<(String, Vec<SemRow>, bool), String> {
+    fn code_rows(
+        &self,
+        q: &str,
+        limit: Option<usize>,
+    ) -> Result<(String, Vec<SemRow>, bool), String> {
         let snap = self.snapshot();
         if !snap.index_code || q.is_empty() {
             return Ok((self.state_str().into(), vec![], false));
@@ -1077,9 +1109,7 @@ impl Tier1 {
             Some(w) => vec![code_rank::phrase(w)],
             None => {
                 let store = lock(&self.store);
-                code_rank::word_patterns(&terms, &|p| {
-                    store.code_has_pattern(p).unwrap_or(false)
-                })
+                code_rank::word_patterns(&terms, &|p| store.code_has_pattern(p).unwrap_or(false))
             }
         };
         if patterns.is_empty() {
@@ -1102,8 +1132,7 @@ impl Tier1 {
             best_words.entry(h.hash.as_str()).or_insert(h);
         }
         let lookup = code_rank::is_lookup(&terms) || id.is_some();
-        let mut coverage: std::collections::HashMap<String, f32> =
-            std::collections::HashMap::new();
+        let mut coverage: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
         if !words.is_empty() {
             let mut hashes: Vec<String> = words.iter().map(|h| h.hash.clone()).collect();
             hashes.sort();
@@ -1115,7 +1144,7 @@ impl Tier1 {
         }
         // Meaning side: the best stretch per code file on the relevance scale (the code population
         // only). No gate here: the words side can carry a file the meaning gate would refuse.
-        let cands = match self.embed_query_vectors(q)? {
+        let cands = match self.embed_code_query_vectors(q)? {
             Some((vec, hub)) => lock(&self.store)
                 .search_code_candidates(&vec, &hub)
                 .unwrap_or_default(),
@@ -1136,7 +1165,9 @@ impl Tier1 {
             // Point at the meaning stretch when it stands out; else at the stretch the words
             // matched (its snippet and line locator).
             let by_meaning = c.passes();
-            let hit_w = (!by_meaning).then(|| best_words.get(c.hash.as_str()).copied()).flatten();
+            let hit_w = (!by_meaning)
+                .then(|| best_words.get(c.hash.as_str()).copied())
+                .flatten();
             let score = code_rank::score(c.z, cov, lookup);
             rows.push(SemRow {
                 page: None,
@@ -1153,9 +1184,7 @@ impl Tier1 {
                 snippet: if by_meaning {
                     None
                 } else {
-                    hit_w
-                        .map(|w| w.snippet.clone())
-                        .filter(|s| s.contains('['))
+                    hit_w.map(|w| w.snippet.clone()).filter(|s| s.contains('['))
                 },
                 source: "code",
             });
@@ -1184,11 +1213,7 @@ impl Tier1 {
                 source: "code",
             });
         }
-        rows.sort_by(|a, b| {
-            b.rank
-                .total_cmp(&a.rank)
-                .then_with(|| a.path.cmp(&b.path))
-        });
+        rows.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
         let more = limit.is_some_and(|k| rows.len() > k);
         rows.truncate(limit.unwrap_or(usize::MAX));
         finalize_scores(&mut rows);
@@ -1294,7 +1319,28 @@ impl Tier1 {
         if !e.models_present() {
             return Ok(None);
         }
-        match e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
+        match e
+            .embed_query(q)
+            .and_then(|v| Ok((v, self.hub_vector(&mut e)?)))
+        {
+            Ok(v) => Ok(Some(v)),
+            Err(EmbedError::ModelsMissing) => Ok(None),
+            Err(EmbedError::Other(m)) => Err(m),
+        }
+    }
+
+    /// The code query's vector and the hub vector: `None` without models (text search answers
+    /// alone); `Err` on a real embedder failure. The query embeds in the code retrieval task
+    /// form — the same vector space the code corpus is embedded in (DigUp's measured pairing).
+    fn embed_code_query_vectors(&self, q: &str) -> Result<Option<QueryVectors>, String> {
+        let mut e = lock(&self.embedder);
+        if !e.models_present() {
+            return Ok(None);
+        }
+        match e
+            .embed_code_query(q)
+            .and_then(|v| Ok((v, self.hub_vector(&mut e)?)))
+        {
             Ok(v) => Ok(Some(v)),
             Err(EmbedError::ModelsMissing) => Ok(None),
             Err(EmbedError::Other(m)) => Err(m),
@@ -2799,12 +2845,14 @@ mod tests {
             hits[1].snippet.as_deref().unwrap().contains('['),
             "a words hit shows its matched stretch"
         );
-        assert!(t
-            .semantic_search("retry", 5)
-            .unwrap()
-            .hits
-            .iter()
-            .all(|h| h.source != "code"), "code never mixes into a general search");
+        assert!(
+            t.semantic_search("retry", 5)
+                .unwrap()
+                .hits
+                .iter()
+                .all(|h| h.source != "code"),
+            "code never mixes into a general search"
+        );
     }
 
     /// The words side's gate: a file must answer at least half the query's words to be listed.
@@ -2837,14 +2885,25 @@ mod tests {
     fn a_code_chunker_change_reindexes_the_code_partition() {
         let t = tier(Box::new(Q), &[r"C:\Code"]);
         assert_eq!(t.set_index_code(true), Ok(true));
-        add_code(&t, 1, r"C:\Code\a.rs", 0, "fn a() {}\n", Some(r#"{"loc":1,"loc_end":1}"#));
+        add_code(
+            &t,
+            1,
+            r"C:\Code\a.rs",
+            0,
+            "fn a() {}\n",
+            Some(r#"{"loc":1,"loc_end":1}"#),
+        );
         lock(&t.store)
             .set_setting(winseek_store::SETTING_CODE_CHUNKER, Some("old"))
             .unwrap();
         t.check_code_chunker();
         {
             let s = lock(&t.store);
-            assert_eq!(s.stats().unwrap().done, 0, "the old-stretch file was forgotten");
+            assert_eq!(
+                s.stats().unwrap().done,
+                0,
+                "the old-stretch file was forgotten"
+            );
             assert_eq!(
                 s.get_setting(winseek_store::SETTING_CODE_CHUNKER)
                     .unwrap()
