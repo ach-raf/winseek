@@ -11,3 +11,4 @@ winseek-usn = { path = "../crates/usn" }
 winseek-index = { path = "../crates/index" }
 winseek-ipc = { path = "../crates/ipc" }
 winseek-folder = { path = "../crates/folder" }
+jiff = "0.2"

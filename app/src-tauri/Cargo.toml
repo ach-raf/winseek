@@ -56,6 +56,8 @@ kamadak-exif = "0.6.1"
 zip = { version = "2", default-features = false, features = ["deflate-flate2"] }
 flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
 quick-xml = "0.42"
+# Tier 2: civil calendar math for the agent date filters (was hand-rolled Hinnant)
+jiff = "0.2"
 # Tier 1 PDF text + page rendering (pdfium.dll is downloaded at run time, bound dynamically)
 pdfium-render = { version = "0.9.4", default-features = false, features = ["pdfium_7881", "thread_safe", "image_025"] }
 

@@ -1,78 +1,98 @@
 //! Date / size range parsing for the agent's search filters (pure; the adapter injects the
 //! clock and the timezone offset so tests are deterministic). Weeks start Monday.
 
+use jiff::civil::Date;
+use jiff::tz::TimeZone;
+use jiff::{Span, Timestamp};
+
 /// `[start_ms, end_ms)` in unix milliseconds for an ISO date (`YYYY-MM-DD`) or one of
 /// `today|yesterday|this_week|last_week|this_month|this_year`, resolved in local time.
 pub fn date_range(spec: &str, now_ms: i64, tz_offset_min: i32) -> Result<(i64, i64), String> {
-    const DAY: i64 = 86_400_000;
     let tz = i64::from(tz_offset_min) * 60_000;
-    let local = now_ms + tz;
-    let today = local.div_euclid(DAY); // local day number (1970-01-01 = 0, a Thursday)
-    let day_start = |d: i64| d * DAY - tz;
-    let monday = today - (today + 3).rem_euclid(7); // day 0 was Thursday -> +3
+    // The shift trick: read the local wall clock as UTC, so plain UTC civil dates are local dates.
+    // (The adapter passes the machine's current offset, not a full zone: DST shifts land in the
+    // offset at call time, and a range never spans more than a year.)
+    let local = Timestamp::from_millisecond(now_ms + tz).map_err(|e| format!("bad clock: {e}"))?;
+    let today = local.to_zoned(TimeZone::UTC).date();
+    let midnight = |d: Date| -> Result<i64, String> {
+        Ok(d.to_zoned(TimeZone::UTC)
+            .map_err(|e| e.to_string())?
+            .timestamp()
+            .as_millisecond()
+            - tz)
+    };
+    // Monday of this week (0 = Monday .. 6 = Sunday, per jiff's weekday).
+    let monday = today
+        .checked_sub(Span::new().days(i16::from(today.weekday().to_monday_zero_offset())))
+        .map_err(|e| e.to_string())?;
     match spec.trim().to_lowercase().as_str() {
-        "today" => Ok((day_start(today), day_start(today + 1))),
-        "yesterday" => Ok((day_start(today - 1), day_start(today))),
-        "this_week" => Ok((day_start(monday), day_start(today + 1))),
-        "last_week" => Ok((day_start(monday - 7), day_start(monday))),
+        "today" => Ok((midnight(today)?, midnight(day_after(today)?)?)),
+        "yesterday" => Ok((
+            midnight(today.yesterday().map_err(|e| e.to_string())?)?,
+            midnight(today)?,
+        )),
+        "this_week" => Ok((midnight(monday)?, midnight(day_after(today)?)?)),
+        "last_week" => Ok((
+            midnight(
+                monday
+                    .checked_sub(Span::new().days(7))
+                    .map_err(|e| e.to_string())?,
+            )?,
+            midnight(monday)?,
+        )),
         "this_month" => {
-            let (y, m, _) = civil_from_days(today);
+            let (y, m) = (today.year(), today.month());
             Ok((
-                day_start(days_from_civil(y, m, 1)),
-                day_start(days_from_civil(y, m + 1, 1)),
+                midnight(month_start(y, m)?)?,
+                midnight(next_month_start(y, m)?)?,
             ))
         }
         "this_year" => {
-            let (y, _, _) = civil_from_days(today);
+            let y = today.year();
             Ok((
-                day_start(days_from_civil(y, 1, 1)),
-                day_start(days_from_civil(y + 1, 1, 1)),
+                midnight(month_start(y, 1)?)?,
+                midnight(next_year_start(y)?)?,
             ))
         }
         other => {
-            let (y, m, d) = parse_ymd(other)?;
-            let from = days_from_civil(y, m, d);
-            // The civil calendar is continuous: the next day is just from + 1.
-            Ok((day_start(from), day_start(from + 1)))
+            let d = parse_ymd(other)?;
+            Ok((midnight(d)?, midnight(day_after(d)?)?))
         }
     }
 }
 
-fn parse_ymd(s: &str) -> Result<(i64, u32, u32), String> {
+fn month_start(y: i16, m: i8) -> Result<Date, String> {
+    Date::new(y, m, 1).map_err(|e| format!("date out of range: {e}"))
+}
+
+fn next_month_start(y: i16, m: i8) -> Result<Date, String> {
+    if m == 12 {
+        month_start(y.checked_add(1).ok_or("date out of range")?, 1)
+    } else {
+        month_start(y, m + 1)
+    }
+}
+
+fn next_year_start(y: i16) -> Result<Date, String> {
+    month_start(y.checked_add(1).ok_or("date out of range")?, 1)
+}
+
+fn day_after(d: Date) -> Result<Date, String> {
+    d.tomorrow().map_err(|e| format!("date out of range: {e}"))
+}
+
+fn parse_ymd(s: &str) -> Result<Date, String> {
     let bad = || format!("bad date \"{s}\" (want YYYY-MM-DD or a word like this_week)");
     let mut it = s.split('-');
-    let y: i64 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
-    let m: u32 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
-    let d: u32 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
-    if it.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+    let y: i16 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let m: i8 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    let d: i8 = it.next().ok_or_else(bad)?.parse().map_err(|_| bad())?;
+    if it.next().is_some() {
         return Err(bad());
     }
-    Ok((y, m, d))
-}
-
-/// Howard Hinnant's civil calendar algorithms (public domain), the smallest correct way to do
-/// month / year boundaries without pulling chrono into the crate.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+    // jiff rejects month 13, day 32 and Feb 30 here — the old hand-rolled arithmetic
+    // silently normalised them.
+    Date::new(y, m, d).map_err(|_| bad())
 }
 
 /// Bytes, or a string like `1024`, `"10MB"`, `"1.5 GB"` (1024-based; B/KB/MB/GB/TB).
@@ -117,8 +137,12 @@ mod tests {
     const NOW: i64 = 1_792_497_600_000; // 2026-10-20T12:00:00Z
     const TZ: i32 = 60;
 
-    fn day_ms(y: i64, m: u32, d: u32) -> i64 {
-        days_from_civil(y, m, d) * 86_400_000
+    fn day_ms(y: i16, m: i8, d: i8) -> i64 {
+        jiff::civil::date(y, m, d)
+            .to_zoned(TimeZone::UTC)
+            .unwrap()
+            .timestamp()
+            .as_millisecond()
     }
 
     #[test]

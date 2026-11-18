@@ -24,24 +24,20 @@ pub fn init(path: &Path) {
 
 /// `YYYY-MM-DDTHH:MM:SS.mmmZ` (UTC) for a unix time in milliseconds.
 pub fn timestamp(unix_ms: u64) -> String {
-    let secs = unix_ms / 1000;
-    let (days, rem) = (secs / 86_400, secs % 86_400);
-    // Howard Hinnant's civil-from-days.
-    let z = days as i64 + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + i64::from(m <= 2);
+    // u64 milliseconds can outrun jiff's ±9999-year range (never in practice): clamp to the
+    // largest instant it can represent instead of printing a bogus year.
+    let ms = i64::try_from(unix_ms).unwrap_or(i64::MAX);
+    let t = jiff::Timestamp::from_millisecond(ms).unwrap_or(jiff::Timestamp::MAX);
+    let z = t.to_zoned(jiff::tz::TimeZone::UTC);
     format!(
-        "{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z",
-        rem / 3600,
-        rem % 3600 / 60,
-        rem % 60,
-        unix_ms % 1000
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
+        z.year(),
+        z.month(),
+        z.day(),
+        z.hour(),
+        z.minute(),
+        z.second(),
+        z.subsec_nanosecond() / 1_000_000,
     )
 }
 
