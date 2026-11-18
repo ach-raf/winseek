@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { chainTo, crumbs, driveTitle, flattenTree, formatPct, isHidden, parentPath, squarify, tileItems, within, withoutHidden } from "./spaceLogic.ts";
+import { chainTo, crumbs, driveTitle, flattenTree, formatPct, isHidden, parentPath, selectionBytes, squarify, tileItems, within, withoutHidden } from "./spaceLogic.ts";
 import type { DiskUsage, UsageEntry } from "./types.ts";
 
 const ent = (name: string, size: number, dir = false, base = "C:\\x"): UsageEntry =>
@@ -93,4 +93,17 @@ test("flattenTree shows the root, open folders' children, loading rows and the m
   assert.deepEqual(loading.map((r) => `${r.depth}:${r.type}:${r.entry?.name ?? ""}`).slice(0, 5), ["0:node:C:", "1:node:Users", "2:node:Me", "3:busy:", "2:node:Pub"]);
   assert.equal(loading[2]?.base, users.size);
   assert.equal(flattenTree("D:\\", get, new Set())[0]?.type, "busy");
+});
+
+test("selectionBytes sums the batch from the picked-sizes map", () => {
+  const sizes = new Map([["C:\\a", 28], ["C:\\b", 3], ["C:\\c", 1]]);
+  assert.equal(selectionBytes(["C:\\a", "C:\\b", "C:\\c"], sizes), 32);
+  assert.equal(selectionBytes(["C:\\b"], sizes), 3);
+  assert.equal(selectionBytes([], sizes), 0);
+});
+
+test("selectionBytes counts never-picked items as 0, not undefined", () => {
+  const sizes = new Map([["C:\\a", 28]]);
+  assert.equal(selectionBytes(["C:\\a", "C:\\never-picked"], sizes), 28);
+  assert.equal(selectionBytes(["C:\\never-picked"], sizes), 0);
 });

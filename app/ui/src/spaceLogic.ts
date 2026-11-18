@@ -177,6 +177,15 @@ export function formatPct(p: number): string {
   return p > 0 ? "<0.1%" : "0%";
 }
 
+/** The one selection total: the header roll-up, the per-item panel's Recycle button and the bottom
+ *  bar all read it, so a multi-selection can never be named by three different numbers. Items whose
+ *  bytes were not recorded (never picked) count as 0. */
+export function selectionBytes(paths: Iterable<string>, sizes: ReadonlyMap<string, number>): number {
+  let total = 0;
+  for (const p of paths) total += sizes.get(p) ?? 0;
+  return total;
+}
+
 /** What a tile merges when its area is too small to read. */
 export interface Rest { rest: true; count: number; size: number }
 export type TileItem = UsageEntry | Rest;

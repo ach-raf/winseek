@@ -11,7 +11,7 @@ import { IChevL, IUp, IRefresh } from "./icons";
 import { uniformRange, nameMatches, rangedBatch, toggledBatch, type SelMod } from "./libraryLogic";
 import { NameFilter } from "./NameFilter";
 import {
-  KINDS, chainTo, crumbs, detailWithoutHidden, driveTitle, flattenTree, formatPct, kindTotals, parentPath, pct, squarify, tileItems,
+  KINDS, chainTo, crumbs, detailWithoutHidden, driveTitle, flattenTree, formatPct, kindTotals, parentPath, pct, selectionBytes, squarify, tileItems,
   within, withoutHidden, type Rest, type TileItem, type TreeRow,
 } from "./spaceLogic";
 
@@ -85,7 +85,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     return s;
   }, [batch, sel]);
   const isOn = useCallback((p: string) => onSet.has(p.toLowerCase()), [onSet]);
-  const batchBytes = batch ? [...batch].reduce((a, p) => a + (sizeOf.current.get(p) ?? 0), 0) : 0;
+  const batchBytes = batch ? selectionBytes(batch, sizeOf.current) : 0;
 
   // The roll-up reads (react-query): one shared cache entry per folder. The drive list ("") is always
   // watched; the entered folder, the treemap's focus, the open tree folders and the treemap's prefetches
@@ -283,7 +283,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
         <button className="btn sm su-up" onClick={up} title="Up one level (Backspace)"><IUp size={15} />Up</button>
         <Crumbs path={focus} onGo={(p) => (p === "" ? enterRoot("") : showFolder(p))} />
         <span className="su-sp" />
-        {shownMap && <Summary data={shownMap} />}
+        {shownMap && <Summary data={shownMap} sel={batch ? { bytes: batchBytes, count: batch.size } : null} />}
         <button className="btn sm su-ref" onClick={again} title="Read the index again"><IRefresh size={14} />Refresh</button>
       </header>
       {err && <div className="su-err" role="alert">{err} <button className="gd-link" onClick={again}>Try again</button></div>}
@@ -293,11 +293,13 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             <div className="dseg su-tabs" role="tablist" aria-label="What to list">
               {TABS.map((t) => <button key={t.id} role="tab" aria-selected={tab === t.id} className={tab === t.id ? "on" : ""} onClick={() => setTab(t.id)}>{t.label}</button>)}
             </div>
-            {/* The per-item panel follows the lead; the batch itself lives in the bottom bar (.selbar),
-                the same selection bar the Clean up suggestions use. */}
+            {/* The per-item panel follows the lead; with a batch its Recycle names and moves the whole
+                selection, the same total the bottom bar (.selbar) shows — the bar the Clean up
+                suggestions share. */}
             <Selected
               entry={selRow} hit={selHit} actions={actions}
-              onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={(p) => recycle([p])}
+              onEnter={(p) => enterRoot(p)} onShow={showFile} onRecycle={(p) => recycle(batch ? [...batch] : [p])}
+              batchBytes={batch ? batchBytes : null}
             />
           </div>
           {tab === "tree" && (
@@ -358,13 +360,15 @@ function Crumbs({ path, onGo }: { path: string; onGo: (p: string) => void }) {
   );
 }
 
-function Summary({ data }: { data: DiskUsage }) {
+/** The viewed folder's roll-up; while a batch is selected it names the selection instead, so the
+ *  header, the Recycle button and the bottom bar all quote the same total. */
+function Summary({ data, sel }: { data: DiskUsage; sel: { bytes: number; count: number } | null }) {
   const drive = data.drives[0];
   const kinds = useMemo(() => kindTotals(data), [data]);
   return (
     <div className="su-sum">
-      <b>{formatSize(data.size) || "0 B"}</b>
-      <span>{num(data.files)} file{data.files === 1 ? "" : "s"} · {num(data.folders)} folder{data.folders === 1 ? "" : "s"}</span>
+      <b>{formatSize(sel ? sel.bytes : data.size) || "0 B"}</b>
+      <span>{sel ? `${num(sel.count)} selected` : `${num(data.files)} file${data.files === 1 ? "" : "s"} · ${num(data.folders)} folder${data.folders === 1 ? "" : "s"}`}</span>
       {drive && <Capacity drive={drive} indexed={data.size} kinds={kinds} />}
     </div>
   );
@@ -658,10 +662,13 @@ function Biggest({ backend, detail, base, on, lead, onSel, onOpen, onMenu }: {
   );
 }
 
-/** One slim strip: size and share are already on the tree row, so only what the row lacks (file count, date) is repeated. */
-function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
+/** One slim strip: size and share are already on the tree row, so only what the row lacks (file count, date) is repeated.
+ *  `batchBytes` is set while a multi-selection is live: the Recycle button then names and moves the
+ *  whole selection, quoting the same total as the bottom bar instead of just the lead. */
+function Selected({ entry, hit, actions, onEnter, onShow, onRecycle, batchBytes }: {
   entry: UsageEntry | null; hit: Hit | null; actions: LibActions;
   onEnter: (p: string) => void; onShow: (h: Hit) => void; onRecycle: (p: string) => void;
+  batchBytes: number | null;
 }) {
   const path = entry?.path ?? hit?.path;
   if (!path) return <div className="su-sel idle">Select a folder or file</div>;
@@ -683,7 +690,7 @@ function Selected({ entry, hit, actions, onEnter, onShow, onRecycle }: {
         {hit && <button className="btn sm" onClick={() => onShow(hit)}>Show in folder</button>}
         {!isDir && <button className="btn sm" onClick={() => actions.open(path)} title="Open the file (Enter)">Open</button>}
         <button className="btn sm" onClick={() => actions.reveal(path)}>Reveal</button>
-        {!isRoot && <button className="btn sm su-del" onClick={() => onRecycle(path)} title="Move to Recycle Bin (Delete)">Recycle{size ? ` ${formatSize(size)}` : ""}</button>}
+        {!isRoot && <button className="btn sm su-del" onClick={() => onRecycle(path)} title="Move to Recycle Bin (Delete)">Recycle{batchBytes !== null ? ` ${formatSize(batchBytes)}` : size ? ` ${formatSize(size)}` : ""}</button>}
       </div>
     </div>
   );
