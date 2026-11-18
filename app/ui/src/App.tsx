@@ -1,5 +1,5 @@
 import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort, VolumeStatus } from "./types";
+import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
 import { previewSelectionText } from "./previewLogic";
@@ -22,7 +22,9 @@ import { portableApps, launchForFilter, makeLaunchGuard } from "./launchLogic";
 import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useModels, useSemantic, useTier1 } from "./hooks";
+import { qk } from "./qk";
 import { kindOf, formatSize } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
@@ -98,7 +100,6 @@ export default function App({ backend }: { backend: Backend }) {
   const [sel, setSel] = useState(0);
   const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
   const [loaded, setLoaded] = useState(false);
-  const [status, setStatus] = useState<VolumeStatus[]>([]);
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const [renaming, setRenaming] = useState(false); // inline rename of the selected row
   const [scrollTop, setScrollTop] = useState(0);
@@ -139,7 +140,6 @@ export default function App({ backend }: { backend: Backend }) {
   // First run: panel shown while on demo data with the service missing/stopped. Typing hides it (clearing the
   // box brings it back); "Not now" hides it for the session. After install/start it becomes a live counter that
   // ends on the first keystroke once everything is live.
-  const [service, setService] = useState<ServiceState | null>(null);
   const [dismissed, setDismissed] = useState(false);
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupErr, setSetupErr] = useState<string | null>(null);
@@ -603,18 +603,17 @@ export default function App({ backend }: { backend: Backend }) {
 
   // ---- status / window events ---------------------------------------------
   const fast = counting && !summary; // 250 ms while the first scan is being watched
-  const refreshStatus = useCallback(() => {
-    backend.status().then((st) => {
-      // Polled every second: an unchanged answer must not re-render the whole popup.
-      setStatus((prev) => (JSON.stringify(prev) === JSON.stringify(st) ? prev : st));
-      if (st.length > 0 && st.every((v) => v.state === "demo")) backend.serviceState().then(setService).catch(() => {});
-    }).catch(() => {});
-  }, [backend]);
-  useEffect(() => {
-    refreshStatus();
-    const t = window.setInterval(refreshStatus, fast ? 250 : 1000);
-    return () => window.clearInterval(t);
-  }, [refreshStatus, fast, epoch]);
+  const qc = useQueryClient();
+  // Volume status, polled: this is the same query entry the Library reads, and react-query's structural
+  // sharing keeps an unchanged answer from re-rendering the popup (the old hand-rolled JSON.stringify
+  // compare did this by hand — and re-rendered on any backend field reorder).
+  const statusQ = useQuery({ queryKey: qk.libStatus, queryFn: () => backend.status(), refetchInterval: fast ? 250 : 1000 });
+  const status = useMemo(() => statusQ.data ?? [], [statusQ.data]);
+  // On demo data the first-run panel also needs the Windows service's install/run state; polled on the
+  // same clock, only while it is relevant.
+  const demoAll = status.length > 0 && status.every((v) => v.state === "demo");
+  const serviceQ = useQuery({ queryKey: qk.service, queryFn: () => backend.serviceState(), refetchInterval: fast ? 250 : 1000, enabled: demoAll });
+  const service: ServiceState | null = serviceQ.data ?? null;
 
   const startCounting = useCallback(() => {
     t0.current ??= performance.now();
@@ -627,11 +626,11 @@ export default function App({ backend }: { backend: Backend }) {
     let off: (() => void) | undefined;
     backend.onSourceChanged(() => {
       if (showPanelRef.current) startCounting();
-      refreshStatus();
+      void qc.invalidateQueries({ queryKey: qk.libStatus }); // a file was deleted/moved from outside: status re-reads now
       setEpoch((e) => e + 1);
     }).then((u) => (off = u));
     return () => off?.();
-  }, [backend, refreshStatus, startCounting]);
+  }, [backend, qc, startCounting]);
 
   useEffect(() => {
     if (!counting || summary || !status.length) return;

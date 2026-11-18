@@ -1,6 +1,8 @@
 import { KeyHints } from "./Hint";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend, DiskUsage, DriveSpace, Hit, UsageDetail, UsageEntry, UsageType } from "./types";
+import { qk, refreshSpace } from "./qk";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { formatDate, formatSize } from "./format";
@@ -69,11 +71,8 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const [multi, setMulti] = useState<ReadonlySet<string> | null>(null); // Ctrl/Shift batch (real-case paths); null = just the lead
   const [open, setOpen] = useState<ReadonlySet<string>>(new Set());
   const [tab, setTab] = useState<Tab>("tree");
-  const [ver, bump] = useState(0);
-  const [err, setErr] = useState<string | null>(null);
-  const cache = useRef(new Map<string, DiskUsage>());
-  const flying = useRef(new Set<string>());
-  const details = useRef(new Map<string, UsageDetail | null>());
+  const qc = useQueryClient();
+  const [wanted, setWanted] = useState<ReadonlySet<string>>(new Set()); // folders the treemap layout asked to prefetch
   const rootEl = useRef<HTMLDivElement>(null);
   const rangeAnchor = useRef<string | null>(null);  // where a Shift+click range starts
   const sizeOf = useRef(new Map<string, number>()); // bytes of every picked item, for the batch total
@@ -87,53 +86,49 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const isOn = useCallback((p: string) => onSet.has(p.toLowerCase()), [onSet]);
   const batchBytes = batch ? [...batch].reduce((a, p) => a + (sizeOf.current.get(p) ?? 0), 0) : 0;
 
-  const fetchDir = useCallback((p: string, force = false) => {
-    if (!force && (cache.current.has(p) || flying.current.has(p))) return;
-    flying.current.add(p);
-    backend.diskUsage(p).then((d) => {
-      cache.current.set(p, d); setErr(null);
-    }).catch((e) => setErr(errText(e))).finally(() => { flying.current.delete(p); bump((n) => n + 1); });
-  }, [backend]);
-  const fetchDetail = useCallback((p: string, force = false) => {
-    const k = "d:" + p;
-    if (!force && (details.current.has(p) || flying.current.has(k))) return;
-    flying.current.add(k);
-    backend.diskUsageDetail(p, 100).then((d) => { details.current.set(p, d); })
-      .catch((e) => { details.current.set(p, null); setErr(errText(e)); })
-      .finally(() => { flying.current.delete(k); bump((n) => n + 1); });
-  }, [backend]);
+  // The roll-up reads (react-query): one shared cache entry per folder. The drive list ("") is always
+  // watched; the entered folder, the treemap's focus, the open tree folders and the treemap's prefetches
+  // join while a folder is open. A refetch keeps the previous answer on screen until the new one lands —
+  // the old hand-rolled Map + in-flight Set + version bump did exactly this, by hand.
+  const dirPaths = useMemo(() => {
+    if (!root) return [""];
+    return [...new Set(["", root, focus, ...open, ...wanted])];
+  }, [root, focus, open, wanted]);
+  const dirQs = useQueries({
+    queries: dirPaths.map((p) => ({
+      queryKey: qk.spaceDir(p),
+      queryFn: () => backend.diskUsage(p),
+      enabled: p === "" || !!root,
+    })),
+  });
+  const dirData = useMemo(() => {
+    const m = new Map<string, DiskUsage>();
+    dirPaths.forEach((p, i) => { const d = dirQs[i]?.data; if (d) m.set(p, d); });
+    return m;
+  }, [dirPaths, dirQs]);
+  const detailQ = useQuery({ queryKey: qk.spaceDetail(focus), queryFn: () => backend.diskUsageDetail(focus, 100), enabled: !!root && tab !== "tree" });
+  const rawErr = dirQs.find((q) => q.error)?.error ?? detailQ.error;
+  const err = rawErr ? errText(rawErr) : null;
 
-  // Read whatever the tree and the treemap need (each folder once).
-  useEffect(() => {
-    fetchDir("");
-    if (root) { fetchDir(root); fetchDir(focus); open.forEach((p) => fetchDir(p)); }
-  }, [root, focus, open, fetchDir]);
-  useEffect(() => { if (root && tab !== "tree") fetchDetail(focus); }, [root, focus, tab, fetchDetail]);
+  // `get` reads the shared query cache; every consumer (tree rows, treemap layout, tiles) goes through it.
+  const get = useCallback((p: string): DiskUsage | undefined => {
+    const d = dirData.get(p);
+    return d ? withoutHidden(d, hidden) : undefined;
+  }, [dirData, hidden]);
+  /** The treemap layout asks for nested folders: read them into the same cache. */
+  const want = useCallback((p: string) => {
+    setWanted((s) => (s.has(p) ? s : new Set(s).add(p)));
+    void qc.ensureQueryData({ queryKey: qk.spaceDir(p), queryFn: () => backend.diskUsage(p) });
+  }, [qc, backend]);
 
-  // The index changed (recycled something, undo, new scan): read again what is on screen, keep showing the old meanwhile.
-  const again = useCallback(() => {
-    for (const p of [...cache.current.keys()]) fetchDir(p, true);
-    for (const p of [...details.current.keys()]) fetchDetail(p, true);
-  }, [fetchDir, fetchDetail]);
+  // The index changed (recycled something, undo, new scan) or the Refresh button: every roll-up and detail
+  // on screen is read again; cached answers keep rendering meanwhile. The invalidation is the signal — the
+  // old code re-read on a guessed fixed 1.5 s timer instead.
+  const again = useCallback(() => { refreshSpace(qc); }, [qc]);
   const firstEpoch = useRef(epoch);
   useEffect(() => { if (epoch !== firstEpoch.current) again(); }, [epoch, again]);
-  const hiddenCount = hidden.size;
-  useEffect(() => {
-    if (hiddenCount === 0) return;
-    const t = window.setTimeout(again, 1500);
-    return () => window.clearTimeout(t);
-  }, [hiddenCount, again]);
 
-  // `get` reads the mutably-updated cache ref; the version counter that forces re-derivation
-  // lives on the memo below (in-place refetches bump `ver`, which must re-run `flattenTree`).
-  const get = useCallback((p: string): DiskUsage | undefined => {
-    const d = cache.current.get(p);
-    return d ? withoutHidden(d, hidden) : undefined;
-  }, [hidden]);
-  const rows = useMemo(() => {
-    void ver;
-    return root ? flattenTree(root, get, open) : [];
-  }, [root, open, get, ver]);
+  const rows = useMemo(() => (root ? flattenTree(root, get, open) : []), [root, open, get]);
   const homeData = get("");
   const mapData = root ? get(focus) : undefined;
   const lastMap = useRef<DiskUsage | undefined>(undefined);
@@ -147,9 +142,9 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     const add = (p: string) => { const k = p.toLowerCase(); if (!seen.has(k)) { seen.add(k); out.push(p); } };
     for (const r of rows) if (r.type === "node") add(r.entry!.path);
     if (shownMap) for (const e of shownMap.entries) add(e.path);
-    if (tab === "files") for (const b of details.current.get(focus)?.biggest ?? []) add(b.path);
+    if (tab === "files") for (const b of detailQ.data?.biggest ?? []) add(b.path);
     return out;
-  }, [rows, shownMap, tab, focus]);
+  }, [rows, shownMap, tab, detailQ.data]);
   const allOn = allPaths.length > 0 && allPaths.every((p) => onSet.has(p.toLowerCase()));
 
   // ---- navigation ---------------------------------------------------------------------------------------------
@@ -214,9 +209,10 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     setTab("tree"); setFocus(dir); setSel(h.path); setMulti(null); rangeAnchor.current = h.path; if (root) { openChain(h.path, root); }
   }, [root, openChain]);
 
-  // The selection clears only once the recycle really happened (the confirm dialog may answer no).
+  // The selection clears only once the recycle really happened (the confirm dialog may answer no); the
+  // roll-ups are invalidated so the sizes re-read once the index has the deletions.
   const recycle = async (paths: string[]) => {
-    if (await actions.recycle(paths)) { setSel(null); setMulti(null); rangeAnchor.current = null; }
+    if (await actions.recycle(paths)) { setSel(null); setMulti(null); rangeAnchor.current = null; again(); }
   };
 
   // ---- keyboard (tree) ---------------------------------------------------------------------------------------
@@ -254,7 +250,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
     return (
       <div className="su" ref={rootEl} tabIndex={0} data-autofocus onKeyDown={onKey}>
         {lead && <header className="su-top">{lead}</header>}
-        {err && !homeData && <div className="lg-empty"><strong>Could not read the disk index</strong><span>{err}</span><button className="btn pri" onClick={() => fetchDir("", true)}>Try again</button></div>}
+        {err && !homeData && <div className="lg-empty"><strong>Could not read the disk index</strong><span>{err}</span><button className="btn pri" onClick={again}>Try again</button></div>}
         {!homeData && !err && <div className="lg-empty"><span className="spin" aria-label="Loading" /></div>}
         {homeData && <Drives data={homeData} onGo={(p) => enterRoot(p)} />}
       </div>
@@ -262,7 +258,8 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   }
 
   const selRow = selIdx >= 0 ? (nodeRows[selIdx]?.entry ?? null) : null;
-  const detail = tab !== "tree" ? details.current.get(focus) : undefined;
+  // undefined = not read yet (spinner), null = the read failed ("No files here."), data = the detail.
+  const detail = tab !== "tree" ? (detailQ.data ?? (detailQ.error ? null : undefined)) : undefined;
   const detailView = detail ? detailWithoutHidden(detail, hidden) : detail;
   const selHit = sel && (tab === "files" || !selRow) ? detailView?.biggest.find((b) => b.path === sel) ?? null : null;
 
@@ -310,7 +307,7 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
             {shownMap && <Legend data={shownMap} />}
           </div>
           {mapPref.open && (shownMap
-            ? <Treemap data={shownMap} get={get} want={fetchDir} on={isOn} lead={sel} dim={!mapData} onSel={(e, mod) => { if (pick(e, mod) && root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
+            ? <Treemap data={shownMap} get={get} want={want} on={isOn} lead={sel} dim={!mapData} onSel={(e, mod) => { if (pick(e, mod) && root) openChain(e.path, root); }} onOpen={(e) => (e.is_dir ? showFolder(e.path) : actions.open(e.path))} onMenu={(e, x, y) => actions.menu(e.path, x, y)} />
             : <div className="su-tm"><div className="su-none"><span className="spin" aria-label="Loading" /></div></div>)}
         </section>
       </div>

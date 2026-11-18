@@ -42,6 +42,12 @@ export const qk = {
   dims: (pathsKey: string) => ["library", "dims", pathsKey] as const,
   /** The standalone library window's volume poll. */
   libStatus: ["library", "status"] as const,
+  /** The Windows service's install/run state (read while the popup shows demo data). */
+  service: ["service"] as const,
+  /** One Space screen folder roll-up; `p` is the folder path, "" = the drive list. */
+  spaceDir: (p: string) => ["space", "dir", p] as const,
+  /** One Space folder's type / biggest-files detail. */
+  spaceDetail: (p: string) => ["space", "detail", p] as const,
   /** One meaning-search answer (popup), pinned to the popup epoch (re-show), the typed text and the plan. */
   sem: (epoch: number, q: string, planKey: string) => ["sem", epoch, q, planKey] as const,
 } as const;
@@ -67,4 +73,10 @@ export function refreshLibraryEmbeddings(qc: QueryClient): void {
 export function refreshLibraryAfterUndo(qc: QueryClient): void {
   refreshLibraryIndex(qc);
   qc.invalidateQueries({ queryKey: ["library", "collEval"] });
+}
+
+/** The Space screen's roll-ups may be behind the index (a recycle, an undo, a new scan, or the
+ *  Refresh button): every folder slice and detail is read again; cached answers keep rendering. */
+export function refreshSpace(qc: QueryClient): void {
+  qc.invalidateQueries({ queryKey: ["space"] });
 }
