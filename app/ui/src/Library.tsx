@@ -176,7 +176,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         if (e.key === "Escape" || matches(e, "Alt+Left")) { e.preventDefault(); dismissConfirm(); }
         return;
       }
-      if (showSettings && (e.key === "Escape" || matches(e, "Alt+Left"))) { e.preventDefault(); setShowSettings(false); return; }
+      if (showSettings && (e.key === "Escape" || matches(e, "Alt+Left"))) {
+        if (t?.closest?.("dialog")) return; // a confirm dialog inside Settings owns the key until it is answered
+        e.preventDefault(); setShowSettings(false); return;
+      }
       if (!embedded && e.ctrlKey && !e.shiftKey && !e.altKey) {
         const ti = TABS.findIndex((_, i) => matches(e, `Ctrl+${i + 1}`));
         if (ti >= 0) { e.preventDefault(); setOwnTab(TABS[ti]!); return; }
@@ -265,7 +268,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {sub && <span className="hsub">{sub}</span>}
         <span className="sp" />
         {tab === "timeline" && images !== null && visible.length > 0 && (
-          <>
+          <div className="ttools">
             <NameFilter value={photoQ} onChange={setPhotoQ} label="Filter photos by name" />
             <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
               {TIMELINE_VIEWS.map((v) => (
@@ -275,7 +278,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
               ))}
             </div>
             <GalleryViewToggle view={gview} onChange={setGview} />
-          </>
+          </div>
         )}
         {chrome}
       </div>

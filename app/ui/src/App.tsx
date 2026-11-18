@@ -1033,9 +1033,10 @@ export default function App({ backend }: { backend: Backend }) {
       // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
       if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (e.key === "Escape" && cheat) { e.preventDefault(); setCheat(false); return; }
-      // Full window, another page: the page owns the keyboard. Esc leaves Settings for the search.
+      // Full window, another page: the page owns the keyboard. Esc leaves Settings for the search —
+      // unless a confirm dialog inside it is open: that dialog owns the key until it is answered.
       if (full && page !== "search") {
-        if (e.key === "Escape" && page === "settings") { e.preventDefault(); setPage("search"); refocus(); }
+        if (e.key === "Escape" && page === "settings" && !(e.target as HTMLElement | null)?.closest?.("dialog")) { e.preventDefault(); setPage("search"); refocus(); }
         return;
       }
       // Alt combos (physical-key matching, so Alt+1 works on AZERTY) must preventDefault:
