@@ -14,24 +14,16 @@ pub const TARGET_CHARS: usize = 1500;
 pub const OVERLAP_CHARS: usize = 150;
 pub const MAX_CHUNKS: usize = 64;
 
-/// Code stretches (`chunk_code`): 1800 characters of whole lines (DigUp's measured sweet spot:
-/// 1200 / 3600 were worse), a single longer line is a stretch of its own cut at 4000.
-pub const CODE_STRETCH: usize = 1800;
-pub const CODE_MAX_PIECE: usize = 4000;
-/// A code file contributes at most this many stretches — the same bound the rest of the index
-/// keeps per file.
-pub const CODE_MAX_CHUNKS: usize = 64;
+// Code stretch constants (DigUp's measured sweet spot: 1800-char stretches, 4000 single-line
+// cap) live in the store crate with the chunker; the chunk tests use them.
+#[cfg(test)]
+pub(crate) use winseek_store::code_chunk::{CODE_MAX_CHUNKS, CODE_MAX_PIECE, CODE_STRETCH};
 
 /// Fingerprint of the code chunker and embedding shape. Stored per index; a change forgets the
 /// indexed code so it is re-chunked and re-embedded whole instead of mixing locator or vector
 /// generations ("titled": stretches embed under their repo-relative path, code queries in the
 /// code retrieval task form — the corpus re-embeds once so both sides share the new space).
 pub const CODE_CHUNKER_FINGERPRINT: &str = "code1 lines1800 titled";
-
-/// Lines that close a block (shell, Ruby, Lua, Objective-C, the C preprocessor).
-const CODE_CLOSERS: &[&str] = &[
-    "end", "fi", "done", "esac", "@end", "#endif", "end;", "end)",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Chunk {
@@ -160,132 +152,17 @@ pub fn chunk_page(text: &str, page: u32, max_chunks: usize) -> Vec<Chunk> {
         .collect()
 }
 
-// ---------------------------------------------------------------- source code
-
-/// A stretch of whole lines: 0-based `first`/`last` (exclusive) indexes into `lines`, plus the
-/// char range of the kept body.
-struct Stretch {
-    text: String,
-    first: usize,
-    last: usize,
-    char_start: usize,
-    char_end: usize,
-}
-
-fn code_blank(line: &str) -> bool {
-    line.chars().all(char::is_whitespace)
-}
-
-/// A line that starts a new block at the left margin; a closing line belongs to the block above it.
-fn code_starts_block(line: &str) -> bool {
-    let Some(first) = line.chars().next() else {
-        return false;
-    };
-    if first.is_whitespace() || "})]".contains(first) {
-        return false;
-    }
-    let trimmed = line.trim();
-    !CODE_CLOSERS.contains(&trimmed)
-}
-
-/// Stretches of whole lines, each at most `size` characters (a longer line is a stretch of its
-/// own, cut at [`CODE_MAX_PIECE`]). A stretch ends, when it can, where the code does: before a
-/// line that starts a new block after a blank line first, then after a blank line or at a new
-/// block — both only in its last 60%. One that had to stop mid-block hands its last two lines on
-/// to the next, so whatever spans the cut is read whole once. `text` is `\n`-normalised upstream.
-///
-/// Port of DigUp's `CodeExtractor.lines` (the measured configuration: 1800-char stretches).
-fn code_stretches(text: &str, size: usize) -> Vec<Stretch> {
-    let mut lines: Vec<&str> = text.split('\n').collect();
-    if lines.last().is_some_and(|l| l.is_empty()) {
-        lines.pop(); // the final newline
-    }
-    let count = lines.len();
-    // Characters before each line, each line counted with its newline.
-    let mut offsets = Vec::with_capacity(count + 1);
-    offsets.push(0usize);
-    for line in &lines {
-        offsets.push(offsets.last().unwrap() + line.chars().count() + 1);
-    }
-    let mut pieces: Vec<Stretch> = Vec::new();
-    let mut start = 0usize;
-    while start < count && pieces.len() < CODE_MAX_CHUNKS {
-        while start < count && code_blank(lines[start]) {
-            start += 1;
-        }
-        if start >= count {
-            break;
-        }
-        let mut end = start + 1; // the stretch is lines[start..<end]
-        while end < count && offsets[end + 1] - offsets[start] <= size {
-            end += 1;
-        }
-        let mut natural = end >= count;
-        if !natural {
-            let floor = offsets[start] + size * 2 / 5;
-            let last_break = |pred: &dyn Fn(usize) -> bool| -> Option<usize> {
-                let mut line = end;
-                while line > start + 1 && offsets[line] >= floor {
-                    if pred(line) {
-                        return Some(line);
-                    }
-                    line -= 1;
-                }
-                None
-            };
-            if let Some(cut) =
-                last_break(&|l| code_starts_block(lines[l]) && code_blank(lines[l - 1])).or_else(
-                    || last_break(&|l| code_blank(lines[l - 1]) || code_starts_block(lines[l])),
-                )
-            {
-                end = cut;
-                natural = true;
-            }
-        }
-        let mut last = end;
-        while last > start + 1 && code_blank(lines[last - 1]) {
-            last -= 1; // blank lines at its end don't count
-        }
-        let mut body = lines[start..last].join("\n");
-        if body.chars().count() > CODE_MAX_PIECE {
-            body = body.chars().take(CODE_MAX_PIECE).collect();
-        }
-        if !body.is_empty() {
-            pieces.push(Stretch {
-                char_start: offsets[start],
-                char_end: offsets[last - 1] + lines[last - 1].chars().count(),
-                text: body,
-                first: start,
-                last,
-            });
-        }
-        if pieces.len() >= CODE_MAX_CHUNKS {
-            break;
-        }
-        start = if natural {
-            end
-        } else {
-            end.saturating_sub(2).max(start + 1)
-        };
-    }
-    pieces
-}
-
-/// Locator of a code stretch: the 1-based lines it spans, so a hit opens there.
-fn code_locator(first: usize, last: usize) -> String {
-    json!({"loc": first + 1, "loc_end": last}).to_string()
-}
-
-/// Chunk source code into stretches of whole lines (see [`code_stretches`]); at most
+/// Chunk source code into stretches of whole lines (the store's
+/// [`winseek_store::code_chunk`] core, shared with the eval harness); at most
 /// [`CODE_MAX_CHUNKS`]. The locator carries 1-based `loc` / `loc_end`.
 pub fn chunk_code(text: &str) -> Vec<Chunk> {
-    code_stretches(text, CODE_STRETCH)
+    winseek_store::code_chunk::code_stretches(text, winseek_store::code_chunk::CODE_STRETCH)
         .into_iter()
         .map(|p| Chunk {
             text: p.text.trim().to_owned(),
             start: p.char_start,
             end: p.char_end,
-            locator: code_locator(p.first, p.last),
+            locator: winseek_store::code_chunk::code_locator(p.first, p.last),
         })
         .collect()
 }

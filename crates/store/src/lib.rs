@@ -11,6 +11,8 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
 
+pub mod code_chunk;
+pub mod code_rank;
 pub mod fuse;
 mod provenance;
 pub mod reason;
