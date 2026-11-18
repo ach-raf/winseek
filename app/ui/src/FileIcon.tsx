@@ -72,7 +72,15 @@ function AppPlate({ src, onFail }: { src: string; onFail: () => void }) {
   const onLoad = (e: React.SyntheticEvent<HTMLImageElement>) => {
     if (plates.has(src)) return;
     const p = analyse(e.currentTarget);
-    if (p) { if (plates.size > 800) plates.clear(); plates.set(src, p); setPlate(p); }
+    if (p) {
+      // Cache cap: drop the single oldest plate (a Map iterates insertion order). Wiping everything
+      // instead re-analysed every visible icon at once — a mid-scroll latency spike.
+      if (plates.size >= 800) {
+        const oldest = plates.keys().next().value;
+        if (oldest !== undefined) plates.delete(oldest);
+      }
+      plates.set(src, p); setPlate(p);
+    }
   };
   const bleed = plate?.kind === "bleed";
   const style = plate?.kind === "tile" ? ({ "--pa": plate.a, "--pb": plate.b } as CSSProperties) : undefined;
