@@ -17,7 +17,7 @@ import { OPACITY_MAX, OPACITY_MIN, applyOpacity, loadOpacity, saveOpacity } from
 import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
-import { ConfirmButton } from "./Confirm";
+import { ConfirmButton, useConfirm } from "./Confirm";
 import { IChevL, ICmd, IContrast, IFolderStroke, IGear, IGrid, IKeyboard, IPulse, ISearch, ISparkle } from "./icons";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
@@ -616,14 +616,15 @@ const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optiona
 
 /** Settings › Shortcuts: the three global hotkeys, each with a press-to-record field
  *  (PRD B9). Recording never swallows keys: every press is captured, Esc cancels, Backspace
- *  clears the held combo (Backspace on an empty field marks an optional one for removal),
- *  Enter saves a captured combo, Save applies. */
+ *  clears the held combo, Enter saves a captured combo, Save applies. Removing a bound optional
+ *  shortcut goes through the shared are-you-sure gate (askIt below), then unbinds. */
 function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: unknown) => void }) {
   const [hk, setHk] = useState<Hotkeys | null>(null);
   const [rec, setRec] = useState<{ which: keyof Hotkeys; combo: string | null } | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const [saved, setSaved] = useState<keyof Hotkeys | null>(null);
   const flashT = useRef<number | undefined>(undefined);
+  const { askIt, node: confirmNode } = useConfirm();
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.hotkeysGet().then(setHk).catch(onError);
@@ -642,6 +643,24 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
     } catch (e) {
       setErr(errText(e));
       setRec(null);
+      backend.hotkeysGet().then(setHk).catch(onError);
+    }
+  };
+  // The Remove button asks first (the shared are-you-sure gate), then unbinds through the same
+  // hotkeysSet(which, null) command the recorder's Save would send — one mutation path for the
+  // keymap. It never opens the recorder: recording is for choosing a new combination only.
+  const remove = async (which: keyof Hotkeys, label: string) => {
+    const ok = await askIt({
+      title: `Remove the “${label}” shortcut?`,
+      body: "winseek stops reacting to this key combination. You can set a new shortcut any time.",
+      verb: "Remove",
+    });
+    if (!ok) return;
+    try {
+      setHk(await backend.hotkeysSet(which, null));
+      setErr(null);
+    } catch (e) {
+      setErr(errText(e));
       backend.hotkeysGet().then(setHk).catch(onError);
     }
   };
@@ -675,7 +694,7 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
                   {bound ? "Change" : "Set"}
                 </button>
                 {row.optional && bound && (
-                  <button className="gbtn danger" onMouseDown={(e) => e.preventDefault()} onClick={() => { setRec({ which: row.which, combo: null }); void save(); }}>Remove</button>
+                  <button className="gbtn danger" onMouseDown={(e) => e.preventDefault()} onClick={() => void remove(row.which, row.label)}>Remove</button>
                 )}
               </span>
             )}
@@ -683,6 +702,7 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
         );
       })}
       {err && <div className="grow"><span className="fr-error" role="alert">{err}</span></div>}
+      {confirmNode}
     </Grp>
   );
 }
