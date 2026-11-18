@@ -69,6 +69,9 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
   background: var(--bg);
   color: var(--fg);
   backdrop-filter: none;
+  /* .ov's hairline white outline is for captions over photos; here it drew a bright box around the
+   * results. The list's edges come from the shared --line borders (frow, pv, abar) like the rest. */
+  box-shadow: none;
 }
 
 /* Home suggestions: recent searches (clearable) + static "Try" examples; both fill the search box.
