@@ -335,17 +335,16 @@ fn path_icon_px(path: &str, size: u32, thumb: bool) -> Option<(u32, u32, Vec<u8>
             f.GetImage(sz, SIIGBF_RESIZETOFIT | SIIGBF_ICONONLY)
         }
     };
-    // The shell extracts icons asynchronously and answers E_PENDING until the image is ready.
+    // The shell extracts icons asynchronously and answers E_PENDING until the image is ready;
+    // poll until a deadline rather than counting attempts, so slow GetImage calls cannot
+    // stretch the total wait past the cap.
     const E_PENDING: windows::core::HRESULT = windows::core::HRESULT(0x8000000Au32 as i32);
+    const ICON_WAIT: std::time::Duration = std::time::Duration::from_millis(500);
+    let deadline = std::time::Instant::now() + ICON_WAIT;
     let mut res = get();
-    for _ in 0..25 {
-        match &res {
-            Err(e) if e.code() == E_PENDING => {
-                std::thread::sleep(std::time::Duration::from_millis(20));
-                res = get();
-            }
-            _ => break,
-        }
+    while matches!(&res, Err(e) if e.code() == E_PENDING) && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        res = get();
     }
     let hbm = res.ok()?;
     let _g = BitmapGuard(hbm);
