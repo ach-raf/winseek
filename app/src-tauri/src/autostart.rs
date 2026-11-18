@@ -8,7 +8,7 @@
 use std::path::Path;
 
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::ERROR_FILE_NOT_FOUND;
+use windows::Win32::Foundation::{ERROR_FILE_NOT_FOUND, ERROR_MORE_DATA};
 use windows::Win32::System::Registry::{
     RegCloseKey, RegCreateKeyExW, RegDeleteValueW, RegGetValueW, RegSetValueExW, HKEY,
     HKEY_CURRENT_USER, KEY_SET_VALUE, REG_OPTION_NON_VOLATILE, REG_SZ, RRF_RT_REG_SZ,
@@ -31,7 +31,26 @@ fn wide(s: &str) -> Vec<u16> {
 }
 
 fn read_value() -> Option<String> {
-    let mut buf = [0u16; 1024];
+    // Size the buffer from the registry first: a fixed 1024-unit buffer made RegGetValueW
+    // answer ERROR_MORE_DATA for a long Run command (a deep install path), read_value()
+    // return None, and enabled() lie that autostart was off — re-registering on every launch.
+    let mut len: u32 = 0;
+    let probe = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            RUN_KEY,
+            VALUE,
+            RRF_RT_REG_SZ,
+            None,
+            None,
+            Some(&mut len),
+        )
+    };
+    if probe.0 != 0 && probe.0 != ERROR_MORE_DATA.0 {
+        return None; // the value is not there (or unreadable)
+    }
+    let units = (len as usize / 2).max(1);
+    let mut buf = vec![0u16; units];
     let mut len = (buf.len() * 2) as u32;
     let r = unsafe {
         RegGetValueW(
@@ -47,7 +66,10 @@ fn read_value() -> Option<String> {
     if r.0 != 0 {
         return None;
     }
-    let n = (len as usize / 2).saturating_sub(1).min(buf.len());
+    let mut n = (len as usize / 2).min(buf.len());
+    if n > 0 && buf[n - 1] == 0 {
+        n -= 1; // RegGetValueW NUL-terminates REG_SZ; drop the terminator
+    }
     Some(String::from_utf16_lossy(&buf[..n]))
 }
 
