@@ -454,6 +454,11 @@ pub fn skip_code_file(path: &str) -> bool {
     {
         return true;
     }
+    // Licenses: prose noise nobody code-searches for (DigUp skips them wherever they are).
+    ["license", "licence", "copying", "notice"]
+        .iter()
+        .any(|w| name.starts_with(w))
+        ||
     // Secret-looking by name: .env, secrets, credentials, tokens, private keys.
     [
         "secret",
@@ -466,6 +471,17 @@ pub fn skip_code_file(path: &str) -> bool {
     ]
     .iter()
     .any(|w| name.contains(w))
+}
+
+/// MPEG transport stream sniff (DigUp `isMPEGTransportStream`): TS packets start with the
+/// 0x47 sync byte every 188 bytes (192 with a 4-byte timecode, as in .m2ts / .mts). A `.ts`
+/// file that sniffs like this is a video wearing a TypeScript name, never code.
+pub fn is_mpeg_ts(bytes: &[u8]) -> bool {
+    if bytes.len() < 400 {
+        return false;
+    }
+    let at = |i: usize| bytes[i] == 0x47;
+    (at(0) && at(188) && at(376)) || (at(4) && at(196) && at(388))
 }
 
 // ---------------------------------------------------------------- notebooks
@@ -519,6 +535,53 @@ mod tests {
             assert!(super::is_temp_name(n), "{n}");
         }
         assert!(!super::is_temp_name(r"C:\d\report.docx"));
+    }
+
+    #[test]
+    fn license_names_are_skipped_and_mpeg_ts_sniffs_by_packet_sync() {
+        for n in [
+            "LICENSE",
+            "a/LICENSE.md",
+            "licence.txt",
+            "COPYING",
+            "NOTICE",
+            "notice.rst",
+        ] {
+            assert!(super::skip_code_file(n), "{n}");
+        }
+        assert!(
+            !super::skip_code_file("noticer/x.rs"),
+            "only the file NAME counts, not folder names"
+        );
+        assert!(
+            !super::skip_code_file("unlicense_me.rs"),
+            "prefix, not contains"
+        );
+
+        let ts: Vec<u8> = [
+            vec![0x47u8],
+            vec![0u8; 187],
+            vec![0x47u8],
+            vec![0u8; 187],
+            vec![0x47u8],
+            vec![0u8; 200],
+        ]
+        .concat();
+        assert_eq!(ts.len(), 577);
+        assert!(super::is_mpeg_ts(&ts), "188-byte packets");
+        let m2ts: Vec<u8> = [
+            vec![0u8; 4],
+            vec![0x47u8],
+            vec![0u8; 191],
+            vec![0x47u8],
+            vec![0u8; 191],
+            vec![0x47u8],
+            vec![0u8; 200],
+        ]
+        .concat();
+        assert!(super::is_mpeg_ts(&m2ts), "192-byte packets with timecode");
+        assert!(!super::is_mpeg_ts(&vec![0u8; 400]), "all zero is not TS");
+        assert!(!super::is_mpeg_ts(&vec![0x47u8; 100]), "too short to trust");
     }
 
     use super::*;

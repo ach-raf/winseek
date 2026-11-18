@@ -190,6 +190,11 @@ pub fn extract_file(path: &str, bytes: &[u8]) -> Res<Extracted> {
                 super::guard::notebook_text(bytes).ok_or(ExtractError::Skip("not_notebook"))?;
             plain(text.as_bytes(), false)?
         }
+        // A `.ts` file can be an MPEG transport stream wearing a TypeScript name; sniff the
+        // packet sync bytes before treating it as text.
+        "ts" if super::guard::is_mpeg_ts(bytes) => {
+            return Err(ExtractError::Skip("mpeg_ts_video"));
+        }
         _ => plain(bytes, false)?,
     };
     if doc.text.trim().is_empty() {
@@ -945,6 +950,32 @@ fn odf_text(r: &mut dyn BufRead, kind: OdfKind, out: &mut Out) {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    #[test]
+    fn a_ts_file_that_sniffs_as_mpeg_transport_stream_is_skipped_as_video() {
+        let ts: Vec<u8> = [
+            vec![0x47u8],
+            vec![0x41u8; 187],
+            vec![0x47u8],
+            vec![0x41u8; 187],
+            vec![0x47u8],
+            vec![0x41u8; 200],
+        ]
+        .concat();
+        assert_eq!(ts.len(), 577);
+        match extract_file(r"C:\p\clip.ts", &ts) {
+            Err(ExtractError::Skip(r)) => assert_eq!(r, "mpeg_ts_video"),
+            other => panic!("expected mpeg_ts_video skip, got {other:?}"),
+        }
+        // A real TypeScript file of the same length is fine (the sync bytes don't line up).
+        let code: Vec<u8> = b"const x = 1;\n"
+            .iter()
+            .copied()
+            .cycle()
+            .take(577)
+            .collect();
+        assert!(matches!(extract_file(r"C:\p\app.ts", &code), Ok(_)));
+    }
     use super::*;
     use std::io::Write;
     use zip::write::SimpleFileOptions;

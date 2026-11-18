@@ -44,9 +44,41 @@ const CODE_EXTS: &[&str] = &[
     "bat", "cmd", "sql", "html", "htm", "css", "scss", "sass", "less", "vue", "svelte", "json",
     "toml", "yaml", "yml", "xml", "ini", "cfg", "gradle", "cmake", "proto", "graphql", "tf",
     "ipynb",
+    // DigUp's source coverage (Rules.sourceExtensions): shader / GPU / hardware description,
+    // build and template languages, more scripting languages.
+    "pyx", "hxx", "cts", "groovy", "fs", "fish", "pl", "pm", "astro", "gql", "hcl", "nix", "zig",
+    "cljs", "elm", "mli", "vim", "el", "lisp", "asm", "s", "metal", "glsl", "hlsl", "wgsl", "cu",
+    "cuh", "ino", "v", "sv", "tex", "mk",
 ];
 /// Prose that lives next to code; it joins the code index when its folder is a code project.
-const CODE_PROSE_EXTS: &[&str] = &["md", "markdown", "txt", "rst"];
+const CODE_PROSE_EXTS: &[&str] = &["md", "markdown", "txt", "rst", "adoc", "org", "typ"];
+
+/// Build files known by their name alone (DigUp `codeFileNames`): no extension to match, and
+/// among the first things a developer looks for. Compared lower-cased; `Dockerfile.` also
+/// matches the flavour variants (`Dockerfile.dev`).
+const CODE_FILE_NAMES: &[&str] = &[
+    "makefile",
+    "gnumakefile",
+    "dockerfile",
+    "containerfile",
+    "justfile",
+    "rakefile",
+    "gemfile",
+    "podfile",
+    "brewfile",
+    "procfile",
+    "vagrantfile",
+    "jenkinsfile",
+];
+
+/// True for a file that belongs to the code index by its name alone.
+pub fn is_code_name(path: &str) -> bool {
+    let name = Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    name.starts_with("dockerfile.") || CODE_FILE_NAMES.contains(&name.as_str())
+}
 
 /// True for the image formats the worker can decode.
 pub fn is_supported_image(path: &str) -> bool {
@@ -78,7 +110,10 @@ pub fn kind_of(path: &str, index_code: bool) -> Option<&'static str> {
         Some(KIND_VIDEO)
     } else if ext_in(path, AUDIO_EXTS) {
         Some(KIND_AUDIO)
-    } else if index_code && ext_in(path, CODE_EXTS) && !guard::skip_code_file(path) {
+    } else if index_code
+        && (ext_in(path, CODE_EXTS) || is_code_name(path))
+        && !guard::skip_code_file(path)
+    {
         Some(KIND_CODE)
     } else {
         None
@@ -100,7 +135,8 @@ pub fn kind_in(path: &str, index_code: bool, in_project: bool) -> Option<&'stati
     if !index_code || guard::skip_code_file(path) {
         return None;
     }
-    (ext_in(path, CODE_EXTS) || ext_in(path, CODE_PROSE_EXTS)).then_some(KIND_CODE)
+    (ext_in(path, CODE_EXTS) || ext_in(path, CODE_PROSE_EXTS) || is_code_name(path))
+        .then_some(KIND_CODE)
 }
 
 /// Entries the crawler never looks at.
@@ -442,6 +478,33 @@ mod tests {
             assert_eq!(kind_of(code, false), None, "{code} needs the opt-in");
             assert_eq!(kind_of(code, true), Some(KIND_CODE), "{code}");
         }
+        for code in [
+            "a.pyx", "a.hxx", "a.cts", "a.groovy", "a.fs", "a.fish", "a.pl", "a.pm", "a.astro",
+            "a.gql", "a.hcl", "a.nix", "a.zig", "a.cljs", "a.elm", "a.mli", "a.vim", "a.el",
+            "a.lisp", "a.asm", "a.s", "a.metal", "a.glsl", "a.hlsl", "a.wgsl", "a.cu", "a.cuh",
+            "a.ino", "a.v", "a.sv", "a.tex", "a.mk",
+        ] {
+            assert_eq!(kind_of(code, true), Some(KIND_CODE), "{code}");
+        }
+        for named in [
+            "Makefile",
+            "makefile",
+            "GNUmakefile",
+            "Dockerfile",
+            "Containerfile",
+            "Justfile",
+            "Rakefile",
+            "Gemfile",
+            "Podfile",
+            "Brewfile",
+            "Procfile",
+            "Vagrantfile",
+            "Jenkinsfile",
+            "Dockerfile.dev",
+            "dockerfile.prod",
+        ] {
+            assert_eq!(kind_of(named, true), Some(KIND_CODE), "{named}");
+        }
         for no in [
             "a.exe",
             "a.dll",
@@ -450,8 +513,34 @@ mod tests {
             "x.js.map",
             "package-lock.json",
             "vendor/x.go",
+            "Makefile.bak",
+            "makefile2",
         ] {
             assert_eq!(kind_of(no, true), None, "{no}");
+        }
+    }
+
+    #[test]
+    fn licenses_are_never_code_and_prose_gains_the_doc_flavours_in_a_project() {
+        // Extension-less license names reach the code branch and are rejected there; a
+        // LICENSE.md outside a project is a document like any other text file.
+        for lic in ["LICENSE", "COPYING", "COPYING.LESSER", "NOTICE"] {
+            assert_eq!(kind_of(lic, true), None, "{lic}");
+        }
+        // In a project the prose extensions would join the code index - except licenses.
+        assert_eq!(kind_in("LICENSE.md", true, true), None, "license prose");
+        assert_eq!(
+            kind_in("CHANGELOG.md", true, true),
+            Some(KIND_CODE),
+            "real prose stays"
+        );
+        for prose in ["docs/a.adoc", "notes.org", "spec.typ"] {
+            assert_eq!(kind_in(prose, true, true), Some(KIND_CODE), "{prose}");
+            assert_eq!(
+                kind_in(prose, true, false),
+                None,
+                "{prose} outside a project"
+            );
         }
     }
 
