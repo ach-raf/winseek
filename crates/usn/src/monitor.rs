@@ -183,8 +183,9 @@ pub enum MonitorExit {
     JournalReset,
 }
 
-/// Sleep up to `d`, waking early when `stop` is set.
-fn sleep_stoppable(d: Duration, stop: &AtomicBool) {
+/// Sleep up to `d`, waking early when `stop` is set. Also the one wait helper for the searchd
+/// volume workers (they used to carry a second, coarser copy).
+pub fn sleep_stoppable(d: Duration, stop: &AtomicBool) {
     let end = Instant::now() + d;
     while !stop.load(Ordering::Relaxed) {
         let left = end.saturating_duration_since(Instant::now());

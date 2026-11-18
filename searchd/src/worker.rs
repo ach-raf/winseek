@@ -15,7 +15,8 @@ use winseek_index::{Index, IndexBuilder, VolKind, VolumeMeta};
 use winseek_ipc::{Monitor, VolumeState};
 use winseek_ntfs::{open_volume_for_usn, scan_volume, VolumeInfo};
 use winseek_usn::{
-    query_journal, run_monitor, JournalCursor, MonitorConfig, MonitorExit, RecordVersion,
+    query_journal, run_monitor, sleep_stoppable, JournalCursor, MonitorConfig, MonitorExit,
+    RecordVersion,
 };
 
 use crate::log::{error, info, warn};
@@ -199,13 +200,6 @@ fn scan_refs(sh: &Shared, vol: &Vol, ctl: &VolCtl) -> Result<Index, String> {
     Ok(b.finish())
 }
 
-pub(crate) fn sleep_stoppable(sh: &Shared, d: Duration) {
-    let end = Instant::now() + d;
-    while !sh.shutdown.load(Ordering::Relaxed) && Instant::now() < end {
-        std::thread::sleep(Duration::from_millis(100));
-    }
-}
-
 /// Close-on-query-remove for a long-lived handle (`CM_Register_Notification` on the handle,
 /// our stand-in for Everything's per-volume `RegisterDeviceNotification`). The callback asks
 /// the worker to stop (and cancels a pending folder watch), then waits until the worker has
@@ -319,7 +313,7 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol, mut resume: Option<Journa
                     }
                     error!("{l}: scan failed: {e}; retrying in {}s", RETRY.as_secs());
                     sh.set_state(l, VolumeState::Error { msg: e });
-                    sleep_stoppable(&sh, RETRY);
+                    sleep_stoppable(RETRY, &sh.shutdown);
                     continue;
                 }
             },
@@ -334,7 +328,7 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol, mut resume: Option<Journa
                 error!("{l}: {e}; retrying in {}s", RETRY.as_secs());
                 sh.set_state(l, VolumeState::Error { msg: e.to_string() });
                 resume = Some(cursor);
-                sleep_stoppable(&sh, RETRY);
+                sleep_stoppable(RETRY, &sh.shutdown);
                 continue;
             }
         };
