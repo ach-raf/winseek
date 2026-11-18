@@ -48,3 +48,17 @@
 
 /* ---- one gutter for every page of the full window: titles, tabs, cards, lists and footers start on the same line (--gut, base.css) ---- */
 .shell.full .tbar { padding-left: var(--gut); }
+
+/* Row inside the shell: sidebar and the visible page column in the full window; the popup's single
+   column rides in it too. The jobs strip (`.jbar`) sits below it, full width, in both modes. */
+.shell-row { flex: 1; min-width: 0; min-height: 0; display: flex; }
+
+/* ---- jobs bar: the always-visible bottom strip that names the work in progress ---- */
+.jbar { position: relative; flex: none; height: 28px; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--gut); border-top: 1px solid var(--line); background: var(--bg); color: var(--fg3); font-size: 12.5px; overflow: hidden; }
+.jbar .jspin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--line); border-top-color: var(--acc); animation: jspin 900ms linear infinite; }
+@keyframes jspin { to { transform: rotate(360deg); } }
+.jbar .jseg { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.jbar .jseg + .jseg, .jbar .jseg + .jdone { border-left: 1px solid var(--line); padding-left: var(--sp-3); }
+.jbar .jdone { flex: none; color: var(--ok); font-weight: 600; animation: jfade 200ms var(--ease); }
+@keyframes jfade { from { opacity: 0; } }
+.jbar .jtrack { position: absolute; left: 0; bottom: 0; height: 2px; background: var(--acc); opacity: 0.55; transition: width 400ms var(--ease); }

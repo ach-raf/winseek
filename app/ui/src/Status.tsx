@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { qk } from "./qk";
 import type { Backend, StatusIndex, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusTier1, VolumeDetail } from "./types";
 import { errText, formatClock, formatDate, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText, plural, waitingText } from "./statusVerdict";
@@ -7,23 +9,15 @@ import { fileName, reasonHint, reasonSentence } from "./reasonText";
 import type { SettingsSection } from "./settingsNav";
 
 const fmt = (n: number) => n.toLocaleString("en-US");
-const POLL_MS = 1000;
-
-/** Polls `statusPage` every second while this is mounted and the window is visible. */
+/** Reads the status page through the shared `qk.statusPage` entry: the Settings›Status panes and
+ *  the bottom jobs bar are observers of one answer, so an open Settings never means a second
+ *  poller in the same window. Polls every second while mounted (the page shows live tickers);
+ *  the jobs bar's own observer drops to 5 s while nothing runs. */
 export function useStatusPage(backend: Backend): [StatusPage | null, string | null, () => void] {
-  const [page, setPage] = useState<StatusPage | null>(null);
-  const [err, setErr] = useState<string | null>(null);
-  const load = useCallback(() => {
-    backend.statusPage().then((p) => { setPage(p); setErr(null); }).catch((e) => setErr(errText(e)));
-  }, [backend]);
-  useEffect(() => {
-    load();
-    const t = window.setInterval(() => { if (!document.hidden) load(); }, POLL_MS);
-    const onVis = () => { if (!document.hidden) load(); };
-    document.addEventListener("visibilitychange", onVis);
-    return () => { window.clearInterval(t); document.removeEventListener("visibilitychange", onVis); };
-  }, [load]);
-  return [page, err, load];
+  const qc = useQueryClient();
+  const q = useQuery({ queryKey: qk.statusPage, queryFn: () => backend.statusPage(), refetchInterval: 1000 });
+  const load = useCallback(() => { void qc.invalidateQueries({ queryKey: qk.statusPage }); }, [qc]);
+  return [q.data ?? null, q.error ? errText(q.error) : null, load];
 }
 
 export function Bar({ value, label }: { value: number | null; label: string }) {

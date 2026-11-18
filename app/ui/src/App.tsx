@@ -24,6 +24,7 @@ import { Shortcuts, tooltip } from "./Shortcuts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue, useModels, usePaneFollow, useSemantic, useStoredSection, useStoredValue, useTier1 } from "./hooks";
 import { qk } from "./qk";
+import { JobsBar } from "./JobsBar";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
@@ -1679,8 +1680,10 @@ export default function App({ backend }: { backend: Backend }) {
 
   return (
     <div className={"shell" + shellClass(viewMode) + (showPanel ? " panel" : "")}>
+      {/* The shell is a column everywhere so the jobs strip can sit at the very bottom; the sidebar
+          and the page columns live in this row. The strip below is on every screen, both modes. */}
+      <div className="shell-row">
       {full && <Sidebar page={page} onPage={(p) => { setSpaceAt(undefined); setPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
-
       <div className="main-col" hidden={full && page !== "search"}>
         {full ? (
           <header className="tbar">
@@ -1834,6 +1837,10 @@ export default function App({ backend }: { backend: Backend }) {
                    drive={spaceAt} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
         </div>
       )}
+      </div>
+
+      {/* Work-in-progress strip: always the last thing on screen while any job runs. */}
+      <JobsBar backend={backend} volumes={status} t1={t1} models={models} />
 
       {launchMenu && <LaunchMenu
         menu={{ hit: launchMenu.hit, x: launchMenu.x, y: launchMenu.y }} idx={menuIdx} setIdx={setMenuIdx}

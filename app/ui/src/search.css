@@ -1,12 +1,11 @@
 /* ===== search surface (v4): compact popup + full window. ===== */
 
 /* ---- layout glue ---- */
-.shell > .main-col { min-height: 0; }
+.shell .main-col { min-height: 0; }
 .main-col[hidden], .cols[hidden], .list[hidden] { display: none; }
 html.web.view-full body { display: block; }
 html.web.view-full #root { width: 100%; height: 100%; }
 html.web.view-full .shell { border-radius: 0; border: 0; }
-.shell.full { flex-direction: row; }
 
 /* ---- search bar ---- */
 .sbar { display: flex; align-items: center; gap: 12px; flex: none; }

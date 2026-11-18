@@ -44,6 +44,9 @@ export const qk = {
   libStatus: ["library", "status"] as const,
   /** The Windows service's install/run state (read while the popup shows demo data). */
   service: ["service"] as const,
+  /** The whole status page: the Settings›Status panes read it on a 1 s clock and the bottom jobs
+   *  bar rides the same entry, so an open Settings never means a second poller in one window. */
+  statusPage: ["statusPage"] as const,
   /** One Space screen folder roll-up; `p` is the folder path, "" = the drive list. */
   spaceDir: (p: string) => ["space", "dir", p] as const,
   /** One Space folder's type / biggest-files detail. */
