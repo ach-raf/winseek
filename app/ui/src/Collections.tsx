@@ -5,7 +5,7 @@ import { Gallery, GalleryViewToggle, type GallerySection, type GridExtra, type G
 import { NameFilter } from "./NameFilter";
 import { KeyHints } from "./Hint";
 import { baseName } from "./Semantic";
-import { kindOf } from "./format";
+import { errText, kindOf } from "./format";
 import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./libraryLogic";
 import { useStoredValue } from "./hooks";
 import { qk } from "./qk";
@@ -19,7 +19,6 @@ interface Eval {
   sig: string;
 }
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const CAP = 500;
 /** The slider is a strictness dial over the calibrated gate (hub-corrected, per-modality z-score —
  *  the same relevance machinery search uses), not a raw cosine. 0.62 sits at search's own

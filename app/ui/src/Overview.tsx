@@ -4,13 +4,13 @@ import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
 import { Hint } from "./Hint";
-import { matchPct, nicePath, reasonOf, relDate } from "./overviewLogic";
+import { matchPct, nicePath, reasonOf } from "./overviewLogic";
 import { picBadge } from "./pictureRank";
 import { launchPath } from "./launchLogic";
 import { FileIcon } from "./FileIcon";
 import { IChevL } from "./icons";
 import { Snippet } from "./Semantic";
-import { formatSize, kindOf, matchRanges } from "./format";
+import { formatSize, kindOf, matchRanges, relDate } from "./format";
 
 /** Highlights `ranges` when given (launcher hits carry exact char ranges), else finds `query`. */
 export function Highlight({ text, query, ranges }: { text: string; query: string; ranges?: [number, number][] }) {

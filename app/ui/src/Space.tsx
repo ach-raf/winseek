@@ -5,7 +5,7 @@ import type { Backend, DiskUsage, DriveSpace, Hit, UsageDetail, UsageEntry, Usag
 import { qk, refreshSpace } from "./qk";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
-import { formatDate, formatSize } from "./format";
+import { errText, formatDate, formatSize } from "./format";
 import { IChevL, IUp, IRefresh } from "./icons";
 import { uniformRange, nameMatches, rangedBatch, toggledBatch, type SelMod } from "./libraryLogic";
 import { NameFilter } from "./NameFilter";
@@ -14,7 +14,6 @@ import {
   within, withoutHidden, type Rest, type TileItem, type TreeRow,
 } from "./spaceLogic";
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const num = (n: number) => n.toLocaleString("en-US");
 const kc = (k: number): CSSProperties => ({ "--kc": `var(--k${k in KINDS ? k : 0})` } as CSSProperties);
 const ROW_H = 32;

@@ -7,12 +7,11 @@ import "./prismLangs";
 import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
-import { formatDate, formatSize } from "./format";
+import { errText, formatDate, formatSize } from "./format";
 import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
 /** What the popup's global key handler may drive while the preview is open (PRD B6). */
 export interface PreviewApi {

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, chipCount, EXAMPLE_QUERIES, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, relDate, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { chipCount, relDate } from "./format.ts";
 import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
 

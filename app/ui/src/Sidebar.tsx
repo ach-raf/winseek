@@ -1,14 +1,11 @@
 import type { CSSProperties, ReactNode } from "react";
 import type { DriveSpace, VolumeStatus } from "./types";
 import { IClean, IColl, IContract, IGear, ILogo, ISearch, ITime, IMin, ICls } from "./icons";
+import { formatSize } from "./format";
 
 export type Page = "search" | "timeline" | "collections" | "cleanup" | "settings";
 
 const compact = (n: number) => (n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
-const gb = (n: number) => {
-  const g = n / 1024 ** 3;
-  return g >= 1000 ? `${(g / 1024).toFixed(g >= 10240 ? 0 : 1)} TB` : g >= 10 ? `${Math.round(g)} GB` : g >= 1 ? `${g.toFixed(1)} GB` : `${Math.max(1, Math.round(n / 1024 ** 2))} MB`;
-};
 
 /**
  * v4 left rail of the full window: brand, Search, Library group, the drives card, Settings. Classes: shell.css.
@@ -62,9 +59,9 @@ export function Sidebar({ page, onPage, status, counts, space, onDrive }: {
             const scan = v.state === "scanning" && v.total ? Math.min(1, (v.done ?? 0) / v.total) : null;
             const used = sp ? 1 - sp.free / sp.total : null;
             const tight = used !== null && used >= 0.9;
-            const right = scan !== null ? `Reading ${Math.round(scan * 100)}%` : sp ? gb(sp.free) : `${compact(v.files)} files`;
+            const right = scan !== null ? `Reading ${Math.round(scan * 100)}%` : sp ? formatSize(sp.free) : `${compact(v.files)} files`;
             const tip = [
-              sp ? `${v.letter}: ${gb(sp.free)} free of ${gb(sp.total)}${tight ? " (almost full)" : ""}` : `${v.letter}:`,
+              sp ? `${v.letter}: ${formatSize(sp.free)} free of ${formatSize(sp.total)}${tight ? " (almost full)" : ""}` : `${v.letter}:`,
               `${v.files.toLocaleString("en-US")} files searchable`,
               onDrive ? "Click to see what takes the space" : "",
             ].filter(Boolean).join("\n");

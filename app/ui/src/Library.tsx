@@ -17,6 +17,7 @@ import { groupByMonth } from "./libraryLogic";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
 import { useConfirm } from "./Confirm";
+import { errText } from "./format";
 import { recycleAsk } from "./confirmLogic";
 
 export type LibTab = "timeline" | "collections" | "cleanup";
@@ -27,7 +28,6 @@ const SUBS: Record<Exclude<LibTab, "timeline">, string> = {
   cleanup: "Nothing is deleted until you say so",
 };
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
 /** `value`, but a change shows up at most once per `ms` (the last one always does). */
 function useSettled<T>(value: T, ms: number): T {

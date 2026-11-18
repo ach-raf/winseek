@@ -1,23 +1,62 @@
+/** Bytes, the one formatter every surface shows sizes with: "512 B", "1.5 KB", "45 GB" (no
+ *  trailing ".0"). Was five per-surface formatters that rounded differently. */
+const NUM1 = new Intl.NumberFormat("en-US", { maximumFractionDigits: 1 });
+const SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"];
 export function formatSize(n: number | null): string {
   if (n === null) return "";
-  if (n < 1024) return `${n} B`;
-  const u = ["KB", "MB", "GB", "TB"];
-  let v = n / 1024, i = 0;
-  while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-  return `${v >= 100 ? v.toFixed(0) : v.toFixed(1)} ${u[i]}`;
+  let v = n, i = 0;
+  while (v >= 1024 && i < SIZE_UNITS.length - 1) { v /= 1024; i++; }
+  return `${i === 0 ? n : NUM1.format(v)} ${SIZE_UNITS[i]}`;
 }
 
-const MON = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+/** Month abbreviations ("Jan"…) come from Intl — the one month-name source in the UI. */
+const MON_FMT = new Intl.DateTimeFormat("en-US", { month: "short" });
+export const MONTH_SHORT = Array.from({ length: 12 }, (_, m) => MON_FMT.format(new Date(2021, m, 15)));
+
+/** Whole calendar days between two timestamps' local dates (positive = past). The shared
+ *  arithmetic of formatDate and relDate — they used to be two disagreeing copies. */
+function dayDiff(ms: number, now: number): number {
+  const day = (t: number) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
+  return Math.round((day(now) - day(ms)) / 86400000);
+}
+
 export function formatDate(ms: number | null, now = Date.now()): string {
   if (ms === null) return "";
   const d = new Date(ms), n = new Date(now);
-  const day = (x: Date) => new Date(x.getFullYear(), x.getMonth(), x.getDate()).getTime();
-  const diff = Math.round((day(n) - day(d)) / 86400000);
+  const diff = dayDiff(ms, now);
   const hm = `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
   if (diff === 0) return `Today ${hm}`;
   if (diff === 1) return `Yesterday ${hm}`;
-  if (d.getFullYear() === n.getFullYear()) return `${MON[d.getMonth()]} ${d.getDate()}`;
-  return `${MON[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+  if (d.getFullYear() === n.getFullYear()) return `${MONTH_SHORT[d.getMonth()]} ${d.getDate()}`;
+  return `${MONTH_SHORT[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`;
+}
+
+/** The message of an error-ish rejection ("Error: x" as the backend words it → "x"). One util
+ *  instead of the copy that used to sit at the top of half the components. */
+export function errText(e: unknown): string {
+  return String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
+}
+
+/** A filter chip's count, short enough that the popup's chip row never clips it: 842, 1.3k, 12k, 4.2M. */
+export function chipCount(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 999_500) return n < 1e4 ? (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k" : Math.round(n / 1e3) + "k";
+  return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
+}
+
+/** "Today", "Yesterday", "3 days ago", "2 weeks ago", "5 months ago", "2 years ago" (calendar days;
+ *  months and years stay the coarse 30 / 365-day buckets every surface has always shown). The
+ *  relative twin of formatDate, sharing its day math. */
+export function relDate(ms: number | null, now = Date.now()): string {
+  if (ms === null) return "";
+  const d = dayDiff(ms, now);
+  if (d <= 0) return "Today";
+  if (d === 1) return "Yesterday";
+  if (d < 7) return `${d} days ago`;
+  const n = (v: number, unit: string) => (v <= 1 ? `Last ${unit}` : `${v} ${unit}s ago`);
+  if (d < 60) return n(Math.round(d / 7), "week");
+  if (d < 700) return n(Math.round(d / 30), "month");
+  return n(Math.round(d / 365), "year");
 }
 
 /** Split a path's directory into a shrinkable head and a fixed tail (last folder), for CSS middle-truncation. */

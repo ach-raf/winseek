@@ -423,27 +423,6 @@ export function nicePath(path: string): { head: string; tail: string } {
   return parts.length === 1 ? { head: "", tail: last } : { head: parts.slice(0, -1).join(" \u203a "), tail: " \u203a " + last };
 }
 
-/** A filter chip's count, short enough that the popup's chip row never clips it: 842, 1.3k, 12k, 4.2M. */
-export function chipCount(n: number): string {
-  if (n < 1000) return String(n);
-  if (n < 999_500) return n < 1e4 ? (n / 1e3).toFixed(1).replace(/\.0$/, "") + "k" : Math.round(n / 1e3) + "k";
-  return (n / 1e6).toFixed(1).replace(/\.0$/, "") + "M";
-}
-
-/** "Today", "Yesterday", "3 days ago", "2 weeks ago", "5 months ago", "2 years ago" (calendar days). */
-export function relDate(ms: number | null, now = Date.now()): string {
-  if (ms === null) return "";
-  const day = (t: number) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime(); };
-  const d = Math.round((day(now) - day(ms)) / 86400000);
-  if (d <= 0) return "Today";
-  if (d === 1) return "Yesterday";
-  if (d < 7) return `${d} days ago`;
-  const n = (v: number, unit: string) => (v <= 1 ? `Last ${unit}` : `${v} ${unit}s ago`);
-  if (d < 60) return n(Math.round(d / 7), "week");
-  if (d < 700) return n(Math.round(d / 30), "month");
-  return n(Math.round(d / 365), "year");
-}
-
 /** Search time for the stat: one decimal below 10 ms ("0.4"), whole milliseconds above. */
 export const fmtMs = (ms: number): string => (ms < 10 ? Math.max(0.1, ms).toFixed(1) : String(Math.round(ms)));
 

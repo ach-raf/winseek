@@ -14,7 +14,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, chipCount, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
@@ -25,7 +25,7 @@ import { Shortcuts, tooltip } from "./Shortcuts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useModels, useSemantic, useTier1 } from "./hooks";
 import { qk } from "./qk";
-import { kindOf, formatSize } from "./format";
+import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 
 const ROW_H = 54;
@@ -740,7 +740,7 @@ export default function App({ backend }: { backend: Backend }) {
   }, []);
   const fail = useCallback((e: unknown) => {
     console.error("winseek action failed:", e);
-    flash(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""), false, 3500);
+    flash(errText(e), false, 3500);
   }, [flash]);
 
   // Window drag: the bars are the handle (popup search bar, full-window top bar and side rail —
@@ -1300,7 +1300,7 @@ export default function App({ backend }: { backend: Backend }) {
       await (service === "stopped" ? backend.startService() : backend.installService());
       startCounting();
     } catch (e) {
-      setSetupErr(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, ""));
+      setSetupErr(errText(e));
     } finally {
       setSetupBusy(false);
       refocus();
@@ -1340,7 +1340,7 @@ export default function App({ backend }: { backend: Backend }) {
   // ---- render --------------------------------------------------------------
   const totalFiles = status.reduce((a, v) => a + v.files + v.folders, 0);
   const state = status.find((v) => v.state !== "live")?.state ?? (status.length ? "live" : "connecting");
-  const filesText = totalFiles >= 1e6 ? `${(totalFiles / 1e6).toFixed(1)}M` : totalFiles.toLocaleString("en-US");
+  const filesText = totalFiles >= 1e6 ? chipCount(totalFiles) : totalFiles.toLocaleString("en-US");
   const statusText =
     state === "demo" ? `Demo data · ${service === "not_installed" ? "name service not installed" : service === "stopped" ? "name service stopped" : "searchd not running"}`
     : state === "offline" ? "searchd offline — reconnecting…"

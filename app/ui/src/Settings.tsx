@@ -4,7 +4,7 @@ import type { Models } from "./hooks";
 import { refinerView, rowAction, type RowAction } from "./modelRows";
 import { argsPreview, pathNote, snippets } from "./agentLogic";
 import { Bar, IndexRow, Models as ModelsPane, Names, RebuildRow, StatusMeaning, useStatusPage } from "./Status";
-import { formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
+import { errText, formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { fileName } from "./reasonText";
 import { eventToCombo } from "./hotkeyLogic";
 import { Folders } from "./Setup";
@@ -607,7 +607,6 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
   );
 }
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
 const HOTKEY_ROWS: { which: keyof Hotkeys; label: string; blurb: string; optional: boolean }[] = [
   { which: "popup", label: "Shortcut", blurb: "Opens winseek from anywhere. Combine Ctrl, Alt, Shift or Win with a key.", optional: false },

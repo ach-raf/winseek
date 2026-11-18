@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { errText } from "./format";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_GROUPS } from "./modelRows";
 import { NO_HITS, runSemantic, semPlan, semPlaceholder, type SemanticState } from "./semanticLogic";
 import { qk } from "./qk";
 import type { Backend, Filter, ModelGroup, ModelsPlan, ModelsProgress, Tier1Status } from "./types";
 
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 
 /** Tier 1 (semantic layer) status, owned by react-query: one shared cache entry for every consumer
  *  (the popup and the Library used to poll independently, two fetches for one answer). Polls every

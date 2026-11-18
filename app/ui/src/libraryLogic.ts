@@ -1,6 +1,8 @@
 // Pure helpers for the library window (no imports, so `node --test` can load this file).
 
-const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+// Month names from Intl (the one month-name source in the UI); local on purpose: this file stays
+// import-free for `node --test`.
+const MONTHS = Array.from({ length: 12 }, (_, m) => new Intl.DateTimeFormat("en-US", { month: "long" }).format(new Date(2021, m, 15)));
 const MON3 = MONTHS.map((m) => m.slice(0, 3));
 
 // ---- timeline sections ------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import type { Backend, StatusIndex, StatusModelFile, StatusModels, StatusPage, StatusParser, StatusReason, StatusTier0, StatusTier1, VolumeDetail } from "./types";
-import { formatClock, formatDate, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
+import { errText, formatClock, formatDate, formatDuration, formatPages, formatPercent, formatRate, formatSize } from "./format";
 import { pausedText, plural, waitingText } from "./statusVerdict";
 import { Grp, Row } from "./settingsUi";
 import { fileName, reasonHint, reasonSentence } from "./reasonText";
@@ -14,7 +14,7 @@ export function useStatusPage(backend: Backend): [StatusPage | null, string | nu
   const [page, setPage] = useState<StatusPage | null>(null);
   const [err, setErr] = useState<string | null>(null);
   const load = useCallback(() => {
-    backend.statusPage().then((p) => { setPage(p); setErr(null); }).catch((e) => setErr(String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "")));
+    backend.statusPage().then((p) => { setPage(p); setErr(null); }).catch((e) => setErr(errText(e)));
   }, [backend]);
   useEffect(() => {
     load();

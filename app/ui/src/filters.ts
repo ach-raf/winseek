@@ -58,8 +58,11 @@ const SCREENSHOT = new Set(["screenshot", "screenshots"]);
 const ARTICLES = new Set(["a", "an", "the", "some", "any"]);
 const LINKS = new Set(["of", "with", "showing"]);
 
-const MONTHS = ["january", "february", "march", "april", "may", "june", "july", "august", "september", "october", "november", "december"];
-const MON3 = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+// Month vocab from Intl, so the words parsed here are exactly the words the UI displays (the
+// short forms label the date chips). Local on purpose: this file stays import-free for `node --test`.
+const MONTH_AT = (m: number) => new Date(2021, m, 15);
+const MON3 = Array.from({ length: 12 }, (_, m) => new Intl.DateTimeFormat("en-US", { month: "short" }).format(MONTH_AT(m)));
+const MONTHS = Array.from({ length: 12 }, (_, m) => new Intl.DateTimeFormat("en-US", { month: "long" }).format(MONTH_AT(m)).toLowerCase());
 const monthIndex = (w: string): number => {
   const i = MONTHS.indexOf(w);
   if (i >= 0) return i;

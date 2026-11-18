@@ -4,7 +4,7 @@ import type { Backend, DupGroup, DupMember, Hit, LibImage, NearState } from "./t
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { baseName } from "./Semantic";
-import { formatDate, formatSize, splitDir } from "./format";
+import { errText, formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
 import { qk } from "./qk";
 import { IChevL, ICheck } from "./icons";
@@ -13,7 +13,6 @@ import { KeyHints } from "./Hint";
 import { Space } from "./Space";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
-const errText = (e: unknown) => String(e instanceof Error ? e.message : e).replace(/^Error:\s*/, "");
 const NEAR_THRESHOLD = 0.95;
 const BIG_N = 200;
 const HOME_ROWS = 6;
