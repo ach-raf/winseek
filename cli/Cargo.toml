@@ -10,6 +10,7 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 winseek-ipc = { path = "../crates/ipc" }
 jiff = "0.2"
+clap = { version = "4", features = ["derive"] }
 
 [[bin]]
 name = "winseek-cli"

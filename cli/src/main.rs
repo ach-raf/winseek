@@ -25,6 +25,7 @@
 use std::io::{self, Write};
 use std::time::{Duration, Instant};
 
+use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 use winseek_ipc::pipe::connect;
 use winseek_ipc::{
@@ -47,6 +48,7 @@ USAGE
   winseek-cli path [status | add | remove] [--machine] [--json]
 
 search   Name search with the same syntax as the app (ext:pdf, size:>10mb, dm:today, folder:...).
+         --          a query starting with '-' goes after `--` (search -- -draft)
          -n N        at most N results (default 50)
          --sort      name (default), size, date, type, path; add _desc / _asc to flip (size_asc, date_asc, name_desc...)
          --long      add size and modified date
@@ -70,7 +72,7 @@ search/status/index need the winseek name service (searchd); meaning/read/recent
 winseek app running with agent access on (Settings › Agents).
 Exit code 0 ok, 1 failed, 2 bad usage.";
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, PartialEq, Eq, Clone, Copy, ValueEnum)]
 enum PathAction {
     Status,
     Add,
@@ -146,14 +148,6 @@ fn sort_of(s: &str) -> Result<Sort, String> {
 }
 
 /// `-n N` / `--limit N` shared by four commands; rejects 0 and junk, caps at the tool limit.
-fn limit_of(it: &mut std::slice::Iter<String>) -> Result<u32, String> {
-    it.next()
-        .and_then(|v| v.parse::<u32>().ok())
-        .filter(|n| *n > 0)
-        .map(|n| n.min(200))
-        .ok_or_else(|| "needs a positive number (at most 200)".to_string())
-}
-
 fn kind_of(s: &str) -> Result<String, String> {
     match s {
         "app" | "setting" | "command" => Ok(s.to_string()),
@@ -161,210 +155,260 @@ fn kind_of(s: &str) -> Result<String, String> {
     }
 }
 
+fn sort_val(s: &str) -> Result<Sort, String> {
+    sort_of(s)
+}
+
+fn kind_val(s: &str) -> Result<String, String> {
+    kind_of(s)
+}
+
+fn volume_val(s: &str) -> Result<char, String> {
+    let t = s.trim_end_matches(':');
+    let mut it = t.chars();
+    match (it.next(), it.next()) {
+        (Some(c), None) if c.is_ascii_alphabetic() => Ok(c.to_ascii_uppercase()),
+        _ => Err(format!("not a volume or option: {s}")),
+    }
+}
+
+#[derive(Debug, Parser)]
+#[command(name = "winseek-cli", version, about = "winseek from a terminal")]
+struct Cli {
+    #[command(subcommand)]
+    cmd: Option<Sub>,
+}
+
+#[derive(Debug, Subcommand)]
+enum Sub {
+    /// Name search with the same syntax as the app (ext:pdf, size:>10mb, dm:today, folder:...)
+    #[command(alias = "s")]
+    Search {
+        /// The query words (a query starting with a dash needs `--` first)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// At most N results (1 to 200)
+        #[arg(short = 'n', long = "limit", default_value_t = 50, value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: u32,
+        /// Result order (name, size, date, type, path; _asc / _desc to flip)
+        #[arg(long, default_value = "name", value_parser = sort_val)]
+        sort: Sort,
+        /// Add size and modified date
+        #[arg(short = 'l', long = "long")]
+        long: bool,
+        /// JSON array of {name, path, is_dir, size, mtime}
+        #[arg(long)]
+        json: bool,
+    },
+    /// Volumes, file counts and state of the name index
+    Status {
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Rescan volume(s) from the file table; --wait polls until it is live again
+    #[command(alias = "rescan")]
+    Index {
+        /// One volume letter (C or C:)
+        #[arg(value_parser = volume_val)]
+        volumes: Option<char>,
+        /// Rescan every volume instead of one
+        #[arg(long)]
+        all: bool,
+        /// Poll until the scan is live again
+        #[arg(long)]
+        wait: bool,
+        /// Total wait cap for --wait, in seconds
+        #[arg(long, value_parser = clap::value_parser!(u64))]
+        timeout: Option<u64>,
+    },
+    /// Search documents, screenshots and photos by what they CONTAIN (semantic index)
+    #[command(alias = "m")]
+    Meaning {
+        /// The query words (a query starting with a dash needs `--` first)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// At most N results (1 to 200)
+        #[arg(short = 'n', long = "limit", default_value_t = 20, value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: u32,
+        /// Add score and snippet
+        #[arg(short = 'l', long = "long")]
+        long: bool,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Extract the text of a file (PDF, Office, image OCR already parsed, code, ...)
+    #[command(alias = "r")]
+    Read {
+        /// The file path (quote it if it has spaces)
+        #[arg(required = true)]
+        path: Vec<String>,
+        /// Just that page (PDFs)
+        #[arg(long, value_parser = clap::value_parser!(u32).range(1..))]
+        page: Option<u32>,
+        /// At most N characters (1 to 200000; default 20000)
+        #[arg(long = "max", alias = "max-chars", value_parser = clap::value_parser!(u32).range(1..=200_000))]
+        max_chars: Option<u32>,
+        /// The full {text, chars, truncated, source} object
+        #[arg(long)]
+        json: bool,
+    },
+    /// Recently used files
+    Recent {
+        /// At most N results (1 to 200)
+        #[arg(short = 'n', long = "limit", default_value_t = 30, value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: u32,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Search the launcher catalog (apps, Windows settings, commands)
+    Apps {
+        /// The query words (a query starting with a dash needs `--` first)
+        #[arg(required = true)]
+        query: Vec<String>,
+        /// At most N results (1 to 200)
+        #[arg(short = 'n', long = "limit", default_value_t = 10, value_parser = clap::value_parser!(u32).range(1..=200))]
+        limit: u32,
+        /// Only this kind (app, setting, command)
+        #[arg(long, value_parser = kind_val)]
+        kind: Option<String>,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show whether the install directory is on PATH; add/remove it (user PATH by default)
+    Path {
+        /// What to do (status, add, remove)
+        #[arg(default_value = "status", value_enum)]
+        action: PathAction,
+        /// The machine PATH instead of this user's (needs elevation)
+        #[arg(long)]
+        machine: bool,
+        /// Machine-readable output
+        #[arg(long)]
+        json: bool,
+    },
+    /// Print the version
+    #[command(hide = true)]
+    Version,
+}
+
 fn parse(args: &[String]) -> Result<Cmd, String> {
-    let Some((cmd, rest)) = args.split_first() else {
-        return Ok(Cmd::Help);
+    // clap expects argv[0] (the program name) first; parse() receives the stripped args.
+    let mut argv = Vec::with_capacity(args.len() + 1);
+    argv.push(String::from("winseek-cli"));
+    argv.extend(args.iter().cloned());
+    // -h / --help / help and -V / --version are intercepted by clap itself and arrive as
+    // "display" pseudo-errors; they are not usage failures.
+    let cli = match Cli::try_parse_from(&argv) {
+        Ok(c) => c,
+        Err(e) => match e.kind() {
+            clap::error::ErrorKind::DisplayHelp => return Ok(Cmd::Help),
+            clap::error::ErrorKind::DisplayVersion => return Ok(Cmd::Version),
+            _ => return Err(e.to_string()),
+        },
     };
-    match cmd.as_str() {
-        "-h" | "--help" | "help" => Ok(Cmd::Help),
-        "-V" | "--version" | "version" => Ok(Cmd::Version),
-        "search" | "s" => {
-            let (mut words, mut limit, mut sort, mut long, mut json) =
-                (Vec::new(), 50u32, Sort::NameAsc, false, false);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "-n" | "--limit" => limit = limit_of(&mut it)?,
-                    "--sort" => sort = sort_of(it.next().ok_or("--sort needs a value")?)?,
-                    "--long" | "-l" => long = true,
-                    "--json" => json = true,
-                    "--" => words.extend(it.by_ref().cloned()),
-                    f if f.starts_with('-') && f.len() > 1 && !f.starts_with("-\"") => {
-                        return Err(format!("unknown option {f}"))
-                    }
-                    w => words.push(w.to_string()),
-                }
-            }
-            let query = words.join(" ");
+    let cmd = match cli.cmd {
+        None => Cmd::Help,
+        Some(Sub::Version) => Cmd::Version,
+        Some(Sub::Search {
+            query,
+            limit,
+            sort,
+            long,
+            json,
+        }) => {
+            let query = query.join(" ");
             if query.trim().is_empty() {
                 return Err("search needs a query".into());
             }
-            Ok(Cmd::Search {
+            Cmd::Search {
                 query,
                 limit,
                 sort,
                 long,
                 json,
-            })
+            }
         }
-        "status" => match rest {
-            [] => Ok(Cmd::Status { json: false }),
-            [f] if f == "--json" => Ok(Cmd::Status { json: true }),
-            _ => Err("usage: winseek-cli status [--json]".into()),
+        Some(Sub::Status { json }) => Cmd::Status { json },
+        Some(Sub::Index {
+            volumes,
+            all,
+            wait,
+            timeout,
+        }) => match (volumes, all) {
+            (Some(_), true) => return Err("give a volume or --all, not both".into()),
+            (None, false) => return Err("index needs a volume (C or C:) or --all".into()),
+            (v, _) => Cmd::Index {
+                volumes: v,
+                wait,
+                timeout,
+            },
         },
-        "index" | "rescan" => {
-            let (mut vol, mut all, mut wait, mut timeout) = (None, false, false, None);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--all" => all = true,
-                    "--wait" => wait = true,
-                    "--timeout" => {
-                        let v = it.next().ok_or("usage: index --timeout SECS")?;
-                        timeout = Some(
-                            v.parse::<u64>()
-                                .map_err(|_| format!("--timeout: not a number: {v}"))?,
-                        );
-                    }
-                    v if v.trim_end_matches(':').chars().count() == 1
-                        && v.trim_end_matches(':')
-                            .chars()
-                            .all(|c| c.is_ascii_alphabetic()) =>
-                    {
-                        vol = Some(v.chars().next().unwrap().to_ascii_uppercase());
-                    }
-                    other => return Err(format!("not a volume or option: {other}")),
-                }
-            }
-            match (vol, all) {
-                (Some(_), true) => Err("give a volume or --all, not both".into()),
-                (None, false) => Err("index needs a volume (C or C:) or --all".into()),
-                (v, _) => Ok(Cmd::Index {
-                    volumes: v,
-                    wait,
-                    timeout,
-                }),
-            }
-        }
-        "meaning" | "m" => {
-            let (mut words, mut limit, mut long, mut json) = (Vec::new(), 20u32, false, false);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "-n" | "--limit" => limit = limit_of(&mut it)?,
-                    "--long" | "-l" => long = true,
-                    "--json" => json = true,
-                    "--" => words.extend(it.by_ref().cloned()),
-                    f if f.starts_with('-') && f.len() > 1 && !f.starts_with("-\"") => {
-                        return Err(format!("unknown option {f}"))
-                    }
-                    w => words.push(w.to_string()),
-                }
-            }
-            let query = words.join(" ");
+        Some(Sub::Meaning {
+            query,
+            limit,
+            long,
+            json,
+        }) => {
+            let query = query.join(" ");
             if query.trim().is_empty() {
                 return Err("meaning needs a query".into());
             }
-            Ok(Cmd::Meaning {
+            Cmd::Meaning {
                 query,
                 limit,
                 long,
                 json,
-            })
-        }
-        "read" | "r" => {
-            let (mut words, mut page, mut max, mut json) = (Vec::new(), None, None, false);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "--page" => {
-                        page = Some(
-                            it.next()
-                                .and_then(|v| v.parse().ok())
-                                .filter(|n: &u32| *n > 0)
-                                .ok_or("--page needs a positive number")?,
-                        )
-                    }
-                    "--max" | "--max-chars" => {
-                        max = Some(
-                            it.next()
-                                .and_then(|v| v.parse().ok())
-                                .filter(|n: &u32| *n > 0 && *n <= 200_000)
-                                .ok_or("--max needs a number from 1 to 200000")?,
-                        )
-                    }
-                    "--json" => json = true,
-                    "--" => words.extend(it.by_ref().cloned()),
-                    f if f.starts_with('-') && f.len() > 1 && !f.starts_with("-\"") => {
-                        return Err(format!("unknown option {f}"))
-                    }
-                    w => words.push(w.to_string()),
-                }
             }
-            if words.is_empty() {
+        }
+        Some(Sub::Read {
+            path,
+            page,
+            max_chars,
+            json,
+        }) => {
+            if path.is_empty() {
                 return Err("read needs a path".into());
             }
-            Ok(Cmd::Read {
-                path: words.join(" "),
+            Cmd::Read {
+                path: path.join(" "),
                 page,
-                max_chars: max,
+                max_chars,
                 json,
-            })
-        }
-        "recent" => {
-            let (mut limit, mut json) = (30u32, false);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "-n" | "--limit" => limit = limit_of(&mut it)?,
-                    "--json" => json = true,
-                    other => return Err(format!("unknown option {other}")),
-                }
             }
-            Ok(Cmd::Recent { limit, json })
         }
-        "apps" => {
-            let (mut words, mut limit, mut kind, mut json) = (Vec::new(), 10u32, None, false);
-            let mut it = rest.iter();
-            while let Some(a) = it.next() {
-                match a.as_str() {
-                    "-n" | "--limit" => limit = limit_of(&mut it)?,
-                    "--kind" => {
-                        kind = Some(kind_of(it.next().ok_or("--kind needs a value")?)?);
-                    }
-                    "--json" => json = true,
-                    "--" => words.extend(it.by_ref().cloned()),
-                    f if f.starts_with('-') && f.len() > 1 && !f.starts_with("-\"") => {
-                        return Err(format!("unknown option {f}"))
-                    }
-                    w => words.push(w.to_string()),
-                }
-            }
-            let query = words.join(" ");
+        Some(Sub::Recent { limit, json }) => Cmd::Recent { limit, json },
+        Some(Sub::Apps {
+            query,
+            limit,
+            kind,
+            json,
+        }) => {
+            let query = query.join(" ");
             if query.trim().is_empty() {
                 return Err("apps needs a query".into());
             }
-            Ok(Cmd::Apps {
+            Cmd::Apps {
                 query,
                 limit,
                 kind,
                 json,
-            })
-        }
-        "path" => {
-            let (mut action, mut machine, mut json) = (PathAction::Status, false, false);
-            for a in rest {
-                match a.as_str() {
-                    "status" => action = PathAction::Status,
-                    "add" => action = PathAction::Add,
-                    "remove" => action = PathAction::Remove,
-                    "--machine" => machine = true,
-                    "--json" => json = true,
-                    other => {
-                        return Err(format!(
-                            "unknown path action '{other}' (status, add, remove)"
-                        ))
-                    }
-                }
             }
-            Ok(Cmd::Path {
-                action,
-                machine,
-                json,
-            })
         }
-        other => Err(format!("unknown command '{other}'")),
-    }
+        Some(Sub::Path {
+            action,
+            machine,
+            json,
+        }) => Cmd::Path {
+            action,
+            machine,
+            json,
+        },
+    };
+    Ok(cmd)
 }
 
 /// One request/response round trip to searchd.
@@ -1050,10 +1094,11 @@ mod tests {
         assert!(
             matches!(parse(&a("search -- -draft")).unwrap(), Cmd::Search { query, .. } if query == "-draft")
         );
+        // An unknown option is a usage error (a query starting with a dash goes after `--`)
+        assert!(parse(&a("search x --wat")).is_err());
         assert!(parse(&a("search")).is_err());
         assert!(parse(&a("search x -n 0")).is_err());
         assert!(parse(&a("search x --sort nope")).is_err());
-        assert!(parse(&a("search x --wat")).is_err());
     }
 
     #[test]
