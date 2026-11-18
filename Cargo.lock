@@ -5188,6 +5188,7 @@ dependencies = [
  "jiff",
  "kamadak-exif",
  "pdfium-render",
+ "percent-encoding",
  "png 0.17.16",
  "quick-xml",
  "rusqlite",

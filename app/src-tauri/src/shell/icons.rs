@@ -50,7 +50,36 @@ struct Queue {
 const MAX_WAITING: usize = 512;
 
 static POOL: OnceLock<Arc<Queue>> = OnceLock::new();
-static CACHE: Mutex<Option<HashMap<String, Arc<Vec<u8>>>>> = Mutex::new(None);
+
+/// Rendered PNGs, insertion order kept alongside: at the cap the single oldest entry is
+/// evicted (the old wipe-everything made every visible icon re-render at once — a latency
+/// spike mid-scroll).
+#[derive(Default)]
+struct IconCache {
+    map: HashMap<String, Arc<Vec<u8>>>,
+    order: VecDeque<String>,
+}
+
+/// Insert into the cache, evicting oldest entries while it is at the cap. The only place that
+/// mutates `IconCache`, so map and order can never drift apart.
+fn cache_insert(c: &mut IconCache, key: String, png: Arc<Vec<u8>>) {
+    while c.map.len() >= CACHE_CAP {
+        match c.order.pop_front() {
+            Some(old) => {
+                c.map.remove(&old);
+            }
+            None => {
+                // Order lost (cannot happen: every insert goes through here) — start over.
+                c.map.clear();
+                break;
+            }
+        }
+    }
+    c.map.insert(key.clone(), png);
+    c.order.push_back(key);
+}
+
+static CACHE: Mutex<Option<IconCache>> = Mutex::new(None);
 
 /// Decode workers: cores - 1 (the UI keeps one), between 3 and 8.
 fn workers() -> usize {
@@ -145,22 +174,10 @@ fn response(png: Option<Arc<Vec<u8>>>) -> Response<Cow<'static, [u8]>> {
 }
 
 pub(crate) fn percent_decode(s: &str) -> String {
-    let b = s.as_bytes();
-    let mut out = Vec::with_capacity(b.len());
-    let mut i = 0;
-    while i < b.len() {
-        if b[i] == b'%' && i + 2 < b.len() {
-            let hex = |c: u8| (c as char).to_digit(16);
-            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
-                out.push((h * 16 + l) as u8);
-                i += 3;
-                continue;
-            }
-        }
-        out.push(b[i]);
-        i += 1;
-    }
-    String::from_utf8_lossy(&out).into_owned()
+    // Invalid escapes (%zz, a trailing %2) stay literal, like the hand-rolled loop it replaces.
+    percent_encoding::percent_decode_str(s)
+        .decode_utf8_lossy()
+        .into_owned()
 }
 
 pub(crate) fn query_param(q: &str, key: &str) -> Option<String> {
@@ -220,7 +237,7 @@ pub(super) fn render(path: &str, is_dir: bool, size: u32, thumb: bool) -> Option
     } else {
         format!("x:{ext}:{size}")
     };
-    if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.get(&key)) {
+    if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.map.get(&key)) {
         return Some(hit.clone());
     }
     let png = if thumb && size <= 512 {
@@ -235,18 +252,14 @@ pub(super) fn render(path: &str, is_dir: bool, size: u32, thumb: bool) -> Option
         return Some(png); // preview-sized renders are one-offs; keep the cache small
     }
     let mut g = CACHE.lock().ok()?;
-    let c = g.get_or_insert_with(HashMap::new);
-    if c.len() >= CACHE_CAP {
-        c.clear();
-    }
-    c.insert(key, png.clone());
+    cache_insert(g.get_or_insert_with(IconCache::default), key, png.clone());
     Some(png)
 }
 
 /// Cached PNG for a shell app id (Store or Start-menu entry), via `shell:AppsFolder\<aumid>`.
 pub(super) fn render_aumid(aumid: &str, size: u32) -> Option<Arc<Vec<u8>>> {
     let key = format!("a:{aumid}:{size}");
-    if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.get(&key)) {
+    if let Some(hit) = CACHE.lock().ok()?.as_ref().and_then(|c| c.map.get(&key)) {
         return Some(hit.clone());
     }
     let png = Arc::new(path_icon_png(
@@ -258,11 +271,7 @@ pub(super) fn render_aumid(aumid: &str, size: u32) -> Option<Arc<Vec<u8>>> {
         return Some(png);
     }
     let mut g = CACHE.lock().ok()?;
-    let c = g.get_or_insert_with(HashMap::new);
-    if c.len() >= CACHE_CAP {
-        c.clear();
-    }
-    c.insert(key, png.clone());
+    cache_insert(g.get_or_insert_with(IconCache::default), key, png.clone());
     Some(png)
 }
 
