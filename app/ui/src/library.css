@@ -440,6 +440,16 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .gv-seg button:hover { color: var(--fg); }
 .tbar .nfilter { margin-right: 8px; }
 
+/* The timeline top bar wraps instead of squeezing: the count line keeps its natural width (no
+   narrow wrapped wall of text) and the filter / view controls drop to their own right-aligned
+   row when the window is narrow — the window chrome stays pinned top-right. A wide window keeps
+   today's single 60px bar, and the other tabs' bars are untouched (the wrap rules only match a
+   bar that has the .ttools cluster, i.e. an active timeline with items). */
+.lib-main .tbar:has(.ttools) { height: auto; min-height: 60px; flex-wrap: wrap; row-gap: 6px; padding-top: 6px; padding-bottom: 6px; }
+.lib-main .tbar:has(.ttools) .hsub { flex: none; white-space: nowrap; }
+.lib-main .tbar .ttools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; flex: 1 1 auto; row-gap: 6px; }
+.lib-main .tbar .tl-seg { flex-wrap: wrap; row-gap: 6px; } /* the 4-pill row alone can exceed a very narrow pane: pills flow instead of clipping */
+
 /* ---------- key hints (what the focused list can do) ---------- */
 .keyhints { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; font-size: 12.5px; color: var(--fg3); }
 .keyhints span { display: inline-flex; align-items: center; gap: 6px; white-space: nowrap; }
