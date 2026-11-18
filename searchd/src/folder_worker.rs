@@ -12,11 +12,12 @@ use std::time::{Duration, Instant};
 use winseek_folder::{stat, walk_names, DirWatch, PathEvent, Poll};
 use winseek_index::{Index, IndexBuilder, VolKind, FIRST_SYNTHETIC_ID};
 use winseek_ipc::VolumeState;
+use winseek_usn::sleep_stoppable;
 
 use crate::index_ops::PathOp;
 use crate::log::{error, info, warn};
 use crate::state::{Msg, Shared};
-use crate::worker::{guard_removal, present, settle_removal, sleep_stoppable, Vol};
+use crate::worker::{guard_removal, present, settle_removal, Vol};
 
 /// Everything's `monitor_update_delay` (ms): changes are batched this long.
 const BATCH: Duration = Duration::from_millis(1000);
@@ -27,6 +28,16 @@ const ERROR_RETRY: Duration = Duration::from_secs(30);
 const MAX_ADDED_SUBTREE: usize = 100_000;
 /// Overflow rescans back off (5 s, 10 s, ... up to 5 min) while the volume keeps overflowing.
 const OVERFLOW_BACKOFF_MAX: Duration = Duration::from_secs(300);
+
+/// The wait after the change buffer overflowed: doubles with each recent overflow (5 s .. 160 s),
+/// capped at `OVERFLOW_BACKOFF_MAX`. Extracted from the follow loop so the arithmetic is unit
+/// tested and cannot depend on line order (`overflows` starts at 0 there; 0 backs off like 1).
+fn overflow_backoff(overflows: u32) -> Duration {
+    let n = overflows.clamp(1, 6);
+    Duration::from_secs(5)
+        .saturating_mul(1u32 << (n - 1))
+        .min(OVERFLOW_BACKOFF_MAX)
+}
 
 /// Why a follow loop ended.
 #[derive(Debug)]
@@ -232,7 +243,7 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                         msg: format!("cannot watch the volume: {e}"),
                     },
                 );
-                sleep_stoppable(&sh, ERROR_RETRY);
+                sleep_stoppable(ERROR_RETRY, &sh.shutdown);
                 continue;
             }
         };
@@ -292,14 +303,13 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                 } else {
                     overflows + 1
                 };
-                let wait = (Duration::from_secs(5) * 2u32.pow(overflows.min(6) - 1))
-                    .min(OVERFLOW_BACKOFF_MAX);
+                let wait = overflow_backoff(overflows);
                 warn!(
                     "{l}: change buffer overflowed; need to rescan (in {}s)",
                     wait.as_secs()
                 );
                 sh.set_state(l, VolumeState::Rescanning);
-                sleep_stoppable(&sh, wait);
+                sleep_stoppable(wait, &sh.shutdown);
             }
             Follow::Error(e) => {
                 if !present(l) {
@@ -312,7 +322,7 @@ pub fn run(sh: Arc<Shared>, tx: Sender<Msg>, vol: Vol) {
                     ERROR_RETRY.as_secs()
                 );
                 sh.set_state(l, VolumeState::Error { msg: e.to_string() });
-                sleep_stoppable(&sh, ERROR_RETRY);
+                sleep_stoppable(ERROR_RETRY, &sh.shutdown);
             }
         }
     }
@@ -352,6 +362,24 @@ mod tests {
             .collect();
         v.sort();
         v
+    }
+
+    #[test]
+    fn overflow_backoff_doubles_and_caps() {
+        assert_eq!(overflow_backoff(0), Duration::from_secs(5)); // never less than one step
+        assert_eq!(overflow_backoff(1), Duration::from_secs(5));
+        assert_eq!(overflow_backoff(2), Duration::from_secs(10));
+        assert_eq!(overflow_backoff(6), Duration::from_secs(160));
+        // Clamped instead of shifting out (the loop resets the counter only between waits).
+        assert_eq!(overflow_backoff(7), Duration::from_secs(160));
+        assert_eq!(overflow_backoff(u32::MAX), Duration::from_secs(160));
+        let mut last = Duration::ZERO;
+        for n in 1..=6 {
+            let w = overflow_backoff(n);
+            assert!(w > last, "step {n} must grow");
+            assert!(w <= OVERFLOW_BACKOFF_MAX);
+            last = w;
+        }
     }
 
     /// The real scan + event pipeline on an NTFS temp dir standing in for a FAT root (the
