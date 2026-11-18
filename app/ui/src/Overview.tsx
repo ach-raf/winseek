@@ -108,7 +108,7 @@ export interface ItemHandlers {
   /** Open (double click). */
   onOpen: (i: number) => void;
   onMenu: (i: number, e: React.MouseEvent) => void;
-  onDown: (i: number, e: React.MouseEvent) => void;
+  onDown: (i: number, e: React.PointerEvent) => void;
   onRenameCommit: (i: number, name: string) => void;
   onRenameCancel: () => void;
 }
@@ -142,7 +142,7 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
     <div className={"row" + (top ? " top" : "") + (sel ? " sel" : "")} role="option" aria-selected={sel} style={y === undefined ? undefined : { transform: `translateY(${y}px)` }}
          data-sel={sel ? "1" : undefined} data-i={i} title={title ?? hit.path}
          onClick={renaming ? undefined : () => h.onSelect(i)} onDoubleClick={renaming ? undefined : () => h.onOpen(i)}
-         onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
+         onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
       <FileIcon name={hit.name} isDir={hit.is_dir} variant={app ? "app" : undefined} thumb={thumb}
                 src={backend.iconUrl(hit.path, hit.is_dir, thumb, iconSize(!!top))} />
       <div className="tx">
@@ -180,7 +180,7 @@ const LaunchRow = memo(function LaunchRow({ it, i, sel, query, backend, h, armed
     <div className={"row launch" + (top ? " top" : "") + (sel ? " sel" : "") + (isArmed ? " armed" : "")}
          role="option" aria-selected={sel} data-sel={sel ? "1" : undefined} data-i={i} title={item.subtitle}
          onClick={() => (oneClick ? h.onOpen(i) : h.onSelect(i))} onDoubleClick={() => h.onOpen(i)}
-         onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
+         onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
       <FileIcon name={item.title} isDir={false} src={src} variant={item.kind} />
       <div className="tx">
         <div className="nm" dir="auto"><Highlight text={item.title} query={query} ranges={l.ranges} /></div>
@@ -201,7 +201,7 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
     <div className={"atile" + (sel ? " sel" : "")} role="option" aria-selected={sel} aria-label={item.title}
          data-sel={sel ? "1" : undefined} data-i={i}
          onClick={() => h.onOpen(i)} onDoubleClick={() => h.onOpen(i)}
-         onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
+         onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
       <FileIcon name={item.title} isDir={false} src={src} variant="app" />
       <span>{item.title}</span>
     </div>
@@ -224,7 +224,7 @@ const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem;
          data-sel={sel ? "1" : undefined} data-i={i} title={reason ? `${it.hit.path}
 ${reason}` : it.hit.path}
          onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
-         onContextMenu={(e) => h.onMenu(i, e)} onMouseDown={(e) => h.onDown(i, e)}>
+         onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
       {src ? <ThumbImg src={src} bad={ph} /> : ph}
       {(kind || pct !== null) && (
         <span className={"tpct" + (kind ? " k-" + kind : "")}>
@@ -240,7 +240,7 @@ ${reason}` : it.hit.path}
 function CalcCard({ it, i, sel, expr, h }: { it: OvItem; i: number; sel: boolean; expr: string; h: ItemHandlers }) {
   return (
     <div className={"calc" + (sel ? " sel" : "")} role="option" aria-selected={sel} data-sel={sel ? "1" : undefined} data-i={i}
-         onClick={() => h.onOpen(i)} onMouseDown={(e) => h.onDown(i, e)} onContextMenu={(e) => h.onMenu(i, e)}>
+         onClick={() => h.onOpen(i)} onPointerDown={(e) => h.onDown(i, e)} onContextMenu={(e) => h.onMenu(i, e)}>
       <span className="ex">{expr} =</span>
       <span className="v">{it.calc}</span>
       <span className="k">Copy <kbd>{"↵"}</kbd></span>

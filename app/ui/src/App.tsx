@@ -940,19 +940,29 @@ export default function App({ backend }: { backend: Backend }) {
     refocus();
   }, [backend, removeRow, pushUndo, fail, refocus]);
 
-  const onRowDown = useCallback((e: React.MouseEvent, h: Hit) => {
+  // Row drag out of the list: pointer capture on the row itself, like the image panner. The
+  // move/up events keep arriving outside the window, and nothing leaks when the popup hides
+  // mid-gesture (the old window listeners did).
+  const onRowDown = useCallback((e: React.PointerEvent, h: Hit) => {
     suppressClick.current = false;
     if (e.button !== 0) return;
+    const el = e.currentTarget as HTMLElement;
     const sx = e.clientX, sy = e.clientY;
-    const stop = () => { window.removeEventListener("mousemove", mv); window.removeEventListener("mouseup", stop); };
-    const mv = (ev: MouseEvent) => {
-      if (Math.hypot(ev.clientX - sx, ev.clientY - sy) <= 4) return;
-      stop();
-      suppressClick.current = true; // the click that follows the drag must not open the file
-      backend.startDrag([h.path]).catch(fail);
+    let dragging = false;
+    el.setPointerCapture(e.pointerId);
+    const mv = (ev: PointerEvent) => {
+      if (!dragging && Math.hypot(ev.clientX - sx, ev.clientY - sy) > 4) {
+        dragging = true;
+        suppressClick.current = true; // the click that follows the drag must not open the file
+        backend.startDrag([h.path]).catch(fail);
+      }
     };
-    window.addEventListener("mousemove", mv);
-    window.addEventListener("mouseup", stop);
+    const stop = () => {
+      el.removeEventListener("pointermove", mv);
+      el.removeEventListener("pointerup", stop);
+    };
+    el.addEventListener("pointermove", mv);
+    el.addEventListener("pointerup", stop);
   }, [backend, fail]);
 
   const move = useCallback((to: number) => {
