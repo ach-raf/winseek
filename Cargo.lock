@@ -5204,6 +5204,7 @@ dependencies = [
  "tempfile",
  "ureq",
  "windows",
+ "winseek-folder",
  "winseek-ipc",
  "winseek-llama",
  "winseek-store",

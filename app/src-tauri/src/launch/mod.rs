@@ -567,31 +567,14 @@ fn start_menu_dirs() -> Vec<String> {
     out
 }
 
-/// Blocking ReadDirectoryChangesW on one Start-menu tree; any change re-enumerates after 1 s.
+/// Watch one Start-menu tree with the folder crate's overlapped `ReadDirectoryChangesW` watcher
+/// (`DirWatch`, the same one searchd uses for FAT/exFAT drives); any change re-enumerates after
+/// 1 s. This used to be a second, synchronous hand-rolled RDCW loop next to `DirWatch`.
 fn watch_start_menu_dir(dir: String, app: AppHandle) {
-    use windows::core::PCWSTR;
-    use windows::Win32::Foundation::CloseHandle;
-    use windows::Win32::Storage::FileSystem::{
-        CreateFileW, ReadDirectoryChangesW, FILE_FLAG_BACKUP_SEMANTICS, FILE_LIST_DIRECTORY,
-        FILE_NOTIFY_CHANGE_ATTRIBUTES, FILE_NOTIFY_CHANGE_CREATION, FILE_NOTIFY_CHANGE_DIR_NAME,
-        FILE_NOTIFY_CHANGE_FILE_NAME, FILE_NOTIFY_CHANGE_LAST_WRITE, FILE_NOTIFY_CHANGE_SIZE,
-        FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
-    };
+    use winseek_folder::{DirWatch, Poll};
     loop {
-        let w = crate::shell::wide(&dir);
-        // SAFETY: NUL-terminated path; the directory handle is closed on every loop exit.
-        let handle = match unsafe {
-            CreateFileW(
-                PCWSTR(w.as_ptr()),
-                FILE_LIST_DIRECTORY.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS,
-                None,
-            )
-        } {
-            Ok(h) => h,
+        let mut watch = match DirWatch::open(&dir) {
+            Ok(w) => w,
             Err(e) => {
                 eprintln!("winseek: cannot watch {dir} ({e}); retrying in 10 s");
                 std::thread::sleep(Duration::from_secs(10));
@@ -599,37 +582,18 @@ fn watch_start_menu_dir(dir: String, app: AppHandle) {
             }
         };
         eprintln!("winseek: watching start menu {dir}");
-        let mut buf = vec![0u8; 64 * 1024];
-        let mut bytes = 0u32;
         loop {
-            // SAFETY: valid directory handle, buffer sized above; synchronous (no OVERLAPPED).
-            let ok = unsafe {
-                ReadDirectoryChangesW(
-                    handle,
-                    buf.as_mut_ptr().cast(),
-                    buf.len() as u32,
-                    true,
-                    FILE_NOTIFY_CHANGE_FILE_NAME
-                        | FILE_NOTIFY_CHANGE_DIR_NAME
-                        | FILE_NOTIFY_CHANGE_LAST_WRITE
-                        | FILE_NOTIFY_CHANGE_SIZE
-                        | FILE_NOTIFY_CHANGE_CREATION
-                        | FILE_NOTIFY_CHANGE_ATTRIBUTES,
-                    Some(&mut bytes),
-                    None,
-                    None,
-                )
-            };
-            if ok.is_err() || bytes == 0 {
-                break; // watch broken or buffer overflow: reopen and rebuild anyway
+            match watch.poll(1000) {
+                // A change re-enumerates; so does a lost change buffer (Overflow — the old
+                // hand-rolled loop reopened without rebuilding, losing that burst entirely).
+                // Debounce: installers drop dozens of files; let the tree go quiet first.
+                Ok(Poll::Events(_)) | Ok(Poll::Overflow) => {
+                    std::thread::sleep(Duration::from_secs(1));
+                    spawn_rebuild(&app);
+                }
+                Ok(Poll::Timeout) => {}
+                Err(_) => break, // watch broken (volume gone, cancelled): reopen after a settle
             }
-            // Debounce: installers drop dozens of files; let the tree go quiet first.
-            std::thread::sleep(Duration::from_secs(1));
-            spawn_rebuild(&app);
-        }
-        // SAFETY: owned handle from CreateFileW above.
-        unsafe {
-            let _ = CloseHandle(handle);
         }
         std::thread::sleep(Duration::from_secs(5));
     }
