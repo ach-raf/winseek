@@ -108,6 +108,7 @@ pub struct DirList {
 }
 
 /// Snapshot of every folder's totals and child lists. See the module docs.
+#[derive(Clone)]
 pub struct Rollup {
     /// Slot of each folder, ascending.
     dirs: Vec<u32>,

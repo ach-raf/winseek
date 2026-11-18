@@ -741,8 +741,11 @@ pub fn recent(sh: &Shared, limit: u32) -> Vec<Hit> {
 
 /// Biggest children listed per folder when the caller names no limit; the rest is summed into `more`.
 const USAGE_ENTRIES: usize = 400;
-/// A cached roll-up younger than this is served as is while the index keeps changing.
-const USAGE_FRESH: Duration = Duration::from_secs(45);
+/// How long a roll-up stays good even while the index changes: the floor between rebuilds, so a
+/// churn burst (saves, builds, browser caches) cannot trigger one per index batch. Once the index
+/// moved on and this floor has passed, the very next look rebuilds — a recycle shows up within
+/// seconds, not minutes.
+const USAGE_FRESH: Duration = Duration::from_secs(5);
 /// The roll-up is only kept (and rebuilt) while somebody asked for it this recently.
 const USAGE_WANTED: Duration = Duration::from_secs(300);
 
@@ -759,15 +762,27 @@ impl Shared {
             .store(self.started.elapsed().as_secs().max(1), Ordering::Relaxed);
     }
 
-    /// The roll-up: the cached one, or (first use) a fresh build. Concurrent first requests share one build.
+    /// A roll-up may be served as is: the index has not moved on since it was built, or the build
+    /// is young enough that the next rebuild is not due yet (see `USAGE_FRESH`).
+    fn usage_usable(c: &UsageCache, gen: u64) -> bool {
+        c.gen == gen || c.at.elapsed() < USAGE_FRESH
+    }
+
+    /// The roll-up: the cached one, or a fresh build — also when the cache exists but the index
+    /// moved on past the floor, so the request that asked after a change gets a fresh answer.
+    /// Concurrent builds share one pass.
     fn usage_cache(&self) -> Result<Arc<UsageCache>, String> {
         self.note_usage_use();
         if let Some(c) = self.usage_cache.lock().unwrap().clone() {
-            return Ok(c);
+            if Self::usage_usable(&c, self.gen.load(Ordering::Relaxed)) {
+                return Ok(c);
+            }
         }
         let _one = self.usage_build.lock().unwrap();
         if let Some(c) = self.usage_cache.lock().unwrap().clone() {
-            return Ok(c);
+            if Self::usage_usable(&c, self.gen.load(Ordering::Relaxed)) {
+                return Ok(c);
+            }
         }
         let ix = self.index.read().unwrap();
         if !ix.has_meta() {
@@ -802,7 +817,7 @@ impl Shared {
             *self.usage_cache.lock().unwrap() = None;
             return;
         }
-        if cur.gen == self.gen.load(Ordering::Relaxed) || cur.at.elapsed() < USAGE_FRESH {
+        if Self::usage_usable(&cur, self.gen.load(Ordering::Relaxed)) {
             return;
         }
         let Ok(_one) = self.usage_build.try_lock() else {
@@ -827,6 +842,7 @@ fn drive_label(letter: u8) -> String {
 /// What the folder `path` holds, child by child; an empty `path` lists the drives.
 pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
     let c = sh.usage_cache()?;
+    let fresh = c.gen == sh.gen.load(Ordering::Relaxed);
     let ix = sh.index.read().unwrap();
     let ru = &c.ru;
     if path.trim().is_empty() {
@@ -839,6 +855,7 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
             more: 0,
             more_size: 0,
             cats: vec![0; winseek_index::CATEGORIES],
+            fresh,
         };
         for (letter, d) in ix.volume_dirs(ru) {
             let (bytes, files, folders) = ru.totals(d);
@@ -899,6 +916,7 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
         more: l.more,
         more_size: l.more_bytes,
         cats: l.cats.to_vec(),
+        fresh,
     })
 }
 
@@ -960,6 +978,7 @@ pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDeta
         path: path.to_string(),
         types: types.into_iter().take(60).collect(),
         biggest,
+        fresh: c.gen == sh.gen.load(Ordering::Relaxed),
     })
 }
 
@@ -1004,6 +1023,34 @@ mod tests {
         assert!(usage(&sh, r"C:\nope", 0).is_err());
         let d = usage_detail(&sh, "", 5).unwrap();
         assert!(d.biggest.len() <= 1);
+    }
+
+    #[test]
+    fn usage_freshness_tracks_the_index() {
+        let sh = shared();
+        apply_batch(&sh, b'C', &[create(100, 10, "a.txt")], CUR);
+        assert!(
+            usage(&sh, r"C:\Docs", 5).unwrap().fresh,
+            "a just-built roll-up is fresh"
+        );
+        // a change inside the floor serves the cached roll-up, and the answer admits it is behind
+        apply_batch(&sh, b'C', &[create(101, 10, "b.txt")], CUR);
+        assert!(
+            !usage(&sh, r"C:\Docs", 5).unwrap().fresh,
+            "changed index inside the floor: the answer says so"
+        );
+        // past the floor the request itself gets a rebuilt roll-up — the new child is in it
+        let c = sh.usage_cache.lock().unwrap().clone().unwrap();
+        let old = UsageCache {
+            gen: c.gen,
+            at: Instant::now().checked_sub(USAGE_FRESH).unwrap(),
+            ru: c.ru.clone(),
+        };
+        *sh.usage_cache.lock().unwrap() = Some(Arc::new(old));
+        let u = usage(&sh, r"C:\Docs", 5).unwrap();
+        assert!(u.fresh, "past the floor the request rebuilds");
+        assert!(u.entries.iter().any(|e| e.name == "b.txt"));
+        assert!(usage_detail(&sh, r"C:\Docs", 5).unwrap().fresh);
     }
 
     #[test]

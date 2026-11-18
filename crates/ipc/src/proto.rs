@@ -126,6 +126,10 @@ pub struct UsageTree {
     /// Bytes per file category under the folder (index = `UsageEntry::kind`).
     #[serde(default)]
     pub cats: Vec<u64>,
+    /// False while the roll-up is known to sit behind the index (a change landed but the next
+    /// rebuild has not run yet); the UI reads again until it is true.
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -133,6 +137,9 @@ pub struct UsageDetail {
     pub path: String,
     pub types: Vec<UsageType>,
     pub biggest: Vec<Hit>,
+    /// See `UsageTree::fresh`.
+    #[serde(default)]
+    pub fresh: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
