@@ -713,7 +713,10 @@ export interface DiskUsage {
   more_size: number;
   /** Bytes per file category under the folder (index = `UsageEntry.kind`). */
   cats: number[];
+  /** False while the service knows this roll-up sits behind the index (a change landed, the
+   *  rebuild has not run yet); the screen reads again until it is true. */
+  fresh?: boolean;
   /** Only for the drive list and a drive root: what the drive itself has free. */
   drives: DriveSpace[];
 }
-export interface UsageDetail { path: string; types: UsageType[]; biggest: Hit[] }
+export interface UsageDetail { path: string; types: UsageType[]; biggest: Hit[]; fresh?: boolean }

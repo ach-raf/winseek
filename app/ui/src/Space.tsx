@@ -128,6 +128,18 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   const firstEpoch = useRef(epoch);
   useEffect(() => { if (epoch !== firstEpoch.current) again(); }, [epoch, again]);
 
+  // An answer may honestly say it is behind the index: a recycle lands before the service has
+  // rebuilt its roll-up, so `fresh: false` rides along. Read again every 1.5 s until the service
+  // reports fresh — bounded, so a wedged service cannot spin the screen forever.
+  const staleNow = dirQs.some((q) => q.data?.fresh === false) || detailQ.data?.fresh === false;
+  const [staleTries, setStaleTries] = useState(0);
+  useEffect(() => {
+    if (!staleNow) { setStaleTries(0); return; }
+    if (staleTries >= 8) return;
+    const t = setTimeout(() => { setStaleTries((n) => n + 1); again(); }, 1500);
+    return () => clearTimeout(t);
+  }, [staleNow, staleTries, again]);
+
   const rows = useMemo(() => (root ? flattenTree(root, get, open) : []), [root, open, get]);
   const homeData = get("");
   const mapData = root ? get(focus) : undefined;
