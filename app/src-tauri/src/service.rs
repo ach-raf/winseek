@@ -6,7 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST,
+    CloseHandle, GetLastError, ERROR_CANCELLED, ERROR_SERVICE_DOES_NOT_EXIST, WAIT_TIMEOUT,
 };
 use windows::Win32::System::Registry::{RegGetValueW, HKEY_CURRENT_USER, RRF_RT_REG_BINARY};
 use windows::Win32::System::Services::{
@@ -14,7 +14,7 @@ use windows::Win32::System::Services::{
     SC_MANAGER_CONNECT, SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_START,
     SERVICE_START_PENDING, SERVICE_STATUS, SERVICE_STOPPED, SERVICE_STOP_PENDING,
 };
-use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject, INFINITE};
+use windows::Win32::System::Threading::{GetExitCodeProcess, WaitForSingleObject};
 use windows::Win32::UI::Shell::{ShellExecuteExW, SEE_MASK_NOCLOSEPROCESS, SHELLEXECUTEINFOW};
 use windows::Win32::UI::WindowsAndMessaging::SW_HIDE;
 
@@ -145,7 +145,15 @@ fn install_blocking() -> Result<(), String> {
         if proc.is_invalid() {
             return Err("Installer did not start".into());
         }
-        WaitForSingleObject(proc, INFINITE);
+        // 30 s, then report: a stuck (or silently waiting) installer used to hang this Settings
+        // call forever. The handle is closed either way; the installer itself keeps running.
+        const INSTALL_WAIT_MS: u32 = 30_000;
+        if WaitForSingleObject(proc, INSTALL_WAIT_MS) == WAIT_TIMEOUT {
+            let _ = CloseHandle(proc);
+            return Err(
+                "The installer did not finish within 30 s; is it waiting for input?".into(),
+            );
+        }
         let mut code = 0u32;
         let got = GetExitCodeProcess(proc, &mut code);
         let _ = CloseHandle(proc);
