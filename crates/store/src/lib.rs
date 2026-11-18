@@ -611,6 +611,17 @@ pub struct TextHit {
 /// One matching code stretch ([`Store::search_code_words`]): unlike [`TextHit`] there is no
 /// per-file dedup, so several stretches of one file (or of its copies) can come back; `hash`
 /// joins them to the vector candidates.
+/// Every stretch of one code content ([`Store::code_stretches`]): what the search's focus pass
+/// reads to find where a name is defined and which line to open at.
+#[derive(Debug, Clone)]
+pub struct CodeStretch {
+    pub chunk: u32,
+    /// The stretch's own locator (the `loc` / `loc_end` lines), when its vector or pending row
+    /// knows it.
+    pub locator: Option<String>,
+    pub body: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct CodeWordsHit {
     pub hash: String,
@@ -1741,14 +1752,7 @@ impl Store {
     /// itself, so the gate is applied there, against word coverage. One [`Candidate`] per file
     /// path (copies of a content share it).
     pub fn search_code_candidates(&self, query: &[f32], hub: &[f32]) -> Result<Vec<Candidate>> {
-        self.calibrated(
-            &[query],
-            hub,
-            usize::MAX,
-            &HashSet::new(),
-            None,
-            true,
-        )
+        self.calibrated(&[query], hub, usize::MAX, &HashSet::new(), None, true)
     }
 
     /// `passing`: keep only the contents that pass the gate at this strictness. `code`: score the
@@ -2059,7 +2063,31 @@ impl Store {
              JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
              WHERE texts MATCH ?1 LIMIT 1",
         )?;
-        Ok(st.query_row(params![pattern], |r| r.get::<_, i64>(0)).is_ok())
+        Ok(st
+            .query_row(params![pattern], |r| r.get::<_, i64>(0))
+            .is_ok())
+    }
+
+    /// All stretches of one code content hash, in chunk order (the `code` partition's `texts`).
+    pub fn code_stretches(&self, hash: &str) -> Result<Vec<CodeStretch>> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT t.chunk, t.body,
+                    COALESCE((SELECT v.locator FROM vectors v WHERE v.hash = t.hash AND v.chunk = t.chunk),
+                             (SELECT p.locator FROM pending_vecs p WHERE p.hash = t.hash AND p.chunk = t.chunk))
+             FROM texts t WHERE t.hash = ?1 ORDER BY t.chunk",
+        )?;
+        let rows = st.query_map(params![hash], |r| {
+            Ok(CodeStretch {
+                chunk: r.get(0)?,
+                body: r.get(1)?,
+                locator: r.get::<_, Option<String>>(2)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for r in rows {
+            out.push(r?);
+        }
+        Ok(out)
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -3708,8 +3736,12 @@ mod tests {
             vol_guid: "v".into(),
             frn: n,
         };
-        let a = s.upsert_file(&k(1), r"C:\p\util.rs", 10, 1, "code").unwrap();
-        let _b = s.upsert_file(&k(2), r"C:\p\more.rs", 10, 1, "code").unwrap();
+        let a = s
+            .upsert_file(&k(1), r"C:\p\util.rs", 10, 1, "code")
+            .unwrap();
+        let _b = s
+            .upsert_file(&k(2), r"C:\p\more.rs", 10, 1, "code")
+            .unwrap();
         s.complete(
             a,
             "ha",
@@ -3724,9 +3756,14 @@ mod tests {
         .unwrap();
         // A copy of the same content: another path over one hash.
         s.complete(_b, "ha", &[], &[]).unwrap();
-        s.upsert_file(&k(3), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
+        s.upsert_file(&k(3), r"C:\p\notes.txt", 10, 1, "doc")
+            .unwrap();
         let words = s.search_code_words("widget", 10).unwrap();
-        assert_eq!(words.len(), 2, "one row per file path (the copy shares the hash)");
+        assert_eq!(
+            words.len(),
+            2,
+            "one row per file path (the copy shares the hash)"
+        );
         assert!(words.iter().all(|w| w.hash == "ha"));
         let w = words.iter().find(|w| w.path == r"C:\p\util.rs").unwrap();
         assert_eq!(
@@ -3749,7 +3786,69 @@ mod tests {
             .unwrap();
         assert_eq!(cov.get("ha"), Some(&0.5), "one of two patterns");
         assert!(s.code_has_pattern("\"widget\"").unwrap());
-        assert!(!s.code_has_pattern("\"meeting\"").unwrap(), "docs are not the code partition");
+        assert!(
+            !s.code_has_pattern("\"meeting\"").unwrap(),
+            "docs are not the code partition"
+        );
+    }
+
+    #[test]
+    fn code_stretches_list_the_whole_file_with_its_locators() {
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
+        let mut s = Store::open_in_memory(&meta).unwrap();
+        let a = s
+            .upsert_file(
+                &FileKey {
+                    vol_guid: "v".into(),
+                    frn: 1,
+                },
+                r"C:\p\util.rs",
+                10,
+                1,
+                "code",
+            )
+            .unwrap();
+        s.complete(
+            a,
+            "ha",
+            &[
+                ChunkVec {
+                    chunk: 0,
+                    kind: VecKind::Text,
+                    locator: Some(r#"{"loc":12,"loc_end":30}"#.into()),
+                    vec: [1.0, 0.0, 0.0, 0.0].to_vec(),
+                },
+                ChunkVec {
+                    chunk: 1,
+                    kind: VecKind::Text,
+                    locator: None,
+                    vec: [0.0, 1.0, 0.0, 0.0].to_vec(),
+                },
+            ],
+            &[(0, "first stretch".into()), (1, "second stretch".into())],
+        )
+        .unwrap();
+        let all = s.code_stretches("ha").unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].chunk, 0);
+        assert_eq!(all[0].body, "first stretch");
+        assert_eq!(
+            all[0].locator.as_deref(),
+            Some(r#"{"loc":12,"loc_end":30}"#)
+        );
+        assert_eq!(all[1].chunk, 1);
+        assert_eq!(all[1].body, "second stretch");
+        assert_eq!(
+            all[1].locator, None,
+            "a pending vector keeps its locator missing"
+        );
+        assert!(s.code_stretches("zz").unwrap().is_empty());
     }
 
     #[test]
@@ -3770,8 +3869,14 @@ mod tests {
         let hub = [0.0f32, 1.0, 0.0, 0.0];
         let mut hot = Vec::new();
         for n in 0..32u64 {
-            let id = s.upsert_file(&k(n), format!(r"C:\p\f{n}.rs").as_str(), 10, 1, "code").unwrap();
-            let v = if n < 3 { query } else { [0.0f32, 0.0, 1.0, 0.0] };
+            let id = s
+                .upsert_file(&k(n), format!(r"C:\p\f{n}.rs").as_str(), 10, 1, "code")
+                .unwrap();
+            let v = if n < 3 {
+                query
+            } else {
+                [0.0f32, 0.0, 1.0, 0.0]
+            };
             if n < 3 {
                 hot.push(format!("hc{n}"));
             }
@@ -3789,7 +3894,9 @@ mod tests {
             .unwrap();
         }
         // A document with the same hot vector must not take part: the population is code only.
-        let doc = s.upsert_file(&k(99), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
+        let doc = s
+            .upsert_file(&k(99), r"C:\p\notes.txt", 10, 1, "doc")
+            .unwrap();
         s.complete(
             doc,
             "hdoc",

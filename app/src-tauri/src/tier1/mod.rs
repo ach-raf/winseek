@@ -50,8 +50,8 @@ use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::{Manifest, Profile, Table};
 use winseek_store::relevance::{self, HUB_PROMPTS};
 use winseek_store::{
-    default_ignore, fts_escape, in_scope_with, CodeWordsHit, Ignore, ParseCounts, Recovery, Scopes,
-    Stats, Store,
+    default_ignore, fts_escape, in_scope_with, CodeStretch, CodeWordsHit, Ignore, ParseCounts,
+    Recovery, Scopes, Stats, Store,
 };
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
@@ -284,7 +284,108 @@ pub fn locator_page(locator: Option<&str>) -> Option<u32> {
 pub fn locator_code_line(locator: Option<&str>) -> Option<u32> {
     let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
     let loc = |k: &str| u32::try_from(v.get(k)?.as_u64()?).ok().filter(|l| *l > 0);
-    loc("loc").or_else(|| loc("loc_end"))
+    loc("line")
+        .or_else(|| loc("loc"))
+        .or_else(|| loc("loc_end"))
+}
+
+/// The stretch's first 1-based line, from its locator's `loc`.
+fn locator_first_line(locator: Option<&str>) -> Option<u32> {
+    let v: serde_json::Value = serde_json::from_str(locator?).ok()?;
+    u32::try_from(v.get("loc")?.as_u64()?)
+        .ok()
+        .filter(|l| *l > 0)
+}
+
+/// The locator for opening at 1-based `line`: the stretch's own locator plus an explicit `line`
+/// the opener prefers, so a hit can land inside the stretch, not just at its top.
+fn with_line(locator: Option<&str>, line: u32) -> String {
+    let mut v: serde_json::Value = locator
+        .and_then(|l| serde_json::from_str(l).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    if let Some(o) = v.as_object_mut() {
+        o.insert("line".into(), serde_json::json!(line));
+    }
+    v.to_string()
+}
+
+/// Where each shown code hit opens: a looked-up name opens at the stretch that defines it, when
+/// one of the first ten results defines it (a name used all over a repo sits in hundreds of
+/// stretches — DigUp's measured cut, 560 -> 100 ms a search); otherwise the line is the first
+/// one of the pointed stretch carrying the query's words. A match by meaning alone keeps the
+/// stretch's first line. Port of DigUp `codePlace`.
+fn code_focus(
+    rows: &mut [(SemRow, String, bool)],
+    name: Option<&str>,
+    terms: &[String],
+    stretches_of: &dyn Fn(&str) -> Vec<CodeStretch>,
+) {
+    let mut cache: std::collections::HashMap<String, Vec<CodeStretch>> =
+        std::collections::HashMap::new();
+    for (rank, (row, hash, words_here)) in rows.iter_mut().enumerate() {
+        let all = cache
+            .entry(hash.clone())
+            .or_insert_with(|| stretches_of(hash));
+        if all.is_empty() {
+            continue;
+        }
+        // 1. The definition of the looked-up name, in the first ten results only.
+        if let (Some(n), true) = (name, rank < 10) {
+            let mut best: Option<(u32, u32, i32)> = None; // (chunk, line, strength)
+            for s in all.iter() {
+                let first = locator_first_line(s.locator.as_deref()).unwrap_or(1);
+                if let Some((line, strength)) = code_rank::definition(n, &s.body, first) {
+                    if strength > best.map_or(0, |(_, _, s)| s) {
+                        best = Some((s.chunk, line, strength));
+                    }
+                    if strength == 2 {
+                        break;
+                    }
+                }
+            }
+            if let Some((chunk, line, _)) = best {
+                let def_locator = all
+                    .iter()
+                    .find(|s| s.chunk == chunk)
+                    .and_then(|s| s.locator.clone());
+                let same = row.locator.is_some() && row.locator == def_locator
+                    || row
+                        .chunk
+                        .as_ref()
+                        .is_some_and(|(h, c)| h == hash && *c == chunk);
+                row.chunk = Some((hash.clone(), chunk));
+                row.locator = Some(with_line(def_locator.as_deref(), line));
+                if !same {
+                    row.snippet = None; // the words matched elsewhere; no excerpt of this stretch
+                }
+                continue;
+            }
+        }
+        // 2. The first line of the pointed stretch carrying the query's words.
+        if !(*words_here || name.is_some()) {
+            continue;
+        }
+        let words: Vec<String> = match name {
+            Some(n) => vec![n.to_lowercase()],
+            None => terms.to_vec(),
+        };
+        let pointed = match row
+            .chunk
+            .as_ref()
+            .filter(|(h, _)| h == hash)
+            .and_then(|(_, c)| all.iter().find(|s| s.chunk == *c))
+            .or_else(|| all.iter().find(|s| Some(&s.locator) == Some(&row.locator)))
+        {
+            Some(s) => s,
+            None => continue,
+        };
+        let first = locator_first_line(pointed.locator.as_deref()).unwrap_or(1);
+        if let Some(line) = code_rank::first_line(&words, &pointed.body, first) {
+            if line != first {
+                row.locator = Some(with_line(row.locator.as_deref(), line));
+            }
+        }
+    }
 }
 
 /// The saved performance profile (`balanced` when unset or unreadable).
@@ -1132,6 +1233,10 @@ impl Tier1 {
             best_words.entry(h.hash.as_str()).or_insert(h);
         }
         let lookup = code_rank::is_lookup(&terms) || id.is_some();
+        // The identifier as written ("()" stripped): what the definition pass looks for.
+        let name = id
+            .as_ref()
+            .map(|_| q.trim().strip_suffix("()").unwrap_or(q.trim()));
         let mut coverage: std::collections::HashMap<String, f32> = std::collections::HashMap::new();
         if !words.is_empty() {
             let mut hashes: Vec<String> = words.iter().map(|h| h.hash.clone()).collect();
@@ -1151,6 +1256,9 @@ impl Tier1 {
             None => Vec::new(),
         };
         let mut rows: Vec<SemRow> = Vec::new();
+        // Per row, the file's hash and whether the words matched the pointed stretch (the pass
+        // that decides where a hit opens needs both).
+        let mut focus: Vec<(String, bool)> = Vec::new();
         let mut seen = std::collections::HashSet::new();
         for c in &cands {
             let key = c.path.to_lowercase();
@@ -1169,6 +1277,7 @@ impl Tier1 {
                 .then(|| best_words.get(c.hash.as_str()).copied())
                 .flatten();
             let score = code_rank::score(c.z, cov, lookup);
+            focus.push((c.hash.clone(), !by_meaning));
             rows.push(SemRow {
                 page: None,
                 path: c.path.clone(),
@@ -1201,6 +1310,7 @@ impl Tier1 {
             }
             seen.insert(key);
             let score = code_rank::score(None, cov, lookup);
+            focus.push((h.hash.clone(), true));
             rows.push(SemRow {
                 page: None,
                 path: h.path.clone(),
@@ -1213,9 +1323,23 @@ impl Tier1 {
                 source: "code",
             });
         }
-        rows.sort_by(|a, b| b.rank.total_cmp(&a.rank).then_with(|| a.path.cmp(&b.path)));
-        let more = limit.is_some_and(|k| rows.len() > k);
-        rows.truncate(limit.unwrap_or(usize::MAX));
+        let mut paired: Vec<(SemRow, String, bool)> = rows
+            .into_iter()
+            .zip(focus)
+            .map(|(r, (h, w))| (r, h, w))
+            .collect();
+        paired.sort_by(|a, b| {
+            b.0.rank
+                .total_cmp(&a.0.rank)
+                .then_with(|| a.0.path.cmp(&b.0.path))
+        });
+        let more = limit.is_some_and(|k| paired.len() > k);
+        paired.truncate(limit.unwrap_or(usize::MAX));
+        // Only what is shown pays for the stretch reads that decide where it opens.
+        code_focus(&mut paired, name, &terms, &|hash| {
+            lock(&self.store).code_stretches(hash).unwrap_or_default()
+        });
+        let mut rows: Vec<SemRow> = paired.into_iter().map(|(r, _, _)| r).collect();
         finalize_scores(&mut rows);
         Ok((self.state_str().into(), rows, more))
     }
@@ -2852,6 +2976,53 @@ mod tests {
                 .iter()
                 .all(|h| h.source != "code"),
             "code never mixes into a general search"
+        );
+    }
+
+    /// A looked-up name opens where it is defined — in whichever of the top results defines it —
+    /// and a plain words hit opens at its first matched line, not the top of the stretch.
+    #[test]
+    fn code_hits_open_at_the_definition_of_a_looked_up_name() {
+        let t = tier(Box::new(Q), &[r"C:\Code"]);
+        assert_eq!(t.set_index_code(true), Ok(true));
+        // The caller file ranks first: it uses the name, it doesn't define it (the fake query
+        // vector only matches its stretch).
+        add_code(
+            &t,
+            5,
+            r"C:\Code\app.rs",
+            2,
+            "retry_with_backoff(every request);\nretry_with_backoff(all);\n",
+            Some(r#"{"loc":10,"loc_end":11}"#),
+        );
+        // The definition, carried by the words side alone.
+        add_code(
+            &t,
+            6,
+            r"C:\Code\util.rs",
+            0,
+            "use std::time::Duration;\n\nfn retry_with_backoff(d: Duration) {\n    nap(d);\n}\n",
+            Some(r#"{"loc":40,"loc_end":44}"#),
+        );
+        let hits = t
+            .semantic_search("code: retry_with_backoff", 5)
+            .unwrap()
+            .hits;
+        assert_eq!(hits.len(), 2);
+        assert_eq!(hits[0].path, r"C:\Code\app.rs");
+        assert_eq!(
+            hits[0].line,
+            Some(10),
+            "the caller opens at its first matched line"
+        );
+        assert_eq!(
+            hits[1].line,
+            Some(42),
+            "the looked-up name opens at its definition, across files"
+        );
+        assert!(
+            hits[1].snippet.as_deref().unwrap().contains('['),
+            "a definition in the matched stretch keeps the excerpt"
         );
     }
 

@@ -152,6 +152,207 @@ pub fn score(z: Option<f32>, coverage: f32, lookup: bool) -> f32 {
     wm * z.unwrap_or(0.0).max(0.0) + ww * coverage.powf(1.5)
 }
 
+/// Words a definition can start with ("def", "func", "class", "@implementation"...).
+const DEFINERS: [&str; 33] = [
+    "def",
+    "func",
+    "fn",
+    "fun",
+    "function",
+    "class",
+    "struct",
+    "enum",
+    "protocol",
+    "interface",
+    "trait",
+    "type",
+    "typealias",
+    "actor",
+    "extension",
+    "impl",
+    "module",
+    "namespace",
+    "object",
+    "record",
+    "macro",
+    "const",
+    "let",
+    "var",
+    "val",
+    "union",
+    "mod",
+    "sub",
+    "@interface",
+    "@implementation",
+    "@protocol",
+    "#define",
+    "function*",
+];
+
+/// Words before a name that mean it's being used, not defined ("return name()", "await name()").
+const USERS: [&str; 28] = [
+    "return", "await", "yield", "throw", "new", "else", "case", "print", "echo", "assert", "not",
+    "and", "or", "in", "is", "do", "go", "defer", "try", "catch", "if", "while", "for", "typeof",
+    "delete", "raise", "import", "from",
+];
+
+/// How comments and docstrings start.
+const COMMENT_STARTS: [&str; 9] = ["//", "#", "/*", "*", "--", "\"\"\"", "'''", "<!--", ";"];
+
+/// A word that starts a definition ("def", "func", "class", "@implementation"...). `let` / `var`
+/// / `const` / `val` bind a value; they don't say what a name is. Port of DigUp
+/// `CodeLookup.definesSomething`.
+pub fn defines_something(word: &str) -> bool {
+    DEFINERS.contains(&word) && !matches!(word, "let" | "var" | "const" | "val")
+}
+
+/// Where `name` is defined in `text` (a stretch whose first line is `first`): the 1-based line,
+/// and how surely — 2 after a word that defines something ("fn retry_with_backoff") or as a
+/// C-style definition ("static void retry_with_backoff(...) {"), 1 for a declaration (the same,
+/// ending in ";"). `None` when the stretch only uses the name. Port of DigUp
+/// `CodeLookup.definition`.
+pub fn definition(name: &str, text: &str, first: u32) -> Option<(u32, i32)> {
+    let mut best: Option<(u32, i32)> = None;
+    for (offset, line) in text.split('\n').enumerate() {
+        for (b, e) in occurrences(name, line) {
+            let before = line[..b].trim();
+            let after = line[e..].trim();
+            let strength = definition_strength(before, after, line);
+            // A strength of 0 (a use) is never a definition: DigUp compares against the best
+            // so far, defaulting to 0, so only 1 and 2 are ever recorded.
+            if strength > best.map_or(0, |(_, s)| s) {
+                best = Some((first + offset as u32, strength));
+            }
+            if strength == 2 {
+                return best;
+            }
+        }
+    }
+    best
+}
+
+/// How surely the line at `name` defines it. 2: a definer word before the name, a Go method, an
+/// Objective-C method, or a C-style definition; 1: the C-style shape ending in ";" (a
+/// declaration); 0: a use ("x = name()", "return name()", "name()" with nothing declared).
+fn definition_strength(before: &str, after: &str, line: &str) -> i32 {
+    let previous = before.split_whitespace().next_back().unwrap_or("");
+    if DEFINERS.contains(&previous) {
+        return 2;
+    }
+    if before.starts_with("func (") && before.ends_with(')') {
+        return 2; // a Go method
+    }
+    if before.starts_with("- (") || before.starts_with("+ (") {
+        // an Objective-C method: "- (void)name" or its body / declaration right after
+        return if after.starts_with(':')
+            || after.is_empty()
+            || after.starts_with('{')
+            || after.starts_with(';')
+        {
+            2
+        } else {
+            0
+        };
+    }
+    // C-style: "static void name(...) {" — a type declared before the name, its parameters
+    // after it, and neither an assignment, a call's argument list, nor a use before it.
+    let typed = !before.is_empty()
+        && !USERS.contains(&previous)
+        && !before.contains(['=', '(', ',', '.', '!', '?'])
+        && !before.contains("->")
+        && before
+            .chars()
+            .next_back()
+            .is_some_and(|c| c.is_alphanumeric() || "*&>_]".contains(c));
+    if !typed || !after.starts_with('(') {
+        return 0;
+    }
+    if line.trim().ends_with(';') {
+        1
+    } else {
+        2
+    }
+}
+
+/// The line (from `first`) to open at for `words` (lowercase): the first line with one of them
+/// that defines something ("fn retry_with_backoff"), else the first such line of code (not a
+/// comment), else the first such line. A word counts as itself or as the start of a name's part
+/// (the "retry" of retryWithBackoff and retry_with_backoff). `None` when none is there. Port of
+/// DigUp `CodeLookup.firstLine`.
+pub fn first_line(words: &[String], text: &str, first: u32) -> Option<u32> {
+    let words: Vec<&str> = words
+        .iter()
+        .map(String::as_str)
+        .filter(|w| w.chars().count() >= 2)
+        .collect();
+    if words.is_empty() {
+        return None;
+    }
+    let mut first_code: Option<u32> = None;
+    let mut first_any: Option<u32> = None;
+    for (offset, line) in text.split('\n').enumerate() {
+        if !words.iter().any(|w| has(w, line)) {
+            continue;
+        }
+        let trimmed = line.trim();
+        if trimmed.split_whitespace().take(4).any(defines_something) {
+            return Some(first + offset as u32);
+        }
+        if first_code.is_none() && !COMMENT_STARTS.iter().any(|s| trimmed.starts_with(s)) {
+            first_code = Some(offset as u32);
+        }
+        if first_any.is_none() {
+            first_any = Some(offset as u32);
+        }
+    }
+    first_code.or(first_any).map(|o| first + o)
+}
+
+/// Whether `line` has `word` (lowercase) as a word or as the start of a name's part: at the
+/// line's start, after something that isn't a letter or a digit, or at a capital letter
+/// (camelCase). Port of DigUp `CodeLookup.has`.
+fn has(word: &str, line: &str) -> bool {
+    let lower = line.to_lowercase();
+    // Offsets into `lower` address `line` only when lowercasing kept the character count
+    // (ASCII code does; the camelCase check needs it).
+    let aligned = lower.chars().count() == line.chars().count();
+    let mut start = 0usize;
+    while let Some(rel) = lower[start..].find(word) {
+        let b = start + rel;
+        let boundary = match lower[..b].chars().next_back() {
+            None => true, // the line starts with it
+            Some(c) => !c.is_alphanumeric(),
+        };
+        let camel = aligned && line[b..].chars().next().is_some_and(char::is_uppercase);
+        if boundary || camel {
+            return true;
+        }
+        start = b + word.len();
+    }
+    false
+}
+
+/// Where `name` sits in `line` as a whole name (not a piece of a longer one), whatever its
+/// case: byte ranges into `line`. Port of DigUp `CodeLookup.occurrences`.
+fn occurrences(name: &str, line: &str) -> Vec<(usize, usize)> {
+    let lower = line.to_lowercase();
+    let needle = name.to_lowercase();
+    let name_char = |c: char| c.is_alphanumeric() || c == '_' || c == '$';
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = lower[start..].find(&needle) {
+        let b = start + rel;
+        let e = b + needle.len();
+        let clear_before = !lower[..b].chars().next_back().is_some_and(name_char);
+        let clear_after = !lower[e..].chars().next().is_some_and(name_char);
+        if clear_before && clear_after {
+            out.push((b, e));
+        }
+        start = e;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,5 +462,71 @@ mod tests {
         );
         // Below-gate meaning does not drag the score under the words bonus.
         assert!(score(Some(-1.0), 1.0, false) > 0.0);
+    }
+
+    #[test]
+    fn definition_finds_the_definer_not_the_users() {
+        let code = "let x = retry_with_backoff();\nfn retry_with_backoff() {\n    nap();\n}\nretry_with_backoff(2);\n";
+        assert_eq!(definition("retry_with_backoff", code, 1), Some((2, 2)));
+        assert_eq!(
+            definition("retry_with_backoff", "retry_with_backoff(2);\n", 7),
+            None,
+            "a stretch that only calls it"
+        );
+        assert_eq!(
+            definition(
+                "retry_with_backoff",
+                "int retry_with_backoff(long ms);\n",
+                3
+            ),
+            Some((3, 1)),
+            "a C declaration is a weak definition"
+        );
+        assert_eq!(
+            definition("retry_with_backoff", "x = retry_with_backoff(2);\n", 5),
+            None,
+            "an assignment is a use, not a definition"
+        );
+        let far = "a\n\nb\n\nc\n\nfn retry_with_backoff() {}\n";
+        assert_eq!(definition("retry_with_backoff", far, 101), Some((107, 2)));
+    }
+
+    #[test]
+    fn first_line_opens_where_the_words_mean_something() {
+        let code = "// retry helpers\nuse std::thread;\nretry_with_backoff(1);\nfn retry_with_backoff() {}\n";
+        let name = |w: &str| vec![w.to_string()];
+        assert_eq!(
+            first_line(&name("retry_with_backoff"), code, 10),
+            Some(13),
+            "the defining line wins over the first use"
+        );
+        assert_eq!(
+            first_line(
+                &name("retry_with_backoff"),
+                "// notes only\nretry_with_backoff(1);\n",
+                20
+            ),
+            Some(21),
+            "no definition: the first line of code with the name"
+        );
+        assert_eq!(
+            first_line(
+                &name("retry_with_backoff"),
+                "# doc\n// note\nx = retry_with_backoff(1);\n",
+                30
+            ),
+            Some(32),
+            "comments are skipped"
+        );
+        assert_eq!(
+            first_line(&name("retry"), "# use it\nretryWithBackoff(1);\n", 40),
+            Some(41),
+            "a term matches as the start of a name's part"
+        );
+        assert_eq!(
+            first_line(&["a".to_string()], code, 1),
+            None,
+            "one-letter words are noise"
+        );
     }
 }
