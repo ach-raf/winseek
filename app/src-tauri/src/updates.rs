@@ -69,18 +69,24 @@ fn save(p: &Prefs) -> Result<(), String> {
     crate::fsutil::write_atomic(&f, json.as_bytes()).map_err(|e| e.to_string())
 }
 
-/// `v0.2.19`, `0.2.19-beta.1` -> (0, 2, 19). The pre-release suffix is ignored.
-pub fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
-    let core = s
-        .trim()
-        .trim_start_matches(['v', 'V'])
-        .split(['-', '+'])
-        .next()?;
-    let mut it = core.split('.');
-    let a = it.next()?.parse().ok()?;
-    let b = it.next().map_or(Some(0), |x| x.parse().ok())?;
-    let c = it.next().map_or(Some(0), |x| x.parse().ok())?;
-    it.next().is_none().then_some((a, b, c))
+/// `v0.2.19`, `0.2.19-beta.1`, `0.3` -> a semver Version. A pre-release orders BELOW its
+/// release (0.3.0-beta.1 < 0.3.0), so a beta build is told about the final 0.3.0 — the old
+/// tuple compare called them equal and never notified.
+pub fn parse_version(s: &str) -> Option<semver::Version> {
+    let t = s.trim().trim_start_matches(['v', 'V']);
+    // Two-part tags like `0.3` (or a bare `2`) are padded: semver demands three numbers.
+    // The pre-release / build suffix (if any) rides along unchanged.
+    let (core, suffix) = match t.find(['-', '+']) {
+        Some(i) => (&t[..i], &t[i..]),
+        None => (t, ""),
+    };
+    let padded = match core.split('.').count() {
+        1 => format!("{core}.0.0"),
+        2 => format!("{core}.0"),
+        3 => core.to_string(),
+        _ => return None, // four-part tags never parsed
+    };
+    semver::Version::parse(&format!("{padded}{suffix}")).ok()
 }
 
 pub fn is_newer(candidate: &str, current: &str) -> bool {
@@ -113,7 +119,7 @@ pub fn pick_release(body: &str) -> Option<Release> {
         .into_iter()
         .filter(|r| !r.draft)
         .filter_map(|r| parse_version(&r.tag_name).map(|v| (v, r)))
-        .max_by_key(|(v, _)| *v)?
+        .max_by(|a, b| a.0.cmp(&b.0))?
         .1;
     let url = if best.html_url.starts_with(PAGE_PREFIX) {
         best.html_url
@@ -284,9 +290,18 @@ mod tests {
 
     #[test]
     fn versions_parse_and_compare() {
-        assert_eq!(parse_version("v0.2.19"), Some((0, 2, 19)));
-        assert_eq!(parse_version("0.3"), Some((0, 3, 0)));
-        assert_eq!(parse_version("1.0.0-rc.1"), Some((1, 0, 0)));
+        assert_eq!(
+            parse_version("v0.2.19"),
+            Some(semver::Version::new(0, 2, 19))
+        );
+        assert_eq!(parse_version("0.3"), Some(semver::Version::new(0, 3, 0)));
+        // A pre-release orders below its release...
+        let rc = parse_version("1.0.0-rc.1").unwrap();
+        assert!(rc < semver::Version::new(1, 0, 0));
+        // ...which is the whole point: a build on 0.3.0-beta.1 must be told about 0.3.0
+        // (the old tuple compare called them equal and never notified).
+        assert!(is_newer("0.3.0", "0.3.0-beta.1"));
+        assert!(!is_newer("0.3.0-beta.1", "0.3.0"));
         assert_eq!(parse_version("nightly"), None);
         assert_eq!(parse_version("1.2.3.4"), None);
         assert!(is_newer("v0.2.19", "0.2.18"));
