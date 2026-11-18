@@ -7,6 +7,7 @@
 //!   extract text -> chunk -> FTS + text vectors (Office / text documents, opt-in source code).
 
 pub mod chunk;
+pub mod code_rank;
 pub mod crawler;
 pub mod embedder;
 pub mod estimate;
@@ -49,7 +50,8 @@ use winseek_llama::prep::prepare_jpeg_long;
 use winseek_llama::{Manifest, Profile, Table};
 use winseek_store::relevance::{self, HUB_PROMPTS};
 use winseek_store::{
-    default_ignore, fts_escape, in_scope_with, Ignore, ParseCounts, Recovery, Scopes, Stats, Store,
+    default_ignore, fts_escape, in_scope_with, CodeWordsHit, Ignore, ParseCounts, Recovery, Scopes,
+    Stats, Store,
 };
 
 use embedder::{EmbedError, Embedder, LlamaEmbedder, RuntimeInfo};
@@ -305,6 +307,9 @@ impl SemanticResult {
     }
 }
 
+/// The query's embedding and the hub's, what a meaning search is built on.
+type QueryVectors = (Vec<f32>, Vec<f32>);
+
 /// A meaning / text hit before the per-file work (stat, highlight boxes) a returned page pays for.
 #[derive(Clone)]
 struct SemRow {
@@ -456,6 +461,37 @@ impl Tier1 {
         t.check_code_chunker();
         t.note_index_stamp(false); // the status page shows which version last verified the index
         Ok(t)
+    }
+
+    /// The code chunker changed since the code index was built: forget the indexed code files once
+    /// so the crawler re-chunks and re-embeds them under the current stretch shape (DigUp's
+    /// fingerprint gate). Without this, old char-offset and new line locators would mix.
+    fn check_code_chunker(&self) {
+        let mut s = lock(&self.store);
+        if !s.get_index_code().unwrap_or(false) {
+            return; // nothing indexed under any chunker
+        }
+        let stored = s
+            .get_setting(winseek_store::SETTING_CODE_CHUNKER)
+            .ok()
+            .flatten();
+        if stored.as_deref() == Some(chunk::CODE_CHUNKER_FINGERPRINT) {
+            return;
+        }
+        match s.remove_kind(crawler::KIND_CODE) {
+            Ok(n) => eprintln!(
+                "winseek: code chunker changed ({} -> {}); {n} code file(s) re-index with line locators",
+                stored.as_deref().unwrap_or("none"),
+                chunk::CODE_CHUNKER_FINGERPRINT
+            ),
+            Err(e) => eprintln!("winseek: could not forget code for re-chunking: {e}"),
+        }
+        if let Err(e) = s.set_setting(
+            winseek_store::SETTING_CODE_CHUNKER,
+            Some(chunk::CODE_CHUNKER_FINGERPRINT),
+        ) {
+            eprintln!("winseek: could not record the code chunker fingerprint: {e}");
+        }
     }
 
     pub fn snapshot(&self) -> Snapshot {
@@ -827,37 +863,6 @@ impl Tier1 {
         Ok(())
     }
 
-    /// The code chunker changed since the code index was built: forget the indexed code files once
-    /// so the crawler re-chunks and re-embeds them under the current stretch shape (DigUp's
-    /// fingerprint gate). Without this, old char-offset and new line locators would mix.
-    fn check_code_chunker(&self) {
-        let mut s = lock(&self.store);
-        if !s.get_index_code().unwrap_or(false) {
-            return; // nothing indexed under any chunker
-        }
-        let stored = s
-            .get_setting(winseek_store::SETTING_CODE_CHUNKER)
-            .ok()
-            .flatten();
-        if stored.as_deref() == Some(chunk::CODE_CHUNKER_FINGERPRINT) {
-            return;
-        }
-        match s.remove_kind(crawler::KIND_CODE) {
-            Ok(n) => eprintln!(
-                "winseek: code chunker changed ({} -> {}); {n} code file(s) re-index with line locators",
-                stored.as_deref().unwrap_or("none"),
-                chunk::CODE_CHUNKER_FINGERPRINT
-            ),
-            Err(e) => eprintln!("winseek: could not forget code for re-chunking: {e}"),
-        }
-        if let Err(e) = s.set_setting(
-            winseek_store::SETTING_CODE_CHUNKER,
-            Some(chunk::CODE_CHUNKER_FINGERPRINT),
-        ) {
-            eprintln!("winseek: could not record the code chunker fingerprint: {e}");
-        }
-    }
-
     /// Record which app version last opened / verified this index, and when its current content
     /// was created or re-stamped (both for the index-status row in Settings). `restamped` marks a
     /// fresh index or a re-stamp after a verified build change: the stamp time is renewed.
@@ -1054,34 +1059,140 @@ impl Tier1 {
         })
     }
 
-    /// `code:` queries: words found in the separate code index (source, notebooks, project prose).
-    /// Needs the code option; code is never part of any other search.
-    fn code_rows(&self, q: &str, limit: Option<usize>) -> (String, Vec<SemRow>, bool) {
+    /// `code:` queries: a hybrid over the separate code index (source, notebooks, project prose).
+    /// Two kinds of evidence, one score ([`code_rank`]): a file's best stretch standing out on the
+    /// meaning scale among the code vectors, and how much of the query the file contains as words
+    /// — an identifier is searched as one phrase, as written. Code is never part of any other
+    /// search.
+    fn code_rows(&self, q: &str, limit: Option<usize>) -> Result<(String, Vec<SemRow>, bool), String> {
         let snap = self.snapshot();
         if !snap.index_code || q.is_empty() {
-            return (self.state_str().into(), vec![], false);
+            return Ok((self.state_str().into(), vec![], false));
         }
-        let raw = lock(&self.store)
-            .search_code(&fts_escape(q), limit.map_or(TEXT_ALL, |k| k * 4))
-            .unwrap_or_default();
-        let mut rows: Vec<SemRow> = raw
-            .into_iter()
-            .filter(|h| snap.in_scope(&h.path))
-            .map(|h| SemRow {
+        // The query's shape decides the patterns: one identifier is a quoted phrase; words are
+        // quoted terms, a word found in no file as typed also as a prefix.
+        let id = code_rank::identifier(q);
+        let terms = code_rank::terms(q);
+        let patterns = match &id {
+            Some(w) => vec![code_rank::phrase(w)],
+            None => {
+                let store = lock(&self.store);
+                code_rank::word_patterns(&terms, &|p| {
+                    store.code_has_pattern(p).unwrap_or(false)
+                })
+            }
+        };
+        if patterns.is_empty() {
+            return Ok((self.state_str().into(), vec![], false));
+        }
+        // Words side: which stretches match (best bm25 first), and how much of the query each
+        // file answers anywhere in it.
+        let words: Vec<CodeWordsHit> = {
+            let store = lock(&self.store);
+            store
+                .search_code_words(&patterns.join(" OR "), limit.map_or(TEXT_ALL, |k| k * 8))
+                .unwrap_or_default()
+        }
+        .into_iter()
+        .filter(|h| snap.in_scope(&h.path))
+        .collect();
+        let mut best_words: std::collections::HashMap<&str, &CodeWordsHit> =
+            std::collections::HashMap::new();
+        for h in &words {
+            best_words.entry(h.hash.as_str()).or_insert(h);
+        }
+        let lookup = code_rank::is_lookup(&terms) || id.is_some();
+        let mut coverage: std::collections::HashMap<String, f32> =
+            std::collections::HashMap::new();
+        if !words.is_empty() {
+            let mut hashes: Vec<String> = words.iter().map(|h| h.hash.clone()).collect();
+            hashes.sort();
+            hashes.dedup();
+            let pats: Vec<&str> = patterns.iter().map(String::as_str).collect();
+            coverage = lock(&self.store)
+                .code_coverage(&pats, &hashes)
+                .unwrap_or_default();
+        }
+        // Meaning side: the best stretch per code file on the relevance scale (the code population
+        // only). No gate here: the words side can carry a file the meaning gate would refuse.
+        let cands = match self.embed_query_vectors(q)? {
+            Some((vec, hub)) => lock(&self.store)
+                .search_code_candidates(&vec, &hub)
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
+        let mut rows: Vec<SemRow> = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        for c in &cands {
+            let key = c.path.to_lowercase();
+            if !seen.insert(key) {
+                continue;
+            }
+            let cov = coverage.get(&c.hash).copied().unwrap_or(0.0);
+            // A file qualifies by standing out in meaning, or by answering half the query.
+            if !c.passes() && cov < code_rank::COVERAGE_CANDIDATE {
+                continue;
+            }
+            // Point at the meaning stretch when it stands out; else at the stretch the words
+            // matched (its snippet and line locator).
+            let by_meaning = c.passes();
+            let hit_w = (!by_meaning).then(|| best_words.get(c.hash.as_str()).copied()).flatten();
+            let score = code_rank::score(c.z, cov, lookup);
+            rows.push(SemRow {
                 page: None,
-                path: h.path,
+                path: c.path.clone(),
+                chunk: Some((c.hash.clone(), c.chunk)),
+                rerank: None,
+                score,
+                rank: score,
+                locator: if by_meaning {
+                    c.locator.clone()
+                } else {
+                    hit_w.and_then(|w| w.locator.clone())
+                },
+                snippet: if by_meaning {
+                    None
+                } else {
+                    hit_w
+                        .map(|w| w.snippet.clone())
+                        .filter(|s| s.contains('['))
+                },
+                source: "code",
+            });
+        }
+        // Files answered by their words only (no vector: models missing or embedding owed).
+        for h in &words {
+            let key = h.path.to_lowercase();
+            if seen.contains(&key) {
+                continue;
+            }
+            let cov = coverage.get(&h.hash).copied().unwrap_or(0.0);
+            if cov < code_rank::COVERAGE_CANDIDATE {
+                continue;
+            }
+            seen.insert(key);
+            let score = code_rank::score(None, cov, lookup);
+            rows.push(SemRow {
+                page: None,
+                path: h.path.clone(),
                 chunk: None,
                 rerank: None,
-                score: 0.0,
-                rank: 0.0,
-                locator: h.locator,
-                snippet: Some(h.snippet).filter(|s| s.contains('[')),
+                score,
+                rank: score,
+                locator: h.locator.clone(),
+                snippet: Some(h.snippet.clone()).filter(|s| s.contains('[')),
                 source: "code",
-            })
-            .collect();
+            });
+        }
+        rows.sort_by(|a, b| {
+            b.rank
+                .total_cmp(&a.rank)
+                .then_with(|| a.path.cmp(&b.path))
+        });
         let more = limit.is_some_and(|k| rows.len() > k);
         rows.truncate(limit.unwrap_or(usize::MAX));
-        (self.state_str().into(), rows, more)
+        finalize_scores(&mut rows);
+        Ok((self.state_str().into(), rows, more))
     }
 
     /// Install another reranker (tests inject a fake; `open_default` the llama-backed one).
@@ -1176,6 +1287,20 @@ impl Tier1 {
         apply_rerank(rows, &cand, &with_text, &scores);
     }
 
+    /// The query's vector and the hub vector: `None` without models (text search answers alone);
+    /// `Err` on a real embedder failure.
+    fn embed_query_vectors(&self, q: &str) -> Result<Option<QueryVectors>, String> {
+        let mut e = lock(&self.embedder);
+        if !e.models_present() {
+            return Ok(None);
+        }
+        match e.embed_query(q).and_then(|v| Ok((v, self.hub_vector(&mut e)?))) {
+            Ok(v) => Ok(Some(v)),
+            Err(EmbedError::ModelsMissing) => Ok(None),
+            Err(EmbedError::Other(m)) => Err(m),
+        }
+    }
+
     /// The hits for `q` before the per-file work: `(state, rows, more exist)`. `limit` = the
     /// top-k of the overview; `None` = every relevant file. Without models the query words found
     /// in extracted text (documents, PDFs, screenshot OCR) answer alone, state `models_missing`.
@@ -1185,24 +1310,10 @@ impl Tier1 {
         limit: Option<usize>,
     ) -> Result<(String, Vec<SemRow>, bool), String> {
         if let Some(cq) = code_query(q) {
-            return Ok(self.code_rows(cq, limit));
+            return self.code_rows(cq, limit);
         }
         let text_k = limit.map_or(TEXT_ALL, |k| k * 4);
-        let embedded = {
-            let mut e = lock(&self.embedder);
-            if !e.models_present() {
-                None
-            } else {
-                let r = e
-                    .embed_query(q)
-                    .and_then(|v| Ok((v, self.hub_vector(&mut e)?)));
-                match r {
-                    Ok(v) => Some(v),
-                    Err(EmbedError::ModelsMissing) => None,
-                    Err(EmbedError::Other(m)) => return Err(m),
-                }
-            }
-        };
+        let embedded = self.embed_query_vectors(q)?;
         let snap = self.snapshot();
         let Some((vec, hub)) = embedded else {
             let raw = lock(&self.store)
@@ -2645,11 +2756,13 @@ mod tests {
             .unwrap();
     }
 
-    /// A `code:` hit knows its line: the stretch locator rides through to the hit.
+    /// The hybrid `code:` search: words (with line locators) and meaning fused, code never
+    /// leaking into a general search.
     #[test]
-    fn code_hits_carry_their_line() {
+    fn code_search_fuses_words_and_meaning_and_carries_lines() {
         let t = tier(Box::new(Q), &[r"C:\Code"]);
         assert_eq!(t.set_index_code(true), Ok(true));
+        // A words-only hit with a line locator (its vector never matches a query).
         add_code(
             &t,
             1,
@@ -2658,19 +2771,64 @@ mod tests {
             "pub fn retry_with_backoff() {\n    nap();\n}\n",
             Some(r#"{"loc":1,"loc_end":3}"#),
         );
+        // A meaning hit (the stub answers any non-"cat" query) that also names the phrase.
+        add_code(
+            &t,
+            2,
+            r"C:\Code\server.rs",
+            2,
+            "retry_with_backoff(every request);\n",
+            Some(r#"{"loc":7,"loc_end":7}"#),
+        );
         let hits = t
             .semantic_search("code: retry_with_backoff", 5)
             .unwrap()
             .hits;
-        assert_eq!(hits.len(), 1);
-        assert_eq!(hits[0].line, Some(1));
-        assert!(hits[0].snippet.as_deref().unwrap().contains('['));
+        assert_eq!(hits.len(), 2);
+        assert_eq!(
+            hits.iter().map(|h| h.line).collect::<Vec<_>>(),
+            [Some(7), Some(1)],
+            "every code hit carries the line to open at"
+        );
+        assert!(hits.iter().all(|h| h.source == "code"));
+        assert!(
+            hits[0].path.ends_with("server.rs"),
+            "the file with both evidences leads (ties break by path)"
+        );
+        assert!(
+            hits[1].snippet.as_deref().unwrap().contains('['),
+            "a words hit shows its matched stretch"
+        );
         assert!(t
             .semantic_search("retry", 5)
             .unwrap()
             .hits
             .iter()
             .all(|h| h.source != "code"), "code never mixes into a general search");
+    }
+
+    /// The words side's gate: a file must answer at least half the query's words to be listed.
+    #[test]
+    fn code_words_only_files_answer_half_the_query_to_qualify() {
+        let t = tier(Box::new(Q), &[r"C:\Code"]);
+        assert_eq!(t.set_index_code(true), Ok(true));
+        add_code(&t, 1, r"C:\Code\full.rs", 0, "alpha retry backoff\n", None);
+        add_code(&t, 2, r"C:\Code\two.rs", 0, "retry backoff\n", None);
+        add_code(&t, 3, r"C:\Code\one.rs", 0, "backoff\n", None);
+        let names: Vec<String> = t
+            .semantic_search("code: alpha retry backoff", 5)
+            .unwrap()
+            .hits
+            .iter()
+            .map(|h| h.path.clone())
+            .collect();
+        assert_eq!(
+            names.len(),
+            2,
+            "one word of three is not enough: one.rs is out"
+        );
+        assert!(names[0].ends_with("full.rs"), "full coverage leads");
+        assert!(names[1].ends_with("two.rs"));
     }
 
     /// The chunker fingerprint gate: stretches cut by an older chunker are forgotten once, so the

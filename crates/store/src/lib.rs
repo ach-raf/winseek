@@ -608,6 +608,21 @@ pub struct TextHit {
     pub rank: f64,
 }
 
+/// One matching code stretch ([`Store::search_code_words`]): unlike [`TextHit`] there is no
+/// per-file dedup, so several stretches of one file (or of its copies) can come back; `hash`
+/// joins them to the vector candidates.
+#[derive(Debug, Clone)]
+pub struct CodeWordsHit {
+    pub hash: String,
+    pub path: String,
+    pub chunk: u32,
+    pub snippet: String,
+    /// Raw `bm25()` value; lower (more negative) is better.
+    pub rank: f64,
+    /// The stretch's locator (a code chunk's `loc` / `loc_end` lines).
+    pub locator: Option<String>,
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Stats {
     pub files: u64,
@@ -1704,7 +1719,7 @@ impl Store {
         per_modality: usize,
         skip: &HashSet<String>,
     ) -> Result<Vec<Candidate>> {
-        self.calibrated(queries, hub, per_modality, skip, None)
+        self.calibrated(queries, hub, per_modality, skip, None, false)
     }
 
     /// Every content that passes the relevance gate for `query` (see [`relevance`]), with no
@@ -1717,10 +1732,28 @@ impl Store {
             usize::MAX,
             &HashSet::new(),
             Some(relevance::Z_MIN),
+            false,
         )
     }
 
-    /// `passing`: keep only the contents that pass the gate at this strictness.
+    /// Every indexed code file's best chunk for `query`, ungated: the code search
+    /// ([`crate::relevance`] scale over the code population only) fuses this with its words side
+    /// itself, so the gate is applied there, against word coverage. One [`Candidate`] per file
+    /// path (copies of a content share it).
+    pub fn search_code_candidates(&self, query: &[f32], hub: &[f32]) -> Result<Vec<Candidate>> {
+        self.calibrated(
+            &[query],
+            hub,
+            usize::MAX,
+            &HashSet::new(),
+            None,
+            true,
+        )
+    }
+
+    /// `passing`: keep only the contents that pass the gate at this strictness. `code`: score the
+    /// code partition (`kind = 'code'`) instead of everything else — its rows form their own
+    /// population, so a code query's z is "standing among code files".
     fn calibrated(
         &self,
         queries: &[&[f32]],
@@ -1728,6 +1761,7 @@ impl Store {
         per_modality: usize,
         skip: &HashSet<String>,
         passing: Option<f32>,
+        code: bool,
     ) -> Result<Vec<Candidate>> {
         if let Some(bad) = queries
             .iter()
@@ -1746,9 +1780,11 @@ impl Store {
         }
         let mut by_hash: HashMap<String, Vec<(FileId, String)>> = HashMap::new();
         {
-            let mut st = self.conn.prepare_cached(
-                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL AND kind != 'code'",
-            )?;
+            let mut st = self.conn.prepare_cached(if code {
+                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL AND kind = 'code'"
+            } else {
+                "SELECT content_hash, id, path FROM files WHERE state = 1 AND content_hash IS NOT NULL AND kind != 'code'"
+            })?;
             let mut rows = st.query([])?;
             while let Some(r) = rows.next()? {
                 let hash: String = r.get(0)?;
@@ -1945,6 +1981,85 @@ impl Store {
             }
         }
         Ok(out)
+    }
+
+    /// One matching code *stretch* per row (not one per file): the code search picks the stretch
+    /// it points at from these. Best bm25 first.
+    pub fn search_code_words(&self, fts_query: &str, k: usize) -> Result<Vec<CodeWordsHit>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        let mut st = self.conn.prepare_cached(
+            "SELECT files.content_hash, files.path, texts.chunk,
+                    snippet(texts, 2, '[', ']', '…', 12), bm25(texts),
+                    COALESCE((SELECT v.locator FROM vectors v WHERE v.hash = texts.hash AND v.chunk = texts.chunk),
+                             (SELECT p.locator FROM pending_vecs p WHERE p.hash = texts.hash AND p.chunk = texts.chunk))
+             FROM texts JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
+             WHERE texts MATCH ?1
+             ORDER BY bm25(texts) LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![fts_query, (k * 5) as i64], |r| {
+            Ok(CodeWordsHit {
+                hash: r.get(0)?,
+                path: r.get(1)?,
+                chunk: r.get(2)?,
+                snippet: r.get(3)?,
+                rank: r.get(4)?,
+                locator: r.get(5)?,
+            })
+        })?;
+        let mut out = Vec::new();
+        for h in rows {
+            out.push(h?);
+            if out.len() == k {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Share of `patterns` answered per content hash: for each pattern, whether the file contains
+    /// it *anywhere* in the code partition. Restricted to `hashes` (the files already in play).
+    pub fn code_coverage(
+        &self,
+        patterns: &[&str],
+        hashes: &[String],
+    ) -> Result<HashMap<String, f32>> {
+        let mut out: HashMap<String, f32> = HashMap::new();
+        if patterns.is_empty() || hashes.is_empty() {
+            return Ok(out);
+        }
+        let in_list = hashes.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "SELECT DISTINCT texts.hash FROM texts
+             JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
+             WHERE texts MATCH ?1 AND texts.hash IN ({in_list})"
+        );
+        let mut st = self.conn.prepare(&sql)?;
+        for pattern in patterns {
+            let mut rows = st.query(rusqlite::params_from_iter(
+                std::iter::once(*pattern).chain(hashes.iter().map(String::as_str)),
+            ))?;
+            let mut hit: HashSet<String> = HashSet::new();
+            while let Some(r) = rows.next()? {
+                hit.insert(r.get(0)?);
+            }
+            let share = 1.0 / patterns.len() as f32;
+            for h in hit {
+                *out.entry(h).or_insert(0.0) += share;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Whether the code partition matches `pattern` as typed (the words side decides prefixes with it).
+    pub fn code_has_pattern(&self, pattern: &str) -> Result<bool> {
+        let mut st = self.conn.prepare_cached(
+            "SELECT 1 FROM texts
+             JOIN files ON files.content_hash = texts.hash AND files.state IN (1, 4) AND files.kind = 'code'
+             WHERE texts MATCH ?1 LIMIT 1",
+        )?;
+        Ok(st.query_row(params![pattern], |r| r.get::<_, i64>(0)).is_ok())
     }
 
     pub fn stats(&self) -> Result<Stats> {
@@ -3576,6 +3691,128 @@ mod tests {
         assert_eq!(
             c.iter().map(|h| h.path.as_str()).collect::<Vec<_>>(),
             [r"C:\p\main.rs"]
+        );
+    }
+
+    #[test]
+    fn code_words_are_per_stretch_with_locators_and_coverage_scores_the_file() {
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
+        let mut s = Store::open_in_memory(&meta).unwrap();
+        let k = |n: u64| FileKey {
+            vol_guid: "v".into(),
+            frn: n,
+        };
+        let a = s.upsert_file(&k(1), r"C:\p\util.rs", 10, 1, "code").unwrap();
+        let _b = s.upsert_file(&k(2), r"C:\p\more.rs", 10, 1, "code").unwrap();
+        s.complete(
+            a,
+            "ha",
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: Some(r#"{"loc":12,"loc_end":30}"#.into()),
+                vec: [1.0, 0.0, 0.0, 0.0].to_vec(),
+            }],
+            &[(0, "frobnicate the widget here".into())],
+        )
+        .unwrap();
+        // A copy of the same content: another path over one hash.
+        s.complete(_b, "ha", &[], &[]).unwrap();
+        s.upsert_file(&k(3), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
+        let words = s.search_code_words("widget", 10).unwrap();
+        assert_eq!(words.len(), 2, "one row per file path (the copy shares the hash)");
+        assert!(words.iter().all(|w| w.hash == "ha"));
+        let w = words.iter().find(|w| w.path == r"C:\p\util.rs").unwrap();
+        assert_eq!(
+            w.locator.as_deref(),
+            Some(r#"{"loc":12,"loc_end":30}"#),
+            "the stretch's line locator comes along"
+        );
+        // Coverage is per content hash, so the copy is covered too, and fully at one pattern.
+        let cov = s
+            .code_coverage(&["\"widget\""], &["ha".into(), "zz".into()])
+            .unwrap();
+        assert_eq!(cov.get("ha"), Some(&1.0));
+        assert!(cov.get("zz").is_none());
+        let cov = s
+            .code_coverage(&["\"widget\"", "\"frobnicate\""], &["ha".into()])
+            .unwrap();
+        assert_eq!(cov.get("ha"), Some(&1.0), "both patterns in one file");
+        let cov = s
+            .code_coverage(&["\"widget\"", "\"nowhere\""], &["ha".into()])
+            .unwrap();
+        assert_eq!(cov.get("ha"), Some(&0.5), "one of two patterns");
+        assert!(s.code_has_pattern("\"widget\"").unwrap());
+        assert!(!s.code_has_pattern("\"meeting\"").unwrap(), "docs are not the code partition");
+    }
+
+    #[test]
+    fn code_candidates_stand_out_among_code_only_and_never_gate() {
+        let meta = IndexMeta {
+            model_id: "t".into(),
+            llama_build: "b".into(),
+            quant: "q".into(),
+            image_budget: 280,
+            dims: 4,
+        };
+        let mut s = Store::open_in_memory(&meta).unwrap();
+        let k = |n: u64| FileKey {
+            vol_guid: "v".into(),
+            frn: n,
+        };
+        let query = [1.0f32, 0.0, 0.0, 0.0];
+        let hub = [0.0f32, 1.0, 0.0, 0.0];
+        let mut hot = Vec::new();
+        for n in 0..32u64 {
+            let id = s.upsert_file(&k(n), format!(r"C:\p\f{n}.rs").as_str(), 10, 1, "code").unwrap();
+            let v = if n < 3 { query } else { [0.0f32, 0.0, 1.0, 0.0] };
+            if n < 3 {
+                hot.push(format!("hc{n}"));
+            }
+            s.complete(
+                id,
+                &format!("hc{n}"),
+                &[ChunkVec {
+                    chunk: 0,
+                    kind: VecKind::Text,
+                    locator: None,
+                    vec: v.to_vec(),
+                }],
+                &[],
+            )
+            .unwrap();
+        }
+        // A document with the same hot vector must not take part: the population is code only.
+        let doc = s.upsert_file(&k(99), r"C:\p\notes.txt", 10, 1, "doc").unwrap();
+        s.complete(
+            doc,
+            "hdoc",
+            &[ChunkVec {
+                chunk: 0,
+                kind: VecKind::Text,
+                locator: None,
+                vec: query.to_vec(),
+            }],
+            &[],
+        )
+        .unwrap();
+        let cands = s.search_code_candidates(&query, &hub).unwrap();
+        assert_eq!(cands.len(), 32, "every code file, ungated");
+        let top: Vec<&str> = cands.iter().take(3).map(|c| c.hash.as_str()).collect();
+        assert!(hot.iter().map(String::as_str).all(|h| top.contains(&h)));
+        assert!(
+            cands.iter().all(|c| c.hash != "hdoc"),
+            "docs never enter the code population"
+        );
+        assert!(
+            cands.iter().take(3).all(|c| c.z.is_some()),
+            "32 rows are enough for a meaning scale"
         );
     }
 
