@@ -5,7 +5,7 @@ import { FileIcon } from "./FileIcon";
 import { ThumbImg } from "./ThumbImg";
 import { IGrid, IRows } from "./icons";
 import { formatDate, formatSize, kindOf, splitDir } from "./format";
-import { usePaneFollow } from "./hooks";
+import { usePaneFollow, useStoredValue } from "./hooks";
 import { activeSection, inBatch, moveMosaic, mosaicMetrics, packMosaic, parseFoldSet, railEntries, rangedBatch, tileBox, toggledBatch, type GalleryView, type SelMod } from "./libraryLogic";
 
 const PAD = 22;
@@ -18,11 +18,9 @@ const OVERSCAN = 320;
 const LIST_H = 32;
 
 const FOLDS_KEY = "winseek.monthfolds";
-const readFolds = (): ReadonlySet<string> => {
-  try { return parseFoldSet(JSON.parse(localStorage.getItem(FOLDS_KEY) ?? "null")); } catch { return new Set(); }
-};
-const saveFolds = (folds: ReadonlySet<string>) => {
-  try { localStorage.setItem(FOLDS_KEY, JSON.stringify([...folds])); } catch { /* storage off: folds just are not remembered */ }
+/** Folded month keys from storage; anything that is not a list of keys is dropped (not cast). */
+const readFolds = (raw: string | null): ReadonlySet<string> => {
+  try { return parseFoldSet(JSON.parse(raw ?? "null")); } catch { return new Set(); }
 };
 
 export interface GridItem {
@@ -114,15 +112,12 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   // With a permanent preview pane (collections) it starts open; Space collapses and reopens it.
   const [pvOpen, setPvOpen] = useState(preview);
   // Folded months: the heading stays (with count and size), the items drop. Remembered across sessions.
-  const [folds, setFolds] = useState<ReadonlySet<string>>(readFolds);
+  const [folds, setFolds] = useStoredValue<ReadonlySet<string>>(FOLDS_KEY, readFolds, (f) => JSON.stringify([...f]));
   const toggleFold = useCallback((key: string) => {
-    setFolds((s) => {
-      const n = new Set(s);
-      if (n.has(key)) n.delete(key); else n.add(key);
-      saveFolds(n);
-      return n;
-    });
-  }, []);
+    const n = new Set(folds);
+    if (n.has(key)) n.delete(key); else n.add(key);
+    setFolds(n);
+  }, [setFolds, folds]);
 
   // A folded section keeps its heading and loses its items; everything below is computed from this.
   const eff = useMemo(

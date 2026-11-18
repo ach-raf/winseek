@@ -8,10 +8,9 @@ import { NameFilter } from "./NameFilter";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
 import { Sidebar, type Page } from "./Sidebar";
-import { Settings, type SettingsSection } from "./Settings";
-import { parseSection } from "./settingsNav";
+import { Settings } from "./Settings";
 import { baseName } from "./Semantic";
-import { useTier1, useModels, useSettled, useStoredValue } from "./hooks";
+import { useTier1, useModels, useSettled, useStoredSection, useStoredValue } from "./hooks";
 import { groupByMonth } from "./libraryLogic";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
@@ -53,14 +52,8 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const [epoch, setEpoch] = useState(0); // bumped after an undo: the background scans (Similar / Disk space) start over
   // Settings inside this window: the sidebar's Settings item used to bounce back to the popup.
   const [showSettings, setShowSettings] = useState(false);
-  // The last section is remembered across sessions (the popup uses the same storage key).
-  const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
-    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "general"; }
-  });
-  const setSettingsSection = useCallback((s: SettingsSection) => {
-    setSettingsSectionRaw(s);
-    try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
-  }, []);
+  // The last section is remembered across sessions (one hook with the popup; same storage key).
+  const [settingsSection, setSettingsSection] = useStoredSection();
   const [t1, refreshT1] = useTier1(backend, showSettings);
   const models = useModels(backend, refreshT1);
   // The Library's own data, owned by react-query: cached across the keep-alive (tab switches and
@@ -72,13 +65,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   // Files sent to the Recycle Bin from here. They vanish from every list at once; an undo brings them back.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   // What the timeline shows: your pictures by default; app graphics only when asked for.
-  const [tlView, setTlViewRaw] = useState<TimelineView>(() => {
-    try { return parseTimelineView(localStorage.getItem("winseek.timelineView")); } catch { return "all"; }
-  });
-  const setTlView = useCallback((v: TimelineView) => {
-    setTlViewRaw(v);
-    try { localStorage.setItem("winseek.timelineView", v); } catch { /* remembered only when storage works */ }
-  }, []);
+  const [tlView, setTlView] = useStoredValue<TimelineView>("winseek.timelineView", parseTimelineView, (v) => v);
   // Tiles or list rows for the timeline gallery (per-screen, remembered).
   const [gview, setGview] = useStoredValue("winseek.galleryView.timeline", parseGalleryView, (v: GalleryView) => v);
   // What the timeline filter field keeps (matches against file names).

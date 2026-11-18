@@ -1,4 +1,5 @@
 import { KeyHints } from "./Hint";
+import { useStoredValue } from "./hooks";
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useQueries, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend, DiskUsage, DriveSpace, Hit, UsageDetail, UsageEntry, UsageType } from "./types";
@@ -32,11 +33,15 @@ const TABS: { id: Tab; label: string }[] = [
 const LS_MAP = "winseek.space.map";
 const MAP_MIN = 120;
 const TREE_MIN = 200;
-const readMapPref = (): { open: boolean; h: number } => {
+/** The map/tree split from storage; anything that is not a well-formed shape is dropped (not cast). */
+const readMapPref = (raw: string | null): { open: boolean; h: number } => {
   try {
-    const j = JSON.parse(localStorage.getItem(LS_MAP) ?? "null");
-    if (j && typeof j === "object") return { open: j.open !== false, h: Number.isFinite(j.h) ? Math.max(MAP_MIN, j.h) : 300 };
-  } catch { /* no storage: defaults */ }
+    const j: unknown = JSON.parse(raw ?? "null");
+    if (j && typeof j === "object" && !Array.isArray(j)) {
+      const o = j as { open?: unknown; h?: unknown };
+      return { open: o.open !== false, h: typeof o.h === "number" && Number.isFinite(o.h) ? Math.max(MAP_MIN, o.h) : 300 };
+    }
+  } catch { /* no storage / malformed: defaults */ }
   return { open: true, h: 300 };
 };
 
@@ -49,18 +54,15 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   /** Open this drive (a click on a drive in the side rail); `n` changes on every request. */
   start?: { letter: string; n: number };
 }) {
-  const [mapPref, setMapPref] = useState(readMapPref);
-  const setMap = useCallback((p: { open: boolean; h: number }) => {
-    setMapPref(p);
-    try { localStorage.setItem(LS_MAP, JSON.stringify(p)); } catch { /* ignore */ }
-  }, []);
+  // One write path: even the live drag-resize writes through (tiny JSON; storage batches the flush).
+  const [mapPref, setMap] = useStoredValue(LS_MAP, readMapPref, (p) => JSON.stringify(p));
   const bodyEl = useRef<HTMLDivElement>(null);
   const dragMap = (e: React.PointerEvent) => {
     e.preventDefault();
     const y0 = e.clientY, h0 = mapPref.h;
     const max = Math.max(MAP_MIN, (bodyEl.current?.clientHeight ?? 600) - TREE_MIN - 40);
     let h = h0;
-    const mv = (ev: PointerEvent) => { h = Math.round(Math.max(MAP_MIN, Math.min(max, h0 + (y0 - ev.clientY)))); setMapPref({ open: true, h }); };
+    const mv = (ev: PointerEvent) => { h = Math.round(Math.max(MAP_MIN, Math.min(max, h0 + (y0 - ev.clientY)))); setMap({ open: true, h }); };
     const up = () => { window.removeEventListener("pointermove", mv); window.removeEventListener("pointerup", up); setMap({ open: true, h }); };
     window.addEventListener("pointermove", mv); window.addEventListener("pointerup", up);
   };

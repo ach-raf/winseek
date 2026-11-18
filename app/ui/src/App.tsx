@@ -6,8 +6,7 @@ import { previewSelectionText } from "./previewLogic";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
 import { Setup } from "./Setup";
-import { Settings, type SettingsSection } from "./Settings";
-import { parseSection } from "./settingsNav";
+import { Settings } from "./Settings";
 import { isToggleKey, shellClass, toggleMode, type ViewMode } from "./viewMode";
 import { Preview, type PreviewApi } from "./Preview";
 import { LaunchMenu } from "./LaunchMenu";
@@ -23,7 +22,7 @@ import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useDebouncedValue, useModels, usePaneFollow, useSemantic, useTier1 } from "./hooks";
+import { useDebouncedValue, useModels, usePaneFollow, useSemantic, useStoredSection, useStoredValue, useTier1 } from "./hooks";
 import { qk } from "./qk";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
@@ -81,22 +80,31 @@ interface Data {
   ver: number;
 }
 
+/** "Most used" entries from storage; anything that is not a well-formed list is dropped, not cast. */
+function readMru(raw: string | null): MruEntry[] {
+  try {
+    const v: unknown = JSON.parse(raw ?? "[]");
+    return Array.isArray(v) ? v.filter((e): e is MruEntry => !!e?.item?.id && typeof e.n === "number") : [];
+  } catch { return []; }
+}
+
+/** Collapsed kind sections from storage; only string keys with boolean values survive. */
+function readKindFolds(raw: string | null): Record<string, boolean> {
+  try {
+    const v: unknown = JSON.parse(raw ?? "{}");
+    if (!v || typeof v !== "object" || Array.isArray(v)) return {};
+    const out: Record<string, boolean> = {};
+    for (const [k, b] of Object.entries(v)) if (typeof b === "boolean") out[k] = b;
+    return out;
+  } catch { return {}; }
+}
+
 export default function App({ backend }: { backend: Backend }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   // Sort order is remembered across sessions of the popup, so "Date modified" stays picked.
-  const [sort, setSort] = useState<Sort>(() => {
-    try {
-      const v = localStorage.getItem("winseek.sort");
-      return v && v in SORT_LABEL ? (v as Sort) : "rel";
-    } catch {
-      return "rel";
-    }
-  });
-  const changeSort = useCallback((s: Sort) => {
-    setSort(s);
-    try { localStorage.setItem("winseek.sort", s); } catch { /* remembered only when storage works */ }
-  }, []);
+  const [sort, setSort] = useStoredValue<Sort>("winseek.sort",
+    (v) => (v && v in SORT_LABEL ? (v as Sort) : "rel"), (s) => s);
   const [sel, setSel] = useState(0);
   const [data, setData] = useState<Data>({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
   const [loaded, setLoaded] = useState(false);
@@ -112,15 +120,9 @@ export default function App({ backend }: { backend: Backend }) {
   // the name index answers in a few ms, and skeletons on every keystroke would flicker.
   const [pending, setPending] = useState(false);
   // Row density of the full window's file list, remembered.
-  const [compactRows, setCompactRows] = useState(() => {
-    try { return localStorage.getItem("winseek.density") === "compact"; } catch { return false; }
-  });
-  const toggleDensity = useCallback(() => {
-    setCompactRows((c) => {
-      try { localStorage.setItem("winseek.density", c ? "comfortable" : "compact"); } catch { /* not remembered */ }
-      return !c;
-    });
-  }, []);
+  const [compactRows, setCompactRows] = useStoredValue<boolean>("winseek.density",
+    (v) => v === "compact", (c) => (c ? "compact" : "comfortable"));
+  const toggleDensity = useCallback(() => setCompactRows(!compactRows), [setCompactRows, compactRows]);
   const totalRef = useRef(0);
   const [space, setSpace] = useState<DriveSpace[]>([]);
   // Drive scope: a row of buttons while it fits, one chip with a menu in the popup or with many drives.
@@ -153,14 +155,8 @@ export default function App({ backend }: { backend: Backend }) {
   const [pvOpen, setPvOpen] = useState(false);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  // The last section is remembered across sessions of the popup.
-  const [settingsSection, setSettingsSectionRaw] = useState<SettingsSection>(() => {
-    try { return parseSection(localStorage.getItem("winseek.settingsSection")); } catch { return "general"; }
-  });
-  const setSettingsSection = useCallback((s: SettingsSection) => {
-    setSettingsSectionRaw(s);
-    try { localStorage.setItem("winseek.settingsSection", s); } catch { /* remembered only when storage works */ }
-  }, []);
+  // The last section is remembered across sessions of the popup (the Library window shares the key).
+  const [settingsSection, setSettingsSection] = useStoredSection();
   // Compact popup or full-window layout; the window itself is resized by the backend.
   const [viewMode, setViewMode] = useState<ViewMode>("compact");
   const full = viewMode === "full";
@@ -177,16 +173,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Per-type result counts of the typed query (the numbers on the filter chips).
   const [nameCounts, setNameCounts] = useState<Partial<Record<Filter, number>> | null>(null);
   // "Most used" apps on home: a launch count kept here (the backend has no usage listing).
-  const [mru, setMru] = useState<MruEntry[]>(() => {
-    try {
-      const v = JSON.parse(localStorage.getItem("winseek.mru") ?? "[]");
-      return Array.isArray(v) ? v.filter((e): e is MruEntry => !!e?.item?.id && typeof e.n === "number") : [];
-    } catch { return []; }
-  });
-  const saveMru = useCallback((next: MruEntry[]) => {
-    setMru(next);
-    try { localStorage.setItem("winseek.mru", JSON.stringify(next)); } catch { /* remembered only when storage works */ }
-  }, []);
+  const [mru, setMru] = useStoredValue<MruEntry[]>("winseek.mru", readMru, JSON.stringify);
   const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
   const [hotkeyBindings, setHotkeyBindings] = useState<Record<string, string>>({});
   const [hintOff, setHintOff] = useState(false);
@@ -225,13 +212,9 @@ export default function App({ backend }: { backend: Backend }) {
   const [histList, setHistList] = useState<string[]>(() => hist.current); // mirror of `hist` for the home's "Recent searches"
   const histAt = useRef(-1); // -1 = the live input
   // "Try" examples: the user can dismiss them for good (the x on the row).
-  const [tryHidden, setTryHidden] = useState<boolean>(() => {
-    try { return localStorage.getItem("winseek.tryHidden") === "1"; } catch { return false; }
-  });
-  const hideTry = useCallback(() => {
-    setTryHidden(true);
-    try { localStorage.setItem("winseek.tryHidden", "1"); } catch { /* remembered only when storage works */ }
-  }, []);
+  const [tryHidden, setTryHidden] = useStoredValue<boolean>("winseek.tryHidden",
+    (v) => v === "1", (h) => (h ? "1" : ""));
+  const hideTry = useCallback(() => setTryHidden(true), [setTryHidden]);
   const recordQuery = useCallback(() => {
     const q = inputRef.current?.value ?? "";
     if (!q.trim()) return;
@@ -297,25 +280,11 @@ export default function App({ backend }: { backend: Backend }) {
   const [weakOpen, setWeakOpen] = useState(false);
   // Files grouped into kind sections (Folders / Documents / …), remembered. The collapsed groups are
   // remembered too, so a group stays shut until it is opened again.
-  const [groupByKind, setGroupByKind] = useState(() => {
-    try { return localStorage.getItem("winseek.kindgroups") === "1"; } catch { return false; }
-  });
-  const toggleGroupKind = useCallback(() => {
-    setGroupByKind((g) => {
-      try { localStorage.setItem("winseek.kindgroups", g ? "0" : "1"); } catch { /* remembered only when storage works */ }
-      return !g;
-    });
-  }, []);
-  const [kindFolds, setKindFolds] = useState<Record<string, boolean>>(() => {
-    try { return JSON.parse(localStorage.getItem("winseek.kindfolds") ?? "{}") as Record<string, boolean>; } catch { return {}; }
-  });
-  const toggleKindFold = useCallback((id: string) => {
-    setKindFolds((f) => {
-      const next = { ...f, [id]: !f[id] };
-      try { localStorage.setItem("winseek.kindfolds", JSON.stringify(next)); } catch { /* remembered only when storage works */ }
-      return next;
-    });
-  }, []);
+  const [groupByKind, setGroupByKind] = useStoredValue<boolean>("winseek.kindgroups",
+    (v) => v === "1", (g) => (g ? "1" : "0"));
+  const toggleGroupKind = useCallback(() => setGroupByKind(!groupByKind), [setGroupByKind, groupByKind]);
+  const [kindFolds, setKindFolds] = useStoredValue<Record<string, boolean>>("winseek.kindfolds", readKindFolds, JSON.stringify);
+  const toggleKindFold = useCallback((id: string) => setKindFolds({ ...kindFolds, [id]: !kindFolds[id] }), [setKindFolds, kindFolds]);
   const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
   const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed, effFilter) && onDrive(h.path, drive)), [sem.hits, parsed, effFilter, drive]);
@@ -860,10 +829,10 @@ export default function App({ backend }: { backend: Backend }) {
       if (mode === "reveal") { await backend.launchReveal(id); await backend.hide(); return; }
       if (h.confirm && armed !== id) { armConfirm(id); return; } // second Enter confirms
       await backend.launchRun(id, q, mode === "admin");
-      if (h.item.kind === "app") saveMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
+      if (h.item.kind === "app") setMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
       await backend.hide();
     } catch (e) { fail(e); }
-  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, saveMru]);
+  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, setMru]);
 
   const enter = (ctrl: boolean, shift: boolean) => {
     if (ovItem?.calc !== undefined) { // calculator result: Enter copies it
@@ -954,10 +923,10 @@ export default function App({ backend }: { backend: Backend }) {
     setLaunchMenu(null);
     void backend.launchHide(h.item.id).then(() => {
       setLaunch((prev) => prev.filter((x) => x.item.id !== h.item.id));
-      saveMru(mru.filter((e) => e.item.id !== h.item.id));
+      setMru(mru.filter((e) => e.item.id !== h.item.id));
       pushUndo({ kind: "unhide", id: h.item.id }, "Hidden from results");
     }).catch(fail);
-  }, [backend, pushUndo, fail, mru, saveMru]);
+  }, [backend, pushUndo, fail, mru, setMru]);
 
   const openMenu = useCallback(async (i: number, x: number, y: number) => {
     const h = rowsRef.current[i];
@@ -1067,7 +1036,7 @@ export default function App({ backend }: { backend: Backend }) {
         }
         if (matchesKey(e, "Alt+S")) {
           e.preventDefault();
-          changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
+          setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
           inputRef.current?.focus();
           return;
         }
@@ -1253,7 +1222,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, changeSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1355,7 +1324,7 @@ export default function App({ backend }: { backend: Backend }) {
       })()
       : null;
   const sortLabel = SORT_LABEL[sort];
-  const nextSort = () => { changeSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
+  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
   const rowHandlers: ItemHandlers = useMemo(() => ({
@@ -1733,7 +1702,7 @@ export default function App({ backend }: { backend: Backend }) {
                     <button tabIndex={-1} className={(on ? "on" : "") + (c.dense ? " ty" : "")} onMouseDown={keep}
                             aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[sort]}` : ""}`}
                             title={on ? `${SORT_LABEL[sort]}. Click to reverse.` : c.hint}
-                            onClick={() => { changeSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
+                            onClick={() => { setSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
                       {c.label}
                       {on && (
                         <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">

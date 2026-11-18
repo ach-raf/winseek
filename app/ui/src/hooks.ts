@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { DEFAULT_GROUPS } from "./modelRows";
 import { NO_HITS, runSemantic, semPlan, semPlaceholder, type SemanticState } from "./semanticLogic";
 import { qk } from "./qk";
+import { parseSection, type SettingsSection } from "./settingsNav";
 import type { Backend, Filter, ModelGroup, ModelsPlan, ModelsProgress, Tier1Status } from "./types";
 
 
@@ -155,6 +156,12 @@ export function useStoredValue<T>(key: string, read: (raw: string | null) => T, 
     try { localStorage.setItem(key, write(n)); } catch { /* storage unavailable: not remembered */ }
   }, [key, write]);
   return [v, put];
+}
+
+/** The last Settings section, remembered across sessions — one reader for the popup and the
+ *  Library window, which share the storage key (they used to be two try/catch copies). */
+export function useStoredSection(): [SettingsSection, (s: SettingsSection) => void] {
+  return useStoredValue("winseek.settingsSection", parseSection, (s) => s);
 }
 
 /** `value`, but a change reaches the caller only after it has stayed put for `ms` (trailing
