@@ -3,7 +3,6 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./types";
 import { TIMELINE_VIEWS, countViews, inView, nameMatches, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
 import { qk, refreshLibraryAfterUndo, refreshLibraryEmbeddings, refreshLibraryIndex } from "./qk";
-import { useStoredValue } from "./hooks";
 import { Gallery, GalleryViewToggle, type GallerySection, type LibActions } from "./Gallery";
 import { NameFilter } from "./NameFilter";
 import { Collections } from "./Collections";
@@ -12,7 +11,7 @@ import { Sidebar, type Page } from "./Sidebar";
 import { Settings, type SettingsSection } from "./Settings";
 import { parseSection } from "./settingsNav";
 import { baseName } from "./Semantic";
-import { useTier1, useModels } from "./hooks";
+import { useTier1, useModels, useSettled, useStoredValue } from "./hooks";
 import { groupByMonth } from "./libraryLogic";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
@@ -27,19 +26,6 @@ const SUBS: Record<Exclude<LibTab, "timeline">, string> = {
   collections: "Describe what you want, winseek keeps it filled",
   cleanup: "Nothing is deleted until you say so",
 };
-
-
-/** `value`, but a change shows up at most once per `ms` (the last one always does). */
-function useSettled<T>(value: T, ms: number): T {
-  const [v, setV] = useState(value);
-  const last = useRef(0);
-  useEffect(() => {
-    if (Object.is(v, value)) return;
-    const t = window.setTimeout(() => { last.current = Date.now(); setV(value); }, Math.max(0, last.current + ms - Date.now()));
-    return () => window.clearTimeout(t);
-  }, [value, ms, v]);
-  return v;
-}
 
 export interface LibraryProps {
   backend: Backend;

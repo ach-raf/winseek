@@ -5,6 +5,7 @@ import { FileIcon } from "./FileIcon";
 import { ThumbImg } from "./ThumbImg";
 import { IGrid, IRows } from "./icons";
 import { formatDate, formatSize, kindOf, splitDir } from "./format";
+import { usePaneFollow } from "./hooks";
 import { activeSection, inBatch, moveMosaic, mosaicMetrics, packMosaic, parseFoldSet, railEntries, rangedBatch, tileBox, toggledBatch, type GalleryView, type SelMod } from "./libraryLogic";
 
 const PAD = 22;
@@ -112,7 +113,6 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   const batch = multi && multi.size > 1 ? multi : null;
   // With a permanent preview pane (collections) it starts open; Space collapses and reopens it.
   const [pvOpen, setPvOpen] = useState(preview);
-  const [pvItem, setPvItem] = useState<GridItem | null>(null);
   // Folded months: the heading stays (with count and size), the items drop. Remembered across sessions.
   const [folds, setFolds] = useState<ReadonlySet<string>>(readFolds);
   const toggleFold = useCallback((key: string) => {
@@ -229,15 +229,11 @@ export function Gallery({ backend, sections, rail, actions, empty, preview = fal
   }, [sel, selBox]);
 
   const cur = flat[sel] ?? null;
-  // The preview follows the selection once it settles (arrowing must not load every file).
+  // The preview follows the selection once it settles (arrowing must not load every file); the
+  // first pick after an empty pane shows at once. (App's popup pane runs the same hook.)
   const curRef = useRef(cur);
   curRef.current = cur;
-  const curPath = cur?.path;
-  useEffect(() => {
-    if (!pvOpen) { setPvItem(null); return; }
-    const t = window.setTimeout(() => setPvItem(curRef.current), pvItem ? 120 : 0);
-    return () => window.clearTimeout(t);
-  }, [pvOpen, curPath, pvItem]);
+  const pvItem = usePaneFollow(pvOpen && cur ? cur.path : null, 120, () => curRef.current);
 
   // The lead item is the keyboard/preview selection; everything in the batch is "on" too.
   const isOn = useCallback((p: string) => inBatch(batch, p, flat[sel]?.path), [batch, flat, sel]);

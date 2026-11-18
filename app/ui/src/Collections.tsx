@@ -7,7 +7,7 @@ import { KeyHints } from "./Hint";
 import { baseName } from "./Semantic";
 import { errText, kindOf } from "./format";
 import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./libraryLogic";
-import { useStoredValue } from "./hooks";
+import { useDebouncedValue, useStoredValue } from "./hooks";
 import { qk } from "./qk";
 import { IChevL, IPlus } from "./icons";
 
@@ -164,12 +164,12 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
 
   // The threshold slider commits shortly after it stops moving.
   const [thr, setThr] = useState<number | null>(null);
+  const settledThr = useDebouncedValue(thr, 450);
   useEffect(() => { setThr(null); setConfirmDel(false); }, [selName]);
   useEffect(() => {
-    if (thr === null || !sel || !list || thr === sel.threshold) return;
-    const t = window.setTimeout(() => { void save(list.map((c) => (c.name === sel.name ? { ...c, threshold: thr } : c))); }, 450);
-    return () => window.clearTimeout(t);
-  }, [thr, sel, list, save]);
+    if (settledThr === null || !sel || !list || settledThr === sel.threshold) return;
+    void save(list.map((c) => (c.name === sel.name ? { ...c, threshold: settledThr } : c)));
+  }, [settledThr, sel, list, save]);
 
   const ev = sel && !sel.rule ? evals[sel.name] : undefined;
 

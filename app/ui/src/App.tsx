@@ -1,5 +1,5 @@
 import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, DriveSpace, Filter, Hit, HitBox, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
+import type { Backend, DriveSpace, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
 import { previewSelectionText } from "./previewLogic";
@@ -23,7 +23,7 @@ import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
 import { Shortcuts, tooltip } from "./Shortcuts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useModels, useSemantic, useTier1 } from "./hooks";
+import { useDebouncedValue, useModels, usePaneFollow, useSemantic, useTier1 } from "./hooks";
 import { qk } from "./qk";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
@@ -147,10 +147,10 @@ export default function App({ backend }: { backend: Backend }) {
   // Search by meaning (Tier 1): setup panel, the "off" hint, semantic hits.
   const [setupOpen, setSetupOpen] = useState(false);
   // The preview pane always shows the selection (Spotlight); Space (`pvOpen`) blows it up to a full-window
-  // Quick Look. `pv` is the (debounced) hit it shows. `navigated`: the user has moved through the results with the
-  // keyboard since the last keystroke in the box, so Space means "Quick Look", not a space.
+  // Quick Look. `pv` is the settled hit it shows (see `usePaneFollow` below). `navigated`: the user has moved
+  // through the results with the keyboard since the last keystroke in the box, so Space means "Quick Look",
+  // not a space.
   const [pvOpen, setPvOpen] = useState(false);
-  const [pv, setPv] = useState<{ hit: Hit; snippet: string | null; page: number | null; at: number | null; boxes: HitBox[] | null; pct: number | null } | null>(null);
   const navigated = useRef(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The last section is remembered across sessions of the popup.
@@ -585,21 +585,21 @@ export default function App({ backend }: { backend: Backend }) {
     return () => window.clearInterval(t);
   }, [backend, scopedQ, sort, effFilter, isRecent, data.recent, loaded, renaming]);
 
-  // The numbers on the type chips: one limit-1 search per type for the typed query (debounced, newest wins).
-  // Not for home, and not while a date / size filter is active (those are applied here, so the totals would lie).
+  // The numbers on the type chips: one limit-1 search per type for the typed query, once it has
+  // settled for 140 ms (newest wins). Not for home, and not while a date / size filter is active
+  // (those are applied here, so the totals would lie).
   const countsOn = query.trim() !== "";
+  const countsKey = useDebouncedValue(countsOn ? `${epoch}|${liveVer}|${scopedQ}` : null, 140);
   useEffect(() => {
-    if (!countsOn) { setNameCounts(null); return; }
+    if (countsKey === null) { setNameCounts(null); return; }
     let dead = false;
-    const t = window.setTimeout(() => {
-      const kinds: Filter[] = ["all", "files", "images", "docs", "video", "audio", "folders"];
-      // limit 0 = count only: the service neither builds rows nor caches a result list for these
-      Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 0, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
-        .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })
-        .catch(() => { if (!dead) setNameCounts(null); });
-    }, 140);
-    return () => { dead = true; window.clearTimeout(t); };
-  }, [backend, countsOn, scopedQ, epoch, liveVer]);
+    const kinds: Filter[] = ["all", "files", "images", "docs", "video", "audio", "folders"];
+    // limit 0 = count only: the service neither builds rows nor caches a result list for these
+    Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 0, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
+      .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })
+      .catch(() => { if (!dead) setNameCounts(null); });
+    return () => { dead = true; };
+  }, [backend, countsKey, scopedQ, epoch]);
 
   // ---- status / window events ---------------------------------------------
   const fast = counting && !summary; // 250 ms while the first scan is being watched
@@ -796,18 +796,14 @@ export default function App({ backend }: { backend: Backend }) {
   boxesRef.current = curBoxes;
   const atRef = useRef(curAt);
   atRef.current = curAt;
-  // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every file).
-  // Launch rows (apps / settings / commands) have no preview: the pane stays empty for them.
+  // The pane follows the selection ~120 ms after it settles (arrowing through a list must not load every
+  // file); the first pick after an empty pane shows at once. Launch rows (apps / settings / commands)
+  // have no preview: the pane stays empty for them. (Gallery's lead preview runs the same hook.)
   const isLaunchSel = !!(overview && ovItem?.launch);
-  const pvShown = useRef(false);
-  useEffect(() => {
-    const c = currentRef.current;
-    if (!c || isLaunchSel) { pvShown.current = false; setPv(null); return; }
-    const set = () => { pvShown.current = true; setPv({ hit: c, snippet: snippetRef.current, page: pageRef.current, at: atRef.current, boxes: boxesRef.current, pct: pctRef.current }); };
-    if (!pvShown.current) { set(); return; }
-    const t = window.setTimeout(set, 120);
-    return () => window.clearTimeout(t);
-  }, [curKey, isLaunchSel]);
+  const pv = usePaneFollow(current && !isLaunchSel ? curKey : null, 120, () => ({
+    hit: currentRef.current!, snippet: snippetRef.current, page: pageRef.current,
+    at: atRef.current, boxes: boxesRef.current, pct: pctRef.current,
+  }));
   useEffect(() => { navigated.current = false; }, [query]);
 
   const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {

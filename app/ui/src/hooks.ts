@@ -156,3 +156,52 @@ export function useStoredValue<T>(key: string, read: (raw: string | null) => T, 
   }, [key, write]);
   return [v, put];
 }
+
+/** `value`, but a change reaches the caller only after it has stayed put for `ms` (trailing
+ *  debounce: the fetch or save fires once, when the typing / slider goes quiet). */
+export function useDebouncedValue<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  const ref = useRef(value);
+  ref.current = value;
+  useEffect(() => {
+    if (Object.is(v, value)) return;
+    const t = window.setTimeout(() => setV(ref.current), ms);
+    return () => window.clearTimeout(t);
+  }, [value, ms, v]);
+  return v;
+}
+
+/** `value`, but a change shows up at most once per `ms` (the last one always does). For inputs
+ *  that climb steadily (the settled embedding count): a trailing debounce would never fire while
+ *  the climb goes on, this re-reads at a bounded rate and catches up when it ends. */
+export function useSettled<T>(value: T, ms: number): T {
+  const [v, setV] = useState(value);
+  const last = useRef(0);
+  useEffect(() => {
+    if (Object.is(v, value)) return;
+    const t = window.setTimeout(() => { last.current = Date.now(); setV(value); }, Math.max(0, last.current + ms - Date.now()));
+    return () => window.clearTimeout(t);
+  }, [value, ms, v]);
+  return v;
+}
+
+/** What a preview pane shows, from `make()`, refreshed only after the selection has settled for
+ *  `ms` (arrowing through a list must not load a preview per row) — but a `null` key (nothing to
+ *  show) and the first pick after an empty pane apply at once: a click must open instantly.
+ *  Keyed by `key`, because a fresh object every render would reset the timer forever. App's
+ *  popup pane and Gallery's lead preview are the same logic; they used to be two diverged copies. */
+export function usePaneFollow<T>(key: string | null, ms: number, make: () => T | null): T | null {
+  const [v, setV] = useState<T | null>(null);
+  const shownKey = useRef<string | null>(null); // the key `v` was built from
+  const makeRef = useRef(make);
+  makeRef.current = make;
+  useEffect(() => {
+    const apply = () => { shownKey.current = key; setV(makeRef.current()); };
+    if (key === null || shownKey.current === null) apply();
+    else if (shownKey.current !== key) {
+      const t = window.setTimeout(apply, ms);
+      return () => window.clearTimeout(t);
+    }
+  }, [key, ms]);
+  return v;
+}
