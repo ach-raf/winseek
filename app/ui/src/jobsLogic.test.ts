@@ -10,7 +10,7 @@ const t1 = (state: Tier1Status["state"], over: Partial<Tier1Status> = {}): Tier1
   ({
     state,
     stats: { files: 3880, pending: 880, done: 3000, failed: 0, skipped: 0, vectors: 3000, text_only: 0 },
-    include: [], exclude: [], error: null, paused_reason: null,
+    include: [], exclude: [], disabled: [], error: null, paused_reason: null,
     ...over,
   });
 

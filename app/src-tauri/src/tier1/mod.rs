@@ -191,6 +191,9 @@ pub struct StatusDto {
     pub stats: Option<StatsDto>,
     pub include: Vec<String>,
     pub exclude: Vec<String>,
+    /// Unchecked folders: kept in the list (and their indexed rows kept) so a re-check is
+    /// instant, but not crawled and not in scope.
+    pub disabled: Vec<String>,
     pub error: Option<String>,
     /// Why indexing is paused: "user" | "battery" | "fullscreen" | null.
     pub paused_reason: Option<&'static str>,
@@ -633,9 +636,26 @@ impl Tier1 {
     }
 
     pub fn set_scopes(&self, include: Vec<String>, exclude: Vec<String>) -> Result<(), String> {
+        // Unchecking parks the folder: its entry moves to the persisted `disabled` list, so
+        // it stays visible (unchecked) across restarts and its rows stay in the store for an
+        // instant re-check. Removal is a different command (`remove_folder`) and clears the
+        // parked entry too. Checked wins over unchecked (scopes::normalize drops the stale one).
+        let prev = self.snapshot().scopes;
+        let parked: Vec<String> = prev
+            .include
+            .iter()
+            .filter(|p| {
+                let lp = scopes::normalize_root(p).to_ascii_lowercase();
+                !include
+                    .iter()
+                    .any(|i| scopes::normalize_root(i).to_ascii_lowercase() == lp)
+            })
+            .cloned()
+            .collect();
         self.persist_scopes(scopes::normalize(Scopes {
             include,
             exclude,
+            disabled: [prev.disabled, parked].concat(),
             ..Default::default()
         }))
     }
@@ -650,22 +670,23 @@ impl Tier1 {
         }
         let lower = p.to_ascii_lowercase();
         let snap = self.snapshot();
-        let included = snap
-            .scopes
-            .include
-            .iter()
-            .any(|i| scopes::normalize_root(i).to_ascii_lowercase() == lower);
-        if included {
-            let include: Vec<String> = snap
-                .scopes
-                .include
-                .iter()
-                .filter(|i| scopes::normalize_root(i).to_ascii_lowercase() != lower)
-                .cloned()
-                .collect();
+        let listed = |list: &[String]| {
+            list.iter()
+                .any(|i| scopes::normalize_root(i).to_ascii_lowercase() == lower)
+        };
+        let (was_included, was_disabled) =
+            (listed(&snap.scopes.include), listed(&snap.scopes.disabled));
+        if was_included || was_disabled {
+            let keep = |list: &[String]| {
+                list.iter()
+                    .filter(|i| scopes::normalize_root(i).to_ascii_lowercase() != lower)
+                    .cloned()
+                    .collect::<Vec<String>>()
+            };
             self.persist_scopes(Scopes {
-                include,
+                include: keep(&snap.scopes.include),
                 exclude: snap.scopes.exclude.clone(),
+                disabled: keep(&snap.scopes.disabled),
                 ..Default::default()
             })?;
         }
@@ -827,6 +848,7 @@ impl Tier1 {
             stats: lock(&self.store).stats().ok().map(Into::into),
             include: scopes.include,
             exclude: scopes.exclude,
+            disabled: scopes.disabled,
             error: lock(&self.last_error).clone(),
             paused_reason: self.paused_reason().map(PauseReason::as_str),
         }
@@ -2084,6 +2106,7 @@ pub async fn tier1_status(h: tauri::State<'_, Handle>) -> Result<StatusDto, Stri
             stats: None,
             include: vec![],
             exclude: vec![],
+            disabled: vec![],
             error: Some(e),
             paused_reason: None,
         }),
@@ -3380,6 +3403,40 @@ mod tests {
         assert!(effective.include.is_empty());
         // And the crawler acts on it: the snapshot scopes are the empty list too.
         assert!(t.snapshot().scopes.include.is_empty());
+    }
+
+    /// Unchecking a folder parks it: the entry stays in the list (persisted `disabled`) and
+    /// its rows stay in the store, so re-checking is instant. Re-checking unparks it.
+    #[test]
+    fn unchecking_parks_a_folder_until_it_is_rechecked() {
+        let t = tier(Box::new(Q), &[r"C:\Pics", r"C:\Docs"]);
+        t.set_scopes(vec![r"C:\Docs".into()], vec![]).unwrap();
+        let st = t.status();
+        assert_eq!(st.include, vec![r"C:\Docs".to_string()]);
+        assert_eq!(st.disabled, vec![r"C:\Pics".to_string()]);
+        // The save persists it, so a restart keeps the unchecked entry in the list.
+        assert_eq!(
+            lock(&t.store).get_scopes().unwrap().disabled,
+            vec![r"C:\Pics".to_string()]
+        );
+        // Back in scope: the stale disabled entry is gone again.
+        t.set_scopes(vec![r"C:\Pics".into(), r"C:\Docs".into()], vec![])
+            .unwrap();
+        assert!(t.status().disabled.is_empty());
+    }
+
+    /// Removing (the Ã— button) is final for a parked folder too: the entry leaves the list
+    /// and the rows are purged, unlike unchecking which keeps both.
+    #[test]
+    fn removing_a_parked_folder_clears_its_entry() {
+        let t = tier(Box::new(Q), &[r"C:\Pics"]);
+        t.set_scopes(vec![], vec![]).unwrap();
+        assert_eq!(t.status().disabled, vec![r"C:\Pics".to_string()]);
+        t.remove_folder(r"C:\Pics").unwrap();
+        assert!(t.status().disabled.is_empty());
+        assert!(t.status().include.is_empty());
+        let saved = lock(&t.store).get_scopes().unwrap();
+        assert!(saved.disabled.is_empty() && saved.configured);
     }
 
     #[test]

@@ -299,6 +299,7 @@ impl Tier1 {
         let scopes = Scopes {
             include: vec![root.clone()],
             exclude: snap.scopes.exclude.clone(),
+            disabled: vec![],
             configured: true,
         };
         let (counts, samples, capped) = walk(
@@ -407,6 +408,7 @@ mod tests {
         let scopes = Scopes {
             include: vec![root],
             exclude: vec![],
+            disabled: vec![],
             configured: true,
         };
         let ignore = winseek_store::Ignore::default();
@@ -437,6 +439,7 @@ mod tests {
         let scopes = Scopes {
             include: vec![d.path().to_string_lossy().into_owned()],
             exclude: vec![],
+            disabled: vec![],
             configured: true,
         };
         let (counts, _, capped) = walk(

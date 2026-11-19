@@ -737,6 +737,11 @@ pub struct Scopes {
     pub include: Vec<String>,
     #[serde(default)]
     pub exclude: Vec<String>,
+    /// Folders the user unchecked: kept in the list (and their indexed rows kept) so a
+    /// re-check is instant, but not crawled and not in scope. A path both checked and
+    /// unchecked is checked; normalization drops the stale entry.
+    #[serde(default)]
+    pub disabled: Vec<String>,
     /// The user has saved a folder list at least once. Without it an empty `include` is
     /// indistinguishable from "never configured", and the defaults would resurrect after
     /// removing the last folder.
@@ -4048,6 +4053,7 @@ mod tests {
         let sc = Scopes {
             include: vec!["C:\\a".into()],
             exclude: vec!["C:\\a\\b".into()],
+            disabled: vec!["C:\\old".into()],
             configured: true,
         };
         s.set_scopes(&sc).unwrap();
@@ -4066,6 +4072,7 @@ mod tests {
             Scopes {
                 include: vec!["C:\\a".into()],
                 exclude: vec![],
+                disabled: vec![],
                 configured: false
             }
         );

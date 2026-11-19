@@ -34,17 +34,21 @@ export function Folders({ t1, onChange, onRemove, estimate }: {
   estimate?: (path: string) => Promise<FolderEstimate>;
 }) {
   const [pending, setPending] = useState<Pending | null>(null);
-  const [known, setKnown] = useState<string[]>([]); // every folder seen this session, so an unchecked one can be re-checked
+  const [known, setKnown] = useState<string[]>([]);
   const [text, setText] = useState("");
   // Removal forgets what was indexed, so it asks first (the shared "are you sure" dialog).
   const rmConfirm = useConfirm();
   const include = t1?.include ?? [];
+  const disabled = t1?.disabled ?? [];
+  // Every folder the app knows: checked roots plus the unchecked ones — the unchecked live on
+  // in the backend's persisted `disabled` list, so they stay in this list across restarts.
+  // Unchecking keeps the entry; the × button (remove) drops it from both lists.
   useEffect(() => {
     setKnown((k) => {
-      const add = include.filter((p) => !k.some((x) => x.toLowerCase() === p.toLowerCase()));
+      const add = [...include, ...disabled].filter((p) => !k.some((x) => x.toLowerCase() === p.toLowerCase()));
       return add.length ? [...k, ...add] : k;
     });
-  }, [include.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [include.join("|"), disabled.join("|")]); // eslint-disable-line react-hooks/exhaustive-deps
   const on = (p: string) => include.some((x) => x.toLowerCase() === p.toLowerCase());
   const toggle = (p: string) => onChange(on(p) ? include.filter((x) => x.toLowerCase() !== p.toLowerCase()) : [...include, p]);
   const add = () => {

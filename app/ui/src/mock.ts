@@ -168,6 +168,7 @@ const dlDone: Record<string, number> = {}; // bytes kept per item (partial files
 const progressCbs = new Set<(p: ModelsProgress) => void>();
 const doneCbs = new Set<(d: ModelsDone) => void>();
 let include = ["C:\\Users\\User\\Pictures", "C:\\Users\\User\\Documents", "C:\\Users\\User\\Desktop", "C:\\Users\\User\\Downloads"];
+let disabled: string[] = []; // unchecked folders: kept in the list, not indexed (same park rule as the backend)
 let exclude: string[] = [];
 let userPaused = false;
 // A representative slice of winseek_store::DEFAULT_IGNORE.
@@ -222,7 +223,7 @@ async function runDownload(groups: ModelGroup[]) {
 
 function t1Status(): Tier1Status {
   if (params.get("unavailable") === "1") {
-    return { state: "unavailable", stats: null, include: [], exclude: [], error: "open store: database is locked", paused_reason: null };
+    return { state: "unavailable", stats: null, include: [], exclude: [], disabled: [], error: "open store: database is locked", paused_reason: null };
   }
   const reason: PausedReason | null = userPaused ? "user" : params.get("battery") === "1" ? "battery" : params.get("fullscreen") === "1" ? "fullscreen" : null;
   const now = performance.now();
@@ -237,7 +238,7 @@ function t1Status(): Tier1Status {
       files: T1_FILES, pending: T1_FILES - done - (modelsInstalled ? 0 : TEXT_ONLY), done, failed: modelsInstalled && done > 100 ? 3 : 0,
       skipped: 0, vectors: done, text_only: modelsInstalled ? 0 : TEXT_ONLY,
     },
-    include: [...include], exclude: [...exclude], error: null, paused_reason: reason,
+    include: [...include], exclude: [...exclude], disabled: [...disabled], error: null, paused_reason: reason,
   };
 }
 
@@ -889,11 +890,21 @@ export const mockBackend: Backend = {
       : null;
   },
   async tier1Status() { return t1Status(); },
-  async tier1SetScopes(inc, exc) { await sleep(30); include = [...inc]; exclude = [...exc]; },
+  async tier1SetScopes(inc, exc) {
+    await sleep(30);
+    // Unchecked roots park in `disabled` so they stay in the list (matches the backend).
+    const parked = include.filter((p) => !inc.some((i) => i.toLowerCase() === p.toLowerCase()));
+    disabled = [...disabled, ...parked].filter(
+      (d, ix, all) => !inc.some((i) => i.toLowerCase() === d.toLowerCase())
+        && all.findIndex((x) => x.toLowerCase() === d.toLowerCase()) === ix,
+    );
+    include = [...inc]; exclude = [...exc];
+  },
   async tier1RemoveFolder(path) {
     await sleep(30);
     const p = path.trim().replace(/[/\\]+$/, "").toLowerCase();
     include = include.filter((i) => i.replace(/[/\\]+$/, "").toLowerCase() !== p);
+    disabled = disabled.filter((i) => i.replace(/[/\\]+$/, "").toLowerCase() !== p);
     return 0; // the mock keeps no per-folder row counts
   },
   async tier1Pause(p) { userPaused = p; },

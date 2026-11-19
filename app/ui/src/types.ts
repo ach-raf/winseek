@@ -31,6 +31,8 @@ export interface Tier1Status {
   } | null;
   include: string[];
   exclude: string[];
+  /** Unchecked folders: kept in the list (rows kept for an instant re-check), not indexed or searched. */
+  disabled: string[];
   error: string | null;
   paused_reason: PausedReason | null;
 }

@@ -59,6 +59,10 @@ pub fn normalize(mut s: Scopes) -> Scopes {
     };
     clean(&mut s.include);
     clean(&mut s.exclude);
+    clean(&mut s.disabled);
+    // A path both checked and unchecked is checked; the stale disabled entry goes.
+    s.disabled
+        .retain(|d| !s.include.iter().any(|i| i.eq_ignore_ascii_case(d)));
     s
 }
 
@@ -70,6 +74,7 @@ pub fn effective(saved: Scopes) -> (Scopes, bool) {
             Scopes {
                 include: default_include(),
                 exclude: saved.exclude,
+                disabled: saved.disabled,
                 configured: false,
             },
             true,
@@ -100,16 +105,39 @@ mod tests {
         let s = Scopes {
             include: vec![r"D:\x".into()],
             exclude: vec![r"D:\x\y".into()],
+            disabled: vec![],
             configured: true,
         };
         assert_eq!(effective(s.clone()), (s, false));
         let (e, used_default) = effective(Scopes {
             include: vec![],
             exclude: vec![r"E:\z".into()],
+            disabled: vec![],
             configured: false,
         });
         assert!(used_default);
         assert_eq!(e.exclude, vec![r"E:\z".to_string()]);
+    }
+
+    /// An unchecked folder stays in `disabled` (trimmed like the rest); one that is
+    /// also checked loses its stale disabled entry, because checked wins.
+    #[test]
+    fn disabled_entries_are_cleaned_and_checked_ones_dropped() {
+        let s = normalize(Scopes {
+            include: vec![r"D:\Photos".into()],
+            exclude: vec![],
+            disabled: vec![
+                r#" D:/Photos/raw "#.into(),
+                r"D:\Archive".into(),
+                r"d:\photos".into(),
+            ],
+            ..Default::default()
+        });
+        assert_eq!(s.include, vec![r"D:\Photos".to_string()]);
+        assert_eq!(
+            s.disabled,
+            vec![r"D:\Photos\raw".to_string(), r"D:\Archive".to_string()]
+        );
     }
 
     /// The 2026-10-19 live bug: after removing every folder the defaults resurrected on
@@ -119,6 +147,7 @@ mod tests {
         let s = Scopes {
             include: vec![],
             exclude: vec![],
+            disabled: vec![],
             configured: true,
         };
         assert_eq!(effective(s.clone()), (s, false));
