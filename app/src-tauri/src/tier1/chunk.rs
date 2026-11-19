@@ -353,7 +353,7 @@ mod tests {
     }
 
     fn locs(cs: &[Chunk]) -> Vec<(u32, u32)> {
-        cs.iter().map(|c| code_span(c)).collect()
+        cs.iter().map(code_span).collect()
     }
 
     /// The 1-based `(first, last)` lines of a code chunk's locator.

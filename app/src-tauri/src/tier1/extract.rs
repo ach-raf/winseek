@@ -974,7 +974,7 @@ pub(crate) mod tests {
             .cycle()
             .take(577)
             .collect();
-        assert!(matches!(extract_file(r"C:\p\app.ts", &code), Ok(_)));
+        assert!(extract_file(r"C:\p\app.ts", &code).is_ok());
     }
     use super::*;
     use std::io::Write;

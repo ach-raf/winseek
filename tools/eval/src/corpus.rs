@@ -565,141 +565,6 @@ pub fn load_index(dir: &Path) -> Result<CorpusIndex, String> {
         .map_err(|e| format!("{}: {e} (run `winseek-eval gen` first)", p.display()))?;
     serde_json::from_str(&s).map_err(|e| format!("{}: {e}", p.display()))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::metrics::{glob_match, parse_cases};
-
-    #[test]
-    fn rendering_is_deterministic() {
-        for i in 0..SPECS.len() {
-            assert_eq!(render(i), render(i), "spec {i}");
-        }
-    }
-
-    #[test]
-    fn generate_twice_gives_identical_bytes() {
-        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
-        generate(a.path()).unwrap();
-        generate(b.path()).unwrap();
-        for f in index().files {
-            assert_eq!(
-                std::fs::read(a.path().join(&f.name)).unwrap(),
-                std::fs::read(b.path().join(&f.name)).unwrap()
-            );
-        }
-        assert_eq!(
-            std::fs::read(a.path().join("corpus.json")).unwrap(),
-            std::fs::read(b.path().join("corpus.json")).unwrap()
-        );
-        assert_eq!(load_index(a.path()).unwrap(), index());
-    }
-
-    #[test]
-    fn names_are_opaque_and_unique() {
-        let idx = index();
-        let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
-        for n in &names {
-            assert!(n.starts_with("img_") || n.starts_with("note_"), "{n}");
-            assert!(
-                !["red", "blue", "circle", "stripes", "page"]
-                    .iter()
-                    .any(|w| n.contains(w)),
-                "{n}"
-            );
-        }
-        names.sort();
-        names.dedup();
-        assert_eq!(names.len(), SPECS.len());
-        let labels: std::collections::HashSet<_> = SPECS.iter().map(|s| s.label).collect();
-        assert_eq!(labels.len(), SPECS.len(), "labels unique");
-    }
-
-    #[test]
-    fn images_decode_and_differ() {
-        let a = image::load_from_memory(&render(0)).unwrap();
-        assert_eq!((a.width(), a.height()), (W, H));
-        let page = image::load_from_memory(&render(29)).unwrap();
-        assert_eq!((page.width(), page.height()), (600, 800));
-        assert_ne!(render(0), render(1));
-        // near-dup differs from its source but is the same size
-        let (src, dup) = (12, 33);
-        assert_ne!(render(src), render(dup));
-        assert_eq!(SPECS[dup].label, "dup-square-blue");
-        assert_eq!(SPECS[src].label, "square-blue");
-    }
-
-    #[test]
-    fn cases_resolve_to_existing_files() {
-        let names: Vec<String> = index().files.into_iter().map(|f| f.name).collect();
-        let cs = cases();
-        assert!(cs.len() >= 40);
-        for c in &cs {
-            for e in &c.expect {
-                assert!(
-                    names.iter().any(|n| glob_match(e, n)),
-                    "{} expects missing {e}",
-                    c.q
-                );
-            }
-        }
-        let tags: std::collections::HashSet<_> = cs.iter().map(|c| c.tag.as_str()).collect();
-        for t in [
-            "color", "shape", "pattern", "gradient", "doc", "text", "xling",
-        ] {
-            assert!(tags.contains(t), "{t}");
-        }
-        assert!(cs.iter().filter(|c| c.tag == "xling").count() >= 2);
-    }
-
-    #[test]
-    fn committed_cases_json_is_in_sync() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/cases.json");
-        let text =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        assert_eq!(
-            parse_cases(&text).unwrap(),
-            cases(),
-            "eval/cases.json is stale; regenerate with `winseek-eval cases > eval/cases.json`"
-        );
-    }
-
-    #[test]
-    fn committed_title_cases_json_is_in_sync() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/title-cases.json");
-        let text =
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-        assert_eq!(
-            parse_cases(&text).unwrap(),
-            title_cases(),
-            "eval/title-cases.json is stale; regenerate with `winseek-eval cases --titles > eval/title-cases.json`"
-        );
-    }
-
-    #[test]
-    fn titled_corpus_writes_unique_files() {
-        let dir = tempfile::tempdir().unwrap();
-        let n = generate_with_titles(dir.path()).unwrap();
-        assert_eq!(n, SPECS.len() + TITLE_NOTES.len());
-        let idx = load_index(dir.path()).unwrap();
-        let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
-        names.sort();
-        let before = names.len();
-        names.dedup();
-        assert_eq!(names.len(), before, "file names collide");
-        for c in title_cases() {
-            for e in &c.expect {
-                assert!(
-                    names.iter().any(|n| glob_match(e, n)),
-                    "{} expects missing {e}",
-                    c.q
-                );
-            }
-        }
-    }
-}
-
 // ------------------------------------------------------------------ code corpus
 
 /// A small, fully deterministic repository for the code cases: an image-thumbnailing service
@@ -877,4 +742,138 @@ pub fn generate_code(dir: &Path) -> std::io::Result<usize> {
     let json = serde_json::to_string_pretty(&idx).expect("serialise");
     std::fs::write(dir.join("corpus.json"), json + "\n")?;
     Ok(CODE_FILES.len())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::metrics::{glob_match, parse_cases};
+
+    #[test]
+    fn rendering_is_deterministic() {
+        for i in 0..SPECS.len() {
+            assert_eq!(render(i), render(i), "spec {i}");
+        }
+    }
+
+    #[test]
+    fn generate_twice_gives_identical_bytes() {
+        let (a, b) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        generate(a.path()).unwrap();
+        generate(b.path()).unwrap();
+        for f in index().files {
+            assert_eq!(
+                std::fs::read(a.path().join(&f.name)).unwrap(),
+                std::fs::read(b.path().join(&f.name)).unwrap()
+            );
+        }
+        assert_eq!(
+            std::fs::read(a.path().join("corpus.json")).unwrap(),
+            std::fs::read(b.path().join("corpus.json")).unwrap()
+        );
+        assert_eq!(load_index(a.path()).unwrap(), index());
+    }
+
+    #[test]
+    fn names_are_opaque_and_unique() {
+        let idx = index();
+        let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
+        for n in &names {
+            assert!(n.starts_with("img_") || n.starts_with("note_"), "{n}");
+            assert!(
+                !["red", "blue", "circle", "stripes", "page"]
+                    .iter()
+                    .any(|w| n.contains(w)),
+                "{n}"
+            );
+        }
+        names.sort();
+        names.dedup();
+        assert_eq!(names.len(), SPECS.len());
+        let labels: std::collections::HashSet<_> = SPECS.iter().map(|s| s.label).collect();
+        assert_eq!(labels.len(), SPECS.len(), "labels unique");
+    }
+
+    #[test]
+    fn images_decode_and_differ() {
+        let a = image::load_from_memory(&render(0)).unwrap();
+        assert_eq!((a.width(), a.height()), (W, H));
+        let page = image::load_from_memory(&render(29)).unwrap();
+        assert_eq!((page.width(), page.height()), (600, 800));
+        assert_ne!(render(0), render(1));
+        // near-dup differs from its source but is the same size
+        let (src, dup) = (12, 33);
+        assert_ne!(render(src), render(dup));
+        assert_eq!(SPECS[dup].label, "dup-square-blue");
+        assert_eq!(SPECS[src].label, "square-blue");
+    }
+
+    #[test]
+    fn cases_resolve_to_existing_files() {
+        let names: Vec<String> = index().files.into_iter().map(|f| f.name).collect();
+        let cs = cases();
+        assert!(cs.len() >= 40);
+        for c in &cs {
+            for e in &c.expect {
+                assert!(
+                    names.iter().any(|n| glob_match(e, n)),
+                    "{} expects missing {e}",
+                    c.q
+                );
+            }
+        }
+        let tags: std::collections::HashSet<_> = cs.iter().map(|c| c.tag.as_str()).collect();
+        for t in [
+            "color", "shape", "pattern", "gradient", "doc", "text", "xling",
+        ] {
+            assert!(tags.contains(t), "{t}");
+        }
+        assert!(cs.iter().filter(|c| c.tag == "xling").count() >= 2);
+    }
+
+    #[test]
+    fn committed_cases_json_is_in_sync() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/cases.json");
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(
+            parse_cases(&text).unwrap(),
+            cases(),
+            "eval/cases.json is stale; regenerate with `winseek-eval cases > eval/cases.json`"
+        );
+    }
+
+    #[test]
+    fn committed_title_cases_json_is_in_sync() {
+        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../eval/title-cases.json");
+        let text =
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+        assert_eq!(
+            parse_cases(&text).unwrap(),
+            title_cases(),
+            "eval/title-cases.json is stale; regenerate with `winseek-eval cases --titles > eval/title-cases.json`"
+        );
+    }
+
+    #[test]
+    fn titled_corpus_writes_unique_files() {
+        let dir = tempfile::tempdir().unwrap();
+        let n = generate_with_titles(dir.path()).unwrap();
+        assert_eq!(n, SPECS.len() + TITLE_NOTES.len());
+        let idx = load_index(dir.path()).unwrap();
+        let mut names: Vec<_> = idx.files.iter().map(|f| f.name.clone()).collect();
+        names.sort();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(names.len(), before, "file names collide");
+        for c in title_cases() {
+            for e in &c.expect {
+                assert!(
+                    names.iter().any(|n| glob_match(e, n)),
+                    "{} expects missing {e}",
+                    c.q
+                );
+            }
+        }
+    }
 }

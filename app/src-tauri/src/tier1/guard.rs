@@ -581,7 +581,7 @@ mod tests {
         .concat();
         assert!(super::is_mpeg_ts(&m2ts), "192-byte packets with timecode");
         assert!(!super::is_mpeg_ts(&vec![0u8; 400]), "all zero is not TS");
-        assert!(!super::is_mpeg_ts(&vec![0x47u8; 100]), "too short to trust");
+        assert!(!super::is_mpeg_ts(&[0x47u8; 100]), "too short to trust");
     }
 
     use super::*;

@@ -251,7 +251,9 @@ impl TimelineState {
         if g.rev != rev {
             return None;
         }
-        let end = start.saturating_add(count.min(MAX_ROWS)).min(g.order.len() as u64);
+        let end = start
+            .saturating_add(count.min(MAX_ROWS))
+            .min(g.order.len() as u64);
         Some(
             (start.min(end)..end)
                 .map(|k| {
@@ -403,7 +405,10 @@ mod tests {
             (secs[0].key.as_str(), secs[0].label.as_str(), secs[0].count),
             ("2025-03", "March 2025", 1)
         );
-        assert_eq!((secs[1].key.as_str(), secs[1].count, secs[1].bytes), ("2025-02", 2, 20));
+        assert_eq!(
+            (secs[1].key.as_str(), secs[1].count, secs[1].bytes),
+            ("2025-02", 2, 20)
+        );
         assert_eq!((secs[1].year, secs[1].month), (2025, 1));
         assert_eq!(
             counts,
@@ -425,11 +430,19 @@ mod tests {
         ];
         let none = HashSet::new();
         let v = |view: &str, q: &str, h: &HashSet<&str>| build_view(&base, view, q, h, 0);
-        assert_eq!(v("all", "", &none).0, vec![0, 1], "graphics stay out of All");
+        assert_eq!(
+            v("all", "", &none).0,
+            vec![0, 1],
+            "graphics stay out of All"
+        );
         assert_eq!(v("photos", "", &none).0, vec![0]);
         assert_eq!(v("screenshots", "", &none).0, vec![1]);
         assert_eq!(v("graphics", "", &none).0, vec![2]);
-        assert_eq!(v("all", " SCREENSHOT ", &none).0, vec![1], "case-insensitive, trimmed");
+        assert_eq!(
+            v("all", " SCREENSHOT ", &none).0,
+            vec![1],
+            "case-insensitive, trimmed"
+        );
         assert_eq!(
             v("all", "p\\", &none).0,
             Vec::<u32>::new(),
@@ -448,7 +461,9 @@ mod tests {
                 .map(|i| row(&format!(r"C:\p\{i}.jpg"), (100 - i) * DAY, ImgClass::Photo))
                 .collect(),
         );
-        let sum = s.view(1, "all", "", &[r"C:\p\3.jpg".to_string()], 0).unwrap();
+        let sum = s
+            .view(1, "all", "", &[r"C:\p\3.jpg".to_string()], 0)
+            .unwrap();
         assert_eq!(sum.total, 9);
         let rows = s.rows(sum.rev, 2, 3).unwrap();
         assert_eq!(
@@ -456,7 +471,11 @@ mod tests {
             [r"C:\p\2.jpg", r"C:\p\4.jpg", r"C:\p\5.jpg"],
             "hidden rows are skipped, indices are of the view"
         );
-        assert_eq!(s.rows(sum.rev, 7, 50).unwrap().len(), 2, "clamped at the end");
+        assert_eq!(
+            s.rows(sum.rev, 7, 50).unwrap().len(),
+            2,
+            "clamped at the end"
+        );
         assert!(s.rows(sum.rev, 99, 5).unwrap().is_empty());
         let pick = s.pick(sum.rev, &[[0, 1], [7, 99]], true).unwrap();
         assert_eq!((pick.count, pick.bytes), (4, 40));
@@ -479,6 +498,9 @@ mod tests {
                 .collect(),
         );
         let sum = s.view(1, "all", "", &[], 0).unwrap();
-        assert_eq!(s.rows(sum.rev, 0, 1_000_000).unwrap().len() as u64, MAX_ROWS);
+        assert_eq!(
+            s.rows(sum.rev, 0, 1_000_000).unwrap().len() as u64,
+            MAX_ROWS
+        );
     }
 }

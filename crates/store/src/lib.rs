@@ -3783,7 +3783,7 @@ mod tests {
             .code_coverage(&["\"widget\""], &["ha".into(), "zz".into()])
             .unwrap();
         assert_eq!(cov.get("ha"), Some(&1.0));
-        assert!(cov.get("zz").is_none());
+        assert!(!cov.contains_key("zz"));
         let cov = s
             .code_coverage(&["\"widget\"", "\"frobnicate\""], &["ha".into()])
             .unwrap();
