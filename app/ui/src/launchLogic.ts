@@ -85,8 +85,9 @@ export const TOP_MIN = 150;
  * (the expand="settings" pass does that filtering) and needs the full list.
  */
 export function launchForFilter(launch: LaunchHit[], filter: Filter): LaunchHit[] {
-  if (filter === "all" || filter === "settings") return launch;
-  if (filter === "apps") return launch.filter((h) => h.item.kind === "app");
+  // "apps" is the "things you launch" tab: Windows pages like "Apps & features" and system
+  // commands ("Lock", "Shut down") are launcher items too, and users look for them under Apps.
+  if (filter === "all" || filter === "settings" || filter === "apps") return launch;
   return [];
 }
 

@@ -277,6 +277,20 @@ pub fn sample(gpu: &mut Option<GpuCounters>) -> Sample {
     }
 }
 
+/// Last borderless-game verdict from the policy poll (GPU-gated, so too costly to redo per query).
+static BORDERLESS_GAME: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Is a full-screen game / presentation running right now? Read-only: one shell query plus the
+/// policy thread's cached borderless-game verdict. Never touches the game's window or input.
+pub fn game_fullscreen_now() -> bool {
+    let live = unsafe { SHQueryUserNotificationState() }.ok().is_some_and(
+        |s: QUERY_USER_NOTIFICATION_STATE| {
+            s == QUNS_RUNNING_D3D_FULL_SCREEN || s == QUNS_PRESENTATION_MODE
+        },
+    );
+    live || BORDERLESS_GAME.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 /// Poll every [`POLL`] and apply the automatic reason to the worker. Runs forever.
 pub fn spawn(t: Arc<Tier1>) {
     let _ = std::thread::Builder::new()
@@ -284,7 +298,9 @@ pub fn spawn(t: Arc<Tier1>) {
         .spawn(move || {
             let mut gpu = None;
             loop {
-                t.set_auto_pause(auto_reason(&sample(&mut gpu)));
+                let s = sample(&mut gpu);
+                BORDERLESS_GAME.store(fullscreen_busy(&s), std::sync::atomic::Ordering::Relaxed);
+                t.set_auto_pause(auto_reason(&s));
                 std::thread::sleep(POLL);
             }
         });

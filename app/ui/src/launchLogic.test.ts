@@ -57,7 +57,7 @@ test("no launch hit at all: file rule decides", () => {
   assert.ok(TOP_MIN > 0);
 });
 
-test("launcher rows follow the type filter: a folders search keeps none, apps keeps only apps", () => {
+test("launcher rows follow the type filter: a folders search keeps none, apps keeps every launcher row", () => {
   const items = [
     launchHit("app:mpv", "mpv", 200),
     launchHit("set:bt", "Bluetooth & devices", 178, { t: "uri", uri: "ms-settings:bluetooth" }, "setting"),
@@ -66,7 +66,8 @@ test("launcher rows follow the type filter: a folders search keeps none, apps ke
   assert.equal(launchForFilter(items, "all").length, 3);
   assert.deepEqual(launchForFilter(items, "folders"), []); // no settings page in the Top Hit slot
   assert.deepEqual(launchForFilter(items, "images"), []);
-  assert.deepEqual(launchForFilter(items, "apps").map((h) => h.item.id), ["app:mpv"]);
+  // Apps tab: "Apps & features" is a settings page, "Lock" a command; both must stay reachable
+  assert.deepEqual(launchForFilter(items, "apps").map((h) => h.item.id), ["app:mpv", "set:bt", "cmd:lock"]);
   // settings scope: the overview shows only the settings pages, so it needs the full list
   assert.equal(launchForFilter(items, "settings").length, 3);
 });

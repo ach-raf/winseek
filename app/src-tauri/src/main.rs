@@ -209,6 +209,15 @@ fn main() {
             let show = MenuItemBuilder::with_id("show", "Show winseek").build(app)?;
             let pause = MenuItemBuilder::with_id("pause", "Pause indexing").build(app)?;
             app.manage(watcher::PauseItem(pause.clone()));
+            let hk_pause =
+                MenuItemBuilder::with_id("hk_pause", hotkeys::pause_label(false)).build(app)?;
+            app.manage(hotkeys::PauseHotkeyItem(hk_pause.clone()));
+            let hk_games = tauri::menu::CheckMenuItemBuilder::with_id(
+                "hk_games",
+                "Pause hotkey in full-screen games",
+            )
+            .checked(app.state::<hotkeys::Hotkeys>().current().pause_in_games)
+            .build(app)?;
             let progress = MenuItemBuilder::with_id("progress", "Meaning index: up to date")
                 .enabled(false)
                 .build(app)?;
@@ -219,8 +228,12 @@ fn main() {
             let status = MenuItemBuilder::with_id("status", "Status").build(app)?;
             let quit = MenuItemBuilder::with_id("quit", "Quit").build(app)?;
             let menu = MenuBuilder::new(app)
-                .items(&[&show, &library, &progress, &pause, &status, &update, &quit])
+                .items(&[
+                    &show, &library, &progress, &pause, &hk_pause, &hk_games, &status, &update,
+                    &quit,
+                ])
                 .build()?;
+            let hk_games_for_event = hk_games.clone();
             let popup_combo = app
                 .state::<hotkeys::Hotkeys>()
                 .current()
@@ -263,6 +276,16 @@ fn main() {
                             t.set_paused(now);
                         }
                         watcher::refresh_pause_item(app);
+                    }
+                    "hk_pause" => {
+                        hotkeys::toggle_user_pause(app);
+                    }
+                    "hk_games" => {
+                        // The check item already flipped itself; mirror it into hotkeys.json.
+                        let on = hk_games_for_event.is_checked().unwrap_or(false);
+                        if let Err(e) = hotkeys::set_pause_in_games(app, on) {
+                            eprintln!("winseek: could not save the game-pause choice: {e}");
+                        }
                     }
                     "update" => updates::tray_clicked(app),
                     "quit" => app.exit(0),

@@ -25,6 +25,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDebouncedValue, useModels, usePaneFollow, useSemantic, useStoredSection, useStoredValue, useTier1 } from "./hooks";
 import { qk } from "./qk";
 import { JobsBar } from "./JobsBar";
+import type { JobKey } from "./jobsLogic";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 import { noteScroll } from "./thumbQueue";
@@ -765,6 +766,15 @@ export default function App({ backend }: { backend: Backend }) {
   const openStatus = useCallback(() => {
     setSetupOpen(false);
     setSettingsSection("status");
+    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    refreshT1();
+  }, [refreshT1, full, setSettingsSection]);
+
+  /** The jobs strip: the job's own Settings section (meaning/models -> Search by meaning with its
+   *  Pause button, everything else -> Status with the drive and parser detail). */
+  const openJob = useCallback((job: JobKey) => {
+    setSetupOpen(false);
+    setSettingsSection(job === "meaning" || job === "models" ? "meaning" : "status");
     if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
     refreshT1();
   }, [refreshT1, full, setSettingsSection]);
@@ -1541,7 +1551,7 @@ export default function App({ backend }: { backend: Backend }) {
     const lc = (k: string) => (drive ? 0 : launch.filter((h) => h.item.kind === k).length);
     switch (f) {
       case "all": return (nameCounts.all ?? 0) + (drive ? 0 : launch.length);
-      case "apps": return lc("app") + portable.length;
+      case "apps": return (drive ? 0 : launch.length) + portable.length; // matches launchForFilter("apps")
       case "settings": return lc("setting");
       default: return nameCounts[f];
     }
@@ -1869,7 +1879,7 @@ export default function App({ backend }: { backend: Backend }) {
       </div>
 
       {/* Work-in-progress strip: always the last thing on screen while any job runs. */}
-      <JobsBar backend={backend} volumes={status} t1={t1} models={models} />
+      <JobsBar backend={backend} volumes={status} t1={t1} models={models} onOpen={openJob} />
 
       {launchMenu && <LaunchMenu
         menu={{ hit: launchMenu.hit, x: launchMenu.x, y: launchMenu.y }} idx={menuIdx} setIdx={setMenuIdx}

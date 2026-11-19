@@ -4,6 +4,7 @@
 //! the global-shortcut plugin, and the handler compares against the *current* bindings.
 
 use std::str::FromStr;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -20,6 +21,10 @@ pub struct Bindings {
     pub library: Option<String>,
     /// Show winseek with the clipboard text as the query (optional, P1).
     pub clipboard: Option<String>,
+    /// Release the popup + clipboard hotkeys while a full-screen game / presentation runs, so the
+    /// game gets every key. Off by default; library hotkey is never paused.
+    #[serde(default)]
+    pub pause_in_games: bool,
 }
 
 impl Default for Bindings {
@@ -28,8 +33,101 @@ impl Default for Bindings {
             popup: Some("Alt+Space".into()),
             library: None,
             clipboard: None,
+            pause_in_games: false,
         }
     }
+}
+
+/// Hotkey pause. While paused the popup + clipboard shortcuts are *unregistered* (not just
+/// ignored) so the keystroke goes to the foreground app untouched. The library hotkey stays live.
+static USER_PAUSED: AtomicBool = AtomicBool::new(false);
+static AUTO_PAUSED: AtomicBool = AtomicBool::new(false);
+/// What is currently true at the OS level (popup/clipboard unregistered).
+static RELEASED: AtomicBool = AtomicBool::new(false);
+static SYNC: Mutex<()> = Mutex::new(());
+
+pub fn is_released() -> bool {
+    RELEASED.load(Ordering::SeqCst)
+}
+
+/// Tray label for the user's hotkey pause.
+pub fn pause_label(user_paused: bool) -> &'static str {
+    if user_paused {
+        "Resume popup hotkey"
+    } else {
+        "Pause popup hotkey"
+    }
+}
+
+pub struct PauseHotkeyItem(pub tauri::menu::MenuItem<tauri::Wry>);
+
+/// Bring the OS registrations in line with the wanted state. Idempotent; safe from any thread.
+pub fn sync(app: &AppHandle) {
+    let _g = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(st) = app.try_state::<Hotkeys>() else {
+        return;
+    };
+    let b = st.current();
+    let want = USER_PAUSED.load(Ordering::SeqCst)
+        || (b.pause_in_games && AUTO_PAUSED.load(Ordering::SeqCst));
+    if want == RELEASED.load(Ordering::SeqCst) {
+        return;
+    }
+    for which in ["popup", "clipboard"] {
+        let Some(sc) = field(&b, which).as_deref().and_then(parse) else {
+            continue;
+        };
+        let gs = app.global_shortcut();
+        if want {
+            let _ = gs.unregister(sc);
+        } else if let Err(e) = gs.register(sc) {
+            eprintln!("winseek: could not re-register {which} hotkey on resume ({e})");
+        }
+    }
+    RELEASED.store(want, Ordering::SeqCst);
+    refresh_tray(app);
+}
+
+/// Flip the user's pause (tray). Returns the new state.
+pub fn toggle_user_pause(app: &AppHandle) -> bool {
+    let now = !USER_PAUSED.load(Ordering::SeqCst);
+    USER_PAUSED.store(now, Ordering::SeqCst);
+    if let Some(it) = app.try_state::<PauseHotkeyItem>() {
+        let _ = it.0.set_text(pause_label(now));
+    }
+    sync(app);
+    now
+}
+
+/// Persist the "pause in games" choice and apply it.
+pub fn set_pause_in_games(app: &AppHandle, on: bool) -> Result<(), String> {
+    let st = app.state::<Hotkeys>();
+    let mut b = st.current();
+    if b.pause_in_games != on {
+        b.pause_in_games = on;
+        save(&b)?;
+        st.set(b.clone());
+        let _ = app.emit("hotkeys-changed", &b);
+    }
+    sync(app);
+    Ok(())
+}
+
+/// Watch for full-screen games (read-only OS query, every few seconds) and release / restore the
+/// hotkeys. Does nothing unless the user opted in.
+fn spawn_game_watch(app: AppHandle) {
+    let _ = std::thread::Builder::new()
+        .name("hotkey-game-watch".into())
+        .spawn(move || loop {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let on = app
+                .try_state::<Hotkeys>()
+                .is_some_and(|s| s.current().pause_in_games);
+            let game = on && crate::tier1::policy::game_fullscreen_now();
+            if AUTO_PAUSED.swap(game, Ordering::SeqCst) != game || (!on && is_released()) {
+                sync(&app);
+            }
+        });
 }
 
 pub struct Hotkeys(Mutex<Bindings>);
@@ -232,6 +330,7 @@ pub fn init(app: &AppHandle) {
     }
     app.manage(Hotkeys(Mutex::new(b)));
     refresh_tray(app);
+    spawn_game_watch(app.clone());
 }
 
 fn field<'a>(b: &'a Bindings, which: &str) -> &'a Option<String> {
@@ -253,7 +352,11 @@ fn set_field(b: &mut Bindings, which: &str, v: Option<String>) {
 fn refresh_tray(app: &AppHandle) {
     let b = app.state::<Hotkeys>().current();
     if let Some(t) = app.tray_by_id(crate::watcher::TRAY_ID) {
-        let tip = format!("winseek ({})", b.popup.as_deref().unwrap_or("no hotkey"));
+        let tip = if is_released() {
+            "winseek (hotkey paused)".to_string()
+        } else {
+            format!("winseek ({})", b.popup.as_deref().unwrap_or("no hotkey"))
+        };
         let _ = t.set_tooltip(Some(tip));
     }
 }
@@ -281,12 +384,15 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
             "winseek needs a popup hotkey; pick another combination instead of clearing it".into(),
         );
     }
-    if let Some(old_str) = &old {
+    // While popup/clipboard are released (pause) nothing is registered at the OS level: just
+    // validate + save; `sync` registers the new combo on resume.
+    let live = which == "library" || !is_released();
+    if let Some(old_str) = old.as_ref().filter(|_| live) {
         if let Some(sc) = parse(old_str) {
             let _ = app.global_shortcut().unregister(sc);
         }
     }
-    if let Some(sc) = &new_sc {
+    if let Some(sc) = new_sc.as_ref().filter(|_| live) {
         if let Err(e) = app.global_shortcut().register(*sc) {
             // Put the old one back before reporting.
             if let Some(old_str) = &old {
@@ -370,6 +476,16 @@ mod tests {
     }
 
     #[test]
+    fn old_hotkeys_json_without_pause_field_loads_with_it_off() {
+        let b: Bindings =
+            serde_json::from_str(r#"{"popup":"Alt+Space","library":null,"clipboard":null}"#)
+                .unwrap();
+        assert!(!b.pause_in_games);
+        assert_eq!(pause_label(true), "Resume popup hotkey");
+        assert_eq!(pause_label(false), "Pause popup hotkey");
+    }
+
+    #[test]
     fn roundtrip_through_combo() {
         for c in [
             "Alt+Space",
@@ -393,6 +509,7 @@ mod tests {
             popup: Some("Ctrl+Alt+Space".into()),
             library: Some("Ctrl+Shift+L".into()),
             clipboard: None,
+            pause_in_games: true,
         };
         save_to(tmp.path(), &b).unwrap();
         assert_eq!(load_from(tmp.path()), b);

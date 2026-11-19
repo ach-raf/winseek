@@ -11,7 +11,9 @@ const FLASH_MS = 5000;
  *  component downloads — it is the last strip of the window on every screen, so the user always
  *  knows work is happening and what exactly. When a job drains, its "finished" line flashes for
  *  a moment before the strip goes away again. */
-export function JobsBar({ backend, volumes, t1, models }: {
+export function JobsBar({ backend, volumes, t1, models, onOpen }: {
+  /** Clicking the strip opens the Settings section that owns the job (pause / resume live there). */
+  onOpen: (job: JobKey) => void;
   backend: Backend;
   volumes: VolumeStatus[];
   t1: Tier1Status | null;
@@ -61,10 +63,12 @@ export function JobsBar({ backend, volumes, t1, models }: {
   const frac = jobsFrac(jobs);
   if (!jobs.length && !flash) return null;
   return (
-    <div className="jbar" role="status" aria-live="polite">
+    <div className="jbar" role="status" aria-live="polite" tabIndex={0} title="Open details"
+         onClick={(e) => onOpen((((e.target as HTMLElement).closest("[data-job]") as HTMLElement | null)?.dataset.job ?? jobs[0]?.key ?? "scan") as JobKey)}
+         onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onOpen(jobs[0]?.key ?? "scan"); } }}>
       {jobs.length > 0 && <span className="jspin" aria-hidden />}
       {jobs.map((j) => (
-        <span key={j.key} className="jseg">{j.label}</span>
+        <span key={j.key} className="jseg" data-job={j.key}>{j.label}</span>
       ))}
       {flash && <span key={flash.n} className="jdone">✓ {flash.text}</span>}
       {frac != null && <i className="jtrack" style={{ width: `${Math.min(100, frac * 100)}%` }} aria-hidden />}

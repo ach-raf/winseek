@@ -54,8 +54,11 @@
 .shell-row { flex: 1; min-width: 0; min-height: 0; display: flex; }
 
 /* ---- jobs bar: the always-visible bottom strip that names the work in progress ---- */
-.jbar { position: relative; flex: none; height: 32px; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--gut); border-top: 1px solid color-mix(in oklab, var(--acc) 55%, var(--line)); background: color-mix(in oklab, var(--acc) 16%, var(--bg3)); box-shadow: 0 -4px 10px -6px rgba(10,12,18,.22); color: var(--fg); font-size: 13px; font-weight: 500; overflow: hidden; }
+.jbar { position: relative; flex: none; height: 32px; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--gut); border-top: 1px solid color-mix(in oklab, var(--acc) 55%, var(--line)); background: color-mix(in oklab, var(--acc) 16%, var(--bg3-0)); cursor: pointer; box-shadow: 0 -4px 10px -6px rgba(10,12,18,.22); color: var(--fg); font-size: 13px; font-weight: 500; overflow: hidden; }
 .jbar .jspin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklab, var(--fg) 22%, transparent); border-top-color: var(--fg); animation: jspin 900ms linear infinite; }
+/* solid mix (--bg3-0, not the window-alpha --bg3): the strip never shows the desktop through it */
+.jbar:hover { background: color-mix(in oklab, var(--acc) 26%, var(--bg3-0)); }
+.jbar:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 @keyframes jspin { to { transform: rotate(360deg); } }
 .jbar .jseg { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .jbar .jseg + .jseg, .jbar .jseg + .jdone { border-left: 1px solid color-mix(in oklab, var(--fg) 25%, transparent); padding-left: var(--sp-3); }
