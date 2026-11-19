@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, TlPick, TlRow, TlSummary, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -137,6 +137,10 @@ function tauriBackend(t: TauriGlobal): Backend {
     onLaunchCatalogChanged: (cb) => t.event.listen("launch-catalog-changed", cb),
     appIconUrl: (aumid, size) => `http://wsicon.localhost/?a=${encodeURIComponent(aumid)}&s=${size}`,
     libraryImages: () => inv<LibImage[]>("library_images"),
+    libraryTimelineLoad: () => inv<number>("library_timeline_load"),
+    libraryTimelineView: (load, view, q, hidden) => inv<TlSummary | null>("library_timeline_view", { load, view, q, hidden }),
+    libraryTimelineRows: (rev, start, count) => inv<TlRow[] | null>("library_timeline_rows", { rev, start, count }),
+    libraryTimelinePick: (rev, ranges, withPaths) => inv<TlPick | null>("library_timeline_pick", { rev, ranges, withPaths }),
     libraryCollections: () => inv<Collection[]>("library_collections"),
     librarySetCollections: (list) => inv<Collection[]>("library_set_collections", { list }),
     libraryCollection: (query, threshold, cap, exclude, graphics) =>

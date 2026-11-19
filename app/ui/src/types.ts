@@ -391,7 +391,7 @@ export interface PreviewInfo {
 }
 /** "settings" is a launcher-only scope (the name index is not searched); "apps" filters the name
  *  index to exe/msi AND keeps the launcher's app rows; "files" is everything but folders. */
-export type Filter = "all" | "files" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
+export type Filter = "all" | "meaning" | "files" | "images" | "docs" | "video" | "audio" | "folders" | "apps" | "settings";
 export type Sort = "rel" | "name" | "size" | "date" | "name_desc" | "size_asc" | "date_asc" | "type" | "type_desc";
 
 export type MenuResult = "rename" | "deleted" | "invoked" | "cancelled";
@@ -488,6 +488,31 @@ export interface LibImage {
   class: ImgClass;
 }
 export type ImgClass = "photo" | "screenshot" | "graphic";
+
+// ---- library timeline (the photo list stays in the backend; the page holds sections and the rows on screen) ----
+/** One month of the filtered timeline. */
+export interface TlSection {
+  /** "2025-03" */
+  key: string;
+  /** "March 2025" */
+  label: string;
+  year: number;
+  /** 0-11 */
+  month: number;
+  count: number;
+  bytes: number;
+}
+export interface TlCounts { all: number; photos: number; screenshots: number; graphics: number }
+/** The filtered list as the backend holds it now. `rev` names this exact list: range / pick calls for another rev answer null. */
+export interface TlSummary {
+  rev: number;
+  total: number;
+  /** Per view over everything not hidden (the tab badges). */
+  counts: TlCounts;
+  sections: TlSection[];
+}
+export interface TlRow { path: string; size: number; mtime: number }
+export interface TlPick { count: number; bytes: number; paths: string[] }
 /** A saved semantic query. `rule: "screenshots"` selects by file name instead of by meaning. */
 export interface Collection {
   name: string;
@@ -646,8 +671,16 @@ export interface Backend {
   onLaunchCatalogChanged(cb: () => void): Promise<() => void>;
   /** Shell icon URL for a store / start-menu app id. */
   appIconUrl(aumid: string, size: number): string | null;
-  /** Every indexed image, newest first. */
+  /** Every indexed image, newest first. Only Collections and Clean up read this whole list; the timeline does not. */
   libraryImages(): Promise<LibImage[]>;
+  /** (Re)read the timeline's base list into the backend; resolves to the id of this load. */
+  libraryTimelineLoad(): Promise<number>;
+  /** Build the filtered view (view tab, name filter, files sent to the Recycle Bin) of load `load`; null when that load is no longer current. */
+  libraryTimelineView(load: number, view: string, q: string, hidden: string[]): Promise<TlSummary | null>;
+  /** Rows [start, start + count) of the view `rev` (path / size / mtime), or null when `rev` is stale. */
+  libraryTimelineRows(rev: number, start: number, count: number): Promise<TlRow[] | null>;
+  /** Count / bytes (and paths when asked) of inclusive index ranges of view `rev`, or null when stale. */
+  libraryTimelinePick(rev: number, ranges: [number, number][], withPaths: boolean): Promise<TlPick | null>;
   libraryCollections(): Promise<Collection[]>;
   /** Validates and saves the list; resolves to what was stored. */
   librarySetCollections(list: Collection[]): Promise<Collection[]>;

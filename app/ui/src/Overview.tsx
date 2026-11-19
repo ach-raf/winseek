@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { ThumbImg } from "./ThumbImg";
+import { noteScroll } from "./thumbQueue";
 import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
@@ -210,9 +211,11 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
 
 /** Pictures: a 4:3 tile. The badge says what put it there (what the picture shows, its name, or both) and
  *  how well it scores; a tile that is there for its name keeps the name on, with the word marked. */
+/** The 4:3 tiles are 170-210 css px wide (4-5 columns) and show 4:3 pictures uncropped: 256 covers them. */
+const TILE_PX = 256;
 const BADGE = { both: "Picture", picture: "Picture", text: "Text inside", name: "Name" } as const;
 const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers }) {
-  const src = backend.iconUrl(it.hit.path, false, true, 256);
+  const src = backend.iconUrl(it.hit.path, false, true, TILE_PX);
   const sem = it.sem;
   const pct = it.pct !== undefined ? it.pct : matchPct(sem);
   const reason = it.why !== undefined ? it.why : reasonOf(sem, true);
@@ -261,9 +264,11 @@ const WIN_OVERSCAN = 4;
  * The row height and the column count are read from the drawn items (the CSS stays in charge of
  * the layout); every item must carry `data-i` and all rows must be equally tall.
  */
-function Windowed({ scrollRef, count, className, render }: {
+function Windowed({ scrollRef, count, className, render, onMore }: {
   scrollRef: React.RefObject<HTMLDivElement | null>; count: number; className: string;
   render: (from: number, to: number) => ReactNode;
+  /** The window reached the last loaded rows: the owner may read more. */
+  onMore?: () => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [g, setG] = useState({ cols: 1, stride: 0, gap: 0, top: 0, viewH: 0 });
@@ -292,13 +297,17 @@ function Windowed({ scrollRef, count, className, render }: {
   useEffect(() => {
     const sc = scrollRef.current;
     if (!sc || !on) return;
-    const onScroll = () => setScrollTop(sc.scrollTop);
-    onScroll();
+    let raf = 0;
+    const onScroll = () => {
+      noteScroll(sc.scrollTop);
+      if (raf === 0) raf = requestAnimationFrame(() => { raf = 0; setScrollTop(sc.scrollTop); }); // one update per frame
+    };
+    setScrollTop(sc.scrollTop);
     sc.addEventListener("scroll", onScroll, { passive: true });
     const ro = new ResizeObserver(measure);
     ro.observe(sc);
     if (box.current) ro.observe(box.current);
-    return () => { sc.removeEventListener("scroll", onScroll); ro.disconnect(); };
+    return () => { sc.removeEventListener("scroll", onScroll); cancelAnimationFrame(raf); ro.disconnect(); };
   }, [scrollRef, on, measure]);
 
   let from = 0, to = count, before = 0, after = 0;
@@ -314,6 +323,8 @@ function Windowed({ scrollRef, count, className, render }: {
     before = a * g.stride - g.gap;
     after = (rows - 1 - b) * g.stride - g.gap;
   }
+  const nearEnd = on && !!g.stride && to >= count - g.cols * 6;
+  useEffect(() => { if (nearEnd) onMore?.(); }, [nearEnd, count, onMore]);
   return (
     <div ref={box} className={className + (on ? " win" : "")}>
       {before > 0 && <div className="win-pad" style={{ height: before }} />}
@@ -359,7 +370,9 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak, onT
   );
 }
 
-export function Overview({ sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
+export function Overview({ onMore, sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
+  /** The pictures grid scrolled near the end of what is loaded. */
+  onMore?: () => void;
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
   /** "Show all" is still reading pages: the list keeps growing. */
   loading?: boolean;
@@ -388,7 +401,7 @@ export function Overview({ sections, sel, renaming, query, backend, expanded, lo
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
             <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} onToggleFold={onToggleFold} />
             {s.fold && !s.items.length ? null : s.id === "images" || s.id === "namepics" ? (
-              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" render={(from, to) =>
+              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" onMore={onMore} render={(from, to) =>
                 s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />
             ) : s.id === "mostused" ? (
               <div className="grid apps">

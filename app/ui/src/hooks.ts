@@ -203,7 +203,7 @@ export function usePaneFollow<T>(key: string | null, ms: number, make: () => T |
   const makeRef = useRef(make);
   makeRef.current = make;
   useEffect(() => {
-    const apply = () => { shownKey.current = key; setV(makeRef.current()); };
+    const apply = () => { shownKey.current = key; setV(key === null ? null : makeRef.current()); }; // no key = nothing to follow: the pane empties (never build a value from a selection that is not there)
     if (key === null || shownKey.current === null) apply();
     else if (shownKey.current !== key) {
       const t = window.setTimeout(apply, ms);

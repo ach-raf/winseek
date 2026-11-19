@@ -1,17 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./types";
-import { TIMELINE_VIEWS, countViews, inView, nameMatches, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
+import { TIMELINE_VIEWS, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
 import { qk, refreshLibraryAfterUndo, refreshLibraryEmbeddings, refreshLibraryIndex } from "./qk";
-import { Gallery, GalleryViewToggle, type GallerySection, type LibActions } from "./Gallery";
+import { Gallery, GalleryViewToggle, type LibActions } from "./Gallery";
+import { useTimelineSource } from "./timelineSource";
 import { NameFilter } from "./NameFilter";
 import { Collections } from "./Collections";
 import { Cleanup } from "./Cleanup";
 import { Sidebar, type Page } from "./Sidebar";
 import { Settings } from "./Settings";
-import { baseName } from "./Semantic";
-import { useTier1, useModels, useSettled, useStoredSection, useStoredValue } from "./hooks";
-import { groupByMonth } from "./libraryLogic";
+import { useTier1, useModels, useSettled, useStoredSection, useStoredValue, useDebouncedValue } from "./hooks";
 import { combos, matches } from "./keymap";
 import { Shortcuts } from "./Shortcuts";
 import { useConfirm } from "./Confirm";
@@ -59,9 +58,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   // The Library's own data, owned by react-query: cached across the keep-alive (tab switches and
   // page round-trips never refetch), re-read only when the inputs change (see the effects below).
   const qc = useQueryClient();
-  const imagesQ = useQuery({ queryKey: qk.libImages, queryFn: () => backend.libraryImages() });
-  const images = useMemo(() => (imagesQ.isError ? [] : imagesQ.data ?? null), [imagesQ.isError, imagesQ.data]);
-  const loadErr = imagesQ.isError ? errText(imagesQ.error) : null;
+  // The timeline's photo list lives in the backend (a million photos as page objects cost ~2 GB): the page asks for a
+  // load, then for a view of it (tab, name filter, hidden files) and gets months with counts; rows come by index
+  // from the gallery as it scrolls (timelineSource).
+  const baseQ = useQuery({ queryKey: qk.libTimelineBase, queryFn: () => backend.libraryTimelineLoad() });
   // Files sent to the Recycle Bin from here. They vanish from every list at once; an undo brings them back.
   const [hidden, setHidden] = useState<ReadonlySet<string>>(new Set());
   // What the timeline shows: your pictures by default; app graphics only when asked for.
@@ -70,6 +70,30 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const [gview, setGview] = useStoredValue("winseek.galleryView.timeline", parseGalleryView, (v: GalleryView) => v);
   // What the timeline filter field keeps (matches against file names).
   const [photoQ, setPhotoQ] = useState("");
+  const nameQ = useDebouncedValue(photoQ.trim(), 150);
+  const hiddenList = useMemo(() => [...hidden], [hidden]);
+  const load = baseQ.data;
+  const viewQ = useQuery({
+    queryKey: qk.libTimeline(load ?? -1, tlView, nameQ, hiddenList.join("\n")),
+    queryFn: async () => {
+      const r = await backend.libraryTimelineView(load!, tlView, nameQ, hiddenList);
+      if (!r) throw new Error("The photo list changed while it was being read");
+      return r;
+    },
+    enabled: load !== undefined,
+    placeholderData: keepPreviousData,
+    gcTime: 0,
+    staleTime: 0,
+  });
+  const summary = viewQ.data ?? null;
+  const source = useTimelineSource(backend, summary);
+  const loadErr = baseQ.isError ? errText(baseQ.error) : viewQ.isError && !summary ? errText(viewQ.error) : null;
+  // State, not a ref, and marked during render: the newly picked tab must mount in THIS commit — a
+  // ref flip would wait for the next unrelated render, leaving the body empty for seconds.
+  const [seen, setSeen] = useState<Record<LibTab, boolean>>({ timeline: true, collections: false, cleanup: false });
+  if (!seen[tab]) setSeen((s) => ({ ...s, [tab]: true }));
+  // Whole-list consumers (Collections, Clean up) read the plain list, and only once one of their tabs was opened.
+  const imagesQ = useQuery({ queryKey: qk.libImages, queryFn: () => backend.libraryImages(), enabled: seen.collections || seen.cleanup });
   const [toast, setToast] = useState<{ msg: string; undo: boolean } | null>(null);
   const toastTimer = useRef<number | undefined>(undefined);
   const undoRef = useRef<string[] | null>(null);
@@ -208,38 +232,31 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
     });
   }, [tab, active]);
 
-  const visible = useMemo(() => (images ?? []).filter((i) => !hidden.has(i.path)), [images, hidden]);
   // Your own pictures: what collections and clean-up work on (app graphics are never offered there).
-  const personal = useMemo(() => visible.filter((i) => i.class !== "graphic"), [visible]);
-  const viewCounts = useMemo(() => countViews(visible), [visible]);
-  const shown = useMemo(() => {
-    const inView_ = visible.filter((i) => inView(i.class, tlView));
-    return photoQ.trim() ? inView_.filter((i) => nameMatches(baseName(i.path), photoQ)) : inView_;
-  }, [visible, tlView, photoQ]);
-  const sections: GallerySection[] = useMemo(
-    () => groupByMonth(shown).map((s) => ({
-      key: s.key, label: s.label, year: s.year, month: s.month,
-      items: s.items.map((i) => ({ path: i.path, name: baseName(i.path), size: i.size, mtime: i.mtime })),
-    })),
-    [shown],
+  const personal = useMemo(
+    () => (imagesQ.data && !imagesQ.isError ? imagesQ.data.filter((i) => i.class !== "graphic" && !hidden.has(i.path)) : []),
+    [imagesQ.data, imagesQ.isError, hidden],
   );
+  const counts = summary?.counts ?? { all: 0, photos: 0, screenshots: 0, graphics: 0 };
+  const visibleTotal = counts.all + counts.graphics; // everything indexed and not recycled, whatever the tab
+  const shownTotal = summary?.total ?? 0;
 
-  const emptyTimeline = images === null
+  const emptyTimeline = summary === null && !loadErr
     ? <><span className="spin" aria-label="Loading" /></>
-    : photoQ.trim() && visible.length > 0 && shown.length === 0
+    : photoQ.trim() && visibleTotal > 0 && shownTotal === 0
       ? <><strong>{`Nothing matches “${photoQ.trim()}”`}</strong><span>Clear the filter to see every photo again.</span></>
     : loadErr
       ? <><strong>Could not read the photo index</strong><span>{loadErr}</span></>
       : t1?.state === "models_missing"
         ? <><strong>Nothing indexed yet</strong><span>Photos appear here once search by meaning is set up (Ctrl+, in the popup).</span></>
-        : visible.length > 0
+        : visibleTotal > 0
           ? <><strong>Nothing in this view</strong><span>{tlView === "graphics" ? "No icons or app graphics were found in your folders." : "Switch the view above to see what else was indexed."}</span></>
           : <><strong>No photos indexed yet</strong><span>Pictures, Desktop and Downloads are indexed in the background; they show up as they are read.</span></>;
 
   const sub = tab === "timeline"
-    ? (images === null ? "" : tlView === "graphics"
-      ? `${shown.length.toLocaleString("en-US")} icons and app graphics`
-      : `${shown.length.toLocaleString("en-US")} ${tlView === "screenshots" ? "screenshots" : tlView === "photos" ? "photos" : "photos and screenshots"}`)
+    ? (summary === null ? "" : tlView === "graphics"
+      ? `${shownTotal.toLocaleString("en-US")} icons and app graphics`
+      : `${shownTotal.toLocaleString("en-US")} ${tlView === "screenshots" ? "screenshots" : tlView === "photos" ? "photos" : "photos and screenshots"}`)
     : SUBS[tab];
 
   const onPage = (p: Page) => {
@@ -255,8 +272,6 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   // outside (via the react-query cache).
   // State, not a ref, and marked during render: the newly picked tab must mount in THIS commit — a
   // ref flip would wait for the next unrelated render, leaving the body empty for seconds.
-  const [seen, setSeen] = useState<Record<LibTab, boolean>>({ timeline: true, collections: false, cleanup: false });
-  if (!seen[tab]) setSeen((s) => ({ ...s, [tab]: true }));
   const keep = (t: LibTab, node: ReactNode) => (
     <div className="lib-keep" hidden={tab !== t} data-active={tab === t ? "" : undefined}>{node}</div>
   );
@@ -267,13 +282,13 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         <h1>{TITLES[tab]}</h1>
         {sub && <span className="hsub">{sub}</span>}
         <span className="sp" />
-        {tab === "timeline" && images !== null && visible.length > 0 && (
+        {tab === "timeline" && summary !== null && visibleTotal > 0 && (
           <div className="ttools">
             <NameFilter value={photoQ} onChange={setPhotoQ} label="Filter photos by name" />
             <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
               {TIMELINE_VIEWS.map((v) => (
                 <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
-                  {v.label}<i>{viewCounts[v.id].toLocaleString("en-US")}</i>
+                  {v.label}<i>{counts[v.id].toLocaleString("en-US")}</i>
                 </button>
               ))}
             </div>
@@ -283,7 +298,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {chrome}
       </div>
       <main className="lib-body">
-        {seen.timeline && keep("timeline", <Gallery backend={backend} sections={sections} rail actions={actions} empty={emptyTimeline} view={gview} />)}
+        {seen.timeline && keep("timeline", <Gallery backend={backend} source={source} rail actions={actions} empty={emptyTimeline} view={gview} />)}
         {seen.collections && keep("collections", (
           <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} actions={actions} onError={fail} active={tab === "collections"} />
         ))}

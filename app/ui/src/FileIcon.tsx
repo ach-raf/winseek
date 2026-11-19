@@ -1,6 +1,7 @@
 import { useState, useEffect, type CSSProperties } from "react";
 import { FileGlyph, ICmd, IFolder, ISet } from "./icons";
 import { appGradient, glyphFor, initials } from "./iconLogic";
+import { ThumbImg } from "./ThumbImg";
 
 /**
  * v4 result icon: a 36 px `.ic` box (size set by its context: row 36, top result 52, app tile 46).
@@ -23,7 +24,12 @@ export function FileIcon({ name, isDir, src, thumb, variant }: {
     return <span className="ic ficon app" aria-hidden style={{ "--a": a, "--b": b } as CSSProperties}>{initials(name)}</span>;
   }
   if (isDir) return <span className="ic ficon" aria-hidden><IFolder /></span>;
-  if (img && thumb) return <span className="ic ficon ph" aria-hidden>{img}</span>;
+  // Picture rows go through the page's thumbnail queue (like the tiles): a row scrolled past before its turn
+  // never costs the backend a decode, and a fling holds the requests back entirely.
+  if (ok && thumb) {
+    const g = glyphFor(name);
+    return <span className="ic ficon ph" aria-hidden><ThumbImg src={src!} bad={<FileGlyph col={g.col} lab={g.lab} />} /></span>;
+  }
   if (img) return <span className="ic ficon sicon" aria-hidden>{img}</span>;
   const g = glyphFor(name);
   return <span className="ic ficon" aria-hidden><FileGlyph col={g.col} lab={g.lab} /></span>;

@@ -36,18 +36,29 @@ struct Job {
     is_dir: bool,
     size: u32,
     thumb: bool,
+    /// Idle prefetch (`w=1`): render into the caches, answer 204 without a body.
+    warm: bool,
     responder: UriSchemeResponder,
 }
 
 /// Waiting jobs. The newest is served first: the tile requested last is the one under the viewport, older ones
 /// belong to rows already scrolled past (the page also holds most requests back, see thumbQueue.ts).
 struct Queue {
-    jobs: Mutex<VecDeque<Job>>,
+    jobs: Mutex<Jobs>,
     cv: Condvar,
+}
+
+/// Two lanes: what the screen waits for, and prefetch (only served when the first lane is empty).
+#[derive(Default)]
+struct Jobs {
+    hi: VecDeque<Job>,
+    lo: VecDeque<Job>,
 }
 
 /// Waiting jobs kept; beyond this the oldest are answered with 503 (the page does not cache that).
 const MAX_WAITING: usize = 512;
+/// Prefetch jobs kept: the page sends its newest window, so older ones are stale.
+const MAX_WARM: usize = 192;
 
 static POOL: OnceLock<Arc<Queue>> = OnceLock::new();
 
@@ -93,7 +104,7 @@ fn workers() -> usize {
 fn next_job(q: &Queue) -> Option<Job> {
     let mut g = q.jobs.lock().ok()?;
     loop {
-        if let Some(j) = g.pop_back() {
+        if let Some(j) = g.hi.pop_back().or_else(|| g.lo.pop_back()) {
             return Some(j);
         }
         g = q.cv.wait(g).ok()?;
@@ -103,7 +114,7 @@ fn next_job(q: &Queue) -> Option<Job> {
 fn pool() -> &'static Arc<Queue> {
     POOL.get_or_init(|| {
         let q = Arc::new(Queue {
-            jobs: Mutex::new(VecDeque::new()),
+            jobs: Mutex::new(Jobs::default()),
             cv: Condvar::new(),
         });
         for i in 0..workers() {
@@ -117,7 +128,11 @@ fn pool() -> &'static Arc<Queue> {
                             Some(aumid) => render_aumid(aumid, job.size),
                             None => render(&job.path, job.is_dir, job.size, job.thumb),
                         };
-                        job.responder.respond(response(png));
+                        if job.warm {
+                            job.responder.respond(warm_response());
+                        } else {
+                            job.responder.respond(response(png));
+                        }
                     }
                 });
         }
@@ -129,11 +144,20 @@ fn submit(job: Job) {
     let q = pool();
     let dropped = match q.jobs.lock() {
         Ok(mut g) => {
-            g.push_back(job);
-            if g.len() > MAX_WAITING {
-                g.pop_front()
+            if job.warm {
+                g.lo.push_back(job);
+                if g.lo.len() > MAX_WARM {
+                    g.lo.pop_front()
+                } else {
+                    None
+                }
             } else {
-                None
+                g.hi.push_back(job);
+                if g.hi.len() > MAX_WAITING {
+                    g.hi.pop_front()
+                } else {
+                    None
+                }
             }
         }
         Err(_) => Some(job),
@@ -149,6 +173,15 @@ fn busy_response() -> Response<Cow<'static, [u8]>> {
         .header("Access-Control-Allow-Origin", "*")
         .header("Cache-Control", "no-store")
         .status(503)
+        .body(Cow::Borrowed(&[][..]))
+        .expect("static response")
+}
+
+fn warm_response() -> Response<Cow<'static, [u8]>> {
+    Response::builder()
+        .header("Access-Control-Allow-Origin", "*")
+        .header("Cache-Control", "no-store")
+        .status(204)
         .body(Cow::Borrowed(&[][..]))
         .expect("static response")
 }
@@ -200,17 +233,21 @@ pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
             is_dir: false,
             size,
             thumb: false,
+            warm: false,
             responder,
         }
     } else if let Some(path) = query_param(q, "p").filter(|p| !p.is_empty()) {
         let is_dir = query_param(q, "d").as_deref() == Some("1");
         let thumb = query_param(q, "t").as_deref() == Some("1");
+        // Prefetch only makes sense for thumbnails (icons are cached by extension and cheap).
+        let warm = thumb && query_param(q, "w").as_deref() == Some("1");
         Job {
             path,
             aumid: None,
             is_dir,
             size,
             thumb,
+            warm,
             responder,
         }
     } else {

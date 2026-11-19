@@ -34,6 +34,7 @@ pub mod provenance;
 pub mod reranker;
 pub mod route;
 pub mod scopes;
+pub mod timeline;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
@@ -3425,7 +3426,7 @@ mod tests {
         assert!(t.status().disabled.is_empty());
     }
 
-    /// Removing (the Ã— button) is final for a parked folder too: the entry leaves the list
+    /// Removing (the × button) is final for a parked folder too: the entry leaves the list
     /// and the rows are purged, unlike unchecking which keeps both.
     #[test]
     fn removing_a_parked_folder_clears_its_entry() {

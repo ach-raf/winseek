@@ -8,9 +8,16 @@
  * request (queued -> dropped; in flight -> aborted by clearing the loader's src).
  */
 
-export const MAX_ACTIVE = 6;
+export const MAX_ACTIVE = 4;
 /** Waiting requests kept; the oldest beyond this are dropped (their tiles are long scrolled away). */
-export const MAX_WAITING = 400;
+export const MAX_WAITING = 300;
+/** Scroll speed (px per ms) above which new requests are held, and below which they resume at once. */
+export const FAST_PX_PER_MS = 1.4;
+export const SLOW_PX_PER_MS = 0.5;
+/** Stillness after the last scroll event that releases a hold. */
+export const IDLE_MS = 90;
+/** Loaded urls remembered as "draw at once" - about what the browser's decoded-image cache can really hold. */
+export const MAX_DONE = 1500;
 
 /** Starts a load; returns the abort function. `done(ok)` is called once when the load ends. */
 export type Loader = (url: string, done: (ok: boolean) => void) => () => void;
@@ -38,6 +45,36 @@ export class ThumbQueue {
   /** True when `url` finished loading earlier (the image can be drawn without waiting). */
   has(url: string): boolean { return this.done.has(url); }
 
+  private held = false;
+  private lastTop = 0;
+  private lastT = 0;
+  private idle: ReturnType<typeof setTimeout> | undefined;
+  /** True while a fast scroll keeps new requests back. */
+  get isHeld(): boolean { return this.held; }
+  /** Hold (or release) new requests; in-flight ones finish, tiles that unmount still withdraw. */
+  setHold(h: boolean) {
+    if (this.held === h) return;
+    this.held = h;
+    if (!h) this.pump();
+  }
+  /**
+   * Scroll sample (`top` in px, `now` in ms). A fast fling holds new requests (nothing visible survives it, so
+   * every job started would be wasted decode + memory); slower movement or 90 ms of stillness releases them and
+   * the newest tiles (the ones now on screen) load first.
+   */
+  noteScroll(top: number, now: number = performance.now()) {
+    const dt = now - this.lastT;
+    if (this.lastT > 0 && dt > 0 && dt < 250) {
+      const v = Math.abs(top - this.lastTop) / dt;
+      if (v > FAST_PX_PER_MS) this.setHold(true);
+      else if (v < SLOW_PX_PER_MS) this.setHold(false);
+    }
+    this.lastTop = top;
+    this.lastT = now;
+    clearTimeout(this.idle);
+    this.idle = setTimeout(() => { this.lastT = 0; this.setHold(false); }, IDLE_MS);
+  }
+
   /** Request `url`; `cb(ok)` fires when it has loaded. Returns the cancel function. */
   request(url: string, cb: (ok: boolean) => void): () => void {
     if (this.done.has(url)) { cb(true); return () => {}; }
@@ -57,7 +94,7 @@ export class ThumbQueue {
   }
 
   private pump() {
-    while (this.active.size < this.maxActive && this.waiting.length) {
+    while (!this.held && this.active.size < this.maxActive && this.waiting.length) {
       const e = this.waiting.pop()!; // newest first
       this.active.add(e);
       let finished = false;
@@ -67,7 +104,7 @@ export class ThumbQueue {
         this.active.delete(e);
         if (ok) {
           this.done.add(e.url);
-          if (this.done.size > 6000) this.done.delete(this.done.values().next().value as string);
+          if (this.done.size > MAX_DONE) this.done.delete(this.done.values().next().value as string);
         }
         e.cb(ok);
         this.pump();
@@ -86,3 +123,42 @@ export const thumbs = new ThumbQueue((url, done) => {
   img.src = url;
   return () => { img.onload = null; img.onerror = null; img.src = ""; };
 });
+
+/** Every scrolling list reports its position here: a fast fling holds thumbnail requests and idle prefetch. */
+export function noteScroll(top: number) {
+  thumbs.noteScroll(top);
+  if (thumbs.isHeld) warmQ.length = 0;
+}
+
+// ---- idle prefetch ----------------------------------------------------------------------------------------------
+// Rows just beyond the viewport are rendered into the backend's caches (`w=1`: the backend answers 204 and keeps the
+// bytes, the page decodes nothing), so by the time they scroll in they come off the disk cache instead of the shell.
+// Runs only while no real thumbnail is waiting and no fling is in progress; two at a time.
+
+const warmed = new Set<string>();
+const warmQ: string[] = [];
+let warmActive = 0;
+const WARM_PARALLEL = 2;
+const WARM_MAX = 96;
+
+function pumpWarm() {
+  while (warmActive < WARM_PARALLEL && warmQ.length && !thumbs.isHeld && thumbs.pending === 0) {
+    const url = warmQ.shift()!;
+    warmActive++;
+    fetch(url + "&w=1", { cache: "no-store" }).catch(() => {}).finally(() => { warmActive--; pumpWarm(); });
+  }
+}
+
+/** Queue thumbnail urls for background rendering (nearest first); anything already seen or queued is skipped. */
+export function warm(urls: string[]) {
+  if (thumbs.isHeld) return;
+  warmQ.length = 0; // the newest window replaces the old one: its rows were scrolled past
+  for (const u of urls) {
+    if (warmQ.length >= WARM_MAX) break;
+    if (warmed.has(u) || thumbs.has(u)) continue;
+    warmed.add(u);
+    if (warmed.size > 8000) warmed.delete(warmed.values().next().value as string);
+    warmQ.push(u);
+  }
+  pumpWarm();
+}

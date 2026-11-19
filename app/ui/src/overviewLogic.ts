@@ -7,7 +7,7 @@ import { kindOf } from "./format.ts";
 export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "namepics" | "mostused" | "recent"
   | "k:folder" | "k:doc" | "k:image" | "k:video" | "k:audio" | "k:archive" | "k:other";
 /** A section can be opened on its own ("Show all"); files open the full virtualised list instead. */
-export type Expand = null | "files" | "images" | "docs" | "apps" | "settings";
+export type Expand = null | "files" | "images" | "docs" | "apps" | "settings" | "meaning";
 
 /** The section Alt+Right can expand for this item; null when there is no "Show all"
  *  (the Top result and the system commands never have one). */
@@ -237,7 +237,8 @@ export function buildOverview(opts: {
 
   const rest = sem.filter((h) => !shownPaths.has(k(h.path)));
   const imgs = rest.filter((h) => isImage(baseName(h.path)));
-  const docs = rest.filter((h) => !isImage(baseName(h.path)));
+  // The "By meaning" tab lists every meaning hit (pictures included) in one ranked list, no name rows.
+  const docs = expand === "meaning" ? rest : rest.filter((h) => !isImage(baseName(h.path)));
   const hasMeaning = imgs.length + docs.length > 0;
 
   // Pictures: one ranked list (pictureRank). What the picture shows is the base score and a name
@@ -330,7 +331,7 @@ export function buildOverview(opts: {
     }
   }
 
-  if (!expand || expand === "docs") {
+  if (!expand || expand === "docs" || expand === "meaning") {
     const list = docs.filter((h) => !shownPaths.has(k(h.path)));
     // Strong matches first; anything under WEAK_RATIO of the best score is folded ("Weaker matches").
     const strong = list.filter((h) => !(h.score > 0 && h.score < WEAK_RATIO));
@@ -340,7 +341,7 @@ export function buildOverview(opts: {
     if (items.length) {
       sections.push({ id: "docs", title: "Related by meaning", note: "Found by what the file shows or says, not its name", items, total: list.length, refined: !!opts.reranked, more: !expand && (strong.length > items.length || weak.length > 0 || !!opts.semMore), open: !expand && !!opts.semMore });
     }
-    if (expand === "docs" && weak.length) {
+    if ((expand === "docs" || expand === "meaning") && weak.length) {
       const open = !!opts.weakOpen;
       sections.push({
         id: "weak", title: `Weaker matches (${weak.length.toLocaleString("en-US")})`, total: weak.length, more: false, fold: { open },

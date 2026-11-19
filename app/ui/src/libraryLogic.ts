@@ -44,12 +44,12 @@ export interface RailYear {
 }
 
 /** Year / month entries of the right-hand rail (same order as the sections). */
-export function railEntries(sections: { year: number; month: number; items: unknown[] }[]): RailYear[] {
+export function railEntries(sections: { year: number; month: number; items?: unknown[]; count?: number }[]): RailYear[] {
   const out: RailYear[] = [];
   sections.forEach((s, i) => {
     let y = out[out.length - 1];
     if (!y || y.year !== s.year) { y = { year: s.year, months: [] }; out.push(y); }
-    y.months.push({ section: i, label: MON3[s.month] ?? "", count: s.items.length });
+    y.months.push({ section: i, label: MON3[s.month] ?? "", count: s.count ?? s.items?.length ?? 0 });
   });
   return out;
 }

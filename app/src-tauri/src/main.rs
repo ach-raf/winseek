@@ -80,6 +80,7 @@ fn main() {
         )
         .manage(models::Models::default())
         .manage(tier1::library::LibState::default())
+        .manage(tier1::timeline::TimelineState::default())
         .manage(launch::Launcher::new())
         .manage(Arc::new(agent::AgentState::load()))
         .manage(AppState::new(pick_source()))
@@ -144,6 +145,10 @@ fn main() {
             tier1::get_profile,
             tier1::set_profile,
             tier1::library::library_images,
+            tier1::timeline::library_timeline_load,
+            tier1::timeline::library_timeline_view,
+            tier1::timeline::library_timeline_rows,
+            tier1::timeline::library_timeline_pick,
             tier1::library::library_collections,
             tier1::library::library_set_collections,
             tier1::library::library_collection,

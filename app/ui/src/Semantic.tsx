@@ -15,7 +15,7 @@ export function semAccepts(h: SemanticHit, p: Parsed, scope: Filter = p.kind ?? 
   const name = baseName(h.path);
   // `code:` hits are source files: the kind chips (photos, documents...) do not apply, an extension chip does.
   if (h.source === "code") return !p.ext || name.toLowerCase().endsWith("." + p.ext);
-  if (scope !== "all" && scope !== "files" && KIND_OF[scope] !== kindOf(name, false)) return false;
+  if (scope !== "all" && scope !== "meaning" && scope !== "files" && KIND_OF[scope] !== kindOf(name, false)) return false;
   if (p.ext && !name.toLowerCase().endsWith("." + p.ext) && !(p.ext === "jpg" && name.toLowerCase().endsWith(".jpeg"))) return false;
   const probe = { is_dir: false, size: h.size ?? null, mtime: h.mtime ?? null };
   const known = { date: probe.mtime === null ? null : p.date, size: probe.size === null ? null : p.size };

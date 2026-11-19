@@ -1,9 +1,10 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
+import { buildSynth, synthIndex } from "./mockSynth";
 import { mockDiskUsage, mockUsageDetail } from "./mockUsage";
 import type { ViewMode, ViewState } from "./viewMode";
-import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, RerankSet, RerankState, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
+import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Collection, DupGroup, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, LaunchKind, LaunchTarget, LibImage, TlCounts, TlPick, TlRow, TlSection, TlSummary, McpPath, NearState, ModelGroup, ModelsDone, ModelsPlan, ModelsProgress, PausedReason, ParsedDoc, PreviewInfo, Profile, RerankSet, RerankState, SemanticHit, ServiceState, Sort, StatusPage, Tier1Status, VolumeDetail, VolumeStatus, FolderEstimate, Opened, UpdateState } from "./types";
 
 const WORDS = ["invoice","report","budget","holiday","photo","screenshot","meeting","notes","draft","final","contract","resume","backup","project","design","summer","winter","family","tax","receipt","presentation","analysis","readme","config","archive","setup","installer","demo","logo","icon","paris","tokyo","berlin","wedding","birthday","lecture","thesis","model","dataset","export"];
 const EXTS: [string, number][] = [["jpg",1],["png",1],["heic",1],["pdf",2],["docx",2],["xlsx",2],["txt",2],["md",2],["pptx",2],["mp4",3],["mkv",3],["mp3",4],["flac",4],["wav",4],["zip",0],["exe",0],["rs",0],["py",0],["json",0],["log",0]];
@@ -78,6 +79,12 @@ const NEAR_MS = 2400;
 // ---- name-service simulation (query: ?installed=1 skips first run, ?stopped=1, ?fail=1, ?accent=1,
 // ?searchd=down: running service that does not answer, ?volerr=1: volume H reports an error) ----
 const params = new URLSearchParams(typeof location !== "undefined" ? location.search : "");
+// ?photos=N: N synthetic timeline photos (typed-array columns, see mockSynth) for scroll checks at scale.
+const SYNTH = (() => {
+  const n = Math.min(3_000_000, Math.max(0, Number(params.get("photos")) || 0));
+  return n > 0 ? buildSynth(n, Date.now()) : null;
+})();
+const synthTile = (i: number, cls: string) => ({ theme: cls === "screenshot" ? "screenshot" as const : "photo" as const, hue: (i * 37) % 360, variant: 0 });
 const SCAN_MS = 4000;
 /** `?scan=<ms>` stretches the mock's volume scan so the bottom jobs bar can be watched scanning
  *  in the browser (plain `?scan=1` keeps the normal 4 s). */
@@ -719,6 +726,24 @@ const uninstallerish = (it: LaunchItem) => {
 };
 const launchCbs = new Set<() => void>();
 
+// ---- timeline backend (same contract as tier1/timeline.rs: load a base, build a view, fetch rows by index) ----
+interface TlBase { n: number; path(i: number): string; size(i: number): number; mtime(i: number): number; cls(i: number): "photo" | "screenshot" | "graphic" }
+let tlBase: TlBase = { n: 0, path: () => "", size: () => 0, mtime: () => 0, cls: () => "photo" };
+let tlLoad = 0, tlRev = 0;
+let tlOrder: Uint32Array = new Uint32Array(0);
+const tlLatency = Math.max(0, Number(params.get("lat") ?? 6) || 0);
+const MONTH_NAMES = Array.from({ length: 12 }, (_, m) => new Intl.DateTimeFormat("en-US", { month: "long" }).format(new Date(2021, m, 15)));
+const tlBaseFromLib = (): TlBase => {
+  const live = livePaths();
+  const rows = LIB.filter((f) => f.kind === 1 && live.has(f.path)).sort((a, b) => b.mtime - a.mtime).map((f) => ({
+    path: f.path, size: f.size, mtime: f.mtime,
+    // a slice of the mock library plays the app graphics a real Documents folder is full of
+    cls: hash01("g|" + f.path) < 0.18 ? "graphic" as const : f.tile?.theme === "screenshot" ? "screenshot" as const : "photo" as const,
+  }));
+  return { n: rows.length, path: (i) => rows[i]!.path, size: (i) => rows[i]!.size, mtime: (i) => rows[i]!.mtime, cls: (i) => rows[i]!.cls };
+};
+const tlBaseFromSynth = (): TlBase => ({ n: SYNTH!.n, path: (i) => SYNTH!.path(i), size: (i) => SYNTH!.size[i]!, mtime: (i) => SYNTH!.mtime[i]!, cls: (i) => SYNTH!.className(i) });
+
 export const mockBackend: Backend = {
   async search({ query, offset, limit, sort, filter }) {
     const t0 = performance.now();
@@ -872,6 +897,10 @@ export const mockBackend: Backend = {
   async onLaunchCatalogChanged(cb) { launchCbs.add(cb); return () => { launchCbs.delete(cb); }; },
   appIconUrl() { return null; }, // the mock has no shell: icons fall back to the glyph/initial
   iconUrl(path, _isDir, thumb, size) {
+    if (SYNTH && thumb) {
+      const si = synthIndex(path);
+      if (si >= 0 && si < SYNTH.n) return tileUrl(synthTile(si, SYNTH.className(si)), size && size > 300 ? 512 : 256);
+    }
     const f = libByPath.get(path);
     return f?.tile && thumb ? tileUrl(f.tile, size && size > 300 ? 512 : 256) : null;
   },
@@ -1124,12 +1153,72 @@ export const mockBackend: Backend = {
   async openPopup() { console.info("[mock] openPopup"); location.href = location.pathname; },
   async libraryImages(): Promise<LibImage[]> {
     await sleep(30);
+    if (SYNTH) {
+      const out: LibImage[] = new Array(SYNTH.n);
+      for (let i = 0; i < SYNTH.n; i++) out[i] = { path: SYNTH.path(i), size: SYNTH.size[i]!, mtime: SYNTH.mtime[i]!, w: 4000, h: 3000, class: SYNTH.className(i) };
+      return out;
+    }
     const live = livePaths();
     return LIB.filter((f) => f.kind === 1 && live.has(f.path)).sort((a, b) => b.mtime - a.mtime).map((f) => ({
       path: f.path, size: f.size, mtime: f.mtime, w: f.w, h: f.h,
       // a slice of the mock library plays the app graphics a real Documents folder is full of
       class: hash01("g|" + f.path) < 0.18 ? "graphic" as const : f.tile?.theme === "screenshot" ? "screenshot" as const : "photo" as const,
     }));
+  },
+  async libraryTimelineLoad(): Promise<number> {
+    await sleep(30);
+    tlBase = SYNTH ? tlBaseFromSynth() : tlBaseFromLib();
+    tlOrder = new Uint32Array(0);
+    return ++tlLoad;
+  },
+  async libraryTimelineView(load, view, q, hidden): Promise<TlSummary | null> {
+    await sleep(20);
+    if (load !== tlLoad) return null;
+    const gone = new Set(hidden);
+    const needle = q.trim().toLowerCase();
+    const order = new Uint32Array(tlBase.n);
+    let len = 0;
+    const counts: TlCounts = { all: 0, photos: 0, screenshots: 0, graphics: 0 };
+    const sections: TlSection[] = [];
+    let last: TlSection | null = null;
+    for (let i = 0; i < tlBase.n; i++) {
+      const path = tlBase.path(i);
+      if (gone.size > 0 && gone.has(path)) continue;
+      const c = tlBase.cls(i);
+      if (c === "graphic") counts.graphics++; else { counts.all++; if (c === "photo") counts.photos++; else counts.screenshots++; }
+      const inView = view === "photos" ? c === "photo" : view === "screenshots" ? c === "screenshot" : view === "graphics" ? c === "graphic" : c !== "graphic";
+      if (!inView) continue;
+      if (needle && !path.slice(path.lastIndexOf("\\") + 1).toLowerCase().includes(needle)) continue;
+      const d = new Date(tlBase.mtime(i));
+      const year = d.getFullYear(), month = d.getMonth();
+      const key = `${year}-${String(month + 1).padStart(2, "0")}`;
+      if (!last || last.key !== key) { last = { key, label: `${MONTH_NAMES[month] ?? ""} ${year}`, year, month, count: 0, bytes: 0 }; sections.push(last); }
+      last.count++; last.bytes += tlBase.size(i);
+      order[len++] = i;
+    }
+    tlOrder = order.slice(0, len);
+    return { rev: ++tlRev, total: len, counts, sections };
+  },
+  async libraryTimelineRows(rev, start, count): Promise<TlRow[] | null> {
+    await sleep(tlLatency + Math.random() * tlLatency);
+    if (rev !== tlRev) return null;
+    const end = Math.min(tlOrder.length, start + Math.min(count, 1024));
+    const out: TlRow[] = [];
+    for (let k = Math.min(start, end); k < end; k++) { const i = tlOrder[k]!; out.push({ path: tlBase.path(i), size: tlBase.size(i), mtime: tlBase.mtime(i) }); }
+    return out;
+  },
+  async libraryTimelinePick(rev, ranges, withPaths): Promise<TlPick | null> {
+    await sleep(tlLatency);
+    if (rev !== tlRev) return null;
+    const out: TlPick = { count: 0, bytes: 0, paths: [] };
+    for (const [a, b] of ranges) {
+      for (let k = a; k <= Math.min(b, tlOrder.length - 1); k++) {
+        const i = tlOrder[k]!;
+        out.count++; out.bytes += tlBase.size(i);
+        if (withPaths) out.paths.push(tlBase.path(i));
+      }
+    }
+    return out;
   },
   async libraryCollections() { return collections.map((c) => ({ ...c })); },
   async librarySetCollections(list) {
@@ -1211,7 +1300,7 @@ export const mockBackend: Backend = {
 // library round-trips make, so a Playwright round can assert that switching screens does not refetch
 // everything. Kept in mock.ts so the shipped app carries no counting code.
 export const mockCalls: Record<string, number> = {};
-const COUNTED = ["libraryImages", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage", "status"] as const;
+const COUNTED = ["libraryImages", "libraryTimelineLoad", "libraryTimelineView", "libraryTimelineRows", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage", "status"] as const;
 for (const m of COUNTED) {
   const fn = mockBackend[m].bind(mockBackend) as (...args: unknown[]) => unknown;
   (mockBackend as unknown as Record<string, (...args: unknown[]) => unknown>)[m] = (...args: unknown[]) => {

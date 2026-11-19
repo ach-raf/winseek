@@ -27,6 +27,7 @@ import { qk } from "./qk";
 import { JobsBar } from "./JobsBar";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
+import { noteScroll } from "./thumbQueue";
 
 const ROW_H = 54;
 const ROW_H_DENSE = 32; // compact rows in the full window: one line, name + location
@@ -43,6 +44,7 @@ const PIC_PAGE = 5000;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
+  { id: "meaning", label: "By meaning" }, // meaning hits only: no name rows
   { id: "files", label: "Files" },
   { id: "apps", label: "Apps" },
   { id: "settings", label: "Settings" }, // launcher-only scope: no name-index rows
@@ -264,6 +266,10 @@ export default function App({ backend }: { backend: Backend }) {
   // One kind scope, whether it came from a word in the query ("cat image") or from the tab: both run the same code below.
   const effFilter: Filter = kindScope(parsed.kind, filter);
   const settingsScope = parsed.kind === "settings" || filter === "settings";
+  // "By meaning" is a scope of its own: only the meaning index answers; the name index is asked as for "all"
+  // (counts, the shared list loader) but its rows are never shown.
+  const meaningScope = effFilter === "meaning";
+  const nameFilter: Filter = meaningScope ? "all" : effFilter;
   const rangeKey = JSON.stringify([parsed.date, parsed.size]);
   const chipLabels = useMemo(() => parsed.chips.map((c) => c.label), [parsed]);
   const dropChip = useCallback((key: string) => {
@@ -286,9 +292,9 @@ export default function App({ backend }: { backend: Backend }) {
   const toggleGroupKind = useCallback(() => setGroupByKind(!groupByKind), [setGroupByKind, groupByKind]);
   const [kindFolds, setKindFolds] = useStoredValue<Record<string, boolean>>("winseek.kindfolds", readKindFolds, JSON.stringify);
   const toggleKindFold = useCallback((id: string) => setKindFolds({ ...kindFolds, [id]: !kindFolds[id] }), [setKindFolds, kindFolds]);
-  const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, effFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || effFilter === "images" || effFilter === "docs");
+  const sem = useSemantic(backend, parsed.text, !!t1 && t1.state !== "unavailable" && !isRecent, nameFilter, epoch, hasRanges(parsed) || !!parsed.ext, expand === "images" || expand === "docs" || meaningScope || effFilter === "images" || effFilter === "docs");
   // Meaning hits obey the same chips as the name results (kind / extension always; date / size when the hit carries them).
-  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed, effFilter) && onDrive(h.path, drive)), [sem.hits, parsed, effFilter, drive]);
+  const semHits = useMemo(() => sem.hits.filter((h) => semAccepts(h, parsed, nameFilter) && onDrive(h.path, drive)), [sem.hits, parsed, nameFilter, drive]);
   const semMap = useMemo(() => new Map(semHits.map((h) => [pathKey(h.path), h])), [semHits]);
   const selCount = data.total;
 
@@ -299,7 +305,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Pictures asked for (the tab, or a kind word like "cat image") with something typed: the grid is the whole
   // ranked list, the very list "Show all" on the Pictures section opens.
   const picScope = effFilter === "images" && parsed.text.trim() !== "" && sort === "rel" && !settingsScope;
-  const ovExpand: Expand = settingsScope ? "settings" : expand ?? (picScope ? "images" : null);
+  const ovExpand: Expand = settingsScope ? "settings" : meaningScope ? "meaning" : expand ?? (picScope ? "images" : null);
   const picsOpen = ovExpand === "images";
   // The pictures whose name has the typed words as words ("cat.jpg", "my cat 2021.png", not "intricate.png"):
   // the index answers that exactly (`ws:` terms), so the grid never pages through mid-word matches to find them.
@@ -307,20 +313,28 @@ export default function App({ backend }: { backend: Backend }) {
   const picQ = `${scopeDrive(wordQuery(nameQ), drive)} ${rangeClause(parsed)}`.trim();
   const picWords = picQ !== scopedQ;
   const picsWanted = !isRecent && !settingsScope && sort === "rel" && (effFilter === "all" || effFilter === "images");
+  // Culling: the opened grid holds only as many pictures as the scroll has reached (a page at a time, `picLimit`),
+  // never the whole library; scrolling near the end of what is loaded raises the limit (`morePics`).
+  const [picLimit, setPicLimit] = useState(PIC_PAGE);
+  const morePics = useCallback(() => setPicLimit((n) => n + PIC_PAGE), []);
+  useEffect(() => { setPicLimit(PIC_PAGE); }, [picQ, scopedQ, picsOpen, epoch]);
+  const picAcc = useRef<{ key: string; hits: Hit[] }>({ key: "", hits: [] });
   const [picNames, setPicNames] = useState<{ q: string; hits: Hit[]; total: number; done: boolean } | null>(null);
   useEffect(() => {
     if (!picsWanted) { setPicNames(null); return; }
     let dead = false;
     const t = window.setTimeout(async () => {
       try {
-        const out: Hit[] = [];
+        const key = `${picQ}|${epoch}|${picsOpen}`;
+        if (picAcc.current.key !== key) picAcc.current = { key, hits: [] };
+        const out = picAcc.current.hits; // survives a raised limit: the next pages are appended, nothing is re-read
         for (;;) {
           const r = await backend.search({ query: picQ, offset: out.length, limit: picsOpen ? PIC_PAGE : PIC_HEAD, sort: "name", filter: "images", stream: "pics" });
           if (dead) return;
           for (const h of r.hits) out.push(h);
-          const done = !picsOpen || r.hits.length === 0 || out.length >= r.total;
-          setPicNames({ q: picQ, hits: out.slice(), total: r.total, done });
-          if (done) break;
+          const complete = !picsOpen || r.hits.length === 0 || out.length >= r.total;
+          setPicNames({ q: picQ, hits: out.slice(), total: r.total, done: complete || out.length >= picLimit });
+          if (complete || out.length >= picLimit) break;
         }
       } catch (e) {
         if (!dead) setPicNames((p) => p && { ...p, done: true });
@@ -328,28 +342,32 @@ export default function App({ backend }: { backend: Backend }) {
       }
     }, picsOpen ? 0 : 120);
     return () => { dead = true; window.clearTimeout(t); };
-  }, [backend, picsWanted, picsOpen, picQ, epoch]);
+  }, [backend, picsWanted, picsOpen, picQ, epoch, picLimit]);
   const picNamesNow = picNames?.q === picQ ? picNames : null;
   // The names that only hold the letters inside another word are read when their fold is opened, or when the
   // word search found nothing at all (then they are all there is to show).
   const tailWanted = picsOpen && picWords && (weakOpen || (!!picNamesNow && picNamesNow.done && picNamesNow.total === 0));
   const [picTail, setPicTail] = useState<{ hits: Hit[]; done: boolean } | null>(null);
+  const tailAcc = useRef<{ key: string; hits: Hit[] }>({ key: "", hits: [] });
   useEffect(() => {
     if (!tailWanted) { setPicTail(null); return; }
     let dead = false;
     (async () => {
-      const out: Hit[] = [];
+      const key = `${scopedQ}|${epoch}`;
+      if (tailAcc.current.key !== key) tailAcc.current = { key, hits: [] };
+      const out = tailAcc.current.hits;
       for (;;) {
         const r = await backend.search({ query: scopedQ, offset: out.length, limit: PIC_PAGE, sort: "name", filter: "images", stream: "tail" });
         if (dead) return;
         for (const h of r.hits) out.push(h);
-        const done = r.hits.length === 0 || out.length >= r.total;
+        const complete = r.hits.length === 0 || out.length >= r.total;
+        const done = complete || out.length >= picLimit;
         setPicTail({ hits: out.slice(), done });
         if (done) break;
       }
     })().catch((e) => { if (!dead) setPicTail((p) => p && { ...p, done: true }); console.error(e); });
     return () => { dead = true; };
-  }, [backend, tailWanted, scopedQ, epoch]);
+  }, [backend, tailWanted, scopedQ, epoch, picLimit]);
   const picsBusy = (picsOpen && !!picNames && !picNames.done) || (!!picTail && !picTail.done);
   // What the overview sections are built from: every row of a fully loaded list, else the first page. (The
   // paged row store is sparse and can span millions of indexes; nothing may loop over it.)
@@ -357,7 +375,7 @@ export default function App({ backend }: { backend: Backend }) {
     () => (data.recent || data.full ? data.rows : data.rows.slice(0, PAGE)),
     [data.rows, data.recent, data.full],
   );
-  const overview = sort === "rel" && expand !== "files"; // home (Most used + Recent files) is an overview too
+  const overview = (sort === "rel" || meaningScope) && expand !== "files"; // home (Most used + Recent files) is an overview too
   // The calculator Top Hit belongs to "all" only — a type filter means "show me that kind of file".
   const calcResult = useMemo(() => (settingsScope || expand || effFilter !== "all" ? null : calc(parsed.text)), [parsed.text, settingsScope, expand, effFilter]);
   // Launcher rows follow the type filter (a Folders search must not put a settings page in the Top Hit slot).
@@ -377,12 +395,12 @@ export default function App({ backend }: { backend: Backend }) {
     () => (isRecent
       ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
       : buildOverview({
-        names: settingsScope ? [] : headRows, nameTotal: settingsScope ? 0 : data.total, sem: semHits, semMore: sem.more, reranked: sem.reranked, text: parsed.text,
+        names: settingsScope || meaningScope ? [] : headRows, nameTotal: settingsScope || meaningScope ? 0 : data.total, sem: semHits, semMore: sem.more, reranked: sem.reranked, text: parsed.text,
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, weakOpen, groupByKind, kindFolds],
+    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -418,7 +436,7 @@ export default function App({ backend }: { backend: Backend }) {
         rowsRef.current = hits;
         setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else {
-        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: effFilter, stream: "list" });
+        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: nameFilter, stream: "list" });
         if (my !== seq.current) return;
         // Only the loaded rows are stored (`data.total` is the length); a one-letter query can match
         // millions of names and must not allocate a slot for each on every keystroke.
@@ -435,7 +453,7 @@ export default function App({ backend }: { backend: Backend }) {
       setPin(null);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, scopedQ, drive, effFilter, rangeKey, sort, isRecent, epoch]);
+  }, [backend, scopedQ, drive, nameFilter, rangeKey, sort, isRecent, epoch]);
 
   // Page loader: only ever fetches what the list shows *now*. While the scrollbar is dragged across millions
   // of rows the positions it passed are never requested (two requests at most are in flight; when one lands
@@ -449,7 +467,7 @@ export default function App({ backend }: { backend: Backend }) {
       if (pagesRef.current.has(p) || inflight.current.has(p) || p * PAGE >= data.total) continue;
       if ((emptyTries.current.get(p) ?? 0) >= 3) continue; // the service keeps answering nothing: stop asking
       inflight.current.add(p);
-      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: effFilter, stream: "list" }).then((r) => {
+      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: nameFilter, stream: "list" }).then((r) => {
         if (my !== seq.current) return;
         inflight.current.delete(p);
         if (r.hits.length === 0) {
@@ -470,7 +488,7 @@ export default function App({ backend }: { backend: Backend }) {
         pumpRef.current();
       }).catch((e) => { if (my === seq.current) { inflight.current.delete(p); setLoadErr(true); } console.error(e); });
     }
-  }, [backend, data.recent, data.full, data.total, scopedQ, sort, effFilter]);
+  }, [backend, data.recent, data.full, data.total, scopedQ, sort, nameFilter]);
   pumpRef.current = pump;
 
   const dense = full && compactRows && !overview;
@@ -499,11 +517,20 @@ export default function App({ backend }: { backend: Backend }) {
     setScrollTop(el.scrollTop);
   }, [data.total, rowH]);
 
+  const scrollPending = useRef(0);
+  const scrollRaf = useRef(0);
+  useEffect(() => () => cancelAnimationFrame(scrollRaf.current), []);
   const onListScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     const st = e.currentTarget.scrollTop;
     // A scroll position we did not set = the user moved the scrollbar: back to the proportional mapping.
     if (pinRef.current !== null && Math.abs(st - pinTop.current) > 1.5) { pinRef.current = null; setPin(null); }
-    setScrollTop(st);
+    noteScroll(st);
+    // One state update per frame: App re-renders on it, and a mouse wheel / touchpad can fire several
+    // scroll events inside one frame.
+    scrollPending.current = st;
+    if (scrollRaf.current === 0) {
+      scrollRaf.current = requestAnimationFrame(() => { scrollRaf.current = 0; setScrollTop(scrollPending.current); });
+    }
     setScrolling(true);
     window.clearTimeout(scrollTimer.current);
     scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
@@ -533,7 +560,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     if (isRecent || data.recent || !loaded || renaming) return;
     const my = seq.current;
-    const args = { query: scopedQ, sort, filter: effFilter, stream: "list" as const };
+    const args = { query: scopedQ, sort, filter: nameFilter, stream: "list" as const };
     const t = window.setInterval(() => {
       if (document.visibilityState !== "visible" || my !== seq.current) return;
       backend.search({ ...args, offset: 0, limit: 0 }).then((c) => {
@@ -553,7 +580,7 @@ export default function App({ backend }: { backend: Backend }) {
       }).catch(() => { /* the next tick asks again */ });
     }, 5000);
     return () => window.clearInterval(t);
-  }, [backend, scopedQ, sort, effFilter, isRecent, data.recent, loaded, renaming]);
+  }, [backend, scopedQ, sort, nameFilter, isRecent, data.recent, loaded, renaming]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query, once it has
   // settled for 140 ms (newest wins). Not for home, and not while a date / size filter is active
@@ -773,8 +800,8 @@ export default function App({ backend }: { backend: Backend }) {
   // file); the first pick after an empty pane shows at once. Launch rows (apps / settings / commands)
   // have no preview: the pane stays empty for them. (Gallery's lead preview runs the same hook.)
   const isLaunchSel = !!(overview && ovItem?.launch);
-  const pv = usePaneFollow(current && !isLaunchSel ? curKey : null, 120, () => ({
-    hit: currentRef.current!, snippet: snippetRef.current, page: pageRef.current,
+  const pv = usePaneFollow(current && !isLaunchSel ? curKey : null, 120, () => currentRef.current && ({
+    hit: currentRef.current, snippet: snippetRef.current, page: pageRef.current,
     at: atRef.current, boxes: boxesRef.current, pct: pctRef.current,
   }));
   useEffect(() => { navigated.current = false; }, [query]);
@@ -1448,7 +1475,7 @@ export default function App({ backend }: { backend: Backend }) {
   if (!isRecent) {
     if (drive) fixes.push({ label: "Search all drives", run: () => setDrive("") });
     if (effFilter !== "all") {
-      fixes.push({ label: `Search all types, not only ${FILTERS.find((f) => f.id === effFilter)?.label ?? effFilter}`, run: () => {
+      fixes.push({ label: meaningScope ? "Search names too, not only by meaning" : `Search all types, not only ${FILTERS.find((f) => f.id === effFilter)?.label ?? effFilter}`, run: () => {
         const k = parsed.chips.find((c) => c.type === "kind");
         if (k) dropChip(k.key);
         setFilter("all");
@@ -1774,11 +1801,13 @@ export default function App({ backend }: { backend: Backend }) {
             {!showPanel && overview && (pending ? (
               <div className="list ov" /> // a scope switch is being fetched: blank beats the old scope's rows under the new tab
             ) : ov.flat.length > 0 || isRecent ? (
-              <Overview sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
+              <Overview onMore={morePics} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (
               <div className="none">
-                <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}
+                {meaningScope && parsed.text.trim().length < 2
+                  ? <><b>Search by meaning</b>Describe what the file shows or says, e.g. &ldquo;invoice for the plumber&rdquo;.</>
+                  : <><b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}</>}
               </div>
             ) : <div className="list ov" />)}
 

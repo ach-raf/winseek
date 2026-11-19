@@ -28,8 +28,13 @@ export const qk = {
   /** Semantic-layer status, polled (1 s with a setup panel open, 10 s otherwise). One shared entry
    *  for every consumer — the popup and the Library used to poll independently. */
   t1: ["t1"] as const,
-  /** The Library's picture list. */
+  /** The Library's whole picture list: only Collections and Clean up read it (opened on demand). */
   libImages: ["library", "images"] as const,
+  /** The timeline's base list inside the backend (a load id; re-read when the index changes). */
+  libTimelineBase: ["library", "timeline", "base"] as const,
+  /** The timeline's filtered view: months and counts of one load, view tab, name filter and hidden set. Never cached
+   *  (`gcTime: 0`): the backend answers rows only for its newest view, so an old answer must not come back. */
+  libTimeline: (load: number, view: string, q: string, hiddenKey: string) => ["library", "timeline", "view", load, view, q, hiddenKey] as const,
   /** Exact duplicate groups. */
   libDups: ["library", "dups"] as const,
   /** The largest files. */
@@ -60,6 +65,7 @@ export const qk = {
  *  Collection evaluations are deliberately not here — they re-run only when their inputs change. */
 export function refreshLibraryIndex(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: qk.libImages });
+  qc.invalidateQueries({ queryKey: qk.libTimelineBase });
   qc.invalidateQueries({ queryKey: qk.libDups });
   qc.invalidateQueries({ queryKey: qk.libBig });
 }
@@ -68,6 +74,7 @@ export function refreshLibraryIndex(qc: QueryClient): void {
  *  read again; collections re-key themselves because the generation is part of their sig. */
 export function refreshLibraryEmbeddings(qc: QueryClient): void {
   qc.invalidateQueries({ queryKey: qk.libImages });
+  qc.invalidateQueries({ queryKey: qk.libTimelineBase });
   qc.invalidateQueries({ queryKey: qk.libDups });
 }
 

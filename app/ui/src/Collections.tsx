@@ -129,7 +129,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
   const sections: GallerySection[] = useMemo(() => {
     const items = sel ? hitsOf(sel) : [];
     if (!sel || sel.rule || items.length === 0) return [{ key: sel?.name ?? "", label: null, items }];
-    const isPic = (i: GridItem) => ["image", "video"].includes(kindOf(i.name, false));
+    const isPic = (i: GridItem) => ["image", "video"].includes(kindOf(i.name ?? i.path, false));
     const photos = items.filter(isPic), docs = items.filter((i) => !isPic(i));
     return [
       { key: `${sel.name}:photos`, label: photos.length ? "Photos" : null, items: photos },
@@ -140,7 +140,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
   // The name filter narrows the same sections; empty groups drop out.
   const shownSections: GallerySection[] = useMemo(
     () => (collQ.trim()
-      ? sections.map((s) => ({ ...s, items: s.items.filter((i) => nameMatches(i.name, collQ)) })).filter((s) => s.items.length > 0)
+      ? sections.map((s) => ({ ...s, items: s.items.filter((i) => nameMatches(i.name ?? i.path, collQ)) })).filter((s) => s.items.length > 0)
       : sections),
     [sections, collQ],
   );

@@ -66,6 +66,39 @@ test("loaded urls resolve at once next time; failures are not remembered", () =>
   assert.equal(r.q.has("bad"), false);
 });
 
+test("a hold keeps new requests back until released; newest then goes first", () => {
+  const r = rig(2);
+  r.q.setHold(true);
+  r.q.request("a", () => {});
+  r.q.request("b", () => {});
+  assert.equal(r.started.length, 0);
+  r.q.setHold(false);
+  assert.deepEqual(r.started, ["b", "a"]);
+});
+
+test("a hold does not stop requests already in flight, and a withdrawn waiting one never starts", () => {
+  const r = rig(1);
+  r.q.request("a", () => {});
+  r.q.setHold(true);
+  const cancelB = r.q.request("b", () => {});
+  r.ends.get("a")!(true);
+  assert.deepEqual(r.started, ["a"]);
+  cancelB();
+  r.q.setHold(false);
+  assert.deepEqual(r.started, ["a"]);
+});
+
+test("a fast scroll holds, a slow one releases", () => {
+  const r = rig(2);
+  r.q.noteScroll(0, 1000);
+  r.q.noteScroll(100, 1016); // 6 px/ms
+  assert.equal(r.q.isHeld, true);
+  r.q.noteScroll(104, 1032); // 0.25 px/ms
+  assert.equal(r.q.isHeld, false);
+  r.q.noteScroll(5000, 1048);
+  r.q.setHold(false); // clears the idle timer's work for the test
+});
+
 test("the waiting list is bounded: the oldest are dropped", () => {
   const r = rig(1, 3);
   for (const u of ["a", "b", "c", "d", "e", "f"]) r.q.request(u, () => {});
