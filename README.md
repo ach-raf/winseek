@@ -4,15 +4,31 @@
 [![Release](https://img.shields.io/github/v/release/ach-raf/winseek?include_prereleases)](https://github.com/ach-raf/winseek/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-File search for Windows with two modes: instant name search over every drive, and search by what files contain (photos, scans, PDFs). Everything runs locally.
+File search for Windows with two modes: instant name search over every drive, and search by what files contain (photos, scans, PDFs). Everything runs locally. See [FEATURES.md](FEATURES.md) for the full list of what it can do.
 
-<p align="center"><img src="screenshots/popup.png" alt="The winseek popup: filename matches, then results related by meaning" width="720"></p>
+<p align="center"><img src="screenshots/popup.png" alt="The winseek popup: the best match first, then results related by meaning, with the live jobs strip at the bottom" width="720"></p>
 
 Press `Alt+Space`, type `report`, and every file with "report" in its name appears in milliseconds, across all drives. Type `a dog on the beach` or `invoice total` and winseek finds the photo or scanned document whose contents match, using embeddings computed on your machine.
 
 Status: early development, version 0.2.x. The name index, live updates, and image and document search work end to end. Tested on Windows 10 x64 with an NVIDIA RTX 3060. The Vulkan and CPU fallbacks work but get less testing. The installer is unsigned.
 
-<p align="center"><img src="screenshots/library.png" alt="The photo timeline in the library window" width="720"></p>
+<p align="center"><img src="screenshots/library.png" alt="The Library timeline: every photo and screenshot by month" width="720"></p>
+
+## Tour
+
+<table>
+<tr>
+<td width="50%"><img src="screenshots/filters.png" alt="The Filters panel: type, date, size and file-type buttons plus power syntax"><br><b>Filters.</b> Say it in words (<code>pdf invoice last month</code>) and the phrases become chips, or click them together in the Filters panel.</td>
+<td width="50%"><img src="screenshots/search.png" alt="The full window: picture results with a live preview pane"><br><b>Full window.</b> Results as a list, grid or gallery with a preview pane, copy-table and one-key actions.</td>
+</tr>
+<tr>
+<td><img src="screenshots/collections.png" alt="Collections: saved descriptions that keep themselves filled"><br><b>Collections.</b> Describe what you want ("a photo of a paper receipt") and winseek keeps the collection filled.</td>
+<td><img src="screenshots/cleanup.png" alt="Clean up: duplicates, large untouched files and old screenshots"><br><b>Clean up.</b> Duplicates, big files you never open and old screenshots, with a Disk space view per drive. Nothing is deleted until you say so.</td>
+</tr>
+<tr>
+<td colspan="2"><img src="screenshots/settings.png" alt="Settings: search by meaning, model downloads and live indexing progress"><br><b>Settings.</b> Model downloads, indexing progress and every option in one searchable place.</td>
+</tr>
+</table>
 
 ## What it searches
 
@@ -75,6 +91,12 @@ A full scan of C: (5.95 million files and folders) takes about 33 seconds. Resto
 | `ext:jpg;png` | files with those extensions |
 | `folder:`, `file:` | only folders, or only files |
 | `docs\2024` | a term containing `\` matches against the path |
+| `photos from last summer`, `big videos`, `pdf 2025` | plain words become filter chips: type (photos, documents, video, audio, apps, folders), date (`today`, `last week`, `march 2025`, `past 7 days`, seasons, years) and size (`big`, `huge`, `over 10 mb`, `under 500 kb`) |
+| `size:>50mb`, `size:10mb..1gb` | size operators and ranges |
+| `!draft` | exclude names containing a word |
+| `code: parse config` | search inside source code (turn on code indexing in Settings) |
+
+The **Filters** button next to the search box lists all of this as one-click buttons.
 
 ### Search by meaning
 
@@ -137,11 +159,16 @@ Indexes, models and queries stay on your machine. There is no telemetry and no a
 
 | Key | Action |
 |---|---|
-| `Alt+Space` | show or hide winseek |
+| `Alt+Space` | show or hide winseek (rebindable) |
 | `↑` `↓` | move through results |
+| `Tab`, `Alt+1`…`Alt+8` | switch result type |
 | `Space` | preview the selected result |
-| `Enter` | open |
-| `Esc` | hide |
+| `Enter` / `Ctrl+Enter` | open / show in folder |
+| `F2`, `Delete`, `Ctrl+Z` | rename, recycle, undo |
+| `Ctrl+K` | more actions |
+| `Ctrl+L` | open the Library |
+| `F1` | every shortcut |
+| `Esc` | back one layer, then hide |
 
 ## Build from source
 
