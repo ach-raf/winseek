@@ -4,7 +4,7 @@
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use winseek_index::{Index, IndexBuilder, VolumeMeta};
+use winseek_index::{Index, IndexBuilder, Rollup, VolumeMeta};
 use winseek_ipc::ChangeKind;
 use winseek_usn::{Change, UsnRecord};
 
@@ -170,6 +170,59 @@ pub fn apply_change(ix: &mut Index, vol: u8, change: &Change) -> Option<Event> {
             })
         }
     }
+}
+
+/// [`apply_change`] that also keeps the disk-usage roll-up's totals exact: the record the
+/// change acts on is looked up the way `apply_change` will, measured before and after, and the
+/// difference pushed up both parent chains (O(depth)). Parent folders the change may create
+/// (lazy stubs) count as new.
+pub fn apply_change_usage(
+    ix: &mut Index,
+    vol: u8,
+    change: &Change,
+    ru: Option<&mut Rollup>,
+) -> Option<Event> {
+    let Some(ru) = ru else {
+        return apply_change(ix, vol, change);
+    };
+    let file_or_dir = |ix: &mut Index, r: &UsnRecord| {
+        if r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 {
+            ix.folder_idx(vol, r.frn as u64)
+        } else {
+            ix.find_file(vol, r.parent_frn as u64, &r.name)
+        }
+    };
+    let (target, parent) = match change {
+        Change::Create(r) => (file_or_dir(ix, r), Some(r.parent_frn as u64)),
+        Change::Delete(r) => (file_or_dir(ix, r), None),
+        Change::Modify(r) if r.attrs & FILE_ATTRIBUTE_DIRECTORY != 0 => (None, None),
+        Change::Modify(r) => (
+            ix.find_file(vol, r.parent_frn as u64, &r.name),
+            Some(r.parent_frn as u64),
+        ),
+        Change::Rename {
+            frn,
+            old_parent,
+            old_name,
+            new_parent,
+            new_name,
+        } => {
+            let t = ix
+                .folder_idx(vol, *frn as u64)
+                .or_else(|| ix.find_file(vol, *old_parent as u64, old_name))
+                .or_else(|| ix.find_file(vol, *new_parent as u64, new_name));
+            (t, Some(*new_parent as u64))
+        }
+    };
+    // (a parent folder known before is not new, whatever the change does under it)
+    let parent = parent.filter(|&p| ix.folder_idx(vol, p).is_none());
+    let touch = ix.usage_before(ru, target.as_slice());
+    let ev = apply_change(ix, vol, change);
+    let mut maybe_new: Vec<u32> = Vec::with_capacity(2);
+    maybe_new.extend(ev.as_ref().and_then(|e| e.idx));
+    maybe_new.extend(parent.and_then(|p| ix.folder_idx(vol, p)));
+    ix.usage_after(ru, touch, &maybe_new);
+    ev
 }
 
 /// Translate a ReFS change (128-bit FRNs) into the u64 id space of the index, so the shared
@@ -893,5 +946,178 @@ mod tests {
             filetime_to_unix_ms(filetime_from_unix_ms(1_700_000_000_123)),
             Some(1_700_000_000_123)
         );
+    }
+
+    /// Every live folder's overlaid totals equal a fresh roll-up of the index.
+    fn assert_usage_exact(ix: &Index, ru: &Rollup) {
+        assert!(ru.exact(), "overlay gave up");
+        let fresh = ix.rollup();
+        for s in 0..ix.slots() as u32 {
+            if ix.is_deleted(s) || !ix.is_dir(s) {
+                continue;
+            }
+            assert_eq!(ru.totals_at(s), fresh.totals_at(s), "{}", ix.full_path(s));
+        }
+    }
+
+    #[test]
+    fn usage_overlay_follows_delete_of_a_folder() {
+        let mut ix = base();
+        let mut ru = ix.rollup();
+        let root = ru.dir_of_slot(ix.root_of(C).unwrap()).unwrap();
+        assert_eq!(ru.totals(root), (42, 1, 2));
+        apply_change_usage(
+            &mut ix,
+            C,
+            &Change::Delete(rec(10, 5, "A", true)),
+            Some(&mut ru),
+        );
+        assert_eq!(ru.totals(root), (0, 0, 1));
+        // a file under a folder nobody has seen: stub + file, both counted at once
+        apply_change_usage(
+            &mut ix,
+            C,
+            &Change::Create(rec(300, 77, "n.zip", false)),
+            Some(&mut ru),
+        );
+        let n = ix.find_file(C, 77, "n.zip").unwrap();
+        let t = ix.usage_before(&ru, &[n]);
+        ix.update_meta(n, 5000, 0);
+        ix.usage_after(&mut ru, t, &[]);
+        assert_eq!(ru.totals(root), (5000, 1, 2));
+        assert!(ru.structure_dirty());
+        assert_usage_exact(&ix, &ru);
+    }
+
+    /// Random USN changes (stubs, stub fills, folder moves, recursive deletes, renames across
+    /// categories, stat refinements, slot reuse) through the writer's code path.
+    #[test]
+    fn usage_overlay_matches_fresh_rollup_randomized() {
+        for seed in 1..=6u64 {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15) | 1;
+            let mut next = move |m: u64| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng % m.max(1)
+            };
+            let exts = ["jpg", "mp4", "txt", "zip", "rs", "exe", "bin", "noext"];
+            let mut b = IndexBuilder::new(true);
+            b.add_volume(C, 5);
+            let mut dirs: Vec<u128> = vec![5];
+            let mut files: Vec<(u128, String)> = Vec::new();
+            let mut frn = 1000u128;
+            for i in 0..400 {
+                frn += 1;
+                let p = dirs[next(dirs.len() as u64) as usize];
+                if i % 5 == 0 {
+                    b.push(C, frn as u64, p as u64, &format!("d{i}"), true, 0, 0);
+                    dirs.push(frn);
+                } else {
+                    let name = format!("f{i}.{}", exts[next(8) as usize]);
+                    b.push(C, frn as u64, p as u64, &name, false, next(1 << 23), 0);
+                    files.push((p, name));
+                }
+            }
+            let mut ix = b.finish();
+            let mut ru = ix.rollup();
+            let mut stubs: Vec<u128> = Vec::new();
+            for step in 0..500 {
+                let mut parent = |next: &mut dyn FnMut(u64) -> u64, frn: &mut u128| {
+                    if next(10) == 0 {
+                        *frn += 1;
+                        stubs.push(*frn);
+                        *frn
+                    } else {
+                        dirs[next(dirs.len() as u64) as usize]
+                    }
+                };
+                let c = match next(12) {
+                    0..=2 => {
+                        let p = parent(&mut next, &mut frn);
+                        let name = format!("c{}.{}", next(5), exts[next(8) as usize]);
+                        files.push((p, name.clone()));
+                        frn += 1;
+                        Change::Create(rec(frn, p, &name, false))
+                    }
+                    3 => {
+                        let p = parent(&mut next, &mut frn);
+                        // sometimes name a stub (fill it in place), else a new folder
+                        let f = match stubs.len() {
+                            0 => None,
+                            n => (next(2) == 0).then(|| stubs[next(n as u64) as usize]),
+                        }
+                        .unwrap_or_else(|| {
+                            frn += 1;
+                            frn
+                        });
+                        dirs.push(f);
+                        Change::Create(rec(f, p, &format!("D{step}"), true))
+                    }
+                    4..=5 => {
+                        let (p, n) = files[next(files.len() as u64) as usize].clone();
+                        Change::Delete(rec(0, p, &n, false))
+                    }
+                    6 => {
+                        let d = dirs[1 + next(dirs.len() as u64 - 1) as usize];
+                        Change::Delete(rec(d, 0, "", true))
+                    }
+                    7..=8 => {
+                        let k = next(files.len() as u64) as usize;
+                        let (op, on) = files[k].clone();
+                        let np = parent(&mut next, &mut frn);
+                        let nn = format!("r{}.{}", next(5), exts[next(8) as usize]);
+                        files[k] = (np, nn.clone());
+                        Change::Rename {
+                            frn: 0,
+                            old_parent: op,
+                            old_name: on,
+                            new_parent: np,
+                            new_name: nn,
+                        }
+                    }
+                    9 => {
+                        let d = dirs[1 + next(dirs.len() as u64 - 1) as usize];
+                        let np = parent(&mut next, &mut frn);
+                        Change::Rename {
+                            frn: d,
+                            old_parent: 0,
+                            old_name: String::new(),
+                            new_parent: np,
+                            new_name: format!("M{step}"),
+                        }
+                    }
+                    10 => {
+                        let (p, n) = files[next(files.len() as u64) as usize].clone();
+                        Change::Modify(rec(0, p, &n, false))
+                    }
+                    _ => {
+                        // the writer's stat() refinement of a created/modified file
+                        let (p, n) = files[next(files.len() as u64) as usize].clone();
+                        if let Some(i) = ix.find_file(C, p as u64, &n) {
+                            let t = ix.usage_before(&ru, &[i]);
+                            ix.update_meta(i, next(1 << 26), 0);
+                            ix.usage_after(&mut ru, t, &[]);
+                        }
+                        continue;
+                    }
+                };
+                let live0 = ix.live_count();
+                let ev = apply_change_usage(&mut ix, C, &c, Some(&mut ru));
+                assert!(
+                    ru.exact(),
+                    "untracked: {c:?} {ev:?} live {live0}->{}",
+                    ix.live_count()
+                );
+                if step % 60 == 0 {
+                    ix.refresh(); // frees deleted slots for reuse
+                }
+                if step % 50 == 0 {
+                    assert_usage_exact(&ix, &ru);
+                }
+            }
+            assert_usage_exact(&ix, &ru);
+            assert!(ix.live_count() > 100, "{}", ix.live_count());
+        }
     }
 }

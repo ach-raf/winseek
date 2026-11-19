@@ -2,6 +2,7 @@ import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types";
 import { pickTop } from "./launchLogic.ts";
 import { picReason, queryWords, rankPictures, type NameMatch, type Pic } from "./pictureRank.ts";
 import { kindOf } from "./format.ts";
+import { gridStep } from "./gridLogic.ts";
 
 /** Result overview: a Top result, then a few rows per section with "Show all"; home = Most used + Recent files. */
 export type SectionId = "top" | "apps" | "settings" | "commands" | "files" | "images" | "docs" | "weak" | "namepics" | "mostused" | "recent"
@@ -470,17 +471,9 @@ export function ovMove(flat: OvItem[], i: number, dir: "up" | "down" | "left" | 
   while (s > 0 && flat[s - 1]?.section === sec) s--;
   let e = i;
   while (e < flat.length - 1 && flat[e + 1]?.section === sec) e++;
-  const pos = i - s;
-  switch (dir) {
-    case "left": return pos % n === 0 ? i : i - 1;
-    case "right": return i === e || pos % n === n - 1 ? i : i + 1;
-    case "down": {
-      const t = i + n;
-      if (t <= e) return t;
-      // last grid row: a shorter row below exists -> its last tile; else leave the grid
-      const lastRowStart = s + Math.floor((e - s) / n) * n;
-      return i < lastRowStart ? e : clamp(e + 1);
-    }
-    case "up": return pos >= n ? i - n : clamp(s - 1);
-  }
+  // The same step every picture grid takes (gridLogic); leaving the grid continues in the rows around it.
+  const t = gridStep(i - s, e - s + 1, n, dir);
+  if (t < 0) return clamp(s - 1);
+  if (t > e - s) return clamp(e + 1);
+  return s + t;
 }

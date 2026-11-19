@@ -151,6 +151,20 @@ export interface ModelsProgress {
   overall_downloaded: number;
   overall_total: number;
 }
+/** One coalesced batch of file-system changes (backend event `fs-delta`, ~150 ms windows).
+ *  Paths are Windows-style exactly as the index reports them; compare case-insensitively.
+ *  `overflow` = too much changed to list (or the feed dropped and resynced): treat every cached
+ *  list as possibly stale and refetch the usual way. */
+export interface FsDelta {
+  removed: string[];
+  renamed: { from: string; to: string }[];
+  added: string[];
+  modified: string[];
+  /** Parent folders of everything above, deduped (drive roots included), capped. */
+  dirs: string[];
+  overflow: boolean;
+}
+
 export interface ModelsDone {
   ok: boolean;
   error: string | null;
@@ -648,6 +662,9 @@ export interface Backend {
   onModelsDone(cb: (d: ModelsDone) => void): Promise<() => void>;
   /** Fired when the app swaps from demo data to the real searchd source. */
   onSourceChanged(cb: () => void): Promise<() => void>;
+  /** One coalesced batch of file-system changes pushed by the backend (~150 ms windows). The single
+   *  signal every screen uses to patch its own cached data in place instead of refetching. */
+  onFsDelta(cb: (d: FsDelta) => void): Promise<() => void>;
   /** Show (or create) the library window. */
   openLibrary(): Promise<void>;
   /** Back from the library: show the popup again. */

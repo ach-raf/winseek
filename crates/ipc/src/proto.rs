@@ -217,6 +217,10 @@ pub enum Response {
         old_path: Option<String>,
         is_dir: bool,
     },
+    /// Streamed to every subscriber when the index changed WITHOUT per-file events (a volume was
+    /// rescanned and swapped in, or a drive was dropped): whatever a client cached about files
+    /// may be stale and must be read again.
+    Resync,
     Error {
         id: u64,
         message: String,

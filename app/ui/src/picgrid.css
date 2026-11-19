@@ -1,0 +1,43 @@
+/* ---- the one picture grid: search Pictures, Timeline, Collections, Clean up thumbnails ----
+ * One tile size (gridLogic PIC_W x PIC_H, 4:3), one gap, one radius, one hover, one selection ring, one caption.
+ * Keep --pic-w / --pic-h / --pic-gap in step with gridLogic.ts. */
+:root { --pic-w: 176px; --pic-h: 132px; --pic-gap: 8px; --pic-r: 10px; --pic-ring: 3px; }
+
+/* A tile. Its box is always explicit (grid track or absolute width/height), so nothing inside can resize it. */
+.pt { position: relative; overflow: hidden; border-radius: var(--pic-r); background: var(--bg3); cursor: default; display: grid; place-items: center;
+  padding: 0; border: 0; color: inherit; font: inherit; text-align: left; }
+.pt > .ic, .pt > .pt-ph > .ic { width: 40%; height: auto; aspect-ratio: 1; }
+.pt-ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg3); }
+.pt.sel { outline: var(--pic-ring) solid var(--acc); outline-offset: 2px; z-index: 2; }
+.pt.sk { pointer-events: none; opacity: .55; }
+/* caption: fades in on hover / selection; a tile that is there for its name (or a document) keeps it on */
+.pt-cap { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 9px 7px; font-size: 11.5px; font-weight: 500; color: #fff;
+  background: linear-gradient(transparent, rgba(0,0,0,.7)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; opacity: 0; transition: opacity .12s; pointer-events: none; }
+.pt:hover .pt-cap, .pt.sel .pt-cap, .pt.named .pt-cap, .pt.doc .pt-cap { opacity: 1; }
+.pt mark { background: none; color: #fff; }
+.pt.named mark { background: rgba(255,255,255,.26); border-radius: 3px; padding: 0 2px; margin: 0 -2px; }
+/* the match badge (search): dark translucent container, light ink, hairline outline */
+.pt .tpct { position: absolute; top: 6px; left: 6px; max-width: calc(100% - 12px); display: inline-flex; align-items: center; gap: 5px; font-size: 11px; font-weight: 600; padding: 2px 7px; border-radius: 20px; background: rgba(0,0,0,.66); color: #fff; box-shadow: inset 0 0 0 1px rgba(255,255,255,.35); pointer-events: none; white-space: nowrap; overflow: hidden; }
+.pt .tpct b { font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.pt .tpct i { font-style: normal; font-weight: 500; opacity: .78; font-variant-numeric: tabular-nums; }
+.pt .tpct b::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: var(--acc); }
+.pt .tpct.k-name b::before { background: #fff; }
+.pt .tpct.k-both b::before { box-shadow: 8px 0 0 #fff; margin-right: 13px; }
+.pt .tpct.k-text b::before { border-radius: 1px; }
+
+/* the CSS-grid form (search popup): exact tracks, the count comes from gridMetrics */
+.picgrid { display: grid; gap: var(--pic-gap); grid-template-columns: repeat(var(--pic-cols, 4), var(--pic-w)); align-content: start; }
+.picgrid > .pt { width: var(--pic-w); height: var(--pic-h); }
+
+/* ---- thumbnails (ThumbImg): 32 px placeholder first, blurred; the sharp tier cross-fades over it ---- */
+.th { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; display: block; }
+.th img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+.th.th-c img { object-fit: contain; }
+.th-lo { filter: blur(6px); transform: scale(1.08); }
+.th.th-c .th-lo { transform: none; }
+/* A flat fill, not a moving shimmer: a shimmer repaints on the main thread every frame for every waiting tile. Only
+   seen until the placeholder tier lands (or where a surface has no placeholder tier: 40 px row icons). */
+.th-wait { position: absolute; inset: 0; background: color-mix(in oklab, var(--bg3) 88%, var(--fg)); }
+.th-in { animation: th-fade .16s ease-out; }
+@keyframes th-fade { from { opacity: 0; } to { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .th-in { animation: none; } }

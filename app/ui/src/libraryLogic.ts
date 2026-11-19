@@ -43,22 +43,76 @@ export interface RailYear {
   months: RailMonth[];
 }
 
-/** Year / month entries of the right-hand rail (same order as the sections). */
-export function railEntries(sections: { year: number; month: number; items?: unknown[]; count?: number }[]): RailYear[] {
+/** Year / month entries of the right-hand rail (same order as the sections). `idx` is the entry's real section index when the list was filtered. */
+export function railEntries(sections: { year: number; month: number; items?: unknown[]; count?: number; idx?: number }[]): RailYear[] {
   const out: RailYear[] = [];
   sections.forEach((s, i) => {
     let y = out[out.length - 1];
     if (!y || y.year !== s.year) { y = { year: s.year, months: [] }; out.push(y); }
-    y.months.push({ section: i, label: MON3[s.month] ?? "", count: s.count ?? s.items?.length ?? 0 });
+    y.months.push({ section: s.idx ?? i, label: MON3[s.month] ?? "", count: s.count ?? s.items?.length ?? 0 });
   });
   return out;
 }
 
-/** Index of the section the scroll position is in (the last one that starts at or above it). */
+/** Index of the section the scroll position is in (the last one that starts at or above it). O(log n) over the ascending tops. */
 export function activeSection(sectionTop: number[], scrollTop: number): number {
-  let a = 0;
-  for (let i = 0; i < sectionTop.length; i++) if (sectionTop[i]! <= scrollTop + 4) a = i;
+  const limit = scrollTop + 4;
+  let lo = 0, hi = sectionTop.length - 1, a = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (sectionTop[mid]! <= limit) { a = mid; lo = mid + 1; } else hi = mid - 1;
+  }
   return a;
+}
+
+/** Scroll offset that puts section `section`'s heading at the top of the viewport (clamped to the list; 0 when unknown). */
+export function jumpOffset(sectionTop: number[], section: number): number {
+  const i = Math.max(0, Math.min(sectionTop.length - 1, section));
+  return sectionTop[i] ?? 0;
+}
+
+/** Section index of a month key ("2026-11"), -1 when the timeline has no such section. */
+export function sectionOfKey(sections: { key: string }[], key: string): number {
+  return sections.findIndex((s) => s.key === key);
+}
+
+/** One rail month as a vertical slot in the rail's content coordinates. */
+export interface RailSlot {
+  top: number;
+  bottom: number;
+  count: number;
+}
+
+/**
+ * The slot a pointer at rail y lands on while scrubbing: the slot under it (or the nearest one in the gaps and past
+ * the ends), and when that month is empty the nearest month with photos, preferring the direction of travel
+ * (`prev` is the slot the scrub was on). -1 when no month has photos.
+ */
+export function scrubSlot(slots: RailSlot[], y: number, prev = -1): number {
+  const n = slots.length;
+  if (n === 0) return -1;
+  // Binary search: the last slot starting at or above y.
+  let lo = 0, hi = n - 1, at = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (slots[mid]!.top <= y) { at = mid; lo = mid + 1; } else hi = mid - 1;
+  }
+  // In the gap after `at` (a year heading): the nearer of the two neighbours.
+  if (y > slots[at]!.bottom && at + 1 < n && slots[at + 1]!.top - y < y - slots[at]!.bottom) at++;
+  if (slots[at]!.count > 0) return at;
+  const fwd = prev < 0 || at >= prev; // moving down (or the first move)
+  for (let d = 1; d < n; d++) {
+    const a = fwd ? at + d : at - d, b = fwd ? at - d : at + d;
+    if (a >= 0 && a < n && slots[a]!.count > 0) return a;
+    if (b >= 0 && b < n && slots[b]!.count > 0) return b;
+  }
+  return -1;
+}
+
+/** The next month with photos before / after `from` (the `[` / `]` keys); `from` itself when there is none. */
+export function stepMonth(counts: number[], from: number, dir: 1 | -1): number {
+  for (let i = from + dir; i >= 0 && i < counts.length; i += dir) if ((counts[i] ?? 0) > 0) return i;
+  return from;
 }
 
 // ---- grid layout + windowing ------------------------------------------------------------------------------
@@ -161,123 +215,6 @@ export function moveIndex(i: number, key: string, cols: number, n: number): numb
     case "End": return n - 1;
     default: return i;
   }
-}
-
-// ---- v4 mosaic (timeline) ---------------------------------------------------------------------------------
-
-export interface MosaicTile {
-  /** Flat item index. */
-  idx: number;
-  section: number;
-  col: number;
-  /** Row inside the section's mosaic. */
-  row: number;
-  w: number;
-  h: number;
-}
-export interface MosaicSection {
-  /** Flat range [first, end). */
-  first: number;
-  end: number;
-  rows: number;
-}
-export interface Mosaic {
-  tiles: MosaicTile[];
-  sections: MosaicSection[];
-  cols: number;
-}
-export interface MosaicMetrics {
-  top: number[];
-  h: number[];
-  head: number[];
-  total: number;
-}
-
-/** Feature tiles of the prototype: the first photo of a month is 2x2, every 5th is 2x1, plus a 2x2 now and then. */
-export function tileSpan(j: number, cols: number): [number, number] {
-  if (cols < 4) return [1, 1];
-  if (j === 0 || j % 11 === 6) return [2, 2];
-  if (j % 5 === 4) return [2, 1];
-  return [1, 1];
-}
-
-/** Packs every section like `grid-auto-flow: dense` (each tile takes the first free slot), independent of pixel sizes. */
-export function packMosaic(sizes: number[], cols: number): Mosaic {
-  const tiles: MosaicTile[] = [];
-  const sections: MosaicSection[] = [];
-  let flat = 0;
-  sizes.forEach((n, s) => {
-    const occ: Uint8Array[] = [];
-    const rowOf = (r: number) => (occ[r] ??= new Uint8Array(cols));
-    let minRow = 0, rows = 0;
-    for (let j = 0; j < n; j++) {
-      const [w0, h] = tileSpan(j, cols);
-      const w = Math.min(w0, cols);
-      let placed = false;
-      for (let r = minRow; !placed; r++) {
-        for (let c = 0; c + w <= cols && !placed; c++) {
-          let ok = true;
-          for (let dr = 0; dr < h && ok; dr++) for (let dc = 0; dc < w; dc++) if (rowOf(r + dr)[c + dc]) { ok = false; break; }
-          if (!ok) continue;
-          for (let dr = 0; dr < h; dr++) for (let dc = 0; dc < w; dc++) rowOf(r + dr)[c + dc] = 1;
-          tiles.push({ idx: flat + j, section: s, col: c, row: r, w, h });
-          rows = Math.max(rows, r + h);
-          placed = true;
-        }
-      }
-      while (occ[minRow]?.every(Boolean)) minRow++;
-    }
-    sections.push({ first: flat, end: flat + n, rows });
-    flat += n;
-  });
-  return { tiles, sections, cols };
-}
-
-/** Vertical metrics for a packed mosaic: `headH[s]` is the heading height of section s (0 = none). */
-export function mosaicMetrics(m: Mosaic, rowH: number, gap: number, headH: number[], bottom: number, pad: number): MosaicMetrics {
-  const top: number[] = [], h: number[] = [];
-  let y = 0;
-  m.sections.forEach((s, i) => {
-    const body = s.rows > 0 ? s.rows * (rowH + gap) - gap : 0;
-    const sh = (headH[i] ?? 0) + body + (s.rows > 0 ? bottom : 0);
-    top.push(y);
-    h.push(sh);
-    y += sh;
-  });
-  return { top, h, head: headH, total: y + pad };
-}
-
-/** Section-relative top and pixel height of a tile. */
-export function tileBox(t: MosaicTile, rowH: number, gap: number, head: number): { y: number; h: number } {
-  return { y: head + t.row * (rowH + gap), h: t.h * rowH + (t.h - 1) * gap };
-}
-
-/** Arrow-key move over a mosaic: left/right follow the order, up/down go to the nearest tile above/below. */
-export function moveMosaic(m: Mosaic, mt: MosaicMetrics, rowH: number, gap: number, i: number, key: string, n: number): number {
-  if (n <= 0) return 0;
-  switch (key) {
-    case "ArrowLeft": return Math.max(0, i - 1);
-    case "ArrowRight": return Math.min(n - 1, i + 1);
-    case "Home": return 0;
-    case "End": return n - 1;
-  }
-  if (key !== "ArrowUp" && key !== "ArrowDown") return i;
-  const cur = m.tiles[i];
-  if (!cur) return i;
-  const gy = (t: MosaicTile) => { const b = tileBox(t, rowH, gap, mt.head[t.section] ?? 0); return { y: (mt.top[t.section] ?? 0) + b.y, h: b.h }; };
-  const c = gy(cur), cx = cur.col + cur.w / 2;
-  let best = -1, bestDy = Infinity, bestDx = Infinity;
-  for (let k = Math.max(0, i - 64); k <= Math.min(n - 1, i + 64); k++) {
-    if (k === i) continue;
-    const t = m.tiles[k];
-    if (!t) continue; // tiles cover [0, n), k never leaves it
-    const b = gy(t);
-    const dy = key === "ArrowDown" ? b.y - (c.y + c.h) : c.y - (b.y + b.h);
-    if (dy < -1) continue;
-    const dx = Math.abs(t.col + t.w / 2 - cx);
-    if (dy < bestDy - 1 || (Math.abs(dy - bestDy) <= 1 && dx < bestDx)) { best = k; bestDy = dy; bestDx = dx; }
-  }
-  return best >= 0 ? best : i;
 }
 
 // ---- smart collections ------------------------------------------------------------------------------------

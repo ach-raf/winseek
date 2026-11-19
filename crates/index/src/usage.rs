@@ -107,7 +107,8 @@ pub struct DirList {
     pub more_bytes: u64,
 }
 
-/// Snapshot of every folder's totals and child lists. See the module docs.
+/// Snapshot of every folder's totals and child lists, plus a small overlay of what changed
+/// since. See the module docs.
 #[derive(Clone)]
 pub struct Rollup {
     /// Slot of each folder, ascending.
@@ -120,6 +121,54 @@ pub struct Rollup {
     kd: Vec<u32>,
     kf_start: Vec<u32>,
     kf: Vec<u32>,
+    ov: Overlay,
+}
+
+/// Signed change of one folder's totals (`cats` in the same 4 KiB units as the snapshot).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct Delta {
+    bytes: i64,
+    files: i64,
+    folders: i64,
+    cats: [i64; CATEGORIES],
+}
+
+impl Delta {
+    fn add(&mut self, o: &Delta, sign: i64) {
+        self.bytes += sign * o.bytes;
+        self.files += sign * o.files;
+        self.folders += sign * o.folders;
+        for k in 0..CATEGORIES {
+            self.cats[k] += sign * o.cats[k];
+        }
+    }
+}
+
+/// What changed under each folder since the snapshot was built, keyed by folder *slot* (so
+/// folders created since have totals too). Everything's way: every add/delete/move pushes its
+/// size up the parent chain, O(depth), instead of recomputing anything.
+#[derive(Clone, Default)]
+struct Overlay {
+    by_slot: Fx<u32, Delta>,
+    /// Something was added or moved that the snapshot's child lists do not show yet.
+    dirty: bool,
+    /// A change could not be tracked: totals are no longer exact until the next build.
+    broken: bool,
+}
+
+/// What one record (with everything under it) adds to the folders above it, and which they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct Contrib {
+    chain: Vec<u32>,
+    d: Delta,
+}
+
+/// The state of the records a mutation may touch, taken just before it
+/// ([`Index::usage_before`]); hand it to [`Index::usage_after`] right after.
+pub struct UsageTouch {
+    live: usize,
+    vols: usize,
+    pre: Vec<(u32, Contrib)>,
 }
 
 fn argmax(c: &[u32; CATEGORIES]) -> u8 {
@@ -137,26 +186,93 @@ impl Rollup {
         self.dirs.len()
     }
     pub fn mem_bytes(&self) -> usize {
-        self.dirs.len() * (4 + 8 + 4 + 4 + 32 + 4 + 4 + 4) + (self.kd.len() + self.kf.len()) * 4
+        self.dirs.len() * (4 + 8 + 4 + 4 + 32 + 4 + 4 + 4)
+            + (self.kd.len() + self.kf.len()) * 4
+            + self.ov.by_slot.len() * (4 + std::mem::size_of::<Delta>())
     }
     /// Folder id of a record slot (None: not a live folder when the roll-up was built).
     pub fn dir_of_slot(&self, slot: u32) -> Option<u32> {
         self.dirs.binary_search(&slot).ok().map(|d| d as u32)
     }
-    fn cats_bytes(&self, d: u32) -> [u64; CATEGORIES] {
-        let c = &self.cats[d as usize];
-        std::array::from_fn(|k| (c[k] as u64) << CAT_SHIFT)
+    /// Snapshot totals of folder id `d`.
+    fn base(&self, d: u32) -> Delta {
+        let du = d as usize;
+        Delta {
+            bytes: self.bytes[du] as i64,
+            files: self.files[du] as i64,
+            folders: self.folders[du] as i64,
+            cats: std::array::from_fn(|k| self.cats[du][k] as i64),
+        }
     }
-    /// `(bytes, files, folders)` of a folder.
+    /// Current totals of the folder at `slot`: snapshot (if it has the folder) plus overlay.
+    fn slot_sum(&self, slot: u32) -> Delta {
+        let mut t = self
+            .dir_of_slot(slot)
+            .map(|d| self.base(d))
+            .unwrap_or_default();
+        if let Some(o) = self.ov.by_slot.get(&slot) {
+            t.add(o, 1);
+        }
+        t
+    }
+    fn sum(&self, d: u32) -> Delta {
+        let mut t = self.base(d);
+        if let Some(o) = self.ov.by_slot.get(&self.dirs[d as usize]) {
+            t.add(o, 1);
+        }
+        t
+    }
+    /// `(bytes, files, folders)` of a folder, changes since the build included.
     pub fn totals(&self, d: u32) -> (u64, u64, u64) {
+        let t = self.sum(d);
         (
-            self.bytes[d as usize],
-            self.files[d as usize] as u64,
-            self.folders[d as usize] as u64,
+            t.bytes.max(0) as u64,
+            t.files.max(0) as u64,
+            t.folders.max(0) as u64,
         )
     }
+    /// Bytes per category under a folder (changes since the build included).
     pub fn cats_of(&self, d: u32) -> [u64; CATEGORIES] {
-        self.cats_bytes(d)
+        let c = self.sum(d).cats;
+        std::array::from_fn(|k| (c[k].max(0) as u64) << CAT_SHIFT)
+    }
+    /// `(bytes, files, folders, cats)` of the live folder at record `slot`, also one created
+    /// after the build (not in the child lists yet).
+    pub fn totals_at(&self, slot: u32) -> (u64, u64, u64, [u64; CATEGORIES]) {
+        let t = self.slot_sum(slot);
+        (
+            t.bytes.max(0) as u64,
+            t.files.max(0) as u64,
+            t.folders.max(0) as u64,
+            std::array::from_fn(|k| (t.cats[k].max(0) as u64) << CAT_SHIFT),
+        )
+    }
+    fn kind_of(&self, d: u32) -> u8 {
+        let c = self.sum(d).cats;
+        argmax(&std::array::from_fn(|k| {
+            c[k].clamp(0, u32::MAX as i64) as u32
+        }))
+    }
+    /// Totals reflect every change pushed through [`Index::usage_after`] since the build.
+    pub fn exact(&self) -> bool {
+        !self.ov.broken
+    }
+    /// Records were added or moved since the build: child lists lag until the next one.
+    pub fn structure_dirty(&self) -> bool {
+        self.ov.dirty
+    }
+    /// Give up exact tracking (a change went around [`Index::usage_after`]).
+    pub fn mark_inexact(&mut self) {
+        self.ov.broken = true;
+    }
+    /// Folders with overlay entries.
+    pub fn overlay_len(&self) -> usize {
+        self.ov.by_slot.len()
+    }
+    fn push(&mut self, c: &Contrib, sign: i64) {
+        for &p in &c.chain {
+            self.ov.by_slot.entry(p).or_default().add(&c.d, sign);
+        }
     }
 }
 
@@ -277,6 +393,133 @@ impl Index {
             kd,
             kf_start,
             kf,
+            ov: Overlay::default(),
+        }
+    }
+
+    fn live_dir(&self, p: u32) -> bool {
+        (p as usize) < self.parent.len() && self.flags[p as usize] & (F_DELETED | F_DIR) == F_DIR
+    }
+
+    /// What live record `s` adds to the live folders above it (`rollup` semantics: a record
+    /// counts towards a parent only while that parent is a live folder). `fresh`: `s` was just
+    /// created, so a folder holds nothing yet whatever its slot held before.
+    fn contrib(&self, ru: &Rollup, s: u32, fresh: bool) -> Contrib {
+        let su = s as usize;
+        let mut d = Delta::default();
+        if self.flags[su] & F_DIR != 0 {
+            if !fresh {
+                d = ru.slot_sum(s);
+            }
+            d.folders += 1;
+        } else {
+            d.files = 1;
+            if self.with_meta {
+                let sz = self.size[su];
+                d.bytes = sz.min(i64::MAX as u64) as i64;
+                if sz > 0 {
+                    let k = category_of_key(ext_key(self.name_bytes(s))) as usize;
+                    d.cats[k] = (sz >> CAT_SHIFT).min(u32::MAX as u64) as i64;
+                }
+            }
+        }
+        let mut chain = Vec::new();
+        let mut c = s;
+        while chain.len() < 100_000 {
+            let p = self.parent[c as usize];
+            if p == c || !self.live_dir(p) {
+                break;
+            }
+            chain.push(p);
+            c = p;
+        }
+        Contrib { chain, d }
+    }
+
+    /// Before a mutation: note what the live records among `slots` (the ones it may move,
+    /// resize or remove) add to the folders above them.
+    pub fn usage_before(&self, ru: &Rollup, slots: &[u32]) -> UsageTouch {
+        let mut pre: Vec<(u32, Contrib)> = Vec::with_capacity(slots.len());
+        for &s in slots {
+            let live = (s as usize) < self.parent.len() && self.flags[s as usize] & F_DELETED == 0;
+            if live && !pre.iter().any(|e| e.0 == s) {
+                pre.push((s, self.contrib(ru, s, false)));
+            }
+        }
+        UsageTouch {
+            live: self.live_count(),
+            vols: self.volumes().len(),
+            pre,
+        }
+    }
+
+    /// After the mutation: push the difference up the old and the new parent chains. `maybe_new`
+    /// are records the mutation may have created (anything live there that `usage_before` did
+    /// not see counts as new). If the live-record count does not add up, the change touched
+    /// something else: the overlay gives up exactness rather than guess.
+    pub fn usage_after(&self, ru: &mut Rollup, t: UsageTouch, maybe_new: &[u32]) {
+        if ru.ov.broken {
+            return;
+        }
+        let live =
+            |s: u32| (s as usize) < self.parent.len() && self.flags[s as usize] & F_DELETED == 0;
+        let mut created: Vec<u32> = Vec::new();
+        for &s in maybe_new {
+            if live(s) && !t.pre.iter().any(|e| e.0 == s) && !created.contains(&s) {
+                created.push(s);
+            }
+        }
+        // Every "after" is measured before the overlay changes.
+        let post: Vec<Option<Contrib>> = t
+            .pre
+            .iter()
+            .map(|(s, _)| live(*s).then(|| self.contrib(ru, *s, false)))
+            .collect();
+        let added: Vec<Contrib> = created.iter().map(|&s| self.contrib(ru, s, true)).collect();
+        let removed: i64 = t
+            .pre
+            .iter()
+            .zip(&post)
+            .filter(|(_, p)| p.is_none())
+            .map(|((_, c), _)| c.d.files + c.d.folders)
+            .sum();
+        if self.live_count() as i64 != t.live as i64 + created.len() as i64 - removed
+            || self.volumes().len() != t.vols
+        {
+            ru.ov.broken = true;
+            return;
+        }
+        // A new folder may sit in a slot an old one (still in the snapshot) had: start it at 0.
+        for &s in &created {
+            if self.flags[s as usize] & F_DIR != 0 {
+                match ru.dir_of_slot(s) {
+                    Some(d) => {
+                        let mut z = Delta::default();
+                        z.add(&ru.base(d), -1);
+                        ru.ov.by_slot.insert(s, z);
+                    }
+                    None => {
+                        ru.ov.by_slot.remove(&s);
+                    }
+                }
+            }
+        }
+        for ((_, pre), post) in t.pre.iter().zip(post) {
+            match post {
+                None => ru.push(pre, -1),
+                Some(post) if post != *pre => {
+                    ru.push(pre, -1);
+                    ru.push(&post, 1);
+                    if post.chain != pre.chain {
+                        ru.ov.dirty = true;
+                    }
+                }
+                Some(_) => {}
+            }
+        }
+        for c in &added {
+            ru.push(c, 1);
+            ru.ov.dirty = true;
         }
     }
 
@@ -295,7 +538,7 @@ impl Index {
             let want = part.to_lowercase();
             cur = ru.kd[lo..hi].iter().copied().find(|&k| {
                 let s = ru.dirs[k as usize];
-                (s as usize) < self.slots() && !self.is_deleted(s) && {
+                self.live_dir(s) && {
                     let nm = self.name(s);
                     nm.eq_ignore_ascii_case(part) || nm.to_lowercase() == want
                 }
@@ -313,19 +556,20 @@ impl Index {
     pub fn list_dir(&self, ru: &Rollup, d: u32, limit: usize) -> DirList {
         let du = d as usize;
         let slot = ru.dirs[du];
+        let (bytes, files, folders) = ru.totals(d);
         let mut out = DirList {
-            bytes: ru.bytes[du],
-            files: ru.files[du] as u64,
-            folders: ru.folders[du] as u64,
-            cats: ru.cats_bytes(d),
+            bytes,
+            files,
+            folders,
+            cats: ru.cats_of(d),
             ..Default::default()
         };
         let n = self.slots();
         let mut all: Vec<(u64, u32, u32)> = Vec::new(); // bytes, slot, folder id (NONE = file)
         for &k in &ru.kd[ru.kd_start[du] as usize..ru.kd_start[du + 1] as usize] {
             let s = ru.dirs[k as usize];
-            if (s as usize) < n && !self.is_deleted(s) && self.parent(s) == slot {
-                all.push((ru.bytes[k as usize], s, k));
+            if self.live_dir(s) && self.parent(s) == slot {
+                all.push((ru.totals(k).0, s, k));
             }
         }
         for &s in &ru.kf[ru.kf_start[du] as usize..ru.kf_start[du + 1] as usize] {
@@ -357,14 +601,14 @@ impl Index {
                         kind: category_of_key(ext_key(self.name_bytes(s))),
                     }
                 } else {
-                    let ku = k as usize;
+                    let (_, files, folders) = ru.totals(k);
                     ChildUsage {
                         slot: s,
                         is_dir: true,
                         bytes,
-                        files: ru.files[ku] as u64,
-                        folders: ru.folders[ku] as u64,
-                        kind: argmax(&ru.cats[ku]),
+                        files,
+                        folders,
+                        kind: ru.kind_of(k),
                     }
                 }
             })
@@ -571,5 +815,198 @@ mod tests {
             ty.len(),
             big.len()
         );
+        let (mut ix, mut ru) = (ix, ru);
+        let n = ix.slots() as u32;
+        let mut spent = std::time::Duration::ZERO;
+        for j in 0..20_000u32 {
+            let s = n - 1 - j * 13;
+            let t = std::time::Instant::now();
+            let tch = ix.usage_before(&ru, &[s]);
+            spent += t.elapsed();
+            if j % 2 == 0 {
+                let sz = ix.size(s).unwrap_or(0) + 4096;
+                ix.update_meta(s, sz, 0);
+            } else {
+                ix.remove(s);
+            }
+            let t = std::time::Instant::now();
+            ix.usage_after(&mut ru, tch, &[]);
+            spent += t.elapsed();
+        }
+        println!(
+            "overlay bookkeeping, 20k resize/delete: {:?} per change, {} overlay folders, exact {}",
+            spent / 20_000,
+            ru.overlay_len(),
+            ru.exact()
+        );
+    }
+
+    /// Fresh `rollup()` of `ix` and `ru` (snapshot + overlay) agree on every live folder; the
+    /// children `ru` lists are listed by the fresh one too, with the same numbers.
+    fn assert_same(ix: &Index, ru: &Rollup) {
+        let fresh = ix.rollup();
+        assert!(ru.exact());
+        for s in 0..ix.slots() as u32 {
+            if !ix.live_dir(s) {
+                continue;
+            }
+            assert_eq!(
+                ru.totals_at(s),
+                fresh.totals_at(s),
+                "folder {}",
+                ix.full_path(s)
+            );
+            let (Some(d), Some(fd)) = (ru.dir_of_slot(s), fresh.dir_of_slot(s)) else {
+                continue;
+            };
+            let a = ix.list_dir(ru, d, usize::MAX);
+            let b = ix.list_dir(&fresh, fd, usize::MAX);
+            assert_eq!(
+                (a.bytes, a.files, a.folders, a.cats),
+                (b.bytes, b.files, b.folders, b.cats)
+            );
+            for ch in &a.children {
+                assert!(b.children.contains(ch), "{:?} in {}", ch, ix.full_path(s));
+            }
+            if !ru.structure_dirty() {
+                assert_eq!(a.children.len(), b.children.len());
+            }
+        }
+    }
+
+    #[test]
+    fn overlay_tracks_delete_resize_and_move() {
+        let mut ix = sample();
+        let mut ru = ix.rollup();
+        let pics = ix.folder_idx(b'C', 11).unwrap();
+        let empty = ix.folder_idx(b'C', 16).unwrap();
+        let users = ix.resolve_dir(&ru, r"C:\Users").unwrap();
+        // Recycle the pictures folder: Users drops 500 bytes and 2 files at once.
+        let t = ix.usage_before(&ru, &[pics]);
+        ix.remove(pics);
+        ix.usage_after(&mut ru, t, &[]);
+        assert_eq!(ru.totals(users), (50, 1, 1));
+        assert!(!ru.structure_dirty());
+        assert_same(&ix, &ru);
+        // Grow a file, move it into Empty, add a new file there.
+        let notes = ix.find_file(b'C', 10, "notes.txt").unwrap();
+        let t = ix.usage_before(&ru, &[notes]);
+        ix.update_meta(notes, 9000, 0);
+        ix.usage_after(&mut ru, t, &[]);
+        let t = ix.usage_before(&ru, &[notes]);
+        ix.rename(notes, empty, "notes.md");
+        ix.usage_after(&mut ru, t, &[]);
+        let t = ix.usage_before(&ru, &[]);
+        let f = ix.insert(b'C', 0, 16, "v.mp4", false, 1 << 20, 0);
+        ix.usage_after(&mut ru, t, &[f]);
+        assert!(ru.structure_dirty());
+        let e = ix.resolve_dir(&ru, r"C:\Users\Empty").unwrap();
+        assert_eq!(ru.totals(e), (9000 + (1 << 20), 2, 0));
+        assert_eq!(ru.cats_of(e)[2], 1 << 20);
+        assert_same(&ix, &ru);
+    }
+
+    #[test]
+    fn overlay_gives_up_on_untracked_changes() {
+        let mut ix = sample();
+        let mut ru = ix.rollup();
+        // A create the caller did not announce as possibly new: the live count does not add up.
+        let t = ix.usage_before(&ru, &[]);
+        ix.insert(b'C', 0, 10, "x.txt", false, 5, 0);
+        ix.usage_after(&mut ru, t, &[]);
+        assert!(!ru.exact());
+    }
+
+    /// Hundreds of random creates/deletes/moves/resizes (with slot reuse) keep every folder's
+    /// overlaid totals equal to a fresh roll-up.
+    #[test]
+    fn overlay_matches_fresh_rollup_randomized() {
+        for seed in 1..=4u64 {
+            let mut rng = seed.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+            let mut next = move |m: u64| {
+                rng ^= rng << 13;
+                rng ^= rng >> 7;
+                rng ^= rng << 17;
+                rng % m.max(1)
+            };
+            let exts = ["jpg", "mp4", "txt", "zip", "rs", "exe", "bin", "none"];
+            let mut b = IndexBuilder::new(true);
+            b.add_volume(b'C', 5);
+            let mut tree = vec![5u64];
+            let mut frn = 100u64;
+            for i in 0..300 {
+                frn += 1;
+                let p = tree[next(tree.len() as u64) as usize];
+                if i % 6 == 0 {
+                    b.push(b'C', frn, p, &format!("d{i}"), true, 0, 0);
+                    tree.push(frn);
+                } else {
+                    let name = format!("f{i}.{}", exts[next(8) as usize]);
+                    b.push(b'C', frn, p, &name, false, next(1 << 22), 0);
+                }
+            }
+            let mut ix = b.finish();
+            let mut ru = ix.rollup();
+            for step in 0..400 {
+                let n = ix.slots() as u64;
+                let live: Vec<u32> = (0..n as u32)
+                    .filter(|&s| !ix.is_deleted(s) && ix.parent(s) != NONE)
+                    .collect();
+                let dirs: Vec<u32> = (0..n as u32).filter(|&s| ix.live_dir(s)).collect();
+                let dir = dirs[next(dirs.len() as u64) as usize];
+                let Some(&pick) = live.get(next(live.len() as u64) as usize) else {
+                    let t = ix.usage_before(&ru, &[]);
+                    frn += 1;
+                    let i = ix.insert(b'C', frn, ix.frn(dir), "re", true, 0, 0);
+                    ix.usage_after(&mut ru, t, &[i]);
+                    continue;
+                };
+                match next(10) {
+                    0..=3 => {
+                        let is_dir = next(3) == 0;
+                        frn += 1;
+                        let name = format!("n{}.{}", next(6), exts[next(8) as usize]);
+                        let pf = ix.frn(dir);
+                        let pre: Vec<u32> = if is_dir {
+                            vec![]
+                        } else {
+                            ix.find_file(b'C', pf, &name).into_iter().collect()
+                        };
+                        let t = ix.usage_before(&ru, &pre);
+                        let i = ix.insert(b'C', frn, pf, &name, is_dir, next(1 << 22), 0);
+                        ix.usage_after(&mut ru, t, &[i]);
+                    }
+                    4..=5 if !ix.is_dir(pick) || next(4) == 0 => {
+                        let t = ix.usage_before(&ru, &[pick]);
+                        ix.remove(pick);
+                        ix.usage_after(&mut ru, t, &[]);
+                    }
+                    6..=7 => {
+                        let t = ix.usage_before(&ru, &[pick]);
+                        let nm = format!("m{}.{}", next(6), exts[next(8) as usize]);
+                        ix.rename(pick, dir, &nm);
+                        ix.usage_after(&mut ru, t, &[]);
+                    }
+                    _ => {
+                        let t = ix.usage_before(&ru, &[pick]);
+                        ix.update_meta(pick, next(1 << 24), 0);
+                        ix.usage_after(&mut ru, t, &[]);
+                    }
+                }
+                if step % 50 == 0 {
+                    ix.refresh(); // frees deleted slots for reuse
+                }
+                if step % 40 == 0 {
+                    assert_same(&ix, &ru);
+                }
+            }
+            assert_same(&ix, &ru);
+            // The run really moved things around (not an index that died early).
+            assert!(
+                ix.live_count() > 80 && ru.overlay_len() > 10,
+                "{}",
+                ix.live_count()
+            );
+        }
     }
 }

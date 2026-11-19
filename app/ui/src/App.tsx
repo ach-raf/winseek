@@ -1,5 +1,6 @@
 import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, DriveSpace, Filter, Hit, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
+import type { Backend, DriveSpace, Filter, FsDelta, Hit, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
+import { SearchGuide } from "./SearchGuide";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
 import { previewSelectionText } from "./previewLogic";
@@ -16,7 +17,7 @@ import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "
 import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
-import { IChevL, IExpand, IGear, IMag, IX } from "./icons";
+import { IChevL, IExpand, IFilter, IGear, IMag, IX } from "./icons";
 import { portableApps, launchForFilter, makeLaunchGuard } from "./launchLogic";
 import * as qh from "./queryHistory";
 import { combos, matches as matchesKey } from "./keymap";
@@ -29,6 +30,10 @@ import type { JobKey } from "./jobsLogic";
 import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 import { noteScroll } from "./thumbQueue";
+import { PIC_SEARCH_PAGE, readPictureNames } from "./pictureSearch";
+import { fsDelta, hasArrivals, hitAt, makeMatcher, pruneList, pruneRows, shiftIndex } from "./fsDelta";
+import { pushLocalDelta } from "./fsDeltaPatch";
+import { useFsDelta, useFsDeltaListener } from "./useFsDelta";
 
 const ROW_H = 54;
 const ROW_H_DENSE = 32; // compact rows in the full window: one line, name + location
@@ -41,7 +46,8 @@ const OVERSCAN = 6;
 const PAGE_CAP = 60;
 // Pictures whose name has the typed word, read for the overview's grid (two rows; the rest is "Show all").
 const PIC_HEAD = 60;
-const PIC_PAGE = 5000;
+// How far "Show all" reads ahead of the scroll (read in pages of PIC_SEARCH_PAGE, capped at PIC_SEARCH_CAP).
+const PIC_PAGE = 2000;
 
 const FILTERS: { id: Filter; label: string }[] = [
   { id: "all", label: "All" },
@@ -178,6 +184,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [nameCounts, setNameCounts] = useState<Partial<Record<Filter, number>> | null>(null);
   // "Most used" apps on home: a launch count kept here (the backend has no usage listing).
   const [mru, setMru] = useStoredValue<MruEntry[]>("winseek.mru", readMru, JSON.stringify);
+  const [guide, setGuide] = useState(false); // the "Narrow your search" filter guide
   const [cheat, setCheat] = useState(false); // the F1 / Ctrl+/ shortcut cheat sheet
   const [hotkeyBindings, setHotkeyBindings] = useState<Record<string, string>>({});
   const [hintOff, setHintOff] = useState(false);
@@ -245,6 +252,7 @@ export default function App({ backend }: { backend: Backend }) {
   const voffRef = useRef(0);
   const scrollTimer = useRef<number | undefined>(undefined);
   const rowsRef = useRef<(Hit | undefined)[]>([]);
+  const recheckRef = useRef<() => void>(() => {}); // the live count check: re-reads the first page when the count moved
   const toastTimer = useRef<number | undefined>(undefined);
   // One-level undo (last rename or recycle). Ctrl+Z triggers it only while the search box is empty or
   // unchanged since the action; otherwise Ctrl+Z is left to the browser (text undo).
@@ -319,7 +327,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [picLimit, setPicLimit] = useState(PIC_PAGE);
   const morePics = useCallback(() => setPicLimit((n) => n + PIC_PAGE), []);
   useEffect(() => { setPicLimit(PIC_PAGE); }, [picQ, scopedQ, picsOpen, epoch]);
-  const picAcc = useRef<{ key: string; hits: Hit[] }>({ key: "", hits: [] });
+  const picAcc = useRef<{ key: string; hits: Hit[]; total: number }>({ key: "", hits: [], total: -1 });
   const [picNames, setPicNames] = useState<{ q: string; hits: Hit[]; total: number; done: boolean } | null>(null);
   useEffect(() => {
     if (!picsWanted) { setPicNames(null); return; }
@@ -327,16 +335,15 @@ export default function App({ backend }: { backend: Backend }) {
     const t = window.setTimeout(async () => {
       try {
         const key = `${picQ}|${epoch}|${picsOpen}`;
-        if (picAcc.current.key !== key) picAcc.current = { key, hits: [] };
-        const out = picAcc.current.hits; // survives a raised limit: the next pages are appended, nothing is re-read
-        for (;;) {
-          const r = await backend.search({ query: picQ, offset: out.length, limit: picsOpen ? PIC_PAGE : PIC_HEAD, sort: "name", filter: "images", stream: "pics" });
-          if (dead) return;
-          for (const h of r.hits) out.push(h);
-          const complete = !picsOpen || r.hits.length === 0 || out.length >= r.total;
-          setPicNames({ q: picQ, hits: out.slice(), total: r.total, done: complete || out.length >= picLimit });
-          if (complete || out.length >= picLimit) break;
-        }
+        if (picAcc.current.key !== key) picAcc.current = { key, hits: [], total: -1 };
+        const acc = picAcc.current; // survives a raised limit: the next pages are appended, nothing is re-read
+        // The shared reader (pictureSearch): pages of 400, capped, one hand-off per burst of pages (not per page),
+        // so the overview is rebuilt once per burst.
+        await readPictureNames(backend, {
+          query: picQ, stream: "pics", acc, limit: picsOpen ? picLimit : PIC_HEAD, page: picsOpen ? PIC_SEARCH_PAGE : PIC_HEAD,
+          live: () => !dead,
+          emit: (s) => setPicNames({ q: picQ, hits: acc.hits.slice(), total: s.total, done: s.done }),
+        });
       } catch (e) {
         if (!dead) setPicNames((p) => p && { ...p, done: true });
         console.error(e);
@@ -349,23 +356,19 @@ export default function App({ backend }: { backend: Backend }) {
   // word search found nothing at all (then they are all there is to show).
   const tailWanted = picsOpen && picWords && (weakOpen || (!!picNamesNow && picNamesNow.done && picNamesNow.total === 0));
   const [picTail, setPicTail] = useState<{ hits: Hit[]; done: boolean } | null>(null);
-  const tailAcc = useRef<{ key: string; hits: Hit[] }>({ key: "", hits: [] });
+  const tailAcc = useRef<{ key: string; hits: Hit[]; total: number }>({ key: "", hits: [], total: -1 });
   useEffect(() => {
     if (!tailWanted) { setPicTail(null); return; }
     let dead = false;
     (async () => {
       const key = `${scopedQ}|${epoch}`;
-      if (tailAcc.current.key !== key) tailAcc.current = { key, hits: [] };
-      const out = tailAcc.current.hits;
-      for (;;) {
-        const r = await backend.search({ query: scopedQ, offset: out.length, limit: PIC_PAGE, sort: "name", filter: "images", stream: "tail" });
-        if (dead) return;
-        for (const h of r.hits) out.push(h);
-        const complete = r.hits.length === 0 || out.length >= r.total;
-        const done = complete || out.length >= picLimit;
-        setPicTail({ hits: out.slice(), done });
-        if (done) break;
-      }
+      if (tailAcc.current.key !== key) tailAcc.current = { key, hits: [], total: -1 };
+      const acc = tailAcc.current;
+      await readPictureNames(backend, {
+        query: scopedQ, stream: "tail", acc, limit: picLimit,
+        live: () => !dead,
+        emit: (s) => setPicTail({ hits: acc.hits.slice(), done: s.done }),
+      });
     })().catch((e) => { if (!dead) setPicTail((p) => p && { ...p, done: true }); console.error(e); });
     return () => { dead = true; };
   }, [backend, tailWanted, scopedQ, epoch, picLimit]);
@@ -388,9 +391,11 @@ export default function App({ backend }: { backend: Backend }) {
     () => (lcfg?.portable === false ? [] : portableApps(headRows.filter((h): h is Hit => !!h), parsed.text, launch)),
     [lcfg, headRows, parsed.text, launch],
   );
-  // Tile grids per layout: photos 4 / 5 columns, most-used apps 6 / 7 (full mode shows 7 wide
+  // Tile grids per layout: photos as many exact-size tiles as fit, most-used apps 6 / 7 (full mode shows 7 wide
   // Launchpad tiles; MRU_MAX still stores 12). Keep in sync with .grid.apps in search.css.
-  const gridCols: GridCols = useMemo(() => ({ images: full ? 5 : 4, namepics: full ? 5 : 4, mostused: full ? 7 : 6 }), [full]);
+  // The pictures grid is the shared exact-size grid: its column count is what fits (Overview measures it).
+  const [picCols, setPicCols] = useState(4);
+  const gridCols: GridCols = useMemo(() => ({ images: picCols, namepics: picCols, mostused: full ? 7 : 6 }), [full, picCols]);
   const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
   const ov = useMemo(
     () => (isRecent
@@ -562,7 +567,7 @@ export default function App({ backend }: { backend: Backend }) {
     if (isRecent || data.recent || !loaded || renaming) return;
     const my = seq.current;
     const args = { query: scopedQ, sort, filter: nameFilter, stream: "list" as const };
-    const t = window.setInterval(() => {
+    const tick = () => {
       if (document.visibilityState !== "visible" || my !== seq.current) return;
       backend.search({ ...args, offset: 0, limit: 0 }).then((c) => {
         if (my !== seq.current || c.total === totalRef.current) return;
@@ -579,8 +584,11 @@ export default function App({ backend }: { backend: Backend }) {
           setLiveVer((v) => v + 1); // the type-chip counts follow
         });
       }).catch(() => { /* the next tick asks again */ });
-    }, 5000);
-    return () => window.clearInterval(t);
+    };
+    // A file-system delta that could bring new matches (something added / renamed in) asks at once (see onFsDelta).
+    recheckRef.current = tick;
+    const t = window.setInterval(tick, 5000);
+    return () => { window.clearInterval(t); if (recheckRef.current === tick) recheckRef.current = () => {}; };
   }, [backend, scopedQ, sort, nameFilter, isRecent, data.recent, loaded, renaming]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query, once it has
@@ -619,6 +627,11 @@ export default function App({ backend }: { backend: Backend }) {
     setSummary(null);
     setCounting(true);
   }, []);
+
+  // The window's one fs-delta subscription: deletes / renames / new files made anywhere (Explorer included)
+  // patch every cached list in this window in place (the embedded Library, Space, meaning answers); the
+  // result rows follow in `onFsDelta` below.
+  useFsDelta(backend);
 
   useEffect(() => {
     let off: (() => void) | undefined;
@@ -910,6 +923,73 @@ export default function App({ backend }: { backend: Backend }) {
     }, 1500);
   }, []);
 
+  // ---- file-system deltas (anything changed on disk, here or in Explorer) ----------------------------
+  // Gone rows leave and renamed rows move in place (the same shift the own delete does); the selection
+  // stays on its row, or on the one that took its place. New files can only enter through the index:
+  // the live count check runs once (debounced), never a re-read of every loaded page.
+  const reselectAt = useRef<number | null>(null);
+  const arrivalTimer = useRef<number | undefined>(undefined);
+  useEffect(() => () => window.clearTimeout(arrivalTimer.current), []);
+  // The home list (recently changed files) after something new arrived: re-read quietly, the selection stays.
+  const refreshRecent = () => {
+    const my = seq.current;
+    backend.recent(drive ? 300 : 40).then((all) => {
+      if (my !== seq.current) return;
+      const hits = drive ? all.filter((h) => onDrive(h.path, drive)).slice(0, 40) : all;
+      rowsRef.current = hits;
+      setData((x) => (x.recent ? { ...x, total: hits.length, rows: hits, ver: x.ver + 1 } : x));
+    }).catch(() => { /* the next change asks again */ });
+  };
+
+  const onFsDelta = (d: FsDelta) => {
+    const m = makeMatcher(d);
+    if (!m.idle) {
+      const r = pruneRows(rowsRef.current, m);
+      if (r.changed) {
+        rowsRef.current = r.rows;
+        const n = r.removed.length;
+        const total = Math.max(0, data.total - n);
+        setData((x) => ({ ...x, rows: r.rows, total: Math.max(0, x.total - n), ver: x.ver + 1 }));
+        if (n > 0) {
+          setSel((s) => shiftIndex(s, r.removed, total));
+          if (!data.recent) {
+            // the loaded pages from the first removed row on are short at their ends: re-read the ones on screen once the index has it
+            const my = seq.current, from = Math.floor(r.removed[0]! / PAGE);
+            window.setTimeout(() => {
+              if (my !== seq.current) return;
+              for (const p of [...pagesRef.current]) if (p >= from) pagesRef.current.delete(p);
+              pumpRef.current();
+            }, 1500);
+          }
+        }
+      }
+      const prune = (hits: Hit[]) => pruneList(hits, (h) => h.path, m, hitAt);
+      picAcc.current = { ...picAcc.current, hits: prune(picAcc.current.hits) };
+      tailAcc.current = { ...tailAcc.current, hits: prune(tailAcc.current.hits) };
+      setPicNames((p) => { if (!p) return p; const hits = prune(p.hits); return hits === p.hits ? p : { ...p, hits, total: Math.max(0, p.total - (p.hits.length - hits.length)) }; });
+      setPicTail((p) => { if (!p) return p; const hits = prune(p.hits); return hits === p.hits ? p : { ...p, hits }; });
+      // The overview's selected item left (or moved): the selection goes to whatever takes its place.
+      const sp = overview ? ovItem?.hit?.path : undefined;
+      if (sp && (m.isGone(sp) || m.rewrite(sp) !== sp)) reselectAt.current = osel;
+    }
+    if (d.overflow || hasArrivals(d)) {
+      window.clearTimeout(arrivalTimer.current);
+      arrivalTimer.current = window.setTimeout(() => {
+        if (data.recent) refreshRecent();
+        else recheckRef.current();
+      }, 300);
+    }
+  };
+  useFsDeltaListener(onFsDelta);
+  useEffect(() => {
+    const at = reselectAt.current;
+    if (at === null) return;
+    reselectAt.current = null;
+    setOselKey(ov.flat[Math.min(at, ov.flat.length - 1)]?.key ?? null);
+  }, [ov.flat]);
+  // The app's own recycle: every list in this window drops the files at once (the backend's delta follows and is a no-op).
+  const ownRemoved = useCallback((paths: string[]) => pushLocalDelta(qc, fsDelta({ removed: paths })), [qc]);
+
   const pushUndo = useCallback((u: Undo, msg: string) => {
     undoRef.current = u;
     undoQuery.current = inputRef.current?.value ?? "";
@@ -922,9 +1002,10 @@ export default function App({ backend }: { backend: Backend }) {
     try {
       await backend.recycle([h.path]);
       removeRow(i);
+      ownRemoved([h.path]);
       pushUndo({ kind: "recycle", paths: [h.path] }, "Moved to Recycle Bin");
     } catch (e) { fail(e); }
-  }, [backend, removeRow, pushUndo, fail]);
+  }, [backend, removeRow, ownRemoved, pushUndo, fail]);
 
   const doRename = useCallback(async (i: number, newName: string) => {
     setRenaming(false);
@@ -938,9 +1019,10 @@ export default function App({ backend }: { backend: Backend }) {
       rows[i] = { ...h, name, path: np };
       rowsRef.current = rows;
       setData((d) => ({ ...d, rows }));
+      pushLocalDelta(qc, fsDelta({ renamed: [{ from: h.path, to: np }] })); // the Library / Space / meaning lists follow
       pushUndo({ kind: "rename", newPath: np, oldName: h.name }, "Renamed");
     } catch (e) { fail(e); }
-  }, [backend, pushUndo, fail, refocus]);
+  }, [backend, qc, pushUndo, fail, refocus]);
 
   const doUndo = useCallback(async () => {
     const u = undoRef.current;
@@ -949,20 +1031,24 @@ export default function App({ backend }: { backend: Backend }) {
     window.clearTimeout(toastTimer.current);
     setToast(null);
     try {
+      // File undos go through the same delta path as any change on disk: the row moves back in place, a restored
+      // file re-enters through the live count check (one first-page read) - no re-run of the whole search.
       if (u.kind === "rename") {
-        await backend.renamePath(u.newPath, u.oldName);
+        const back = await backend.renamePath(u.newPath, u.oldName);
+        pushLocalDelta(qc, fsDelta({ renamed: [{ from: u.newPath, to: back }] }));
         flash("Rename undone");
       } else if (u.kind === "unhide") {
         await backend.launchUnhide(u.id);
         setLaunchVer((v) => v + 1);
         flash("Back in the results");
+        setEpoch((e) => e + 1); // launcher rows are not files: re-run the search
       } else {
         const n = await backend.restoreRecycled(u.paths);
+        pushLocalDelta(qc, fsDelta({ added: u.paths }));
         flash(n > 0 ? "Restored" : "Nothing to restore");
       }
-      setEpoch((e) => e + 1); // re-run the search to refresh the list
     } catch (e) { fail(e); }
-  }, [backend, flash, fail]);
+  }, [backend, qc, flash, fail]);
 
   const hideLaunch = useCallback((h: LaunchHit) => {
     setLaunchMenu(null);
@@ -979,11 +1065,11 @@ export default function App({ backend }: { backend: Backend }) {
     try {
       const r = await backend.showContextMenu(h.path, x, y);
       if (r === "rename") setRenaming(true);
-      else if (r === "deleted") { removeRow(i); pushUndo({ kind: "recycle", paths: [h.path] }, "Moved to Recycle Bin"); }
+      else if (r === "deleted") { removeRow(i); ownRemoved([h.path]); pushUndo({ kind: "recycle", paths: [h.path] }, "Moved to Recycle Bin"); }
       else if (r === "invoked") { await backend.hide(); return; } // Open / Open with / Send to... moved on to another app
     } catch (e) { fail(e); }
     refocus();
-  }, [backend, removeRow, pushUndo, fail, refocus]);
+  }, [backend, removeRow, ownRemoved, pushUndo, fail, refocus]);
 
   // Row drag out of the list: pointer capture on the row itself, like the image panner. The
   // move/up events keep arriving outside the window, and nothing leaks when the popup hides
@@ -1037,10 +1123,10 @@ export default function App({ backend }: { backend: Backend }) {
     try {
       const r = await backend.showContextMenu(path, x, y);
       if (r === "invoked") { await backend.hide(); return; }
-      if (r === "deleted") { flash("Moved to Recycle Bin"); setEpoch((e) => e + 1); }
+      if (r === "deleted") { flash("Moved to Recycle Bin"); ownRemoved([path]); }
     } catch (e) { fail(e); }
     refocus();
-  }, [backend, flash, fail, refocus]);
+  }, [backend, flash, fail, refocus, ownRemoved]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -1070,6 +1156,7 @@ export default function App({ backend }: { backend: Backend }) {
       const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir, gridCols)); };
       // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
       if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
+      if (e.key === "Escape" && guide) { e.preventDefault(); setGuide(false); return; }
       if (e.key === "Escape" && cheat) { e.preventDefault(); setCheat(false); return; }
       // Full window, another page: the page owns the keyboard. Esc leaves Settings for the search —
       // unless a confirm dialog inside it is open: that dialog owns the key until it is answered.
@@ -1258,7 +1345,7 @@ export default function App({ backend }: { backend: Backend }) {
             }
             disarmDel();
             if (curIdx !== undefined) void doRecycle(curIdx);
-            else backend.recycle([current.path]).then(() => { pushUndo({ kind: "recycle", paths: [current.path] }, "Moved to Recycle Bin"); setEpoch((x) => x + 1); }).catch(fail);
+            else backend.recycle([current.path]).then(() => { pushUndo({ kind: "recycle", paths: [current.path] }, "Moved to Recycle Bin"); ownRemoved([current.path]); }).catch(fail);
           }
           break;
         case "z": case "Z":
@@ -1278,7 +1365,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1660,6 +1747,13 @@ export default function App({ backend }: { backend: Backend }) {
         autoFocus
         aria-label="Search"
       />
+      <span className="sg-wrap">
+        <button className={"sg-btn" + (guide ? " on" : "")} tabIndex={-1} aria-expanded={guide} title="Filters and search syntax"
+                onMouseDown={(e) => e.preventDefault()} onClick={() => setGuide((v) => !v)}>
+          <IFilter size={14} />Filters
+        </button>
+        {guide && <SearchGuide query={query} parsed={parsed} onQuery={(q) => { histAt.current = -1; setQuery(q); inputRef.current?.focus(); }} onClose={() => setGuide(false)} />}
+      </span>
       {query !== "" && (
         <button className="clr" tabIndex={-1} aria-label="Clear the search" title="Clear the search"
                 onMouseDown={(e) => e.preventDefault()}
@@ -1811,7 +1905,7 @@ export default function App({ backend }: { backend: Backend }) {
             {!showPanel && overview && (pending ? (
               <div className="list ov" /> // a scope switch is being fetched: blank beats the old scope's rows under the new tab
             ) : ov.flat.length > 0 || isRecent ? (
-              <Overview onMore={morePics} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
+              <Overview onMore={morePics} onGridCols={setPicCols} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (
               <div className="none">

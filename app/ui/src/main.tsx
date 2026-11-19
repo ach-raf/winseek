@@ -16,6 +16,7 @@ import "@fontsource/ibm-plex-mono/500.css";
 import "./base.css";
 import "./shell.css";
 import "./search.css";
+import "./picgrid.css";
 import "./preview.css";
 import "./library.css";
 import "./settings.css";

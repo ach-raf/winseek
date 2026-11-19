@@ -24,7 +24,7 @@ use winseek_ipc::{
 use winseek_usn::{Change, JournalCursor};
 
 use crate::index_ops::{
-    apply_change, apply_path_op, filetime_to_unix_ms, map_refs_change, replace_volume,
+    apply_change_usage, apply_path_op, filetime_to_unix_ms, map_refs_change, replace_volume,
     retain_volumes, Event, PathOp,
 };
 use crate::log::{info, warn};
@@ -324,6 +324,23 @@ impl Shared {
         rx
     }
 
+    /// Tell every subscriber (whatever its roots) that the index changed without per-file events:
+    /// a rescan swapped a volume in, or a drive was dropped. A full queue drops the subscriber,
+    /// which resyncs on reconnect anyway.
+    pub fn notify_resync(&self) {
+        self.subs
+            .lock()
+            .unwrap()
+            .retain(|s| match s.tx.try_send(Response::Resync) {
+                Ok(()) => true,
+                Err(std::sync::mpsc::TrySendError::Full(_)) => {
+                    warn!("dropping a subscriber whose queue overflowed");
+                    false
+                }
+                Err(std::sync::mpsc::TrySendError::Disconnected(_)) => false,
+            });
+    }
+
     fn notify(&self, ev: &Event) {
         let mut subs = self.subs.lock().unwrap();
         if subs.is_empty() {
@@ -417,6 +434,10 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
     let mut to_stat: Vec<(u32, usize)> = Vec::new();
     {
         let mut ix = sh.index.write().unwrap();
+        // Lock order everywhere: index, then the roll-up. Builds install under the index read
+        // lock, so no change can fall between a build and its overlay.
+        let usage = sh.usage_cache.lock().unwrap().clone();
+        let mut ru = usage.as_ref().map(|c| c.ru.write().unwrap());
         let refs = ix.kind_of(vol) == Some(VolKind::Refs);
         for c in changes {
             let mapped;
@@ -426,7 +447,7 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             } else {
                 c
             };
-            let Some(ev) = apply_change(&mut ix, vol, c) else {
+            let Some(ev) = apply_change_usage(&mut ix, vol, c, ru.as_deref_mut()) else {
                 continue;
             };
             if let (Some(i), false, true) = (ev.idx, ev.is_dir, to_stat.len() < STAT_BUDGET) {
@@ -465,6 +486,8 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
     let mut recent: Vec<Hit> = Vec::new();
     {
         let mut ix = sh.index.write().unwrap();
+        let usage = sh.usage_cache.lock().unwrap().clone();
+        let mut ru = usage.as_ref().map(|c| c.ru.write().unwrap());
         for (i, st) in stats {
             if let Some((len, ft)) = st {
                 let ft = if ft != 0 {
@@ -472,7 +495,11 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
                 } else {
                     ix.mtime(i).unwrap_or(0)
                 };
+                let t = ru.as_deref().map(|ru| ix.usage_before(ru, &[i]));
                 ix.update_meta(i, len, ft);
+                if let (Some(ru), Some(t)) = (ru.as_deref_mut(), t) {
+                    ix.usage_after(ru, t, &[]);
+                }
             }
         }
         for ev in &events {
@@ -485,7 +512,14 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             }
         }
     }
-    sh.gen.fetch_add(1, Ordering::Relaxed); // the query cache must not serve this batch's old results
+    let g = sh.gen.fetch_add(1, Ordering::Relaxed); // the query cache must not serve this batch's old results
+                                                    // The roll-up's overlay saw every change of this batch: it is still in step with the index.
+                                                    // (Any other writer bumps `gen` without this, which leaves the roll-up behind.)
+    if let Some(c) = sh.usage_cache.lock().unwrap().clone() {
+        let _ = c
+            .synced
+            .compare_exchange(g, g + 1, Ordering::Relaxed, Ordering::Relaxed);
+    }
     publish(sh, recent, &events);
 }
 
@@ -521,6 +555,7 @@ fn drop_volume(sh: &Shared, vol: u8) {
         *ix = retain_volumes(old, |v| v.letter != vol);
     }
     sh.gen.fetch_add(1, Ordering::Relaxed);
+    sh.notify_resync();
     let prefix = format!("{}:\\", vol as char).to_lowercase();
     sh.recent
         .lock()
@@ -567,6 +602,7 @@ fn replace(sh: &Shared, fresh: Index) {
     let old = std::mem::replace(&mut *sh.index.write().unwrap(), new);
     drop(old);
     sh.gen.fetch_add(1, Ordering::Relaxed);
+    sh.notify_resync();
     for l in letters {
         sh.set_state(l as char, VolumeState::Live);
     }
@@ -755,10 +791,31 @@ const USAGE_FRESH: Duration = Duration::from_secs(5);
 const USAGE_WANTED: Duration = Duration::from_secs(300);
 
 /// Folder totals for the disk-usage view, built once from the index and reused for every click.
+/// The writer keeps its totals exact as the index changes (`Rollup`'s overlay, fed by
+/// `apply_batch`); only its child lists wait for the next build to show new records.
 pub struct UsageCache {
+    /// Index generation the snapshot was built at.
     gen: u64,
+    /// Generation the overlay is in step with: `apply_batch` moves it along with `gen`, any
+    /// other writer (folder-watch ops, volume replace/drop) leaves it behind.
+    synced: AtomicU64,
     at: Instant,
-    ru: Rollup,
+    ru: RwLock<Rollup>,
+}
+
+impl UsageCache {
+    fn new(gen: u64, ru: Rollup) -> Self {
+        UsageCache {
+            gen,
+            synced: AtomicU64::new(gen),
+            at: Instant::now(),
+            ru: RwLock::new(ru),
+        }
+    }
+    /// Totals are exact for index generation `gen`.
+    fn exact(&self, gen: u64) -> bool {
+        self.synced.load(Ordering::Relaxed) == gen && self.ru.read().unwrap().exact()
+    }
 }
 
 impl Shared {
@@ -767,14 +824,37 @@ impl Shared {
             .store(self.started.elapsed().as_secs().max(1), Ordering::Relaxed);
     }
 
-    /// A roll-up may be served as is: the index has not moved on since it was built, or the build
-    /// is young enough that the next rebuild is not due yet (see `USAGE_FRESH`).
+    /// A roll-up may be served as is: its totals are exact (child lists may lag additions until
+    /// the background rebuild), or the build is young enough that the next rebuild is not due
+    /// yet (see `USAGE_FRESH`).
     fn usage_usable(c: &UsageCache, gen: u64) -> bool {
-        c.gen == gen || c.at.elapsed() < USAGE_FRESH
+        c.gen == gen || c.exact(gen) || c.at.elapsed() < USAGE_FRESH
     }
 
-    /// The roll-up: the cached one, or a fresh build — also when the cache exists but the index
-    /// moved on past the floor, so the request that asked after a change gets a fresh answer.
+    /// Build a roll-up and install it while still holding the index read lock: the writer
+    /// cannot slip a change in between, so nothing is lost from or doubled in the overlay.
+    fn usage_build_now(&self) -> Result<Arc<UsageCache>, String> {
+        let ix = self.index.read().unwrap();
+        if !ix.has_meta() {
+            return Err("The name index carries no sizes yet.".into());
+        }
+        let t = Instant::now();
+        let gen = self.gen.load(Ordering::Relaxed);
+        let ru = ix.rollup();
+        info!(
+            "disk usage roll-up: {} folders, {} MB, {:.0?}",
+            ru.dir_count(),
+            ru.mem_bytes() >> 20,
+            t.elapsed()
+        );
+        let c = Arc::new(UsageCache::new(gen, ru));
+        *self.usage_cache.lock().unwrap() = Some(c.clone());
+        drop(ix);
+        Ok(c)
+    }
+
+    /// The roll-up: the cached one, or a fresh build when the cache fell behind (an untracked
+    /// change) past the floor, so the request that asked after a change gets a right answer.
     /// Concurrent builds share one pass.
     fn usage_cache(&self) -> Result<Arc<UsageCache>, String> {
         self.note_usage_use();
@@ -789,30 +869,11 @@ impl Shared {
                 return Ok(c);
             }
         }
-        let ix = self.index.read().unwrap();
-        if !ix.has_meta() {
-            return Err("The name index carries no sizes yet.".into());
-        }
-        let t = Instant::now();
-        let gen = self.gen.load(Ordering::Relaxed);
-        let ru = ix.rollup();
-        drop(ix);
-        info!(
-            "disk usage roll-up: {} folders, {} MB, {:.0?}",
-            ru.dir_count(),
-            ru.mem_bytes() >> 20,
-            t.elapsed()
-        );
-        let c = Arc::new(UsageCache {
-            gen,
-            at: Instant::now(),
-            ru,
-        });
-        *self.usage_cache.lock().unwrap() = Some(c.clone());
-        Ok(c)
+        self.usage_build_now()
     }
 
-    /// Main loop tick: rebuild a stale roll-up while somebody is looking, drop it when nobody is.
+    /// Main loop tick: rebuild a roll-up that fell behind, or whose child lists miss records
+    /// added since (throttled by `USAGE_FRESH`), while somebody is looking; drop it when nobody is.
     pub fn refresh_usage(&self) {
         let Some(cur) = self.usage_cache.lock().unwrap().clone() else {
             return;
@@ -822,21 +883,15 @@ impl Shared {
             *self.usage_cache.lock().unwrap() = None;
             return;
         }
-        if Self::usage_usable(&cur, self.gen.load(Ordering::Relaxed)) {
+        let gen = self.gen.load(Ordering::Relaxed);
+        let lists_lag = cur.ru.read().unwrap().structure_dirty();
+        if cur.at.elapsed() < USAGE_FRESH || (cur.exact(gen) && !lists_lag) {
             return;
         }
         let Ok(_one) = self.usage_build.try_lock() else {
             return;
         };
-        let ix = self.index.read().unwrap();
-        let gen = self.gen.load(Ordering::Relaxed);
-        let ru = ix.rollup();
-        drop(ix);
-        *self.usage_cache.lock().unwrap() = Some(Arc::new(UsageCache {
-            gen,
-            at: Instant::now(),
-            ru,
-        }));
+        let _ = self.usage_build_now();
     }
 }
 
@@ -847,9 +902,12 @@ fn drive_label(letter: u8) -> String {
 /// What the folder `path` holds, child by child; an empty `path` lists the drives.
 pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
     let c = sh.usage_cache()?;
-    let fresh = c.gen == sh.gen.load(Ordering::Relaxed);
     let ix = sh.index.read().unwrap();
-    let ru = &c.ru;
+    // (under the index lock: the overlay and the index are in step here)
+    let gen = sh.gen.load(Ordering::Relaxed);
+    let fresh = c.gen == gen || c.exact(gen);
+    let ru = c.ru.read().unwrap();
+    let ru = &*ru;
     if path.trim().is_empty() {
         let mut t = UsageTree {
             path: String::new(),
@@ -929,7 +987,12 @@ pub fn usage(sh: &Shared, path: &str, limit: u32) -> Result<UsageTree, String> {
 pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDetail, String> {
     let c = sh.usage_cache()?;
     let ix = sh.index.read().unwrap();
-    let ru = &c.ru;
+    let gen = sh.gen.load(Ordering::Relaxed);
+    let ru = c.ru.read().unwrap();
+    let ru = &*ru;
+    // Types and biggest files come from walking the child lists: deletes and size changes
+    // show at once, records added or moved since the build only after the next one.
+    let fresh = c.gen == gen || (c.exact(gen) && !ru.structure_dirty());
     let top = top_files.min(500) as usize;
     let (types, big) = if path.trim().is_empty() {
         let mut all: std::collections::HashMap<String, UsageType> =
@@ -983,7 +1046,7 @@ pub fn usage_detail(sh: &Shared, path: &str, top_files: u32) -> Result<UsageDeta
         path: path.to_string(),
         types: types.into_iter().take(60).collect(),
         biggest,
-        fresh: c.gen == sh.gen.load(Ordering::Relaxed),
+        fresh,
     })
 }
 
@@ -1030,6 +1093,21 @@ mod tests {
         assert!(d.biggest.len() <= 1);
     }
 
+    /// The cached roll-up, aged past the rebuild floor.
+    fn age_usage(sh: &Shared) {
+        let c = sh.usage_cache.lock().unwrap().clone().unwrap();
+        let old = UsageCache {
+            gen: c.gen,
+            synced: AtomicU64::new(c.synced.load(Ordering::Relaxed)),
+            at: Instant::now().checked_sub(USAGE_FRESH).unwrap(),
+            ru: RwLock::new(c.ru.read().unwrap().clone()),
+        };
+        *sh.usage_cache.lock().unwrap() = Some(Arc::new(old));
+    }
+    fn built_at(sh: &Shared) -> Instant {
+        sh.usage_cache.lock().unwrap().as_ref().unwrap().at
+    }
+
     #[test]
     fn usage_freshness_tracks_the_index() {
         let sh = shared();
@@ -1038,24 +1116,79 @@ mod tests {
             usage(&sh, r"C:\Docs", 5).unwrap().fresh,
             "a just-built roll-up is fresh"
         );
-        // a change inside the floor serves the cached roll-up, and the answer admits it is behind
+        let built = built_at(&sh);
+        // a change the writer tracked: totals follow at once, no rebuild, still fresh
         apply_batch(&sh, b'C', &[create(101, 10, "b.txt")], CUR);
-        assert!(
-            !usage(&sh, r"C:\Docs", 5).unwrap().fresh,
-            "changed index inside the floor: the answer says so"
-        );
-        // past the floor the request itself gets a rebuilt roll-up — the new child is in it
-        let c = sh.usage_cache.lock().unwrap().clone().unwrap();
-        let old = UsageCache {
-            gen: c.gen,
-            at: Instant::now().checked_sub(USAGE_FRESH).unwrap(),
-            ru: c.ru.clone(),
-        };
-        *sh.usage_cache.lock().unwrap() = Some(Arc::new(old));
         let u = usage(&sh, r"C:\Docs", 5).unwrap();
-        assert!(u.fresh, "past the floor the request rebuilds");
-        assert!(u.entries.iter().any(|e| e.name == "b.txt"));
+        assert!(u.fresh, "tracked change: totals exact");
+        assert_eq!(u.files, 2);
+        assert_eq!(built_at(&sh), built, "no rebuild for a tracked change");
+        // ... but the type walk uses child lists, which miss b.txt until the next build
+        assert!(!usage_detail(&sh, r"C:\Docs", 5).unwrap().fresh);
+        // the main loop rebuilds lagging lists once past the floor; b.txt is listed then
+        sh.refresh_usage();
+        assert_eq!(built_at(&sh), built, "inside the floor: no rebuild");
+        age_usage(&sh);
+        sh.refresh_usage();
+        let u = usage(&sh, r"C:\Docs", 5).unwrap();
+        assert!(u.fresh && u.entries.iter().any(|e| e.name == "b.txt"));
         assert!(usage_detail(&sh, r"C:\Docs", 5).unwrap().fresh);
+        // a change around the overlay (here: a bare generation bump): behind inside the floor,
+        // rebuilt by the request itself past it
+        sh.gen.fetch_add(1, Ordering::Relaxed);
+        assert!(!usage(&sh, r"C:\Docs", 5).unwrap().fresh);
+        age_usage(&sh);
+        assert!(
+            usage(&sh, r"C:\Docs", 5).unwrap().fresh,
+            "past the floor the request rebuilds"
+        );
+    }
+
+    #[test]
+    fn usage_shows_a_recycled_folder_at_once() {
+        let mut b = IndexBuilder::new(true);
+        b.add_volume(b'C', 5);
+        b.push(b'C', 10, 5, "Docs", true, 0, 0);
+        b.push(b'C', 11, 10, "Old", true, 0, 0);
+        b.push(b'C', 12, 11, "big.iso", false, 7 << 30, 0);
+        b.push(b'C', 13, 10, "keep.txt", false, 100, 0);
+        let sh = Shared::new(b.finish(), &['C']);
+        let u = usage(&sh, r"C:\Docs", 5).unwrap();
+        assert_eq!(
+            (u.size, u.files, u.folders, u.entries.len()),
+            ((7 << 30) + 100, 2, 1, 2)
+        );
+        let del = Change::Delete(UsnRecord {
+            frn: 11,
+            parent_frn: 10,
+            usn: 0,
+            reason: 0,
+            attrs: 0x10,
+            name: "Old".into(),
+        });
+        apply_batch(&sh, b'C', &[del], CUR);
+        let u = usage(&sh, r"C:\Docs", 5).unwrap();
+        assert!(u.fresh);
+        assert_eq!((u.size, u.files, u.folders), (100, 1, 0));
+        assert_eq!(u.entries.len(), 1);
+        let all = usage(&sh, "", 0).unwrap();
+        assert_eq!((all.size, all.files, all.folders), (100, 1, 1));
+        assert_eq!(all.cats[5], 0, "the archive bytes left the drive total");
+        let d = usage_detail(&sh, r"C:\Docs", 5).unwrap();
+        assert!(d.fresh && d.types.iter().all(|t| t.ext != "iso"));
+    }
+
+    #[test]
+    fn resync_reaches_every_subscriber_whatever_its_roots() {
+        let sh = shared();
+        let rx_docs = sh.subscribe(&["C:\\Docs".into()]);
+        let rx_all = sh.subscribe(&[]);
+        sh.notify_resync();
+        assert!(matches!(rx_docs.try_recv(), Ok(Response::Resync)));
+        assert!(matches!(rx_all.try_recv(), Ok(Response::Resync)));
+        // A volume swap (rescan) announces itself the same way.
+        replace(&sh, Index::default());
+        assert!(matches!(rx_docs.try_recv(), Ok(Response::Resync)));
     }
 
     #[test]

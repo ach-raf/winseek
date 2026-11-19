@@ -1,5 +1,5 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, TlPick, TlRow, TlSummary, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, FsDelta, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, TlPick, TlRow, TlSummary, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
   core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
@@ -16,14 +16,14 @@ export const inTauri = typeof window !== "undefined" && !!window.__TAURI__;
 
 /** Bytes of a previewable file (media, and .docx family for the pane's Word renderer), streamed
  *  by the wsfile protocol with Range support. */
-export function wsFileUrl(path: string): string {
-  return `http://wsfile.localhost/?p=${encodeURIComponent(path)}`;
+export function wsFileUrl(path: string, ver?: number | null): string {
+  return `http://wsfile.localhost/?p=${encodeURIComponent(path)}${ver ? `&v=${ver}` : ""}`;
 }
 
 /** What `src` carries for a preview kind: media plays/zooms from the raw bytes; Word documents
  *  hand them to the docx renderer; everything else has no byte view. */
-function mediaSrc(kind: string, path: string): string | null {
-  return kind === "image" || kind === "video" || kind === "audio" || kind === "document" ? wsFileUrl(path) : null;
+function mediaSrc(kind: string, path: string, ver?: number | null): string | null {
+  return kind === "image" || kind === "video" || kind === "audio" || kind === "document" ? wsFileUrl(path, ver) : null;
 }
 
 function tauriBackend(t: TauriGlobal): Backend {
@@ -69,10 +69,12 @@ function tauriBackend(t: TauriGlobal): Backend {
     tier1SetIndexCode: (on) => inv<boolean>("tier1_set_index_code", { on }),
     previewInfo: async (path) => {
       const i = await inv<PreviewInfo>("preview_info", { path });
-      const big = (isDir: boolean) => `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=512&t=1`;
+      // `v` = the file's mtime: an edited file asks under a new url, so the webview never reuses its cached bytes.
+      const v = i.mtime ?? 0;
+      const big = (isDir: boolean) => `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=512&t=1${v ? `&v=${v}` : ""}`;
       return {
         ...i,
-        src: mediaSrc(i.kind, path),
+        src: mediaSrc(i.kind, path, v),
         thumb: i.kind === "text" ? null : big(i.kind === "folder"),
       };
     },
@@ -101,6 +103,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     onModelsProgress: (cb) => t.event.listen<ModelsProgress>("models-progress", (e) => cb(e.payload)),
     onModelsDone: (cb) => t.event.listen<ModelsDone>("models-done", (e) => cb(e.payload)),
     onSourceChanged: (cb) => t.event.listen("source-changed", cb),
+    onFsDelta: (cb) => t.event.listen<FsDelta>("fs-delta", (e) => cb(e.payload)),
     onOpenStatus: (cb) => t.event.listen("open-status", cb),
     onUpdateState: (cb) => t.event.listen("update-state", cb),
     agentGetConfig: () => inv<AgentConfig>("agent_get_config"),

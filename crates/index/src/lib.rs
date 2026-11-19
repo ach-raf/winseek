@@ -16,7 +16,9 @@ pub use snapshot::SnapshotError;
 pub use store::{
     norm_frn, Index, IndexBuilder, VolKind, VolumeMeta, FIRST_SYNTHETIC_ID, FRN_MASK, NONE,
 };
-pub use usage::{category, category_of_key, ChildUsage, DirList, Rollup, TypeUsage, CATEGORIES};
+pub use usage::{
+    category, category_of_key, ChildUsage, DirList, Rollup, TypeUsage, UsageTouch, CATEGORIES,
+};
 
 #[cfg(test)]
 mod tests;

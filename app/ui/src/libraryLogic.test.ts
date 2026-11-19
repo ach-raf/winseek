@@ -1,8 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  activeSection, freedBytes, gridCols, groupByMonth, inBatch, isScreenshot, layoutGrid, moveIndex, pickKeeper, railEntries,
-  rangedBatch, rowOfItem, scrollIntoView, packMosaic, mosaicMetrics, moveMosaic, tileSpan, toggledBatch, totalReclaimable,
+  activeSection, freedBytes, jumpOffset, scrubSlot, sectionOfKey, stepMonth, type RailSlot, gridCols, groupByMonth, inBatch, isScreenshot, layoutGrid, moveIndex, pickKeeper, railEntries,
+  rangedBatch, rowOfItem, scrollIntoView, toggledBatch, totalReclaimable,
   uniformRange, visibleRows,
 } from "./libraryLogic.ts";
 
@@ -115,38 +115,6 @@ test("freed bytes and totals", () => {
   assert.equal(totalReclaimable([{ reclaimable: 3 }, { reclaimable: 4 }]), 7);
 });
 
-test("packMosaic: feature tiles, no overlaps, dense holes get filled", () => {
-  assert.deepEqual([0, 1, 4, 6, 9].map((j) => tileSpan(j, 8)), [[2, 2], [1, 1], [2, 1], [2, 2], [2, 1]]);
-  assert.deepEqual(tileSpan(0, 3), [1, 1]);
-  const m = packMosaic([13, 1, 0], 8);
-  assert.equal(m.tiles.length, 14);
-  const seen = new Set<string>();
-  for (const t of m.tiles) {
-    for (let r = 0; r < t.h; r++) for (let c = 0; c < t.w; c++) {
-      const k = `${t.section}:${t.row + r}:${t.col + c}`;
-      assert.ok(!seen.has(k), "overlap " + k);
-      assert.ok(t.col + c < 8);
-      seen.add(k);
-    }
-  }
-  assert.deepEqual(m.tiles[0], { idx: 0, section: 0, col: 0, row: 0, w: 2, h: 2 });
-  assert.equal(m.sections[2]?.rows, 0);
-  const mt = mosaicMetrics(m, 100, 4, [44, 44, 44], 14, 20);
-  assert.equal(mt.top[1], mt.h[0]);
-  assert.equal(mt.total, mt.top[2]! + mt.h[2]! + 20);
-});
-
-test("moveMosaic: up/down pick the nearest tile in the next row band", () => {
-  const m = packMosaic([20], 8);
-  const mt = mosaicMetrics(m, 100, 4, [44], 14, 20);
-  const down = moveMosaic(m, mt, 100, 4, 0, "ArrowDown", 20);
-  assert.ok(m.tiles[down]!.row >= 2, "below the 2x2 tile");
-  const up = moveMosaic(m, mt, 100, 4, down, "ArrowUp", 20);
-  assert.ok(m.tiles[up]!.row < m.tiles[down]!.row);
-  assert.equal(moveMosaic(m, mt, 100, 4, 0, "ArrowUp", 20), 0);
-  assert.equal(moveMosaic(m, mt, 100, 4, 3, "ArrowRight", 20), 4);
-});
-
 test("timeline views: app graphics only in their own view", async () => {
   const { countViews, inView, parseTimelineView } = await import("./libraryLogic.ts");
   const items = [{ class: "photo" }, { class: "photo" }, { class: "screenshot" }, { class: "graphic" }, { class: "graphic" }, { class: "graphic" }] as const;
@@ -233,4 +201,54 @@ test("inBatch: batch membership and single-lead fallback, case-insensitive", () 
   assert.equal(inBatch(null, "C:\\a", "C:\\a"), true);
   assert.equal(inBatch(null, "C:\\a", "c:\\b"), false);
   assert.equal(inBatch(null, "C:\\a"), false);
+});
+
+test("activeSection matches a linear scan on a big timeline (binary search)", () => {
+  const tops = Array.from({ length: 20000 }, (_, i) => i * 300 + 8);
+  for (const st of [0, 4, 5, 299, 307, 308, 123456, 5_999_000, 99_999_999]) {
+    let want = 0;
+    tops.forEach((t, i) => { if (t <= st + 4) want = i; });
+    assert.equal(activeSection(tops, st), want);
+  }
+});
+
+test("jumpOffset / sectionOfKey: a month key lands on its section top", () => {
+  const secs = [{ key: "2026-11" }, { key: "2026-10" }, { key: "2025-12" }];
+  const tops = [8, 400, 1500];
+  assert.equal(jumpOffset(tops, sectionOfKey(secs, "2026-10")), 400);
+  assert.equal(jumpOffset(tops, 99), 1500);
+  assert.equal(jumpOffset(tops, -3), 8);
+  assert.equal(jumpOffset([], 2), 0);
+  assert.equal(sectionOfKey(secs, "1999-01"), -1);
+});
+
+test("railEntries keeps the real section index of filtered entries", () => {
+  const r = railEntries([{ year: 2026, month: 0, count: 2, idx: 3 }, { year: 2026, month: 1, count: 0, idx: 5 }]);
+  assert.deepEqual(r[0]!.months.map((m) => m.section), [3, 5]);
+});
+
+const slots: RailSlot[] = [
+  { top: 20, bottom: 42, count: 5 },   // 0
+  { top: 42, bottom: 64, count: 0 },   // 1 empty
+  { top: 64, bottom: 86, count: 0 },   // 2 empty
+  { top: 110, bottom: 132, count: 7 }, // 3 (after a year heading gap)
+];
+test("scrubSlot: y to month, clamped, gaps, empty months skipped", () => {
+  assert.equal(scrubSlot(slots, 25), 0);
+  assert.equal(scrubSlot(slots, -50), 0);
+  assert.equal(scrubSlot(slots, 9999), 3);
+  assert.equal(scrubSlot(slots, 120), 3);
+  assert.equal(scrubSlot(slots, 100), 3); // the heading gap goes to the nearer month
+  assert.equal(scrubSlot(slots, 90, 0), 3); // moving down skips the empty ones forward
+  assert.equal(scrubSlot(slots, 50, 3), 0); // moving up skips them backward
+  assert.equal(scrubSlot([{ top: 0, bottom: 10, count: 0 }], 5), -1);
+  assert.equal(scrubSlot([], 5), -1);
+});
+
+test("stepMonth skips empty months and stops at the ends", () => {
+  const c = [4, 0, 0, 9, 1];
+  assert.equal(stepMonth(c, 0, 1), 3);
+  assert.equal(stepMonth(c, 3, -1), 0);
+  assert.equal(stepMonth(c, 4, 1), 4);
+  assert.equal(stepMonth(c, 0, -1), 0);
 });

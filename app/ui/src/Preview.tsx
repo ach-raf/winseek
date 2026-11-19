@@ -8,6 +8,8 @@ import type { Backend, Hit, HitBox, ParsedDoc, PreviewInfo } from "./types";
 import { FileIcon } from "./FileIcon";
 import { Snippet } from "./Semantic";
 import { errText, formatDate, formatSize } from "./format";
+import { makeMatcher, pathKey } from "./fsDelta";
+import { useFsDeltaListener } from "./useFsDelta";
 import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
@@ -95,16 +97,33 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
     return () => { live = false; };
   }, [backend, hit.path]);
 
+  // The file under the pane changed on disk (an fs-delta `modified`: `rev` re-reads it and its bytes) or went away
+  // (`gone`: said plainly, until the parent moves the selection). A rename reaches us as a new `hit.path`.
+  const [rev, setRev] = useState(0);
+  const [gone, setGone] = useState(false);
+  const loadedPath = useRef<string | null>(null);
+  const pathRef = useRef(hit.path);
+  useEffect(() => { pathRef.current = hit.path; setGone(false); }, [hit.path]);
+  useFsDeltaListener((d) => {
+    const m = makeMatcher(d);
+    if (m.idle) return;
+    if (m.isGone(pathRef.current)) { setGone(true); return; }
+    const k = pathKey(pathRef.current);
+    if (d.modified.some((p) => pathKey(p) === k)) setRev((r) => r + 1);
+  });
+
   useEffect(() => {
     let live = true;
-    setLoading(true);
+    // A re-read of the same file keeps the stage on screen (no spinner flash); a new file shows the loader as before.
+    if (loadedPath.current !== hit.path) setLoading(true);
+    loadedPath.current = hit.path;
     setPdfPage(null);
     backend.previewInfo(hit.path).then(
       (i) => { if (live) { setInfo(i); setErr(null); setLoading(false); } },
       (e) => { if (live) { setInfo(null); setErr(errText(e)); setLoading(false); } },
     );
     return () => { live = false; };
-  }, [backend, hit.path]);
+  }, [backend, hit.path, rev]);
 
   const shown = info && info.path === hit.path ? info : null;
   const stale = loading && !!info;
@@ -121,10 +140,12 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
     <aside className="pv" aria-label={`Preview of ${hit.name}`} ref={pvRef} onContextMenu={onContext}>
       <div className="pv-col">
         <div className={"pbox" + (stale ? " stale" : "")}>
-          {err ? (
+          {gone ? (
+            <div className="pv-msg" role="status">This file was moved or deleted.</div>
+          ) : err ? (
             <div className="pv-msg" role="alert">{err}</div>
           ) : info ? (
-            <Body key={info.path + "#" + (page ?? 0) + "@" + (start ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
+            <Body key={info.path + "#" + (info.mtime ?? 0) + "#" + (page ?? 0) + "@" + (start ?? 0)} backend={backend} info={info} query={query} start={start} page={page ?? null}
                   boxes={boxes ?? null} onPage={setPdfPage} registerApi={registerApi} />
           ) : (
             <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>

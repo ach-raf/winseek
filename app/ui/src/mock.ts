@@ -174,6 +174,10 @@ let dlFailOnce = params.get("dlfail") === "1";
 const dlDone: Record<string, number> = {}; // bytes kept per item (partial files survive cancel / failure)
 const progressCbs = new Set<(p: ModelsProgress) => void>();
 const doneCbs = new Set<(d: ModelsDone) => void>();
+const fsDeltaCbs = new Set<(d: import("./types").FsDelta) => void>();
+/** Dev/verify hook: push a synthetic fs-delta into every listener (window.__mockFsDelta in the browser mock). */
+export function emitMockFsDelta(d: import("./types").FsDelta): void { fsDeltaCbs.forEach((cb) => cb(d)); }
+if (typeof window !== "undefined") (window as unknown as { __mockFsDelta?: typeof emitMockFsDelta }).__mockFsDelta = emitMockFsDelta;
 let include = ["C:\\Users\\User\\Pictures", "C:\\Users\\User\\Documents", "C:\\Users\\User\\Desktop", "C:\\Users\\User\\Downloads"];
 let disabled: string[] = []; // unchecked folders: kept in the list, not indexed (same park rule as the backend)
 let exclude: string[] = [];
@@ -897,12 +901,14 @@ export const mockBackend: Backend = {
   async onLaunchCatalogChanged(cb) { launchCbs.add(cb); return () => { launchCbs.delete(cb); }; },
   appIconUrl() { return null; }, // the mock has no shell: icons fall back to the glyph/initial
   iconUrl(path, _isDir, thumb, size) {
+    // three sizes like the real cache: the 32 px placeholder tier, 256, 512
+    const px = size && size <= 48 ? 32 : size && size > 300 ? 512 : 256;
     if (SYNTH && thumb) {
       const si = synthIndex(path);
-      if (si >= 0 && si < SYNTH.n) return tileUrl(synthTile(si, SYNTH.className(si)), size && size > 300 ? 512 : 256);
+      if (si >= 0 && si < SYNTH.n) return tileUrl(synthTile(si, SYNTH.className(si)), px);
     }
     const f = libByPath.get(path);
-    return f?.tile && thumb ? tileUrl(f.tile, size && size > 300 ? 512 : 256) : null;
+    return f?.tile && thumb ? tileUrl(f.tile, px) : null;
   },
   async hide() { console.info("[mock] hide"); },
   async onShown() { return () => {}; },
@@ -1149,6 +1155,10 @@ export const mockBackend: Backend = {
   async onModelsProgress(cb) { progressCbs.add(cb); return () => { progressCbs.delete(cb); }; },
   async onModelsDone(cb) { doneCbs.add(cb); return () => { doneCbs.delete(cb); }; },
   async onSourceChanged(cb) { listeners.add(cb); return () => { listeners.delete(cb); }; },
+  async onFsDelta(cb) {
+    fsDeltaCbs.add(cb);
+    return () => { fsDeltaCbs.delete(cb); };
+  },
   async openLibrary() { window.open(`${location.pathname}?view=library`, "winseek-library"); },
   async openPopup() { console.info("[mock] openPopup"); location.href = location.pathname; },
   async libraryImages(): Promise<LibImage[]> {

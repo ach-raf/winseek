@@ -29,30 +29,26 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lib-main .btn.sm { height: 30px; padding: 0 12px; border-radius: 8px; font-size: 12.5px; }
 .lib-main .btn:disabled { opacity: .5; }
 
-/* ---------- timeline: virtualized mosaic ---------- */
-/* min-width: 0 — the status bar's current-file line (nowrap) must not push the selected file's
- * name length up through the flex chain: without it, .lg-main grows per selection, the mosaic
- * repacks (tiles swell and shrink), and the fixed 380px preview pane is shoved out of the window. */
-.lg { flex: 1; min-height: 0; min-width: 0; display: flex; outline: 0; position: relative; }
-.lg-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.lg-scroll { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+/* ---------- library picture grid (Timeline, Collections): the shared exact-size grid + a docked preview ---------- */
+/* Two columns, like the popup's full mode (`1fr 384px`): the grid column and the preview dock. The dock is always
+ * there (a hint when nothing is selected), so selecting or opening a file never moves or resizes the grid.
+ * min-width: 0 — the status bar's current-file line (nowrap) must not push the selected file's name length up
+ * through the layout and widen the grid column per selection. */
+.lg { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) 384px; outline: 0; position: relative; }
+.lg-main { min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+/* the scroller and, at its right edge inside the grid column, the year / month rail */
+.lg-body { flex: 1; min-height: 0; display: flex; position: relative; }
+.lg-scroll { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overflow-x: hidden; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
 .lg-space { position: relative; width: 100%; }
 .mon { position: absolute; left: 0; right: 0; }
 .mon h3 { position: sticky; top: 0; z-index: 3; height: 44px; margin: 0; padding: 0 var(--gut) 10px; background: var(--bg); font-size: 15px; font-weight: 700; display: flex; gap: 8px; align-items: flex-end; }
 .mon h3 i { font-style: normal; font-size: 12.5px; font-weight: 400; color: var(--fg3); }
-.tl { position: absolute; overflow: hidden; border-radius: 6px; background: var(--bg3); padding: 0; display: block; contain: layout paint style; }
-.tl img { width: 100%; height: 100%; object-fit: cover; display: block; }
-.lg-ph { width: 100%; height: 100%; display: grid; place-items: center; color: var(--fg3); }
+.lg-ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg3); }
 /* rows of the timeline that have not arrived from the backend yet: a quiet block, no hover, no click */
-.tl.sk, .lg-row.sk { pointer-events: none; background: var(--bg3); opacity: .55; }
-.lg-row.sk { background: linear-gradient(var(--bg3), var(--bg3)) 0 50% / 100% 20px no-repeat; }
-.tl:hover { filter: brightness(.94); }
-.tl.sel { z-index: 2; }
-.tl.sel::after { content: ""; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; box-shadow: inset 0 0 0 3px var(--acc), inset 0 0 0 5px rgba(0,0,0,.35); }
-.tl .lg-name { position: absolute; left: 0; right: 0; bottom: 0; padding: 16px 8px 6px; font-size: 11.5px; color: #fff; text-align: left;
-  background: linear-gradient(transparent, rgba(0,0,0,.6)); overflow-wrap: anywhere; opacity: 0; transition: opacity 120ms; }
-.tl:hover .lg-name, .tl.sel .lg-name, .tl.doc .lg-name { opacity: 1; }
-.lg-info { white-space: nowrap; display: flex; align-items: center; gap: var(--sp-3); height: 36px; padding: 0 var(--gut); flex: none; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg3); background: var(--bg); }
+.lg-row.sk { pointer-events: none; opacity: .55; background: linear-gradient(var(--bg3), var(--bg3)) 0 50% / 100% 20px no-repeat; }
+/* the keyboard's tile inside a multi-selection */
+.pt.lead.sel { outline-color: color-mix(in oklab, var(--acc) 70%, var(--fg)); }
+.lg-info { white-space: nowrap; display: flex; align-items: center; gap: var(--sp-3); height: 36px; padding: 0 var(--gut); flex: none; border-top: 1px solid var(--line); font-size: 12.5px; color: var(--fg3); background: var(--bg); overflow: hidden; }
 .lg-cur { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }
 .lg-info .hints { display: inline-flex; gap: 12px; flex: none; }
 .lg-info .hints span { display: inline-flex; align-items: center; gap: 6px; }
@@ -60,22 +56,26 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lg-empty strong { color: var(--fg2); font-weight: 600; font-size: 15px; }
 .lg-empty span { font-size: 12.5px; max-width: 420px; }
 .lg-empty .btn { margin-top: 10px; }
-/* The preview pane floats OVER the grid (Quick Look style): it takes no layout width, so
- * opening/closing it can never re-tile the mosaic, resize tiles or move the scroll. It stops
- * above the 36px status bar (the hints stay readable) and, in the timeline, clear of the
- * 54px month rail. --pop-shadow is the app's token for surfaces that detach entirely. */
-.lg-pv { position: absolute; top: 0; right: 0; bottom: 36px; width: 380px; z-index: 6; display: flex; min-height: 0; background: var(--bg2); box-shadow: var(--pop-shadow); animation: pv-in 130ms ease-out; }
-.lg-pv-r { right: 54px; }
-@keyframes pv-in { from { transform: translateX(12px); opacity: 0; } }
-.lg-pv-empty { flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--fg3); padding: 24px; }
+/* the docked preview: the popup's preview pane (.pv) in the grid's second column, full height */
+.lg-pv { min-width: 0; min-height: 0; display: flex; }
+/* Quick Look (Space): the preview covers the whole gallery. The grid column stays laid out (hidden, not
+ * display:none) so its size, scroll position, selection and loaded pages are exactly as they were on close. */
+.lg.ql .lg-main { visibility: hidden; }
+.lg.ql .lg-pv { position: absolute; inset: 0; z-index: 6; background: var(--bg); }
+.lg.ql .lg-pv .pv { border-left: 0; padding-left: var(--sp-3); padding-right: var(--sp-3); }
+.lg.ql .lg-pv .pv-col { max-width: none; }
+.lg-qlhint { position: absolute; top: 10px; right: 14px; z-index: 7; display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--fg3); pointer-events: none; }
+.lg-pv-empty { flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; color: var(--fg3); padding: 24px; border-left: 1px solid var(--line); background: var(--bg); }
 .lg-pv-empty b { color: var(--fg2); font-size: 14px; }
 .lg-pv-empty span { font-size: 12.5px; max-width: 260px; }
-.lg-rail { flex: none; width: 54px; overflow-y: auto; padding: 8px 6px 12px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; scrollbar-width: none; }
+.lg-rail { position: relative; touch-action: none; user-select: none; flex: none; width: 54px; overflow-y: auto; padding: 8px 6px 12px; border-left: 1px solid var(--line); display: flex; flex-direction: column; gap: 6px; scrollbar-width: none; }
 .lg-rail::-webkit-scrollbar { display: none; }
 .lg-yl { font-size: 12px; font-weight: 700; color: var(--fg2); text-align: center; padding: 8px 0 3px; }
 .lg-rm { display: block; width: 100%; height: 22px; font-size: 11.5px; color: var(--fg3); border-radius: 6px; text-align: center; }
 .lg-rm:hover { background: var(--bg3); color: var(--fg); }
+.lg-rm.empty { opacity: .4; }
 .lg-rm.on { background: var(--sel); color: var(--fg); font-weight: 600; }
+.lg-scrub { position: absolute; right: 62px; transform: translateY(-50%); z-index: 5; pointer-events: none; white-space: nowrap; padding: 6px 11px; border-radius: 8px; background: var(--bg2); color: var(--fg); border: 1px solid var(--line); box-shadow: 0 4px 14px rgba(0,0,0,.28); font-size: 12.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
 /* ---------- collections ---------- */
 .co { flex: 1; min-height: 0; }
@@ -85,7 +85,6 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .coll:focus-visible { outline: 0; }
 .c4 { display: grid; grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; gap: 2px; aspect-ratio: 4/3; border-radius: 12px; overflow: hidden; background: var(--bg3); }
 .c4 > div { position: relative; overflow: hidden; background: var(--bg3); }
-.c4 img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
 .coll:hover .c4 { filter: brightness(.95); }
 .coll:focus-visible .c4 { outline: 2px solid var(--acc); outline-offset: 2px; }
 .coll h4 { margin: 9px 0 0; font-size: 14.5px; font-weight: 600; display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
@@ -185,7 +184,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .gr-item:hover { background: var(--bg2); }
 .gr-item.on { background: var(--sel); }
 .gr-thumbs { display: flex; align-items: center; flex: none; }
-.gr-t { width: 44px; height: 44px; object-fit: cover; border-radius: 8px; border: 2px solid var(--bg); margin-left: -12px; background: var(--bg3); display: grid; place-items: center; }
+.gr-t { position: relative; overflow: hidden; width: 44px; height: 44px; border-radius: var(--pic-r); border: 2px solid var(--bg); margin-left: -12px; background: var(--bg3); display: grid; place-items: center; }
 .gr-item.on .gr-t { border-color: color-mix(in oklab, var(--acc) 17%, var(--bg)); }
 .gr-t:first-child { margin-left: 0; }
 .gr-thumbs em { font-style: normal; font-size: 11.5px; color: var(--fg3); margin-left: 6px; }
@@ -197,8 +196,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .gd-pane { flex: 1; min-width: 0; margin: 0; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .gd-pane figcaption { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .gd-badge { padding: 2px 9px; border-radius: 10px; background: var(--bg3); color: var(--fg2); font-size: 11.5px; font-weight: 500; }
-.gd-img { flex: 1; min-height: 120px; border-radius: 14px; background: var(--bg2); display: grid; place-items: center; overflow: hidden; }
-.gd-img img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.gd-img { position: relative; flex: 1; min-height: 120px; border-radius: 14px; background: var(--bg2); display: grid; place-items: center; overflow: hidden; }
 .gd-facts { display: flex; flex-direction: column; gap: 3px; font-size: 12.5px; color: var(--fg3); }
 .gd-fn { font-weight: 600; font-size: 14px; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gd-path { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -210,7 +208,7 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .gd-card:hover { background: var(--bg2); }
 .gd-card.keep { border-color: var(--ok); }
 .gd-card.cmp { border-color: var(--acc); }
-.gd-th { width: 100%; height: 96px; object-fit: cover; border-radius: 8px; background: var(--bg3); display: grid; place-items: center; }
+.gd-th { position: relative; overflow: hidden; width: 100%; height: 96px; border-radius: var(--pic-r); background: var(--bg3); display: grid; place-items: center; flex: none; }
 .gd-cn { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .gd-cf { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .gd-tag { color: var(--ok); font-weight: 600; }
@@ -414,7 +412,6 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .su-map .su-tm { flex: 1; min-height: 0; }
 
 /* queued thumbnails in the mosaic (ThumbImg) */
-.tl .th-wait { position: absolute; inset: 0; }
 
 /* ---- T10: month folds + list view -------------------------------------------------------------------------- */
 
@@ -428,8 +425,7 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .lg-row:hover { background: var(--bg2); }
 .lg-row.sel { background: var(--sel); }
 .lg-row.sel .lg-rn { color: var(--acc); }
-.lg-rth { width: 22px; height: 22px; border-radius: 5px; overflow: hidden; flex: none; display: grid; place-items: center; background: var(--bg3); color: var(--fg3); }
-.lg-rth img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.lg-rth { position: relative; width: 22px; height: 22px; border-radius: 5px; overflow: hidden; flex: none; display: grid; place-items: center; background: var(--bg3); color: var(--fg3); }
 .lg-rn { color: var(--fg); font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
 .lg-rd { color: var(--fg3); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; flex: 0 1 auto; min-width: 0; }
 .lg-rsp { flex: 1 1 12px; min-width: 12px; }
@@ -443,14 +439,18 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .gv-seg button:hover { color: var(--fg); }
 .tbar .nfilter { margin-right: 8px; }
 
-/* The timeline top bar wraps instead of squeezing: the count line keeps its natural width (no
-   narrow wrapped wall of text) and the filter / view controls drop to their own right-aligned
-   row when the window is narrow — the window chrome stays pinned top-right. A wide window keeps
+/* The timeline top bar never wraps as a whole: the title + count line keep their natural width and
+   the filter / view controls wrap among themselves when the window is narrow — the window chrome
+   stays pinned top-right. A wide window keeps
    today's single 60px bar, and the other tabs' bars are untouched (the wrap rules only match a
    bar that has the .ttools cluster, i.e. an active timeline with items). */
-.lib-main .tbar:has(.ttools) { height: auto; min-height: 60px; flex-wrap: wrap; row-gap: 6px; padding-top: 6px; padding-bottom: 6px; }
+.lib-main .tbar:has(.ttools) { height: auto; min-height: 60px; flex-wrap: nowrap; padding-top: 6px; padding-bottom: 6px; }
+.lib-main .tbar:has(.ttools) h1,
 .lib-main .tbar:has(.ttools) .hsub { flex: none; white-space: nowrap; }
-.lib-main .tbar .ttools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; flex: 1 1 auto; row-gap: 6px; }
+/* Only the filter cluster wraps (inside its own box, min-width:0 so it can shrink); the window
+   chrome is a fixed-size flex item that always stays on the title row, top-right. */
+.lib-main .tbar .ttools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; flex: 1 1 0; min-width: 0; row-gap: 6px; }
+.lib-main .tbar .wc { flex: none; }
 .lib-main .tbar .tl-seg { flex-wrap: wrap; row-gap: 6px; } /* the 4-pill row alone can exceed a very narrow pane: pills flow instead of clipping */
 
 /* ---------- key hints (what the focused list can do) ---------- */
@@ -465,10 +465,15 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
    Every selected item carries the normal .sel/.on look; the lead (keyboard
    / preview item) gets the accent edge so arrows stay findable in a batch. */
 .lg-row.lead { box-shadow: inset 2px 0 0 var(--acc); }
-.tl.lead.sel::after { box-shadow: inset 0 0 0 3px var(--acc), inset 0 0 0 5px rgba(0,0,0,.45); }
 .su-tr.lead::before { box-shadow: inset 0 0 0 1px var(--acc); }
 .su-tile.on.lead { outline-color: var(--acc); }
 .su-frame.on.lead { box-shadow: inset 0 0 0 3px var(--acc); }
 .su-row.lead { box-shadow: inset 0 0 0 1px var(--acc); }
 /* .cl carries no gutter (the bar's own --gut margin provides it); .su already has the padding. */
 .su > .selbar { margin: 0 0 2px; }
+
+/* the Timeline's search: one flat ranked grid under a small results bar */
+.lg-results { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 var(--gut); font-size: 13.5px; color: var(--fg2); border-bottom: 1px solid var(--line); }
+.lg-results b { color: var(--fg); font-weight: 600; }
+.lg-results i { font-style: normal; font-size: 12.5px; color: var(--fg3); font-variant-numeric: tabular-nums; }
+.lg-results .sp { flex: 1; }

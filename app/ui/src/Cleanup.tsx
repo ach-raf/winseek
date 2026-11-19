@@ -3,6 +3,8 @@ import { useQuery } from "@tanstack/react-query";
 import type { Backend, DupGroup, DupMember, Hit, LibImage, NearState } from "./types";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
+import { ThumbImg } from "./ThumbImg";
+import { LOW_PX, thumbPair, thumbUrl } from "./thumbSize";
 import { baseName } from "./Semantic";
 import { errText, formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
@@ -11,6 +13,8 @@ import { IChevL, ICheck } from "./icons";
 import { NameFilter } from "./NameFilter";
 import { KeyHints } from "./Hint";
 import { Space } from "./Space";
+import { pruneGroups } from "./fsDelta";
+import { useFsDeltaListener } from "./useFsDelta";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
 const NEAR_THRESHOLD = 0.95;
@@ -220,7 +224,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
       name: baseName(keeper.path),
       sub: others.length ? `Also in ${others.join(" and ")}` : "Identical copies",
       right: `${g.members.length} copies · ${formatSize(Math.max(...g.members.map((x) => x.size)))}`,
-      icon: <GrThumb backend={backend} m={keeper} size={96} cls="ic" />,
+      icon: <GrThumb backend={backend} m={keeper} size={28} cls="ic ph" />,
       path: keeper.path,
     };
   }), [groups, dupInfo, backend]);
@@ -239,7 +243,7 @@ function Home({ backend, groups, rows, shots, actions, onReview, onSimilar, onLa
     name: f.name,
     sub: `${f.mtime ? `${formatDate(f.mtime)} · ` : ""}${dirName(f.path)}`,
     right: formatSize(f.size),
-    icon: <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={96} cls="ic" />,
+    icon: <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={28} cls="ic ph" />,
     path: f.path,
   })), [shots, backend]);
   const shotTotal = useMemo(() => shots.reduce((a, f) => a + (f.size ?? 0), 0), [shots]);
@@ -437,6 +441,13 @@ function Similar({ backend, hidden, actions, epoch, onError, bar }: {
     return () => { live = false; };
   }, [backend, epoch, start, onError]);
 
+  // Files gone / renamed on disk (here or anywhere): the finished groups lose them in place, no rescan.
+  useFsDeltaListener((d) => setNear((n) => {
+    if (n?.state !== "done") return n;
+    const groups = pruneGroups(n.groups, d);
+    return groups === n.groups ? n : { ...n, groups };
+  }));
+
   // Poll while it runs.
   const running = near?.state === "running";
   useEffect(() => {
@@ -557,7 +568,7 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
                 return (
                   <button key={g.id} role="option" aria-selected={i === idx} className={"gr-item" + (i === idx ? " on" : "")} style={{ top: i * GROUP_H, height: GROUP_H }} tabIndex={-1} onClick={() => setSelId(g.id)}>
                     <span className="gr-thumbs">
-                      {g.members.slice(0, 4).map((m) => <GrThumb key={m.path} backend={backend} m={m} size={96} cls="gr-t" />)}
+                      {g.members.slice(0, 4).map((m) => <GrThumb key={m.path} backend={backend} m={m} size={44} cls="gr-t" />)}
                       {g.members.length > 4 && <em>+{g.members.length - 4}</em>}
                     </span>
                     <span className="gr-meta">
@@ -576,12 +587,12 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
   );
 }
 
-function GrThumb({ backend, m, size, cls }: { backend: Backend; m: DupMember; size: number; cls: string }) {
-  const src = backend.iconUrl(m.path, false, true, size);
-  const [bad, setBad] = useState(false);
-  return src && !bad
-    ? <img className={cls} src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />
-    : <span className={cls + " ph"}><FileIcon name={baseName(m.path)} isDir={false} src={null} /></span>;
+/** A Clean up thumbnail: its own box (`size` x `h` css px, the row's structure), the shared thumbnail pipeline
+ *  (placeholder tier first, the queue, the bucket from the css size, the mtime in the url) and tile radius. */
+function GrThumb({ backend, m, size, h = size, cls, fit }: { backend: Backend; m: DupMember; size: number; h?: number; cls: string; fit?: "contain" }) {
+  const { src, low } = thumbPair(backend, m.path, size, h, m.mtime || null);
+  const ph = <FileIcon name={baseName(m.path)} isDir={false} src={null} />;
+  return <span className={cls + (src ? "" : " ph")}>{src ? <ThumbImg src={src} low={low} bad={ph} path={m.path} fit={fit} /> : ph}</span>;
 }
 
 function GroupDetail({ backend, group, kind, actions }: { backend: Backend; group: DupGroup; kind: "exact" | "near"; actions: LibActions }) {
@@ -643,7 +654,7 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
         {cand.map((c, i) => (
           <div key={c.path} role="listitem" className={"gd-card" + (i === keep ? " keep" : i === other ? " cmp" : "") + (i === ci ? " kbf" : "")}
                onClick={() => { setCi(i); if (i !== keep) setBPath(c.path); }}>
-            <GrThumb backend={backend} m={c} size={192} cls="gd-th" />
+            <GrThumb backend={backend} m={c} size={124} h={96} cls="gd-th" />
             <div className="gd-cn" title={c.path}>{baseName(c.path)}</div>
             <div className="gd-cf">{formatSize(c.size)}{c.width && c.height ? ` · ${c.width}×${c.height}` : ""}</div>
             {kind === "near" && c.sim !== null && <div className="gd-cf">{(c.sim * 100).toFixed(1)}% alike</div>}
@@ -679,11 +690,13 @@ function Pane({ backend, c, role, badge, other, actions }: {
   const heavier = !!other && c.size > other.size;
   const newer = !!other && c.mtime > other.mtime;
   const { head, tail } = splitDir(c.path);
-  const src = backend.iconUrl(c.path, false, true, 512);
+  const src = thumbUrl(backend, c.path, 512, c.mtime || null);
+  const low = thumbUrl(backend, c.path, LOW_PX, c.mtime || null);
+  const ph = <FileIcon name={baseName(c.path)} isDir={false} src={null} />;
   return (
     <figure className="gd-pane">
       <figcaption><b>{role}</b><span className="gd-badge">{badge}</span></figcaption>
-      <div className="gd-img">{src ? <img src={src} alt={baseName(c.path)} draggable={false} /> : <FileIcon name={baseName(c.path)} isDir={false} src={null} />}</div>
+      <div className="gd-img" role="img" aria-label={baseName(c.path)}>{src ? <ThumbImg src={src} low={low} bad={ph} path={c.path} fit="contain" /> : ph}</div>
       <div className="gd-facts">
         <div className="gd-fn" title={c.path}>{baseName(c.path)}</div>
         <div className="gd-path" title={c.path}>{head}{tail}</div>
@@ -775,7 +788,7 @@ function Large({ backend, rows, actions, bar, title, summary, empty, thumbs }: {
                      onClick={() => setSel(i)} onDoubleClick={() => actions.open(f.path)}
                      onContextMenu={(e) => { e.preventDefault(); setSel(i); actions.menu(f.path, e.clientX, e.clientY); }}>
                   {thumbs
-                    ? <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={96} cls="ic" />
+                    ? <GrThumb backend={backend} m={{ path: f.path, size: f.size ?? 0, mtime: f.mtime ?? 0, sim: null }} size={28} cls="ic ph" />
                     : <span className="ic"><FileIcon name={f.name} isDir={false} src={backend.iconUrl(f.path, false, false)} /></span>}
                   <span className="bg-name"><b title={f.name}>{f.name}</b><span className="bg-path" title={f.path}>{head}{tail}</span></span>
                   <span className="bg-size">{formatSize(f.size)}</span>

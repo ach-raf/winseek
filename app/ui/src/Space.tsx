@@ -130,16 +130,29 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   useEffect(() => { if (epoch !== firstEpoch.current) again(); }, [epoch, again]);
 
   // An answer may honestly say it is behind the index: a recycle lands before the service has
-  // rebuilt its roll-up, so `fresh: false` rides along. Read again every 1.5 s until the service
-  // reports fresh — bounded, so a wedged service cannot spin the screen forever.
-  const staleNow = dirQs.some((q) => q.data?.fresh === false) || detailQ.data?.fresh === false;
+  // rebuilt its roll-up, so `fresh: false` rides along. Fallback for when no fs-delta covers it:
+  // only the stale answers are read again, every 1.5 s, bounded (a wedged service cannot spin the
+  // screen forever). Any answer landing meanwhile (a delta's re-read) restarts the wait, and once
+  // that answer is fresh the loop is over.
+  const staleKeys = useMemo(() => {
+    const out: string[] = [];
+    dirPaths.forEach((p, i) => { if (dirQs[i]?.data?.fresh === false) out.push(p); });
+    return out;
+  }, [dirPaths, dirQs]);
+  const staleDetail = detailQ.data?.fresh === false;
+  const staleNow = staleKeys.length > 0 || staleDetail;
+  const landedAt = dirQs.reduce((a, q) => Math.max(a, q.dataUpdatedAt), detailQ.dataUpdatedAt);
   const [staleTries, setStaleTries] = useState(0);
   useEffect(() => {
     if (!staleNow) { setStaleTries(0); return; }
     if (staleTries >= 8) return;
-    const t = setTimeout(() => { setStaleTries((n) => n + 1); again(); }, 1500);
+    const t = setTimeout(() => {
+      setStaleTries((n) => n + 1);
+      for (const p of staleKeys) void qc.invalidateQueries({ queryKey: qk.spaceDir(p), exact: true });
+      if (staleDetail) void qc.invalidateQueries({ queryKey: qk.spaceDetail(focus), exact: true });
+    }, 1500);
     return () => clearTimeout(t);
-  }, [staleNow, staleTries, again]);
+  }, [staleNow, staleTries, staleKeys, staleDetail, focus, qc, landedAt]);
 
   const rows = useMemo(() => (root ? flattenTree(root, get, open) : []), [root, open, get]);
   const homeData = get("");
@@ -225,7 +238,8 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
   // The selection clears only once the recycle really happened (the confirm dialog may answer no); the
   // roll-ups are invalidated so the sizes re-read once the index has the deletions.
   const recycle = async (paths: string[]) => {
-    if (await actions.recycle(paths)) { setSel(null); setMulti(null); rangeAnchor.current = null; again(); }
+    // the recycle's own fs-delta already patched the roll-ups on screen and re-reads only the folders above it
+    if (await actions.recycle(paths)) { setSel(null); setMulti(null); rangeAnchor.current = null; }
   };
 
   // ---- keyboard (tree) ---------------------------------------------------------------------------------------

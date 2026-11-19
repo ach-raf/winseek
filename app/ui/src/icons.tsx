@@ -58,3 +58,4 @@ export const IKeyboard = ({ size, className }: P) => <S size={size} className={c
 export const ISparkle = ({ size, className }: P) => <S size={size} className={className}><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z" /><path d="M18.5 16.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z" /></S>;
 export const IPulse = ({ size, className }: P) => <S size={size} className={className}><path d="M3 12h4l2.5-6 4 12 2.5-6H21" /></S>;
 export const IFolderStroke = ({ size, className }: P) => <S size={size} className={className}><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" /></S>;
+export const IFilter = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><path d="M4 5h16l-6.2 7.4V19l-3.6-1.8v-4.8z" /></S>;

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { mosaicMetrics, moveMosaic, packMosaic, tileBox } from "./libraryLogic.ts";
+import { gridMetrics, gridMove, rangeForViewport, sectionLayout } from "./gridLogic.ts";
 import {
-  PAGE, RowCache, absToEff, buildIndex, effRangeToAbs, effToAbs, moveBy, packTemplate, rangeAdd, rangeCount, rangeHas, rangeRemoveIndex, rangeToggle,
-  sectionOfAbs, sectionOfEff, templateBox, tilesInBand, type Range,
+  PAGE, RowCache, absToEff, buildIndex, effRangeToAbs, effToAbs, rangeAdd, rangeCount, rangeHas, rangeRemoveIndex, rangeToggle,
+  sectionOfAbs, sectionOfEff, type Range,
 } from "./timelineLogic.ts";
 
 const secs = [{ key: "a", count: 5 }, { key: "b", count: 3 }, { key: "c", count: 0 }, { key: "d", count: 4 }];
@@ -53,57 +53,22 @@ test("ranges: add merges, toggle splits, counts and membership", () => {
   assert.deepEqual(rangeAdd([[5, 9]], [[0, 100]]), [[0, 100]]);
 });
 
-test("template: a month of any size is the first tiles of the same packing (equals packMosaic)", () => {
-  for (const cols of [4, 6, 8]) {
-    const t = packTemplate(200, cols);
-    for (const n of [0, 1, 5, 13, 64, 200]) {
-      const m = packMosaic([n], cols);
-      assert.equal(t.rowsAt[n], m.sections[0]!.rows, `rows n=${n} cols=${cols}`);
-      for (let j = 0; j < n; j++) {
-        const a = m.tiles[j]!;
-        assert.deepEqual([t.col[j], t.row[j], t.w[j], t.h[j]], [a.col, a.row, a.w, a.h]);
-      }
-    }
+test("uniform timeline grid: folded months take only their heading; keys cross months in the same column", () => {
+  const ix = buildIndex(secs, new Set(["b"]));
+  const g = gridMetrics(602); // 3 exact-size columns beside the preview dock
+  const heads = secs.map(() => 44);
+  const lay = sectionLayout(ix.effCount, heads, g, 14);
+  assert.equal(lay.h[1], 44 + 6, "the folded month is its heading");
+  // every tile's top is arithmetic: section top + heading + row * stride
+  for (let si = 0; si < secs.length; si++) {
+    const n = ix.effCount[si] ?? 0;
+    const [from, to] = rangeForViewport(0, lay.total, g, n, (lay.top[si] ?? 0) + 44, 0);
+    assert.equal(to - from, n, `all of section ${si} in a viewport over the whole document`);
   }
-});
-
-test("template: boxes match the old tile boxes", () => {
-  const t = packTemplate(30, 8);
-  const m = packMosaic([30], 8);
-  for (let j = 0; j < 30; j++) {
-    const b = templateBox(t, j, 100, 4, 44);
-    const o = tileBox(m.tiles[j]!, 100, 4, 44);
-    assert.deepEqual([b.y, b.h], [o.y, o.h]);
-  }
-});
-
-test("tilesInBand never misses a tile that intersects the band", () => {
-  const rowH = 100, gap = 4, head = 44;
-  for (const cols of [4, 8]) {
-    const n = 300;
-    const t = packTemplate(n, cols);
-    for (const [y0, y1] of [[0, 300], [500, 900], [1500, 1700], [-100, 60], [4000, 9000]] as const) {
-      const [from, to] = tilesInBand(t, n, rowH, gap, head, y0, y1);
-      for (let j = 0; j < n; j++) {
-        const b = templateBox(t, j, rowH, gap, head);
-        if (b.y + b.h >= y0 && b.y <= y1) assert.ok(j >= from && j < to, `tile ${j} in [${y0},${y1}] cols=${cols}`);
-      }
-      assert.ok(to - from < n || y1 > 4000, "a narrow band does not return the whole month");
-    }
-  }
-});
-
-test("moveBy walks like moveMosaic inside one month", () => {
-  const n = 40;
-  const m = packMosaic([n], 8);
-  const mt = mosaicMetrics(m, 100, 4, [44], 14, 20);
-  const t = packTemplate(n, 8);
-  const boxAt = (k: number) => templateBox(t, k, 100, 4, 44);
-  for (const key of ["ArrowDown", "ArrowUp", "ArrowLeft", "ArrowRight", "Home", "End"]) {
-    for (const i of [0, 1, 7, 12, 25, 39]) {
-      assert.equal(moveBy(i, key, n, boxAt), moveMosaic(m, mt, 100, 4, i, key, n), `${key} from ${i}`);
-    }
-  }
+  // down from the last row of a month lands in the next shown month, same column (folded "b" is skipped)
+  const lastOfA = (ix.effStart[0] ?? 0) + (ix.effCount[0] ?? 1) - 1;
+  const next = gridMove(lastOfA, "ArrowDown", ix.effCount, g.cols);
+  assert.equal(sectionOfEff(ix, next), 3, "folded b and empty c are skipped");
 });
 
 test("RowCache: pages by absolute index, missing pages, eviction keeps every wanted span and page 0", () => {

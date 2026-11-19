@@ -2,6 +2,7 @@
 
 mod agent;
 mod autostart;
+mod changebus;
 mod commands;
 mod fsutil;
 mod hotkeys;
@@ -306,6 +307,7 @@ fn main() {
             }
             tray.build(app)?;
             watcher::spawn(app.handle().clone());
+            changebus::spawn(app.handle().clone());
             updates::spawn(app.handle().clone());
             launch::Launcher::start_background(app.handle().clone());
             autostart::init_default();

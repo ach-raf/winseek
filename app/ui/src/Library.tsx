@@ -2,8 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import { keepPreviousData, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { Backend } from "./types";
 import { TIMELINE_VIEWS, parseGalleryView, parseTimelineView, type GalleryView, type TimelineView } from "./libraryLogic";
-import { qk, refreshLibraryAfterUndo, refreshLibraryEmbeddings, refreshLibraryIndex } from "./qk";
-import { Gallery, GalleryViewToggle, type LibActions } from "./Gallery";
+import { qk, refreshLibraryAfterUndo, refreshLibraryEmbeddings } from "./qk";
+import { fsDelta } from "./fsDelta";
+import { pushLocalDelta } from "./fsDeltaPatch";
+import { useFsDelta } from "./useFsDelta";
+import { Gallery, GalleryViewToggle, type GallerySection, type LibActions } from "./Gallery";
+import { usePictureSearch } from "./usePictureSearch";
 import { useTimelineSource } from "./timelineSource";
 import { NameFilter } from "./NameFilter";
 import { Collections } from "./Collections";
@@ -68,15 +72,16 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const [tlView, setTlView] = useStoredValue<TimelineView>("winseek.timelineView", parseTimelineView, (v) => v);
   // Tiles or list rows for the timeline gallery (per-screen, remembered).
   const [gview, setGview] = useStoredValue("winseek.galleryView.timeline", parseGalleryView, (v: GalleryView) => v);
-  // What the timeline filter field keeps (matches against file names).
+  // What the timeline's search field keeps. It runs the popup's picture search (usePictureSearch: names + meaning,
+  // ranked); the dated view underneath is never filtered by it.
   const [photoQ, setPhotoQ] = useState("");
-  const nameQ = useDebouncedValue(photoQ.trim(), 150);
+  const searchQ = useDebouncedValue(photoQ.trim(), 150);
   const hiddenList = useMemo(() => [...hidden], [hidden]);
   const load = baseQ.data;
   const viewQ = useQuery({
-    queryKey: qk.libTimeline(load ?? -1, tlView, nameQ, hiddenList.join("\n")),
+    queryKey: qk.libTimeline(load ?? -1, tlView, "", hiddenList.join("\n")),
     queryFn: async () => {
-      const r = await backend.libraryTimelineView(load!, tlView, nameQ, hiddenList);
+      const r = await backend.libraryTimelineView(load!, tlView, "", hiddenList);
       if (!r) throw new Error("The photo list changed while it was being read");
       return r;
     },
@@ -104,6 +109,17 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   const done = t1?.stats?.done ?? 0;
   const gen = useSettled(done, 20000);
+  const search = usePictureSearch(backend, searchQ, { enabled: seen.timeline, semantic: !!t1 && t1.state !== "unavailable", epoch: gen });
+  const searching = search.query !== "";
+  // The ranked results as one flat section (no months); files recycled from here drop out at once.
+  const results: GallerySection[] = useMemo(() => [{
+    key: "results",
+    label: null,
+    items: search.items.filter((p) => !hidden.has(p.hit.path)).map((p) => ({
+      path: p.hit.path, name: p.hit.name, size: p.hit.size, mtime: p.hit.mtime,
+      score: p.sem?.score, snippet: p.sem?.snippet ?? null, page: p.sem?.page ?? null, at: p.sem?.at ?? null, boxes: p.sem?.boxes ?? null,
+    })),
+  }], [search.items, hidden]);
 
   useEffect(() => {
     if (embedded) return;
@@ -115,10 +131,10 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
   const statusQ = useQuery({ queryKey: qk.libStatus, queryFn: () => backend.status(), refetchInterval: 2000, enabled: !embedded });
   const status = statusQ.data ?? [];
 
-  // The Library becomes the visible page again (embedded keep-alive): the index lists re-read so
-  // files deleted elsewhere (e.g. Del in the search popup) are gone. Collection evaluations follow
-  // their own inputs (the sig), not the reveal.
-  useEffect(() => { if (active) refreshLibraryIndex(qc); }, [active, qc]);
+  // Files deleted / renamed / added elsewhere (the search popup, Explorer) reach the lists as fs-deltas that
+  // patch the cache in place (useFsDelta) — no re-read of the whole index on every reveal any more. Embedded,
+  // the popup's App owns the window's subscription; the standalone window owns its own.
+  useFsDelta(backend, !embedded);
   // New embeddings arrived (the settled done-count moved): picture list and dup groups re-read;
   // collections re-key themselves because the generation is part of their sig.
   const gen0 = useRef(gen);
@@ -150,9 +166,12 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   const trashed = useCallback((paths: string[]) => {
     setHidden((h) => { const n = new Set(h); paths.forEach((p) => n.add(p)); return n; });
+    // Every cached list (pictures, duplicates, biggest files, collections, Space) drops them at once; the
+    // timeline's hidden set already covers its view, so its base list is not re-loaded.
+    pushLocalDelta(qc, fsDelta({ removed: paths }), { timelineCovered: true });
     undoRef.current = paths;
     flash(paths.length === 1 ? "Moved to Recycle Bin" : `Moved ${paths.length} files to Recycle Bin`, true);
-  }, [flash]);
+  }, [flash, qc]);
 
   const doUndo = useCallback(async () => {
     const paths = undoRef.current;
@@ -243,8 +262,6 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
 
   const emptyTimeline = summary === null && !loadErr
     ? <><span className="spin" aria-label="Loading" /></>
-    : photoQ.trim() && visibleTotal > 0 && shownTotal === 0
-      ? <><strong>{`Nothing matches “${photoQ.trim()}”`}</strong><span>Clear the filter to see every photo again.</span></>
     : loadErr
       ? <><strong>Could not read the photo index</strong><span>{loadErr}</span></>
       : t1?.state === "models_missing"
@@ -284,7 +301,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         <span className="sp" />
         {tab === "timeline" && summary !== null && visibleTotal > 0 && (
           <div className="ttools">
-            <NameFilter value={photoQ} onChange={setPhotoQ} label="Filter photos by name" />
+            <NameFilter value={photoQ} onChange={setPhotoQ} label="Search pictures" placeholder="Search pictures" />
             <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
               {TIMELINE_VIEWS.map((v) => (
                 <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
@@ -298,7 +315,20 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {chrome}
       </div>
       <main className="lib-body">
-        {seen.timeline && keep("timeline", <Gallery backend={backend} source={source} rail actions={actions} empty={emptyTimeline} view={gview} />)}
+        {seen.timeline && keep("timeline", searching ? (
+          <>
+            <div className="lg-results" role="status">
+              <span>Results for <b>{`“${search.query}”`}</b></span>
+              <i>{search.total.toLocaleString("en-US")}{search.loading ? "…" : ""}</i>
+              <span className="sp" />
+              <button className="btn sm secondary" onClick={() => setPhotoQ("")} title="Back to the timeline (clears the search)">Clear</button>
+            </div>
+            <Gallery backend={backend} sections={results} listKey={`results|${search.query}`} actions={actions} view={gview} onMore={search.loadMore}
+                     empty={search.loading
+                       ? <><span className="spin" aria-label="Searching" /><span>Searching…</span></>
+                       : <><strong>{`Nothing matches “${search.query}”`}</strong><span>Try other words, or describe what the picture shows.</span></>} />
+          </>
+        ) : <Gallery backend={backend} source={source} rail actions={actions} empty={emptyTimeline} view={gview} />)}
         {seen.collections && keep("collections", (
           <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} actions={actions} onError={fail} active={tab === "collections"} />
         ))}

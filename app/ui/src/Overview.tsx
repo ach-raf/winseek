@@ -1,6 +1,7 @@
-import { memo, useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ThumbImg } from "./ThumbImg";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { noteScroll } from "./thumbQueue";
+import { PicTile, type PicTileEvents } from "./PicTile";
+import { gridMetrics, type GridMetrics } from "./gridLogic";
 import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
@@ -211,31 +212,25 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
 
 /** Pictures: a 4:3 tile. The badge says what put it there (what the picture shows, its name, or both) and
  *  how well it scores; a tile that is there for its name keeps the name on, with the word marked. */
-/** The 4:3 tiles are 170-210 css px wide (4-5 columns) and show 4:3 pictures uncropped: 256 covers them. */
-const TILE_PX = 256;
+/** The shared tile (PicTile) at the shared size: the thumbnail tier comes from the tile's css size (thumbPx). */
 const BADGE = { both: "Picture", picture: "Picture", text: "Text inside", name: "Name" } as const;
-const Tile = memo(function Tile({ it, i, sel, query, backend, h }: { it: OvItem; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers }) {
-  const src = backend.iconUrl(it.hit.path, false, true, TILE_PX);
+const Tile = memo(function Tile({ it, i, sel, query, backend, ev, g }: { it: OvItem; i: number; sel: boolean; query: string; backend: Backend; ev: PicTileEvents; g: GridMetrics }) {
   const sem = it.sem;
   const pct = it.pct !== undefined ? it.pct : matchPct(sem);
   const reason = it.why !== undefined ? it.why : reasonOf(sem, true);
   const kind = picBadge({ sem, name: it.named ?? null });
   const named = it.named === "word" || it.named === "start" || it.section === "namepics";
-  const ph = <FileIcon name={it.hit.name} isDir={false} src={null} />;
   return (
-    <div className={"tile" + (sel ? " sel" : "") + (named ? " named" : "")} role="option" aria-selected={sel} aria-label={it.hit.name}
-         data-sel={sel ? "1" : undefined} data-i={i} title={reason ? `${it.hit.path}
+    <PicTile backend={backend} i={i} path={it.hit.path} name={it.hit.name} mtime={it.hit.mtime} tileW={g.tileW} tileH={g.tileH}
+             sel={sel} named={named} ev={ev}
+             title={reason ? `${it.hit.path}
 ${reason}` : it.hit.path}
-         onClick={() => h.onSelect(i)} onDoubleClick={() => h.onOpen(i)}
-         onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
-      {src ? <ThumbImg src={src} bad={ph} /> : ph}
-      {(kind || pct !== null) && (
-        <span className={"tpct" + (kind ? " k-" + kind : "")}>
-          {kind && <b>{BADGE[kind]}</b>}{pct !== null && <i>{pct}%</i>}
-        </span>
-      )}
-      <span className="cap" dir="auto"><Highlight text={it.hit.name} query={query} /></span>
-    </div>
+             badge={(kind || pct !== null) && (
+               <span className={"tpct" + (kind ? " k-" + kind : "")}>
+                 {kind && <b>{BADGE[kind]}</b>}{pct !== null && <i>{pct}%</i>}
+               </span>
+             )}
+             caption={<Highlight text={it.hit.name} query={query} />} />
   );
 });
 
@@ -264,8 +259,8 @@ const WIN_OVERSCAN = 4;
  * The row height and the column count are read from the drawn items (the CSS stays in charge of
  * the layout); every item must carry `data-i` and all rows must be equally tall.
  */
-function Windowed({ scrollRef, count, className, render, onMore }: {
-  scrollRef: React.RefObject<HTMLDivElement | null>; count: number; className: string;
+function Windowed({ scrollRef, count, className, style, render, onMore }: {
+  scrollRef: React.RefObject<HTMLDivElement | null>; count: number; className: string; style?: CSSProperties;
   render: (from: number, to: number) => ReactNode;
   /** The window reached the last loaded rows: the owner may read more. */
   onMore?: () => void;
@@ -326,7 +321,7 @@ function Windowed({ scrollRef, count, className, render, onMore }: {
   const nearEnd = on && !!g.stride && to >= count - g.cols * 6;
   useEffect(() => { if (nearEnd) onMore?.(); }, [nearEnd, count, onMore]);
   return (
-    <div ref={box} className={className + (on ? " win" : "")}>
+    <div ref={box} className={className + (on ? " win" : "")} style={style}>
       {before > 0 && <div className="win-pad" style={{ height: before }} />}
       {render(from, to)}
       {after > 0 && <div className="win-pad" style={{ height: after }} />}
@@ -370,9 +365,32 @@ function SectionHead({ s, expanded, loading, onBack, onExpand, onToggleWeak, onT
   );
 }
 
-export function Overview({ onMore, sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
+/** Content width of the pictures grid (0 until one is drawn), re-read when the list resizes (window, scrollbar). */
+function useGridInner(scrollRef: React.RefObject<HTMLDivElement | null>, active: boolean): number {
+  const [w, setW] = useState(0);
+  useLayoutEffect(() => {
+    const sc = scrollRef.current;
+    if (!sc || !active) return;
+    const measure = () => {
+      const g = sc.querySelector<HTMLElement>(".picgrid");
+      if (!g) return;
+      const cs = getComputedStyle(g);
+      const v = g.clientWidth - (parseFloat(cs.paddingLeft) || 0) - (parseFloat(cs.paddingRight) || 0);
+      setW((p) => (Math.abs(p - v) < 0.5 ? p : v));
+    };
+    const ro = new ResizeObserver(measure);
+    ro.observe(sc);
+    measure();
+    return () => ro.disconnect();
+  }, [scrollRef, active]);
+  return w;
+}
+
+export function Overview({ onMore, onGridCols, sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
   /** The pictures grid scrolled near the end of what is loaded. */
   onMore?: () => void;
+  /** The pictures grid's column count (gridMetrics of its measured width) changed: keyboard moves follow it. */
+  onGridCols?: (cols: number) => void;
   sections: OvSection[]; sel: number; renaming: boolean; query: string; backend: Backend; expanded: boolean;
   /** "Show all" is still reading pages: the list keeps growing. */
   loading?: boolean;
@@ -388,6 +406,20 @@ export function Overview({ onMore, sections, sel, renaming, query, backend, expa
   const starts: number[] = [];
   let acc = 0;
   for (const s of sections) { starts.push(acc); acc += s.items.length; }
+  // The shared picture grid: exact-size tiles, as many columns as fit (gridMetrics), the same tile as the Library's.
+  const hasPics = sections.some((s) => s.id === "images" || s.id === "namepics");
+  const innerW = useGridInner(scrollRef, hasPics);
+  // One object per width: the memoised tiles compare it by identity.
+  const gm = useMemo(() => gridMetrics(innerW), [innerW]);
+  const cols = innerW > 0 ? gm.cols : 0;
+  useEffect(() => { if (cols > 0) onGridCols?.(cols); }, [cols, onGridCols]);
+  const picEv = useMemo<PicTileEvents>(() => ({
+    onClick: (i) => handlers.onSelect(i),
+    onDoubleClick: (i) => handlers.onOpen(i),
+    onContextMenu: (i, e) => handlers.onMenu(i, e),
+    onPointerDown: (i, e) => handlers.onDown(i, e),
+  }), [handlers]);
+  const gridStyle = { "--pic-cols": cols > 0 ? cols : "auto-fill", "--pic-w": `${gm.tileW}px`, "--pic-h": `${gm.tileH}px` } as CSSProperties;
   return (
     <div className="list ov" ref={scrollRef} role="listbox" aria-label="Results">
       {lead}
@@ -401,8 +433,8 @@ export function Overview({ onMore, sections, sel, renaming, query, backend, expa
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
             <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} onToggleFold={onToggleFold} />
             {s.fold && !s.items.length ? null : s.id === "images" || s.id === "namepics" ? (
-              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos" onMore={onMore} render={(from, to) =>
-                s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} h={handlers} />)} />
+              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos picgrid" style={gridStyle} onMore={onMore} render={(from, to) =>
+                s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} ev={picEv} g={gm} />)} />
             ) : s.id === "mostused" ? (
               <div className="grid apps">
                 {s.items.map((it, j) => <AppTile key={it.key} it={it} i={start + j} sel={start + j === sel} backend={backend} h={handlers} />)}

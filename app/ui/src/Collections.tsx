@@ -10,6 +10,9 @@ import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./l
 import { useDebouncedValue, useStoredValue } from "./hooks";
 import { qk } from "./qk";
 import { IChevL, IPlus } from "./icons";
+import { ThumbImg } from "./ThumbImg";
+import { LOW_PX, thumbUrl } from "./thumbSize";
+import { usePictureSearch } from "./usePictureSearch";
 
 interface Eval {
   status: "loading" | "ready" | "off" | "error";
@@ -71,11 +74,27 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
   // collection keyed by its sig — an in-flight eval can never land in another collection's view,
   // and a re-eval keeps the previous hits on screen (placeholderData) instead of blanking.
   const evalTargets = useMemo(() => (list ?? []).filter((c) => !c.rule), [list]);
+  // Cards on screen are evaluated first; the rest wait until they scroll into view (or are opened). A card once
+  // seen stays evaluated (its query is cached like before).
+  const [shown, setShown] = useState<ReadonlySet<string>>(new Set());
+  const cardObs = useRef<IntersectionObserver | null>(null);
+  useEffect(() => () => { cardObs.current?.disconnect(); cardObs.current = null; }, []);
+  // A ref callback (cards attach before any effect runs): the observer is made by the first card.
+  const watchCard = useCallback((el: HTMLElement | null) => {
+    if (!el) return;
+    const io = cardObs.current ??= new IntersectionObserver((entries) => {
+      const add = entries.filter((e) => e.isIntersecting).map((e) => (e.target as HTMLElement).dataset.coll ?? "");
+      if (add.length) setShown((s) => (add.every((n) => s.has(n)) ? s : new Set([...s, ...add])));
+    }, { rootMargin: "200px" });
+    io.observe(el);
+    return () => io.unobserve(el);
+  }, []);
   const evalQueries = useQueries({
     queries: evalTargets.map((c) => {
       const sig = sigOf(c, gen, t1?.state);
       return {
         queryKey: qk.collEval(c.name, sig),
+        enabled: shown.has(c.name) || c.name === selName,
         queryFn: () => backend.libraryCollection(c.query, c.threshold, CAP, c.exclude ?? [], c.graphics ?? false),
         placeholderData: (prev: SemanticResult | undefined) => prev,
         retry: 1, // a one-off hiccup from the local service is worth one quiet retry
@@ -137,13 +156,29 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
     ].filter((s) => s.items.length > 0);
   }, [sel, hitsOf]);
 
-  // The name filter narrows the same sections; empty groups drop out.
-  const shownSections: GallerySection[] = useMemo(
-    () => (collQ.trim()
-      ? sections.map((s) => ({ ...s, items: s.items.filter((i) => nameMatches(i.name ?? i.path, collQ)) })).filter((s) => s.items.length > 0)
-      : sections),
-    [sections, collQ],
-  );
+  // The search field runs the popup's picture search (names + meaning, ranked) and keeps what is in this
+  // collection, best first; documents in the collection (not pictures) still narrow by name. Empty groups drop out.
+  const searchQ = useDebouncedValue(collQ.trim(), 150);
+  const search = usePictureSearch(backend, searchQ, { enabled: !!sel, semantic: !!t1 && t1.state !== "unavailable", epoch: gen });
+  const searching = search.query !== "";
+  const shownSections: GallerySection[] = useMemo(() => {
+    if (!searching) return sections;
+    const isPic = (i: GridItem) => ["image", "video"].includes(kindOf(i.name ?? i.path, false));
+    const mine = new Map<string, GridItem>();
+    for (const s of sections) for (const i of s.items) if (isPic(i)) mine.set(i.path.toLowerCase(), i);
+    const photos: GridItem[] = [];
+    for (const p of search.items) {
+      const it = mine.get(p.hit.path.toLowerCase());
+      if (it) photos.push(it);
+    }
+    const docs = sections.flatMap((s) => s.items).filter((i) => !isPic(i) && nameMatches(i.name ?? i.path, search.query));
+    return [
+      { key: `${sel?.name ?? ""}:found`, label: docs.length && photos.length ? "Photos" : null, items: photos },
+      { key: `${sel?.name ?? ""}:docs`, label: docs.length && photos.length ? "Documents" : null, items: docs },
+    ].filter((s) => s.items.length > 0);
+  }, [sections, searching, search.items, search.query, sel?.name]);
+  // The search reads more names as the grid nears the end of them (a collection keeps only what it holds).
+  const moreResults = searching ? search.loadMore : undefined;
   // A filter follows its collection: switching collections starts clean.
   useEffect(() => { setCollQ(""); }, [selName]);
 
@@ -343,7 +378,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
               <input type="range" min={THRESHOLD_MIN} max={THRESHOLD_MAX} step={0.01} value={thr ?? sel.threshold} onChange={(e) => setThr(Number(e.target.value))} />
             </label>
           )}
-          <NameFilter value={collQ} onChange={setCollQ} label="Filter in this collection" />
+          <NameFilter value={collQ} onChange={setCollQ} label="Search in this collection" placeholder="Search in this collection" />
           <GalleryViewToggle view={gview} onChange={setGview} />
           <div className="co-btns">
             <button className="btn" onClick={() => editCollection(sel)} title="Edit (F2)">Edit</button>
@@ -365,11 +400,13 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
           </div>
         )}
         <div className="co-grid">
-          <Gallery backend={backend} sections={shownSections} actions={actions}
-                   empty={collQ.trim() && sections.length > 0 && shownSections.length === 0
-                     ? <><strong>{`Nothing matches “${collQ.trim()}”`}</strong><span>Clear the filter to see the whole collection again.</span></>
+          <Gallery backend={backend} sections={shownSections} listKey={searching ? `${sel.name}|${search.query}` : undefined} actions={actions} onMore={moreResults}
+                   empty={searching && sections.length > 0 && shownSections.length === 0
+                     ? (search.loading
+                       ? <><span className="spin" aria-label="Searching" /><span>Searching…</span></>
+                       : <><strong>{`Nothing in ${sel.name} matches “${search.query}”`}</strong><span>Clear the search to see the whole collection again.</span></>)
                      : emptyMsg}
-                   preview extra={extra} noun="item" view={gview} />
+                   extra={extra} noun="item" view={gview} />
         </div>
       </div>
     );
@@ -382,7 +419,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
           const n = count(c);
           const th = peek(c);
           return (
-            <button key={c.name} role="listitem" className="coll" data-autofocus={k === 0 ? "" : undefined} onClick={() => { setSelName(c.name); setDraft(null); }}>
+            <button key={c.name} role="listitem" className="coll" data-coll={c.name} ref={watchCard} data-autofocus={k === 0 ? "" : undefined} onClick={() => { setSelName(c.name); setDraft(null); }}>
               <div className="c4">
                 {[0, 1, 2, 3].map((j) => (
                   <div key={j}>{th[j] && <CollThumb backend={backend} item={th[j]} />}</div>
@@ -406,9 +443,10 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
   );
 }
 
+/** A card's quarter: the shared thumbnail pipeline at 128 px (placeholder tier first), nothing when it fails. */
+const CARD_PX = 128;
 function CollThumb({ backend, item }: { backend: Backend; item: GridItem }) {
-  const src = backend.iconUrl(item.path, false, true, 256);
-  const [bad, setBad] = useState(false);
-  if (!src || bad) return null;
-  return <img src={src} alt="" draggable={false} decoding="async" onError={() => setBad(true)} />;
+  const src = thumbUrl(backend, item.path, CARD_PX, item.mtime);
+  if (!src) return null;
+  return <ThumbImg src={src} low={thumbUrl(backend, item.path, LOW_PX, item.mtime)} bad={null} path={item.path} />;
 }
