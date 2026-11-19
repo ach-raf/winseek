@@ -18,7 +18,7 @@ export const SECTION_LABELS: Record<SettingsSection, string> = {
 /** Words that live in each section, so "hotkey" finds Shortcuts and "gpu" finds Search by meaning. */
 export const SECTION_KEYWORDS: Record<SettingsSection, string> = {
   general: "general startup open as popup full window full screen view f11 start with windows autostart tray updates check version release library photos clean up duplicates",
-  appearance: "appearance theme light dark follow windows accent colour color transparency glass opacity",
+  appearance: "appearance theme light dark follow windows accent colour color transparency glass opacity custom palette create own save colors",
   shortcuts: "shortcuts hotkeys keyboard alt space global library clipboard",
   indexing: "indexing folders skipped ignored names gitignore source code index drives volumes",
   meaning: "search by meaning semantic models download embedding gemma parser pdf documents images rebuild re-index reindex download model llama pdfium pdf reader parser embedder embedding performance profile light balanced fast gpu memory vram background work pause resume set up",
@@ -53,7 +53,8 @@ export const SETTING_INDEX: SettingEntry[] = [
   { id: "updates", section: "general", title: "Check for updates daily", keywords: "update release check github new version" },
   { id: "version", section: "general", title: "Version", keywords: "about app number release" },
   { id: "library", section: "general", title: "Photos and clean up", keywords: "library photos open collections duplicates disk space" },
-  { id: "theme", section: "appearance", title: "Theme", keywords: "light dark appearance follow windows" },
+  { id: "theme", section: "appearance", title: "Theme", keywords: "light dark appearance follow windows custom palette" },
+  { id: "custom-themes", section: "appearance", title: "Custom themes", keywords: "custom theme palette create make own save colours colors editor export import new" },
   { id: "accent", section: "appearance", title: "Accent colour", keywords: "accent color colour highlight amber coral blue green" },
   { id: "transparency", section: "appearance", title: "Window transparency", keywords: "transparency glass opacity see through alpha" },
   { id: "hotkey-popup", section: "shortcuts", title: "Shortcut", keywords: "hotkey keyboard alt space global open popup rebind" },

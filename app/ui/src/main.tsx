@@ -6,7 +6,8 @@ import Library from "./Library";
 import { ErrorBoundary } from "./ErrorBoundary";
 import { createQueryClient } from "./qk";
 import { applyAccent, loadAccent } from "./accent";
-import { applyTheme, loadTheme, watchSystemTheme } from "./theme";
+import { loadTheme, watchSystemTheme } from "./theme";
+import { applyThemeChoice } from "./themeChoice";
 import { applyOpacity, loadOpacity } from "./transparency";
 import { loadBackend, inTauri } from "./api";
 import "@fontsource-variable/figtree";
@@ -25,17 +26,19 @@ const library = new URLSearchParams(location.search).get("view") === "library" |
 if (library) document.documentElement.classList.add("lib-view");
 
 applyAccent(loadAccent());
-applyTheme(loadTheme());
+applyThemeChoice(loadTheme());
 applyOpacity(loadOpacity());
 // The other window (popup / library) follows a change made in Settings: localStorage is shared,
-// and the storage event fires only in the windows that did not make the change.
+// and the storage event fires only in the windows that did not make the change. A custom theme
+// edited elsewhere ("winseek.customThemes") repaints this window too, when it is the one on.
 window.addEventListener("storage", (e) => {
   if (e.key === "winseek.accent" && e.newValue) applyAccent(loadAccent());
-  if (e.key === "winseek.theme") applyTheme(loadTheme());
+  if (e.key === "winseek.theme") applyThemeChoice(loadTheme());
+  if (e.key === "winseek.customThemes") applyThemeChoice(loadTheme());
   if (e.key === "winseek.opacity") applyOpacity(loadOpacity());
 });
 // On System, a flip of the Windows theme re-resolves live (explicit Light/Dark ignores this).
-watchSystemTheme(() => { if (loadTheme() === "system") applyTheme("system"); });
+watchSystemTheme(() => { if (loadTheme() === "system") applyThemeChoice("system"); });
 
 loadBackend().then((backend) => {
   // One client per window: the popup and the library window are separate JS contexts.

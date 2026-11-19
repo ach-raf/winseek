@@ -12,9 +12,11 @@ import { pausedText, statusVerdict, waitingText } from "./statusVerdict";
 import { trapKey } from "./trap";
 import { matches } from "./keymap";
 import { SECTION_LABELS, searchSettings, type SettingEntry, type SettingsSection } from "./settingsNav";
-import { ACCENTS, applyAccent, loadAccent, saveAccent, type AccentId } from "./accent";
+import { ACCENTS, applyAccent, isHexAccent, loadAccent, saveAccent } from "./accent";
 import { OPACITY_MAX, OPACITY_MIN, applyOpacity, loadOpacity, saveOpacity } from "./transparency";
-import { applyTheme, loadTheme, saveTheme, THEMES, type ThemeId } from "./theme";
+import { customThemeRef, loadCustomThemes, loadTheme, saveTheme, THEMES, type CustomTheme, type ThemeId } from "./theme";
+import { applyThemeChoice } from "./themeChoice";
+import { CustomThemesBlock } from "./CustomThemes";
 import type { ViewMode } from "./viewMode";
 import { Grp, Row, Seg, Switch, XIcon } from "./settingsUi";
 import { ConfirmButton, useConfirm } from "./Confirm";
@@ -166,22 +168,28 @@ function VersionRow({ backend, onError }: { backend: Backend; onError: (e: unkno
 }
 
 /** Accent colour swatches (Settings › Appearance). Applies at once and is remembered; the other
- *  window follows through the storage event (main.tsx). */
+ *  window follows through the storage event (main.tsx). A custom theme that is on shows its own
+ *  colour as an extra swatch — picking a preset hands the accent back to the user. */
 function AccentRow() {
-  const [id, setId] = useState<AccentId>(() => loadAccent());
-  const change = (next: AccentId) => {
-    setId(next);
+  const [cur, setCur] = useState<string>(() => loadAccent());
+  const change = (next: string) => {
+    setCur(next);
     applyAccent(next);
     saveAccent(next);
   };
+  const hex = isHexAccent(cur) ? cur : null;
   return (
     <Row id="accent" title="Accent colour" desc="The highlight colour across winseek.">
       <div className="acc-swatches" role="radiogroup" aria-label="Accent colour">
         {ACCENTS.map((a) => (
-          <button key={a.id} role="radio" aria-checked={id === a.id} aria-label={a.label}
-                  title={a.label} className={"acc-sw" + (id === a.id ? " on" : "")}
+          <button key={a.id} role="radio" aria-checked={cur === a.id} aria-label={a.label}
+                  title={a.label} className={"acc-sw" + (cur === a.id ? " on" : "")}
                   style={{ background: a.hex }} onClick={() => change(a.id)} />
         ))}
+        {hex && (
+          <button role="radio" aria-checked aria-label="The theme's own colour" title="The theme's own colour"
+                  className="acc-sw on" style={{ background: hex }} onClick={() => change(hex)} />
+        )}
       </div>
     </Row>
   );
@@ -207,20 +215,41 @@ function TransparencyRow() {
   );
 }
 
-/** Light, dark, or one of the loved palettes; or following Windows (Settings › Appearance).
- *  Applies at once and is remembered; the other window follows through the storage event
- *  (main.tsx). Nine options: the wrapped-pill Seg variant. */
-function ThemeRow() {
-  const [id, setId] = useState<ThemeId>(() => loadTheme());
+/** Everything Appearance (Settings › Appearance): the Theme row — built-in palettes plus every
+ *  saved custom theme — the accent swatches, the transparency slider, and the custom-theme
+ *  editor below. The theme choice lives here so the Seg pills and the custom list can never
+ *  disagree about what is on. Applies at once and is remembered; the other window follows
+ *  through the storage events (main.tsx and this block's own listener). */
+function AppearanceBlock({ onError }: { onError: (e: unknown) => void }) {
+  const [themeId, setThemeId] = useState<ThemeId>(() => loadTheme());
+  const [customs, setCustoms] = useState<CustomTheme[]>(() => loadCustomThemes());
   const change = (next: ThemeId) => {
-    setId(next);
-    applyTheme(next);
+    setThemeId(next);
+    applyThemeChoice(next); // paints the palette; a custom theme also brings its own accent
     saveTheme(next);
   };
+  // A theme renamed, recoloured or deleted in the other window: follow it here too.
+  useEffect(() => {
+    const onStorage = (e: StorageEvent) => {
+      if (e.key === "winseek.customThemes") setCustoms(loadCustomThemes());
+      if (e.key === "winseek.theme") setThemeId(loadTheme());
+    };
+    window.addEventListener("storage", onStorage);
+    return () => window.removeEventListener("storage", onStorage);
+  }, []);
   return (
-    <Row id="theme" title="Theme" desc="Light, dark, and the loved palettes — or follow Windows.">
-      <Seg value={id} options={[...THEMES]} onChange={change} label="Theme" className="multi" />
-    </Row>
+    <>
+      <Grp title="Appearance">
+        <Row id="theme" title="Theme" desc="Light, dark, the loved palettes — and your own.">
+          <Seg value={themeId} options={[...THEMES, ...customs.map((c) => ({ id: customThemeRef(c.id), label: c.name }))]}
+               onChange={change} label="Theme" className="multi" />
+        </Row>
+        <AccentRow />
+        <TransparencyRow />
+      </Grp>
+      <CustomThemesBlock customs={customs} activeId={themeId} onActivate={change}
+                         onListChange={setCustoms} onError={onError} />
+    </>
   );
 }
 
@@ -1010,13 +1039,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
               </Grp>
             </>
           )}
-          {section === "appearance" && (
-            <Grp title="Appearance">
-              <ThemeRow />
-              <AccentRow />
-              <TransparencyRow />
-            </Grp>
-          )}
+          {section === "appearance" && <AppearanceBlock onError={onError} />}
           {section === "shortcuts" && <ShortcutsBlock backend={backend} onError={onError} />}
           {section === "status" && <StatusSection backend={backend} onError={onError} onSection={onSection} />}
           </div>
