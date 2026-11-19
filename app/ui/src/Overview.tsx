@@ -204,7 +204,7 @@ const AppTile = memo(function AppTile({ it, i, sel, backend, h }: { it: OvItem; 
          data-sel={sel ? "1" : undefined} data-i={i}
          onClick={() => h.onOpen(i)} onDoubleClick={() => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>
-      <FileIcon name={item.title} isDir={false} src={src} variant="app" />
+      <FileIcon name={item.title} isDir={false} src={src} variant={item.kind} />
       <span>{item.title}</span>
     </div>
   );

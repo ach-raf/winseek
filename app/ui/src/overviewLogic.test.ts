@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
 import { chipCount, relDate } from "./format.ts";
 import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
@@ -183,31 +183,33 @@ test("expandable maps sections to their Show-all view", () => {
   assert.equal(expandable(undefined), null);
 });
 
-test("home: Most used grid (capped at the columns) then Recent files; ovMove walks the app grid", () => {
+test("home: Most used tiles only (capped, deduped); a drive-scoped home adds that drive's recent files; ovMove walks the grid", () => {
   const mru = Array.from({ length: 9 }, (_, i) => app("app:" + i, "App " + i, 0));
+  const h = buildHome({ mru, maxTiles: 6 });
+  assert.deepEqual(h.sections.map((x) => [x.id, x.items.length]), [["mostused", 6]], "no Recent files on the home");
+  assert.equal(buildHome({ mru, maxTiles: 18 }).flat.length, 9, "every stored entry fits in 3 rows");
+  assert.equal(buildHome({ mru: [...mru, mru[0]!], maxTiles: 18 }).flat.length, 9, "tile keys stay unique");
   const recent = Array.from({ length: 10 }, (_, i) => hit("r" + i));
-  const h = buildHome({ mru, recent, appCols: 6, recentCap: 7 });
-  assert.deepEqual(h.sections.map((x) => [x.id, x.items.length]), [["mostused", 6], ["recent", 7]]);
-  const h12 = buildHome({ mru, recent, appCols: 12, recentCap: 7 });
-  assert.deepEqual(h12.sections.map((x) => [x.id, x.items.length]), [["mostused", 9], ["recent", 7]], "full mode's 12 columns show every stored MRU entry");
-  assert.equal(h.flat[7]?.nameIdx, 1, "recent rows point into the name results");
-  const C = { mostused: 6 };
-  assert.equal(ovMove(h.flat, 2, "down", C), 6, "grid -> first recent row");
-  assert.equal(ovMove(h.flat, 6, "up", C), 0, "recent row up -> first tile of the grid's last row");
+  const d = buildHome({ mru: [], recent, maxTiles: 6, recentCap: 7 });
+  assert.deepEqual(d.sections.map((x) => [x.id, x.items.length]), [["recent", 7]]);
+  const C = { mostused: 3 };
+  assert.equal(ovMove(h.flat, 0, "down", C), 3, "next tile row");
+  assert.equal(ovMove(h.flat, 4, "up", C), 1);
   assert.equal(ovMove(h.flat, 1, "right", C), 2);
   assert.equal(ovMove(h.flat, 5, "right", C), 5);
-  assert.equal(buildHome({ mru: [], recent: [], appCols: 6, recentCap: 7 }).sections.length, 0);
+  assert.equal(buildHome({ mru: [], maxTiles: 6 }).sections.length, 0);
 });
 
-test("bumpMru counts launches, most used first, capped", () => {
+test("bumpMru keeps settings next to apps, most used first, capped at MRU_MAX", () => {
   const it = (id: string) => app(id, id, 0).item;
+  const setting = { ...it("ms-settings:display"), kind: "setting" as const };
   let l = bumpMru([], it("a"), 1);
-  l = bumpMru(l, it("b"), 2);
-  l = bumpMru(l, it("b"), 3);
-  assert.deepEqual(l.map((e) => [e.item.id, e.n]), [["b", 2], ["a", 1]]);
-  for (let i = 0; i < 20; i++) l = bumpMru(l, it("x" + i), 10 + i);
-  assert.equal(l.length, 12);
-  assert.equal(l[0]?.item.id, "b");
+  l = bumpMru(l, setting, 2);
+  l = bumpMru(l, setting, 3);
+  assert.deepEqual(l.map((e) => [e.item.id, e.n]), [["ms-settings:display", 2], ["a", 1]]);
+  for (let i = 0; i < 40; i++) l = bumpMru(l, it("x" + i), 10 + i);
+  assert.equal(l.length, MRU_MAX);
+  assert.equal(l[0]?.item.id, "ms-settings:display");
 });
 
 test("nicePath drops the home folder and joins with a chevron", () => {

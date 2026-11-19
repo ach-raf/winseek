@@ -14,7 +14,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IFilter, IGear, IMag, IX } from "./icons";
@@ -396,17 +396,30 @@ export default function App({ backend }: { backend: Backend }) {
   // The pictures grid is the shared exact-size grid: its column count is what fits (Overview measures it).
   const [picCols, setPicCols] = useState(4);
   const gridCols: GridCols = useMemo(() => ({ images: picCols, namepics: picCols, mostused: full ? 7 : 6 }), [full, picCols]);
-  const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))), [mru, drive]);
+  // No history yet: a few generic launcher picks (well-known apps and settings), fetched once; never personal.
+  const [defaultHits, setDefaultHits] = useState<LaunchHit[] | null>(null);
+  const homeEmpty = isRecent && !drive && mru.length === 0;
+  useEffect(() => {
+    if (!homeEmpty || defaultHits) return;
+    let dead = false;
+    Promise.all(DEFAULT_HOME_QUERIES.map((q) => backend.launchSearch(q, 1).then((h) => h[0]).catch(() => undefined))).then((all) => {
+      if (!dead) setDefaultHits(all.filter((h): h is LaunchHit => !!h).map((h) => ({ ...h, confirm: false })));
+    });
+    return () => { dead = true; };
+  }, [homeEmpty, defaultHits, backend, launchVer]);
+  const mruHits = useMemo((): LaunchHit[] => (drive ? [] : mru.length
+    ? mru.map((e) => ({ item: e.item, score: 0, ranges: [], confirm: false }))
+    : defaultHits ?? []), [mru, drive, defaultHits]);
   const ov = useMemo(
     () => (isRecent
-      ? buildHome({ mru: mruHits, recent: data.recent ? headRows : [], appCols: gridCols.mostused!, recentCap: full ? 40 : 7 })
+      ? buildHome({ mru: mruHits, recent: drive && data.recent ? headRows : [], maxTiles: gridCols.mostused! * HOME_ROWS, recentCap: full ? 40 : 7 })
       : buildOverview({
         names: settingsScope || meaningScope ? [] : headRows, nameTotal: settingsScope || meaningScope ? 0 : data.total, sem: semHits, semMore: sem.more, reranked: sem.reranked, text: parsed.text,
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
       })),
-    [isRecent, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
+    [isRecent, drive, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -435,10 +448,15 @@ export default function App({ backend }: { backend: Backend }) {
     }
     scopeRef.current = sk;
     (async () => {
-      if (isRecent) {
-        const all = await backend.recent(drive ? 300 : 40);
+      if (isRecent && !drive) {
+        // The home is Most used tiles only: no recent-files read (no USN ring IPC).
         if (my !== seq.current) return;
-        const hits = drive ? all.filter((h) => onDrive(h.path, drive)).slice(0, 40) : all;
+        rowsRef.current = [];
+        setData({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
+      } else if (isRecent) {
+        const all = await backend.recent(300);
+        if (my !== seq.current) return;
+        const hits = all.filter((h) => onDrive(h.path, drive)).slice(0, 40);
         rowsRef.current = hits;
         setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else {
@@ -887,7 +905,7 @@ export default function App({ backend }: { backend: Backend }) {
       if (mode === "reveal") { await backend.launchReveal(id); await backend.hide(); return; }
       if (h.confirm && armed !== id) { armConfirm(id); return; } // second Enter confirms
       await backend.launchRun(id, q, mode === "admin");
-      if (h.item.kind === "app") setMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
+      if (h.item.kind === "app" || h.item.kind === "setting" || (h.item.kind === "command" && !h.confirm)) setMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
       await backend.hide();
     } catch (e) { fail(e); }
   }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, setMru]);
@@ -932,10 +950,11 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => () => window.clearTimeout(arrivalTimer.current), []);
   // The home list (recently changed files) after something new arrived: re-read quietly, the selection stays.
   const refreshRecent = () => {
+    if (!drive) return; // the unscoped home lists no files
     const my = seq.current;
-    backend.recent(drive ? 300 : 40).then((all) => {
+    backend.recent(300).then((all) => {
       if (my !== seq.current) return;
-      const hits = drive ? all.filter((h) => onDrive(h.path, drive)).slice(0, 40) : all;
+      const hits = all.filter((h) => onDrive(h.path, drive)).slice(0, 40);
       rowsRef.current = hits;
       setData((x) => (x.recent ? { ...x, total: hits.length, rows: hits, ver: x.ver + 1 } : x));
     }).catch(() => { /* the next change asks again */ });
@@ -1589,7 +1608,7 @@ export default function App({ backend }: { backend: Backend }) {
   ) : null;
 
   // Home suggestions (the empty state is never a dead end): recent searches fill the box, "Try" shows
-  // what the query language understands. Most used / Recent files follow below in the Overview.
+  // what the query language understands. Most used apps and settings follow below in the Overview.
   const qsug = isRecent ? (
     <div className="qsug">
       {histList.length > 0 && (
@@ -1624,8 +1643,8 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
       )}
-      {loaded && ov.flat.length === 0 && (
-        <div className="none qnone"><b>Nothing here yet</b>Files you open or change show up here. Start typing to search.</div>
+      {loaded && ov.flat.length === 0 && (drive || defaultHits) && (
+        <div className="none qnone"><b>Nothing here yet</b>{drive ? "Files you open or change on this drive show up here. " : ""}Start typing to search.</div>
       )}
     </div>
   ) : null;

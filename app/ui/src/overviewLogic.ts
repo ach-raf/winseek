@@ -370,10 +370,12 @@ export function buildOverview(opts: {
   return { sections, flat: sections.flatMap((s) => s.items) };
 }
 
-// ---- home: "Most used" apps (a stored launch count) + "Recent files" ----
+// ---- home: "Most used" apps + settings (a stored launch count); a drive-scoped home lists that drive's recent files ----
 
 export interface MruEntry { item: LaunchItem; n: number; t: number }
-export const MRU_MAX = 12;
+export const MRU_MAX = 24;
+/** Rows of tiles the home shows. */
+export const HOME_ROWS = 3;
 
 /** Count one more launch of `item`; most launched first (ties: most recent first), at most MRU_MAX. */
 export function bumpMru(list: MruEntry[], item: LaunchItem, now: number): MruEntry[] {
@@ -382,12 +384,14 @@ export function bumpMru(list: MruEntry[], item: LaunchItem, now: number): MruEnt
   return next.sort((a, b) => b.n - a.n || b.t - a.t).slice(0, MRU_MAX);
 }
 
-/** Home (empty query): "Most used" apps as a tile grid, then "Recent files" rows. */
+/** Home (empty query): "Most used" apps and settings as a tile grid (at most `maxTiles`). Only a drive-scoped
+ *  home passes `recent`: that drive's recently changed files follow as rows. */
 export function buildHome(opts: {
-  mru: LaunchHit[]; recent: (Hit | undefined)[]; appCols: number; recentCap: number;
+  mru: LaunchHit[]; recent?: (Hit | undefined)[]; maxTiles: number; recentCap?: number;
 }): { sections: OvSection[]; flat: OvItem[] } {
   const sections: OvSection[] = [];
-  const apps = opts.mru.slice(0, Math.max(1, opts.appCols));
+  const seen = new Set<string>();
+  const apps = opts.mru.filter((h) => !seen.has(h.item.id) && seen.add(h.item.id)).slice(0, Math.max(1, opts.maxTiles));
   if (apps.length) {
     sections.push({
       id: "mostused", title: "Most used", total: apps.length, more: false,
@@ -395,13 +399,17 @@ export function buildHome(opts: {
     });
   }
   const files: OvItem[] = [];
-  for (let i = 0; i < opts.recent.length && files.length < opts.recentCap; i++) {
-    const h = opts.recent[i];
+  const recent = opts.recent ?? [];
+  for (let i = 0; i < recent.length && files.length < (opts.recentCap ?? 0); i++) {
+    const h = recent[i];
     if (h) files.push({ key: "n" + i, section: "recent", hit: h, nameIdx: i });
   }
   if (files.length) sections.push({ id: "recent", title: "Recent files", items: files, total: files.length, more: false });
   return { sections, flat: sections.flatMap((x) => x.items) };
 }
+
+/** Well-known, generic launcher queries for a home with no history yet (never personal). */
+export const DEFAULT_HOME_QUERIES = ["notepad", "calculator", "paint", "task manager", "settings", "display", "sound", "bluetooth", "wi-fi", "apps"];
 
 /** Example queries on the home ("Try"): static and generic on purpose (never personal), each one
  *  exercises a real parser feature — kind + season, text + month, text + extension, kind + relative date. */
