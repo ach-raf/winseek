@@ -446,6 +446,138 @@ struct Scratch {
     path: Vec<u8>,
     fold: String,
     chars: Vec<char>,
+    chain: Vec<u32>,
+    up: Vec<u32>,
+}
+
+/// Per-query folder verdicts of one path substring term, indexed by slot: 0 unknown, 1 the
+/// folder's path does not hold the needle, 2 it does. Everything matches folders first and
+/// lets files inherit (`FUN_1400ae4b0` before `FUN_1400af3b0`); here a file's path holds the
+/// needle iff its folder's does or the needle runs into `"\" + name`, so a scan never builds
+/// whole paths. Threads race benignly: every writer stores the same value.
+type PathMemo = Vec<std::sync::atomic::AtomicU8>;
+
+/// A [`PathMemo`] of `n` unknown verdicts, from zeroed pages (no per-slot writes).
+fn zeroed_memo(n: usize) -> PathMemo {
+    let mut v = std::mem::ManuallyDrop::new(vec![0u8; n]);
+    // SAFETY: `AtomicU8` has the same size, alignment and bit validity as `u8`, and the
+    // allocation is handed over whole (pointer, length and capacity unchanged).
+    unsafe {
+        Vec::from_raw_parts(
+            v.as_mut_ptr() as *mut std::sync::atomic::AtomicU8,
+            v.len(),
+            v.capacity(),
+        )
+    }
+}
+
+/// Does folded `needle` occur in `hay` (as `Cond::Text` matches)?
+fn text_has(hay: &[u8], needle: &str, ascii: bool, fold: &mut String) -> bool {
+    if ascii {
+        find_ascii_ci(hay, needle.as_bytes())
+    } else if hay.is_ascii() {
+        false // a non-ASCII folded needle cannot occur in pure-ASCII text
+    } else {
+        match std::str::from_utf8(hay) {
+            Ok(s) => {
+                fold_into(s, fold);
+                fold.contains(needle)
+            }
+            Err(_) => false,
+        }
+    }
+}
+
+const SEP: u8 = b'\\';
+const M_HAS_KNOWN: u8 = 1;
+const M_HAS: u8 = 2;
+const M_ENDS_KNOWN: u8 = 4;
+const M_ENDS: u8 = 8;
+
+/// A folded path needle split at its last separator: `head` + `\` + `rest`.
+struct PathNeedle<'a> {
+    whole: &'a str,
+    head: &'a str,
+    rest: &'a str,
+    ascii: bool,
+}
+
+impl<'a> PathNeedle<'a> {
+    /// `whole` must hold a separator.
+    fn new(whole: &'a str, ascii: bool) -> Self {
+        let k = whole.rfind('\\').unwrap_or(0);
+        PathNeedle {
+            whole,
+            head: &whole[..k],
+            rest: whole.get(k + 1..).unwrap_or(""),
+            ascii,
+        }
+    }
+}
+
+/// Does folded `pre` start `hay` (folding `hay`)?
+fn starts_folded(hay: &[u8], pre: &str, ascii: bool, fold: &mut String) -> bool {
+    if pre.is_empty() {
+        return true;
+    }
+    if ascii && hay.is_ascii() {
+        return hay.len() >= pre.len() && hay[..pre.len()].eq_ignore_ascii_case(pre.as_bytes());
+    }
+    match std::str::from_utf8(hay) {
+        Ok(s) => {
+            fold_into(s, fold);
+            fold.starts_with(pre)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Does folded `suf` end `hay` (folding `hay`)?
+fn ends_folded(hay: &[u8], suf: &str, ascii: bool, fold: &mut String) -> bool {
+    if ascii && hay.is_ascii() {
+        return hay.len() >= suf.len()
+            && hay[hay.len() - suf.len()..].eq_ignore_ascii_case(suf.as_bytes());
+    }
+    match std::str::from_utf8(hay) {
+        Ok(s) => {
+            fold_into(s, fold);
+            fold.ends_with(suf)
+        }
+        Err(_) => false,
+    }
+}
+
+/// Can a whole-path glob match a record named `name`? Its literal tail (after the last `*`
+/// or `?`) ends the path, so it ends the name, or, holding a separator, its last segment is
+/// the whole name. Cheap enough to run before building the path.
+fn glob_tail_fits(pat: &[char], name: &[u8], sc: &mut Scratch) -> bool {
+    let k = pat
+        .iter()
+        .rposition(|&c| c == '*' || c == '?')
+        .map_or(0, |k| k + 1);
+    let lit = &pat[k..];
+    if lit.is_empty() {
+        return true;
+    }
+    sc.chars.clear();
+    sc.chars.extend(
+        std::str::from_utf8(name)
+            .unwrap_or("")
+            .chars()
+            .map(fold_char),
+    );
+    match lit.iter().rposition(|&c| c == '\\') {
+        Some(j) => sc.chars[..] == lit[j + 1..],
+        None => sc.chars.ends_with(lit),
+    }
+}
+
+fn char_len(b: &[u8]) -> usize {
+    if b.is_ascii() {
+        b.len()
+    } else {
+        std::str::from_utf8(b).map_or(b.len(), |s| s.chars().count())
+    }
 }
 
 fn ext_of(name: &str) -> Option<&str> {
@@ -455,7 +587,82 @@ fn ext_of(name: &str) -> Option<&str> {
 }
 
 impl Index {
-    fn eval(&self, t: &Term, i: u32, sc: &mut Scratch) -> bool {
+    /// `sc.path` = the last `want` (or more) chars of `p`'s path as its children see it (a
+    /// volume root contributes its bare name, `C:`).
+    fn write_suffix(&self, p: u32, want: usize, sc: &mut Scratch) {
+        sc.chain.clear();
+        let (mut x, mut got) = (p, 0usize);
+        while x != NONE && sc.chain.len() < MAX_DEPTH {
+            sc.chain.push(x);
+            got += char_len(self.name_bytes(x)) + 1;
+            if got > want {
+                break;
+            }
+            x = self.parent[x as usize];
+        }
+        sc.path.clear();
+        for k in (0..sc.chain.len()).rev() {
+            if k + 1 != sc.chain.len() {
+                sc.path.push(SEP);
+            }
+            sc.path.extend_from_slice(self.name_bytes(sc.chain[k]));
+        }
+    }
+
+    /// Does folded `head` end `f`'s path (as its children see it)? Memoized in the `M_ENDS` bits.
+    fn folder_ends(&self, head: &str, ascii: bool, f: u32, m: &PathMemo, sc: &mut Scratch) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        let s = m[f as usize].load(Relaxed);
+        if s & M_ENDS_KNOWN != 0 {
+            return s & M_ENDS != 0;
+        }
+        let v = head.is_empty() || {
+            self.write_suffix(f, head.chars().count(), sc);
+            ends_folded(&sc.path, head, ascii, &mut sc.fold)
+        };
+        m[f as usize].fetch_or(M_ENDS_KNOWN | if v { M_ENDS } else { 0 }, Relaxed);
+        v
+    }
+
+    /// Does the needle run over the separator in front of `name(i)` (`i`'s parent is `p`)?
+    /// Such a match is `head` ending `p`'s path and `rest` starting the name, with the needle
+    /// split at its last separator (a name holds none).
+    fn crosses(&self, nd: &PathNeedle, p: u32, i: u32, m: &PathMemo, sc: &mut Scratch) -> bool {
+        starts_folded(self.name_bytes(i), nd.rest, nd.ascii, &mut sc.fold)
+            && self.folder_ends(nd.head, nd.ascii, p, m, sc)
+    }
+
+    /// Whether `f`'s path, as a prefix of its children's paths, holds the needle (memoized).
+    fn folder_has(&self, nd: &PathNeedle, f: u32, m: &PathMemo, sc: &mut Scratch) -> bool {
+        use std::sync::atomic::Ordering::Relaxed;
+        // Climb to the first known (or root) folder, then settle the chain downwards.
+        let mut chain = std::mem::take(&mut sc.up);
+        chain.clear();
+        let mut x = f;
+        let mut known = loop {
+            let s = m[x as usize].load(Relaxed);
+            if s & M_HAS_KNOWN != 0 {
+                break s & M_HAS != 0;
+            }
+            let p = self.parent[x as usize];
+            if p == NONE || chain.len() >= MAX_DEPTH {
+                // A root: its bare name (`C:`) is what its children's paths start with.
+                let v = text_has(self.name_bytes(x), nd.whole, nd.ascii, &mut sc.fold);
+                m[x as usize].fetch_or(M_HAS_KNOWN | if v { M_HAS } else { 0 }, Relaxed);
+                break v;
+            }
+            chain.push(x);
+            x = p;
+        };
+        for &c in chain.iter().rev() {
+            known = known || self.crosses(nd, self.parent[c as usize], c, m, sc);
+            m[c as usize].fetch_or(M_HAS_KNOWN | if known { M_HAS } else { 0 }, Relaxed);
+        }
+        sc.up = chain;
+        known
+    }
+
+    fn eval(&self, t: &Term, i: u32, sc: &mut Scratch, memo: Option<&PathMemo>) -> bool {
         let m = match &t.cond {
             Cond::File => !self.is_dir(i),
             Cond::Folder => self.is_dir(i),
@@ -480,23 +687,19 @@ impl Index {
                 ascii,
                 path,
             } => {
-                let hay: &[u8] = if *path {
-                    self.write_path(i, &mut sc.path);
-                    &sc.path
-                } else {
-                    self.name_bytes(i)
-                };
-                if *ascii {
-                    find_ascii_ci(hay, needle.as_bytes())
-                } else if hay.is_ascii() {
-                    false // a non-ASCII folded needle cannot occur in pure-ASCII text
-                } else {
-                    match std::str::from_utf8(hay) {
-                        Ok(s) => {
-                            fold_into(s, &mut sc.fold);
-                            sc.fold.contains(needle.as_str())
+                let p = self.parent[i as usize];
+                match memo {
+                    Some(m) if *path && p != NONE && needle.as_bytes().contains(&SEP) => {
+                        let nd = PathNeedle::new(needle, *ascii);
+                        self.folder_has(&nd, p, m, sc) || self.crosses(&nd, p, i, m, sc)
+                    }
+                    _ => {
+                        if *path {
+                            self.write_path(i, &mut sc.path);
+                            text_has(&sc.path, needle, *ascii, &mut sc.fold)
+                        } else {
+                            text_has(self.name_bytes(i), needle, *ascii, &mut sc.fold)
                         }
-                        Err(_) => false,
                     }
                 }
             }
@@ -515,6 +718,9 @@ impl Index {
                     find_word(&sc.chars, chars)
                 }
             }
+            Cond::Glob {
+                pat, path: true, ..
+            } if !glob_tail_fits(pat, self.name_bytes(i), sc) => false,
             Cond::Glob { pat, pat8, path } => {
                 let hay: &[u8] = if *path {
                     self.write_path(i, &mut sc.path);
@@ -544,17 +750,34 @@ impl Index {
     fn scan_each(
         &self,
         q: &Query,
-        rank: &[u32],
+        memos: &[Option<PathMemo>],
+        view: &OrderView,
         lo: usize,
         hi: usize,
         mut hit: impl FnMut(u32, u32),
     ) {
         let mut sc = Scratch::default();
-        for (i, &r) in rank.iter().enumerate().take(hi).skip(lo) {
-            if r != NONE && q.terms.iter().all(|t| self.eval(t, i as u32, &mut sc)) {
+        for i in lo..hi {
+            let r = view.rank(i);
+            if r != NONE
+                && q.terms
+                    .iter()
+                    .zip(memos.iter())
+                    .all(|(t, m)| self.eval(t, i as u32, &mut sc, m.as_ref()))
+            {
                 hit(i as u32, r);
             }
         }
+    }
+
+    /// One [`PathMemo`] per path substring term of `q` (`None` for every other term), shared
+    /// by the threads of one scan of this index state.
+    fn path_memos(&self, q: &Query) -> Vec<Option<PathMemo>> {
+        let n = self.parent.len();
+        q.terms
+            .iter()
+            .map(|t| matches!(t.cond, Cond::Text { path: true, .. }).then(|| zeroed_memo(n)))
+            .collect()
     }
 
     /// Split `0..slots` into `available_parallelism` chunks and run `scan` over them; the
@@ -586,25 +809,16 @@ impl Index {
         })
     }
 
-    fn rank_view(&self, order_arr: &[u32]) -> std::borrow::Cow<'_, [u32]> {
-        if self.dirty {
-            std::borrow::Cow::Owned(self.compute_rank(order_arr))
-        } else {
-            std::borrow::Cow::Borrowed(&self.rank[..])
-        }
-    }
-
     /// Number of matches, without materializing them (the type-chip counters).
     pub fn count(&self, q: &Query) -> usize {
-        let order_arr = self.clean_order();
+        let view = self.order_view();
         if q.terms.is_empty() {
-            return order_arr.len();
+            return view.len();
         }
-        let rank = self.rank_view(&order_arr);
-        let rank = &rank[..];
-        self.parallel_scan(rank.len(), |lo, hi| {
+        let memos = self.path_memos(q);
+        self.parallel_scan(view.slots(), |lo, hi| {
             let mut n = 0usize;
-            self.scan_each(q, rank, lo, hi, |_, _| n += 1);
+            self.scan_each(q, &memos, &view, lo, hi, |_, _| n += 1);
             n
         })
         .into_iter()
@@ -615,17 +829,16 @@ impl Index {
     /// scan threads set their bits directly, so nothing is collected or sorted.
     pub fn name_matches(&self, q: &Query) -> RankSet {
         use std::sync::atomic::{AtomicU64, Ordering};
-        let order_arr = self.clean_order();
-        let n = order_arr.len();
+        let view = self.order_view();
+        let n = view.len();
         if q.terms.is_empty() {
             return RankSet::all(n);
         }
-        let rank = self.rank_view(&order_arr);
-        let rank = &rank[..];
         let bits: Vec<AtomicU64> = (0..n.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
         let bits_ref = &bits;
-        self.parallel_scan(rank.len(), |lo, hi| {
-            self.scan_each(q, rank, lo, hi, |_, r| {
+        let memos = self.path_memos(q);
+        self.parallel_scan(view.slots(), |lo, hi| {
+            self.scan_each(q, &memos, &view, lo, hi, |_, r| {
                 bits_ref[(r >> 6) as usize].fetch_or(1u64 << (r & 63), Ordering::Relaxed);
             })
         });
@@ -634,31 +847,26 @@ impl Index {
 
     /// Record indices of one window of a [`RankSet`] built on this same index state.
     pub fn name_page(&self, set: &RankSet, offset: usize, limit: usize, desc: bool) -> Vec<u32> {
-        let order_arr = self.clean_order();
-        debug_assert_eq!(
-            order_arr.len(),
-            set.n,
-            "RankSet used on a different index state"
-        );
+        let view = self.order_view();
+        debug_assert_eq!(view.len(), set.n, "RankSet used on a different index state");
         set.window(offset, limit, desc)
             .into_iter()
-            .filter_map(|r| order_arr.get(r as usize).copied())
+            .filter_map(|r| view.at(r as usize))
             .collect()
     }
 
     /// Every matching record index, in storage order (input for the meta orders).
     pub fn match_slots(&self, q: &Query) -> Vec<u32> {
-        let order_arr = self.clean_order();
-        let rank = self.rank_view(&order_arr);
-        let rank = &rank[..];
+        let view = self.order_view();
         if q.terms.is_empty() {
-            return (0..rank.len() as u32)
-                .filter(|&i| rank[i as usize] != NONE)
+            return (0..view.slots() as u32)
+                .filter(|&i| view.rank(i as usize) != NONE)
                 .collect();
         }
-        let parts = self.parallel_scan(rank.len(), |lo, hi| {
+        let memos = self.path_memos(q);
+        let parts = self.parallel_scan(view.slots(), |lo, hi| {
             let mut out = Vec::new();
-            self.scan_each(q, rank, lo, hi, |i, _| out.push(i));
+            self.scan_each(q, &memos, &view, lo, hi, |i, _| out.push(i));
             out
         });
         let mut all = Vec::with_capacity(parts.iter().map(|p| p.len()).sum());
@@ -694,8 +902,7 @@ impl Index {
                 .map(|&i| (self.meta_key(key, i, dirs), i))
                 .collect();
         }
-        let order_arr = self.clean_order();
-        let rank = self.rank_view(&order_arr);
+        let view = self.order_view();
         slots
             .iter()
             .map(|&i| {
@@ -707,7 +914,7 @@ impl Index {
                         }
                     }
                 }
-                let r = (rank.get(i as usize).copied().unwrap_or(0) as u64).min((1 << 31) - 1);
+                let r = (view.rank(i as usize) as u64).min((1 << 31) - 1);
                 (i64::MAX - ((ext << 31) | r) as i64, i)
             })
             .collect()

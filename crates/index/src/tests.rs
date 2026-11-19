@@ -38,6 +38,14 @@ fn sample() -> Index {
     b.finish()
 }
 
+/// Each slot's dense position in the order (NONE when not searchable).
+fn dense_ranks(ix: &Index) -> Vec<u32> {
+    let v = ix.order_view();
+    (0..ix.parent.len())
+        .map(|r| if r < v.slots() { v.rank(r) } else { NONE })
+        .collect()
+}
+
 fn names(ix: &Index, q: &str) -> Vec<String> {
     ix.search_str(q, &SearchOptions::default())
         .items
@@ -523,9 +531,9 @@ fn incremental_equals_full_rebuild() {
         }
     }
     ix.refresh();
-    let inc: Vec<String> = ix.order.iter().map(|&i| ix.full_path(i)).collect();
+    let inc: Vec<String> = ix.order_vec().iter().map(|&i| ix.full_path(i)).collect();
     ix.rebuild_order();
-    let full: Vec<String> = ix.order.iter().map(|&i| ix.full_path(i)).collect();
+    let full: Vec<String> = ix.order_vec().iter().map(|&i| ix.full_path(i)).collect();
     assert_eq!(inc, full);
 }
 
@@ -550,12 +558,12 @@ fn snapshot_round_trip_and_corruption() {
     );
     ix.refresh();
     let a: Vec<_> = ix
-        .order
+        .order_vec()
         .iter()
         .map(|&i| (ix.full_path(i), ix.size(i), ix.frn(i)))
         .collect();
     let b: Vec<_> = ld
-        .order
+        .order_vec()
         .iter()
         .map(|&i| (ld.full_path(i), ld.size(i), ld.frn(i)))
         .collect();
@@ -884,15 +892,16 @@ fn incremental_refresh_matches_full_rebuild() {
         // a search on the dirty index sees the same thing as after the refresh
         let dirty = names(&ix, "");
         ix.refresh();
-        let inc_order = ix.order.clone();
-        let inc_rank: Vec<u32> = (0..ix.parent.len())
-            .map(|r| ix.rank.get(r).copied().unwrap_or(NONE))
-            .collect();
+        let inc_order = ix.order_vec();
+        let inc_rank = dense_ranks(&ix);
         assert_eq!(names(&ix, ""), dirty, "round {round}");
         ix.rebuild_order();
-        assert_eq!(ix.order, inc_order, "round {round}: order");
-        let full_rank: Vec<u32> = (0..ix.parent.len()).map(|r| ix.rank[r]).collect();
-        assert_eq!(full_rank, inc_rank, "round {round}: rank");
+        assert_eq!(ix.order_vec(), inc_order, "round {round}: order");
+        assert_eq!(dense_ranks(&ix), inc_rank, "round {round}: rank");
+        // every record's rank names its own place in the order
+        for (k, &r) in inc_order.iter().enumerate() {
+            assert_eq!(inc_rank[r as usize], k as u32, "round {round}: rank of {r}");
+        }
     }
 }
 
@@ -1130,4 +1139,183 @@ fn type_order_groups_by_extension_then_name() {
     let mut rev = names(Order::TypeAsc);
     rev.reverse();
     assert_eq!(names(Order::TypeDesc), rev);
+}
+
+/// Path terms are matched per folder (memoized) plus the `\name` tail; this must agree with
+/// a substring test over every record's whole folded path, needles crossing any boundary.
+#[test]
+fn path_terms_match_whole_paths() {
+    use crate::fold::fold_string;
+    let mut s = 0x9E37_79B9_7F4A_7C15u64;
+    let mut rnd = move |n: u64| {
+        s ^= s << 13;
+        s ^= s >> 7;
+        s ^= s << 17;
+        s % n
+    };
+    const PARTS: &[&str] = &["a", "ab", "Bc", "é", "Ü", "日本", "x.y", "c", "AB"];
+    let mut b = IndexBuilder::new(false);
+    b.add_volume(C, 5);
+    let mut dirs = vec![5u64];
+    for d in 0..300u64 {
+        let parent = dirs[rnd(dirs.len() as u64) as usize];
+        let name: String = (0..1 + rnd(3))
+            .map(|_| PARTS[rnd(PARTS.len() as u64) as usize])
+            .collect();
+        b.push(C, 1000 + d, parent, &name, true, 0, 0);
+        dirs.push(1000 + d);
+    }
+    for f in 0..1500u64 {
+        let parent = dirs[rnd(dirs.len() as u64) as usize];
+        let name: String = (0..1 + rnd(3))
+            .map(|_| PARTS[rnd(PARTS.len() as u64) as usize])
+            .collect();
+        b.push(C, 10_000 + f, parent, &name, false, 0, 0);
+    }
+    let ix = b.finish();
+    let all = SearchOptions {
+        offset: 0,
+        limit: 1_000_000,
+        order: Order::NameAsc,
+    };
+    let every = ix.search_str("", &all).items;
+    let paths: Vec<(u32, String)> = every
+        .iter()
+        .map(|&i| (i, fold_string(&ix.full_path(i))))
+        .collect();
+    let mut needles: Vec<String> = vec![
+        r"c:\".into(),
+        r"C:\a".into(),
+        r"\a\".into(),
+        r"é\ü".into(),
+        r"\日本".into(),
+        r"b\".into(),
+        r"\".into(),
+        r"x.y\c".into(),
+    ];
+    for _ in 0..150 {
+        let p = &paths[rnd(paths.len() as u64) as usize].1;
+        let cs: Vec<char> = p.chars().collect();
+        let a = rnd(cs.len() as u64) as usize;
+        let l = 1 + rnd((cs.len() - a).min(9) as u64) as usize;
+        let n: String = cs[a..a + l].iter().collect();
+        if n.contains('\\') {
+            needles.push(n);
+        }
+    }
+    for n in &needles {
+        for neg in [false, true] {
+            let q = if neg { format!("!{n}") } else { n.clone() };
+            let want: std::collections::BTreeSet<u32> = paths
+                .iter()
+                .filter(|(_, p)| p.contains(&fold_string(n)) != neg)
+                .map(|&(i, _)| i)
+                .collect();
+            let got: std::collections::BTreeSet<u32> =
+                ix.search_str(&q, &all).items.into_iter().collect();
+            assert_eq!(got, want, "query {q:?}");
+        }
+    }
+}
+
+/// A subtree bigger than the bulk threshold leaves the (parent, name) lookup in one pass;
+/// lookups of the survivors, re-inserts and recounts stay right.
+#[test]
+fn big_subtree_removal_keeps_lookups() {
+    let mut b = IndexBuilder::new(false);
+    b.add_volume(C, 5);
+    b.push(C, 10, 5, "big", true, 0, 0);
+    b.push(C, 11, 10, "inner", true, 0, 0);
+    b.push(C, 12, 5, "keep", true, 0, 0);
+    for f in 0..5000u64 {
+        b.push(
+            C,
+            1000 + f,
+            if f % 2 == 0 { 10 } else { 11 },
+            &format!("f{f}.txt"),
+            false,
+            0,
+            0,
+        );
+    }
+    for f in 0..50u64 {
+        b.push(C, 9000 + f, 12, &format!("f{f}.txt"), false, 0, 0);
+    }
+    let mut ix = b.finish();
+    assert!(ix.find_file(C, 11, "f1.txt").is_some());
+    let big = ix.folder_idx(C, 10).unwrap();
+    assert_eq!(ix.remove(big), 5002);
+    ix.refresh();
+    assert_eq!(ix.find_file(C, 10, "f0.txt"), None);
+    assert_eq!(ix.find_file(C, 11, "f1.txt"), None);
+    for f in 0..50u64 {
+        assert!(ix.find_file(C, 12, &format!("f{f}.txt")).is_some(), "f{f}");
+    }
+    ix.insert(C, 20_000, 12, "late.txt", false, 0, 0);
+    ix.refresh();
+    assert!(ix.find_file(C, 12, "late.txt").is_some());
+    assert_eq!(names(&ix, "late"), vec![r"C:\keep\late.txt".to_string()]);
+    assert_eq!(ix.counts(C), recount(&ix, C));
+    assert_eq!(ix.count(&Query::parse("")), 52);
+}
+
+/// Whole-path globs skip records whose name cannot end the pattern; the result must equal
+/// the glob over every whole folded path.
+#[test]
+fn path_globs_match_whole_paths() {
+    use crate::fold::{fold_string, glob_match};
+    let mut b = IndexBuilder::new(false);
+    b.add_volume(C, 5);
+    let dirs = ["ab", "Bc", "é", "日本", "x.y"];
+    for (d, n) in dirs.iter().enumerate() {
+        b.push(C, 100 + d as u64, 5, n, true, 0, 0);
+        b.push(C, 200 + d as u64, 100 + d as u64, "ab", true, 0, 0);
+    }
+    let files = ["a.dll", "AB", "x.y", "b", "été.txt", "日本.doc", "abc", "c"];
+    let mut frn = 1000u64;
+    for d in 0..dirs.len() as u64 {
+        for (k, f) in files.iter().enumerate() {
+            frn += 1;
+            let parent = if k % 2 == 0 { 100 + d } else { 200 + d };
+            b.push(C, frn, parent, f, false, 0, 0);
+        }
+    }
+    let ix = b.finish();
+    let all = SearchOptions {
+        offset: 0,
+        limit: 1_000_000,
+        order: Order::NameAsc,
+    };
+    let every = ix.search_str("", &all).items;
+    for pat in [
+        r"*\a*",
+        r"c:\*b",
+        r"*é\*",
+        r"*\x.y",
+        r"*\ab\*c",
+        r"*b?",
+        r"c:\*\*\*",
+        r"*\日本*",
+        r"*\*.dll",
+        r"*\ab",
+        r"c:\ab\a?dll",
+        r"*?\ab\",
+    ] {
+        let p: Vec<char> = fold_string(pat).chars().collect();
+        let want: Vec<u32> = {
+            let mut v: Vec<u32> = every
+                .iter()
+                .copied()
+                .filter(|&i| {
+                    let h: Vec<char> = fold_string(&ix.full_path(i)).chars().collect();
+                    glob_match(&p, &h)
+                })
+                .collect();
+            v.sort_unstable();
+            v
+        };
+        let mut got = ix.search_str(pat, &all).items;
+        got.sort_unstable();
+        assert_eq!(got, want, "pattern {pat:?}");
+    }
 }

@@ -46,8 +46,10 @@ const META_TOP: usize = 50_000;
 
 /// Folder sizes (bytes under each folder, all levels) are recomputed at most this often while
 /// the index keeps changing, and only while somebody is looking at folders.
-const FOLDER_SIZES_EVERY: Duration = Duration::from_secs(20);
-const FOLDER_SIZES_WANTED: Duration = Duration::from_secs(600);
+/// Folder-size hints on search rows are approximate: a full pass over the index is only worth it
+/// every couple of minutes, and only while folder rows were shown lately.
+const FOLDER_SIZES_EVERY: Duration = Duration::from_secs(120);
+const FOLDER_SIZES_WANTED: Duration = Duration::from_secs(180);
 
 /// Folder totals keyed by identity (volume + file reference number), not by record slot:
 /// slots are recycled by index refreshes, an identity stays right while the table is a few
@@ -220,6 +222,64 @@ pub struct Shared {
     usage_cache: Mutex<Option<Arc<UsageCache>>>,
     usage_build: Mutex<()>,
     usage_seen: AtomicU64,
+    /// Per-task work counters, logged and reset by the main loop every minute.
+    pub stats: Stats,
+}
+
+/// What the daemon spent its time on since the last report: one line per minute in the log, so a
+/// CPU complaint can be answered from numbers (writer batches, searches, roll-up and
+/// folder-size rebuilds).
+#[derive(Default)]
+pub struct Stats {
+    batches: AtomicU64,
+    changes: AtomicU64,
+    batch_us: AtomicU64,
+    searches: AtomicU64,
+    search_us: AtomicU64,
+    usage_builds: AtomicU64,
+    usage_ms: AtomicU64,
+    folder_builds: AtomicU64,
+    folder_ms: AtomicU64,
+}
+
+impl Stats {
+    pub fn search(&self, d: Duration) {
+        self.searches.fetch_add(1, Ordering::Relaxed);
+        self.search_us
+            .fetch_add(d.as_micros() as u64, Ordering::Relaxed);
+    }
+    fn batch(&self, changes: usize, d: Duration) {
+        self.batches.fetch_add(1, Ordering::Relaxed);
+        self.changes.fetch_add(changes as u64, Ordering::Relaxed);
+        self.batch_us
+            .fetch_add(d.as_micros() as u64, Ordering::Relaxed);
+    }
+    fn usage_build(&self, d: Duration) {
+        self.usage_builds.fetch_add(1, Ordering::Relaxed);
+        self.usage_ms
+            .fetch_add(d.as_millis() as u64, Ordering::Relaxed);
+    }
+    fn folder_build(&self, d: Duration) {
+        self.folder_builds.fetch_add(1, Ordering::Relaxed);
+        self.folder_ms
+            .fetch_add(d.as_millis() as u64, Ordering::Relaxed);
+    }
+    /// A one-line summary of the work since the last call (counters reset); `None` when idle.
+    pub fn take_line(&self) -> Option<String> {
+        let t = |c: &AtomicU64| c.swap(0, Ordering::Relaxed);
+        let (b, ch, bus) = (t(&self.batches), t(&self.changes), t(&self.batch_us));
+        let (s, sus) = (t(&self.searches), t(&self.search_us));
+        let (ub, ums) = (t(&self.usage_builds), t(&self.usage_ms));
+        let (fb, fms) = (t(&self.folder_builds), t(&self.folder_ms));
+        if b + s + ub + fb == 0 {
+            return None;
+        }
+        Some(format!(
+            "writer: {b} batches / {ch} changes / {} ms; searches: {s} / {} ms; usage roll-ups: {ub} / {ums} ms; folder sizes: {fb} / {fms} ms",
+            bus / 1000,
+            sus / 1000
+        ))
+    }
 }
 
 impl Shared {
@@ -246,6 +306,7 @@ impl Shared {
             usage_cache: Mutex::new(None),
             usage_build: Mutex::new(()),
             usage_seen: AtomicU64::new(0),
+            stats: Stats::default(),
         }
     }
 
@@ -292,9 +353,16 @@ impl Shared {
         }
         let ix = self.index.read().unwrap();
         let gen = self.gen.load(Ordering::Relaxed);
+        let t = Instant::now();
         let fresh = FolderSizes::build(&ix, &ix.folder_totals(), gen);
         drop(ix);
+        self.stats.folder_build(t.elapsed());
         *self.folder_sizes.lock().unwrap() = Some(Arc::new(fresh));
+    }
+
+    /// Index generation: moves on every change to the index (the snapshot saver compares it).
+    pub fn generation(&self) -> u64 {
+        self.gen.load(Ordering::Relaxed)
     }
 
     pub fn has_ctl(&self, letter: char) -> bool {
@@ -428,6 +496,7 @@ pub fn writer_loop(sh: &Shared, rx: Receiver<Msg>) {
 }
 
 fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) {
+    let started = Instant::now();
     let mut events: Vec<Event> = Vec::new();
     // Created / modified files whose size and mtime are refined by a stat() *after* the write
     // lock is released: disk (or antivirus) latency must never stall searches.
@@ -521,6 +590,7 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
             .compare_exchange(g, g + 1, Ordering::Relaxed, Ordering::Relaxed);
     }
     publish(sh, recent, &events);
+    sh.stats.batch(changes.len(), started.elapsed());
 }
 
 /// Apply stat'ed folder-watch ops (no I/O under the lock).
@@ -788,7 +858,11 @@ const USAGE_ENTRIES: usize = 400;
 /// seconds, not minutes.
 const USAGE_FRESH: Duration = Duration::from_secs(5);
 /// The roll-up is only kept (and rebuilt) while somebody asked for it this recently.
-const USAGE_WANTED: Duration = Duration::from_secs(300);
+const USAGE_WANTED: Duration = Duration::from_secs(120);
+/// While the totals are exact (the overlay tracks every change) a rebuild is only for the child
+/// lists, which merely lack records added since: new files from constant churn (logs, queues)
+/// must not trigger a full pass over the index every few seconds.
+const USAGE_LISTS_EVERY: Duration = Duration::from_secs(60);
 
 /// Folder totals for the disk-usage view, built once from the index and reused for every click.
 /// The writer keeps its totals exact as the index changes (`Rollup`'s overlay, fed by
@@ -841,6 +915,7 @@ impl Shared {
         let t = Instant::now();
         let gen = self.gen.load(Ordering::Relaxed);
         let ru = ix.rollup();
+        self.stats.usage_build(t.elapsed());
         info!(
             "disk usage roll-up: {} folders, {} MB, {:.0?}",
             ru.dir_count(),
@@ -885,7 +960,12 @@ impl Shared {
         }
         let gen = self.gen.load(Ordering::Relaxed);
         let lists_lag = cur.ru.read().unwrap().structure_dirty();
-        if cur.at.elapsed() < USAGE_FRESH || (cur.exact(gen) && !lists_lag) {
+        let floor = if cur.exact(gen) {
+            USAGE_LISTS_EVERY
+        } else {
+            USAGE_FRESH
+        };
+        if cur.at.elapsed() < floor || (cur.exact(gen) && !lists_lag) {
             return;
         }
         let Ok(_one) = self.usage_build.try_lock() else {
@@ -1099,7 +1179,7 @@ mod tests {
         let old = UsageCache {
             gen: c.gen,
             synced: AtomicU64::new(c.synced.load(Ordering::Relaxed)),
-            at: Instant::now().checked_sub(USAGE_FRESH).unwrap(),
+            at: Instant::now().checked_sub(USAGE_LISTS_EVERY).unwrap(),
             ru: RwLock::new(c.ru.read().unwrap().clone()),
         };
         *sh.usage_cache.lock().unwrap() = Some(Arc::new(old));

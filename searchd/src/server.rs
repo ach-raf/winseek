@@ -72,6 +72,7 @@ fn respond(sh: &Shared, req: Request) -> Response {
         } => {
             let t = Instant::now();
             let (total, hits, note) = state::search(sh, &query, offset, limit, sort);
+            sh.stats.search(t.elapsed());
             if let Some(n) = note {
                 static ONCE: AtomicBool = AtomicBool::new(false);
                 if !ONCE.swap(true, Ordering::Relaxed) {

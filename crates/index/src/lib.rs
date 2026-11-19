@@ -5,6 +5,7 @@
 //! * [`query`]: query parser + parallel matcher
 //! * [`snapshot`]: `WSIX` persistence
 
+mod chunks;
 pub mod fold;
 pub mod query;
 pub mod snapshot;

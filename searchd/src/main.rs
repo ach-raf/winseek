@@ -41,7 +41,9 @@ const USAGE: &str = "usage: searchd --console [--data <dir>] [--volumes C,D] [--
        searchd --service [--data <dir>] [--volumes C,D] [--log <file>]   (started by the SCM)
        searchd --install [--volumes C,D]     (elevated)
        searchd --uninstall                   (elevated)";
-const SAVE_EVERY: Duration = Duration::from_secs(300);
+/// A snapshot is only written when the index changed since the last one, and then at most this
+/// often (a crash replays the USN journal from the stored cursor, so a stale snapshot costs seconds).
+const SAVE_EVERY: Duration = Duration::from_secs(900);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Mode {
@@ -279,6 +281,8 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     /// After an arrival notification, look once more: the letter may not be mounted yet.
     const RECHECK_DELAY: Duration = Duration::from_secs(2);
     let mut last_save = Instant::now();
+    let mut saved_gen = sh.generation();
+    let mut last_stats = Instant::now();
     let mut last_poll = Instant::now();
     let mut recheck: Option<Instant> = None;
     while !stop.load(Ordering::SeqCst) {
@@ -297,7 +301,16 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
         sh.trim_query_cache();
         sh.refresh_folder_sizes();
         sh.refresh_usage();
-        if sh.save_now.swap(false, Ordering::Relaxed) || last_save.elapsed() >= SAVE_EVERY {
+        if last_stats.elapsed() >= Duration::from_secs(60) {
+            last_stats = Instant::now();
+            if let Some(line) = sh.stats.take_line() {
+                info!("last minute: {line}");
+            }
+        }
+        let forced = sh.save_now.swap(false, Ordering::Relaxed);
+        let changed = sh.generation() != saved_gen;
+        if forced || (changed && last_save.elapsed() >= SAVE_EVERY) {
+            saved_gen = sh.generation();
             save_snapshot(&sh, &snap_path);
             last_save = Instant::now();
         }

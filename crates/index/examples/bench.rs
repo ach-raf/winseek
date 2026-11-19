@@ -181,7 +181,7 @@ fn main() {
     ix.insert(b'C', 9_999_999, 5, "warm.txt", false, 0, 0);
     ix.refresh();
     println!(
-        "first insert (builds links+hash table) + refresh: {:?}",
+        "first insert (builds the (parent, name) lookup) + refresh: {:?}",
         t.elapsed()
     );
     let mem2 = ix.mem_bytes();
@@ -209,6 +209,40 @@ fn main() {
         t_ins,
         ix.order_len(),
         t.elapsed()
+    );
+
+    // USN steady state: the monitor hands the writer ~1 s batches of a few changes; each batch
+    // ends in one refresh under the write lock. This is the idle-CPU cost of the service.
+    let mut lat = Vec::new();
+    let mut live: Vec<u32> = Vec::new();
+    for round in 0..200u64 {
+        let t = Instant::now();
+        for k in 0..4u64 {
+            let frn = 20_000_000 + round * 8 + k;
+            ix.insert(
+                b'C',
+                frn,
+                5,
+                &format!("steady_{round}_{k}.tmp"),
+                false,
+                0,
+                0,
+            );
+        }
+        if let Some(i) = live.pop() {
+            ix.remove(i);
+        }
+        ix.refresh();
+        lat.push(t.elapsed().as_micros());
+        if let Some(i) = ix.find_file(b'C', 5, &format!("steady_{round}_0.tmp")) {
+            live.push(i);
+        }
+    }
+    println!(
+        "steady USN batch (4 adds + 1 delete + refresh): p50 {} us  p99 {} us  max {} us",
+        pct(&mut lat.clone(), 0.5),
+        pct(&mut lat.clone(), 0.99),
+        lat.iter().max().unwrap()
     );
 
     let path = std::env::temp_dir().join("winseek_bench.wsix");

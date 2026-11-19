@@ -127,12 +127,110 @@ impl<'a> Rd<'a> {
     }
 }
 
+/// Incremental form of [`checksum`]: feeding the same bytes in any split gives the same value.
+struct Ck {
+    h: u64,
+    carry: [u8; 8],
+    nc: usize,
+    len: u64,
+}
+
+impl Ck {
+    fn new() -> Self {
+        Ck {
+            h: 0x9E37_79B9_7F4A_7C15,
+            carry: [0; 8],
+            nc: 0,
+            len: 0,
+        }
+    }
+    fn eat(&mut self, c: [u8; 8]) {
+        self.h = (self.h ^ u64::from_le_bytes(c)).wrapping_mul(0xff51_afd7_ed55_8ccd);
+        self.h ^= self.h >> 32;
+    }
+    fn update(&mut self, mut d: &[u8]) {
+        self.len += d.len() as u64;
+        if self.nc > 0 {
+            let take = (8 - self.nc).min(d.len());
+            self.carry[self.nc..self.nc + take].copy_from_slice(&d[..take]);
+            self.nc += take;
+            d = &d[take..];
+            if self.nc < 8 {
+                return;
+            }
+            let c = self.carry;
+            self.eat(c);
+            self.nc = 0;
+        }
+        let mut it = d.chunks_exact(8);
+        for c in &mut it {
+            self.eat(c.try_into().unwrap());
+        }
+        let r = it.remainder();
+        self.carry[..r.len()].copy_from_slice(r);
+        self.nc = r.len();
+    }
+    fn finish(mut self) -> u64 {
+        for i in 0..self.nc {
+            self.h = (self.h ^ self.carry[i] as u64).wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        self.h ^ self.len
+    }
+}
+
+/// Buffered, checksumming output: sections are appended to `buf`, which goes to `w` in ~1 MiB
+/// pieces, so a snapshot of a 15M-record index never exists in memory as one allocation.
+struct Sink<W: io::Write> {
+    w: W,
+    ck: Ck,
+    buf: Vec<u8>,
+}
+
+const SINK_BUF: usize = 1 << 20;
+
+impl<W: io::Write> Sink<W> {
+    fn new(w: W) -> Self {
+        Sink {
+            w,
+            ck: Ck::new(),
+            buf: Vec::with_capacity(SINK_BUF + 64),
+        }
+    }
+    fn flush_buf(&mut self) -> io::Result<()> {
+        self.ck.update(&self.buf);
+        self.w.write_all(&self.buf)?;
+        self.buf.clear();
+        Ok(())
+    }
+    fn room(&mut self) -> io::Result<()> {
+        if self.buf.len() >= SINK_BUF {
+            self.flush_buf()?;
+        }
+        Ok(())
+    }
+    /// Flush, then append the checksum of everything written so far.
+    fn finish(mut self) -> io::Result<W> {
+        self.flush_buf()?;
+        let ck = self.ck.finish();
+        self.w.write_all(&ck.to_le_bytes())?;
+        Ok(self.w)
+    }
+}
+
+fn varint_len(mut v: u64) -> u64 {
+    let mut n = 1;
+    while v >= 0x80 {
+        n += 1;
+        v >>= 7;
+    }
+    n
+}
+
 impl Index {
-    /// Serialize to bytes (folds pending changes into the saved order without mutating).
-    pub fn to_bytes(&self) -> Vec<u8> {
-        let order = self.clean_order();
+    fn write_snapshot<W: io::Write>(&self, out: &mut Sink<W>) -> io::Result<()> {
+        let order = self.order_vec();
         let n = self.parent.len();
-        let mut b = Vec::with_capacity(64 + n * 24 + self.arena.len() + order.len() * 4);
+        let b = &mut out.buf;
         b.extend_from_slice(MAGIC);
         b.extend_from_slice(&VERSION.to_le_bytes());
         b.extend_from_slice(&(self.with_meta as u32).to_le_bytes());
@@ -149,59 +247,89 @@ impl Index {
             b.extend_from_slice(&v.next_id.to_le_bytes());
         }
         for &p in &self.parent {
-            b.extend_from_slice(&p.to_le_bytes());
+            out.buf.extend_from_slice(&p.to_le_bytes());
+            out.room()?;
         }
-        b.extend_from_slice(&self.vol);
-        b.extend(self.flags.iter().map(|f| f & F_PERSIST));
+        out.buf.extend_from_slice(&self.vol);
+        out.room()?;
+        for &f in &self.flags {
+            out.buf.push(f & F_PERSIST);
+            out.room()?;
+        }
         for &f in &self.frn {
-            b.extend_from_slice(&f.to_le_bytes());
+            out.buf.extend_from_slice(&f.to_le_bytes());
+            out.room()?;
         }
         if self.with_meta {
             for &s in &self.size {
-                b.extend_from_slice(&s.to_le_bytes());
+                out.buf.extend_from_slice(&s.to_le_bytes());
+                out.room()?;
             }
             for &m in &self.mtime {
-                b.extend_from_slice(&m.to_le_bytes());
+                out.buf.extend_from_slice(&m.to_le_bytes());
+                out.room()?;
             }
         }
-        let mut names = Vec::with_capacity(self.arena.len());
+        // Front-coded names. The section length comes first, so one cheap pass counts it.
+        let shared_with =
+            |prev: &[u8], cur: &[u8]| prev.iter().zip(cur).take_while(|(a, b)| a == b).count();
+        let mut names_len = 0u64;
         let mut prev: &[u8] = &[];
         for r in 0..n as u32 {
             let cur = self.name_bytes(r);
-            let shared = prev.iter().zip(cur).take_while(|(a, b)| a == b).count();
-            put_varint(&mut names, shared as u64);
-            put_varint(&mut names, (cur.len() - shared) as u64);
-            names.extend_from_slice(&cur[shared..]);
+            let shared = shared_with(prev, cur);
+            names_len += varint_len(shared as u64)
+                + varint_len((cur.len() - shared) as u64)
+                + (cur.len() - shared) as u64;
             prev = cur;
         }
-        b.extend_from_slice(&(names.len() as u64).to_le_bytes());
-        b.extend_from_slice(&names);
+        out.buf.extend_from_slice(&names_len.to_le_bytes());
+        let mut prev: &[u8] = &[];
+        for r in 0..n as u32 {
+            let cur = self.name_bytes(r);
+            let shared = shared_with(prev, cur);
+            put_varint(&mut out.buf, shared as u64);
+            put_varint(&mut out.buf, (cur.len() - shared) as u64);
+            out.buf.extend_from_slice(&cur[shared..]);
+            prev = cur;
+            out.room()?;
+        }
         for &o in order.iter() {
-            b.extend_from_slice(&o.to_le_bytes());
+            out.buf.extend_from_slice(&o.to_le_bytes());
+            out.room()?;
         }
         let mut ids: Vec<(u8, u128, u64)> = self.live_ids128().collect();
         ids.sort_unstable();
-        b.extend_from_slice(&(ids.len() as u32).to_le_bytes());
+        out.buf.extend_from_slice(&(ids.len() as u32).to_le_bytes());
         for (v, f, id) in ids {
-            b.push(v);
-            b.extend_from_slice(&f.to_le_bytes());
-            b.extend_from_slice(&id.to_le_bytes());
+            out.buf.push(v);
+            out.buf.extend_from_slice(&f.to_le_bytes());
+            out.buf.extend_from_slice(&id.to_le_bytes());
+            out.room()?;
         }
-        let ck = checksum(&b);
-        b.extend_from_slice(&ck.to_le_bytes());
-        b
+        Ok(())
     }
 
-    /// Write `<path>.tmp`, then rename over `path`.
+    /// Serialize to bytes (folds pending changes into the saved order without mutating).
+    /// Tests and tools only: the daemon streams through [`Index::save`].
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut out = Sink::new(Vec::new());
+        self.write_snapshot(&mut out)
+            .expect("writing to a Vec cannot fail");
+        out.finish().expect("writing to a Vec cannot fail")
+    }
+
+    /// Stream to `<path>.tmp`, then rename over `path`. Peak extra memory is ~1 MiB plus the
+    /// (borrowed or merged) sort order, not a second copy of the whole index.
     pub fn save(&self, path: &Path) -> Result<(), SnapshotError> {
-        let bytes = self.to_bytes();
         let mut tmp = path.as_os_str().to_owned();
         tmp.push(".tmp");
         let tmp = std::path::PathBuf::from(tmp);
         {
-            use std::io::Write;
-            let mut f = std::fs::File::create(&tmp)?;
-            f.write_all(&bytes)?;
+            let f = std::fs::File::create(&tmp)?;
+            let mut out = Sink::new(f);
+            self.write_snapshot(&mut out)?;
+            let f = out.finish()?;
             f.sync_all()?;
         }
         std::fs::rename(&tmp, path)?;
@@ -388,10 +516,31 @@ impl Index {
         ix.arena = arena;
         ix.vols = vols;
         ix.ids128 = ids128;
-        ix.rank = ix.compute_rank(&order);
-        ix.order = order;
+        ix.set_sorted(order);
         ix.live = live;
         ix.recount();
         Ok(ix)
+    }
+}
+
+#[cfg(test)]
+mod stream_tests {
+    use super::*;
+
+    #[test]
+    fn incremental_checksum_equals_one_shot_for_any_split() {
+        let data: Vec<u8> = (0..1000u32)
+            .map(|i| (i.wrapping_mul(2654435761) >> 13) as u8)
+            .collect();
+        for len in [0usize, 1, 7, 8, 9, 63, 64, 65, 999, 1000] {
+            let d = &data[..len];
+            for step in [1usize, 3, 5, 8, 13, 100, 1000] {
+                let mut ck = Ck::new();
+                for c in d.chunks(step) {
+                    ck.update(c);
+                }
+                assert_eq!(ck.finish(), checksum(d), "len {len} step {step}");
+            }
+        }
     }
 }

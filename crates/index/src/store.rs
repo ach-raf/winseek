@@ -1,28 +1,29 @@
 //! Struct-of-arrays record store, live mutation, name-sorted order array.
 //!
 //! # Memory layout (bytes per record slot)
-//! `parent` 4, `name_off` 4, `name_len` 2, `flags` 1, `vol` 1, `frn` 8, `order` 4,
-//! name arena ~avg name length (UTF-8, no terminator), optional `size` 8 + `mtime` 8.
-//! That is ~24 B + names without meta.
+//! `parent` 4, `name_off` 4, `name_len` 2, `flags` 1, `vol` 1, `frn` 8, sorted order 4,
+//! `rank` 4, name arena ~avg name length (UTF-8, no terminator), optional `size` 8 +
+//! `mtime` 8. That is ~28 B + names without meta.
 //! The `HashMap<(vol,frn),idx>` holds **folders only** (~25 B per folder entry).
-//! The *mutation structures* (child links + (parent,name) hash table) are built lazily
-//! on the first mutation: `first_child/next/prev` 12 B + open-addressing `u32` table
-//! (load 0.25-0.7, ~6-16 B) = ~20-28 B per record. A query-only index never pays for them.
+//! The *lookup structure* `kids` is built lazily on the first mutation: every record in
+//! one chunked array sorted by (parent, exact name, slot), 4 B per record. A query-only
+//! index never pays for it.
 //!
 //! # Lookup of files
-//! Files are not in the FRN map. `(parent, exact name)` -> idx goes through the open
-//! addressing table keyed by `hash(parent, name bytes)`; O(1) expected, tombstones on
-//! delete, rebuilt when load > 0.7. Children enumeration (recursive delete) uses the
-//! doubly linked sibling list.
+//! Files are not in the FRN map. `(parent, exact name)` -> idx is a binary search in
+//! `kids` (blocks, then inside one block); children enumeration (recursive delete) is the
+//! run of entries with that parent. Inserts and removals move one block.
 //!
 //! # Sort maintenance
-//! `order: Vec<u32>` is sorted by (folded name, then full path, then idx). Mutations
+//! `sorted` (a chunked list, see [`crate::chunks`]) is sorted by (folded name, then full
+//! path, then idx). Mutations
 //! never touch it directly: a renamed/moved record is flagged `STALE` (still in `order`
 //! at its old position) and queued in `pending`; new records are queued in `pending`;
-//! removed records get `DELETED`. [`Index::refresh`] drops stale/deleted entries,
-//! sorts the (small) pending list and does one linear merge (or a full parallel sort if
-//! pending is > 1/8 of the index). Readers on a dirty index (`search(&self)`) get the
-//! same merge computed on the fly, so results are always correct, just slower.
+//! removed records get `DELETED`. [`Index::refresh`] drops stale/deleted entries from the
+//! blocks that hold them and binary-searches the sorted pending list into place (or does a
+//! full parallel sort if pending is > 1/8 of the index). Readers on a dirty index
+//! (`search(&self)`) get the same merge computed on the fly, so results are always
+//! correct, just slower.
 //! Record slots of deleted records are recycled via a free list *after* refresh has
 //! dropped them from `order`. Caveat: renaming a folder does not re-sort descendants;
 //! only the path tie-break between equal names may be stale until the next full rebuild.
@@ -33,8 +34,8 @@
 //! record for that FRN arrives (`insert`), the stub is filled in place, so children keep
 //! their parent index. Builder entries whose parent FRN is never seen keep the stub.
 
+use crate::chunks::Chunks;
 use crate::fold::cmp_fold;
-use std::borrow::Cow;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::hash::{BuildHasherDefault, Hasher};
@@ -59,8 +60,6 @@ pub fn norm_frn(f: u64) -> u64 {
 }
 
 pub(crate) const MAX_DEPTH: usize = 128;
-const EMPTY: u32 = u32::MAX;
-const TOMB: u32 = u32::MAX - 1;
 
 #[derive(Default, Clone, Copy)]
 pub struct FxHasher(u64);
@@ -150,8 +149,10 @@ pub struct Index {
     /// ReFS twin of the folder map key space (Everything db+0x4a0): 128-bit FRN -> u64 id.
     pub(crate) ids128: Ids128,
     pub(crate) vols: Vec<VolumeMeta>,
-    pub(crate) order: Vec<u32>,
-    /// slot -> position in `order` (NONE if not searchable); lets scans run in storage order
+    /// The name-sorted order of the searchable records, chunked (see [`crate::chunks`]).
+    pub(crate) sorted: Chunks,
+    /// slot -> code of its place in `sorted` (NONE if not searchable); lets scans run in
+    /// storage order. [`OrderView::rank`] turns a code into the dense position.
     pub(crate) rank: Vec<u32>,
     pub(crate) pending: Vec<u32>,
     /// Records still in `order` that were flagged `STALE` / `DELETED` since the last refresh
@@ -165,12 +166,58 @@ pub struct Index {
     pub(crate) vcount: Vec<(u64, u64)>,
     // lazily built mutation structures
     links_on: bool,
-    first: Vec<u32>,
-    next: Vec<u32>,
-    prev: Vec<u32>,
-    tbl: Vec<u32>,
-    tbl_used: usize,
-    tbl_tomb: usize,
+    /// Every linked record sorted by (parent, exact name, slot): file lookup by name and
+    /// children enumeration (built on the first mutation).
+    kids: Chunks,
+}
+
+/// What a reader scans: the sorted order and every slot's dense position in it.
+pub(crate) enum OrderView<'a> {
+    Live { ch: &'a Chunks, rank: &'a [u32] },
+    Flat { order: Vec<u32>, rank: Vec<u32> },
+}
+
+impl OrderView<'_> {
+    pub(crate) fn len(&self) -> usize {
+        match self {
+            OrderView::Live { ch, .. } => ch.len(),
+            OrderView::Flat { order, .. } => order.len(),
+        }
+    }
+    /// Number of record slots covered.
+    pub(crate) fn slots(&self) -> usize {
+        match self {
+            OrderView::Live { rank, .. } => rank.len(),
+            OrderView::Flat { rank, .. } => rank.len(),
+        }
+    }
+    /// Dense position of slot `i` in the order, NONE when it is not searchable.
+    #[inline]
+    pub(crate) fn rank(&self, i: usize) -> u32 {
+        match self {
+            OrderView::Live { ch, rank } => match rank[i] {
+                NONE => NONE,
+                c => ch.dense(c),
+            },
+            OrderView::Flat { rank, .. } => rank[i],
+        }
+    }
+    /// The record at dense position `pos`.
+    pub(crate) fn at(&self, pos: usize) -> Option<u32> {
+        match self {
+            OrderView::Live { ch, .. } => ch.at(pos),
+            OrderView::Flat { order, .. } => order.get(pos).copied(),
+        }
+    }
+}
+
+/// Make room for `more` items in `v`, growing by a sixteenth of its length (at least 4096
+/// items) instead of `Vec`'s doubling: the columns hold ~14M entries, and one doubling
+/// after a snapshot load would commit hundreds of MB that are never touched.
+fn room<T>(v: &mut Vec<T>, more: usize) {
+    if v.capacity() - v.len() < more {
+        v.reserve_exact((v.len() / 16).max(4096).max(more));
+    }
 }
 
 fn clamp_name(name: &str) -> &str {
@@ -182,14 +229,6 @@ fn clamp_name(name: &str) -> &str {
         e -= 1;
     }
     &name[..e]
-}
-
-fn hash_key(parent: u32, name: &[u8]) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64 ^ (parent as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15);
-    for &b in name {
-        h = (h ^ b as u64).wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    h ^ (h >> 32)
 }
 
 impl Index {
@@ -211,7 +250,11 @@ impl Index {
     }
     /// Searchable records currently in the sorted order (after pending merge).
     pub fn order_len(&self) -> usize {
-        self.clean_order().len()
+        if self.dirty {
+            self.merged().len()
+        } else {
+            self.sorted.len()
+        }
     }
     pub fn has_meta(&self) -> bool {
         self.with_meta
@@ -328,15 +371,11 @@ impl Index {
             + self.size.capacity() * 8
             + self.mtime.capacity() * 8
             + self.arena.capacity()
-            + self.order.capacity() * 4
+            + self.sorted.mem_bytes()
             + self.rank.capacity() * 4
             + self.folders.capacity() * 25
             + self.ids128.capacity() * 33
-            + (self.first.capacity()
-                + self.next.capacity()
-                + self.prev.capacity()
-                + self.tbl.capacity())
-                * 4
+            + self.kids.mem_bytes() * 4
     }
 
     // ---------------------------------------------------------------- paths
@@ -417,6 +456,7 @@ impl Index {
             "name arena overflow"
         );
         let off = self.arena.len() as u32;
+        room(&mut self.arena, name.len());
         self.arena.extend_from_slice(name.as_bytes());
         (off, name.len() as u16)
     }
@@ -464,15 +504,22 @@ impl Index {
                 self.size[i] = size;
                 self.mtime[i] = mtime;
             }
-            if self.links_on {
-                self.first[i] = NONE;
-                self.next[i] = NONE;
-                self.prev[i] = NONE;
-            }
             return r;
         }
         let i = self.parent.len();
         assert!(i < (u32::MAX - 2) as usize, "too many records");
+        if self.parent.len() == self.parent.capacity() {
+            room(&mut self.parent, 1);
+            room(&mut self.name_off, 1);
+            room(&mut self.name_len, 1);
+            room(&mut self.flags, 1);
+            room(&mut self.vol, 1);
+            room(&mut self.frn, 1);
+            if self.with_meta {
+                room(&mut self.size, 1);
+                room(&mut self.mtime, 1);
+            }
+        }
         self.parent.push(parent);
         self.name_off.push(off);
         self.name_len.push(len);
@@ -482,11 +529,6 @@ impl Index {
         if self.with_meta {
             self.size.push(size);
             self.mtime.push(mtime);
-        }
-        if self.links_on {
-            self.first.push(NONE);
-            self.next.push(NONE);
-            self.prev.push(NONE);
         }
         i as u32
     }
@@ -530,143 +572,147 @@ impl Index {
         let i = self.alloc(vol, frn, root, &stub, F_DIR | F_STUB, 0, 0);
         self.folders.insert((vol, frn), i);
         if self.links_on {
-            self.link(i);
-            self.tbl_insert(i);
+            self.kid_insert(i);
         }
         i
     }
 
-    // ---------------------------------------------------------------- links + table
+    // ---------------------------------------------------------------- (parent, name) lookup
     fn valid_linked(&self, r: usize) -> bool {
         self.flags[r] & F_DELETED == 0 && self.parent[r] != NONE
     }
 
+    /// Order of the lookup structure: parent, then exact name bytes, then slot.
+    #[inline]
+    fn kid_cmp(&self, x: u32, parent: u32, name: &[u8], idx: u32) -> Ordering {
+        self.parent[x as usize]
+            .cmp(&parent)
+            .then_with(|| self.name_bytes(x).cmp(name))
+            .then_with(|| x.cmp(&idx))
+    }
+
+    /// Build the lookup structure on the first mutation: every linked record sorted by
+    /// (parent, name, slot) in one chunked array, 4 B a record (Everything keys its file tree
+    /// db+0xb0 the same way). A counting sort by parent, then the names inside each folder.
     fn ensure_links(&mut self) {
         if self.links_on {
             return;
         }
         let n = self.parent.len();
-        self.first = vec![NONE; n];
-        self.next = vec![NONE; n];
-        self.prev = vec![NONE; n];
-        self.links_on = true;
+        let mut start = vec![0u32; n + 1];
+        let mut count = 0usize;
         for r in 0..n {
             if self.valid_linked(r) {
-                self.link(r as u32);
+                start[self.parent[r] as usize + 1] += 1;
+                count += 1;
             }
         }
-        self.tbl_rebuild();
-    }
-
-    fn link(&mut self, r: u32) {
-        let p = self.parent[r as usize] as usize;
-        let f = self.first[p];
-        self.next[r as usize] = f;
-        self.prev[r as usize] = NONE;
-        if f != NONE {
-            self.prev[f as usize] = r;
+        for k in 0..n {
+            start[k + 1] += start[k];
         }
-        self.first[p] = r;
-    }
-
-    fn unlink(&mut self, r: u32) {
-        let (ru, p) = (r as usize, self.parent[r as usize]);
-        let (pr, nx) = (self.prev[ru], self.next[ru]);
-        if pr != NONE {
-            self.next[pr as usize] = nx;
-        } else if p != NONE {
-            self.first[p as usize] = nx;
-        }
-        if nx != NONE {
-            self.prev[nx as usize] = pr;
-        }
-        self.prev[ru] = NONE;
-        self.next[ru] = NONE;
-    }
-
-    fn tbl_rebuild(&mut self) {
-        let n = self.parent.len();
-        let count = (0..n).filter(|&r| self.valid_linked(r)).count();
-        let cap = (count * 2 + 2).next_power_of_two().max(16);
-        self.tbl = vec![EMPTY; cap];
-        self.tbl_used = 0;
-        self.tbl_tomb = 0;
+        let mut v = vec![0u32; count];
         for r in 0..n {
             if self.valid_linked(r) {
-                self.tbl_put(r as u32);
+                let p = self.parent[r] as usize;
+                v[start[p] as usize] = r as u32;
+                start[p] += 1;
             }
         }
-    }
-
-    fn tbl_put(&mut self, r: u32) {
-        let h = hash_key(self.parent[r as usize], self.name_bytes(r)) as usize;
-        let mask = self.tbl.len() - 1;
-        let mut s = h & mask;
-        loop {
-            let v = self.tbl[s];
-            if v == EMPTY || v == TOMB {
-                if v == TOMB {
-                    self.tbl_tomb -= 1;
+        drop(start);
+        // Sort every folder's run by name, the runs split over threads at folder boundaries.
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
+        let nt = hw.min(v.len() / (1 << 16)).max(1);
+        let mut parts: Vec<&mut [u32]> = Vec::with_capacity(nt);
+        let mut rest: &mut [u32] = &mut v;
+        for k in (1..=nt).rev() {
+            let mut cut = rest.len() / k;
+            while cut > 0
+                && cut < rest.len()
+                && self.parent[rest[cut] as usize] == self.parent[rest[cut - 1] as usize]
+            {
+                cut += 1;
+            }
+            let cut = cut.min(rest.len());
+            let (a, b) = std::mem::take(&mut rest).split_at_mut(cut);
+            parts.push(a);
+            rest = b;
+        }
+        let sort_runs = |s: &mut [u32]| {
+            let mut a = 0;
+            while a < s.len() {
+                let p = self.parent[s[a] as usize];
+                let mut b = a + 1;
+                while b < s.len() && self.parent[s[b] as usize] == p {
+                    b += 1;
                 }
-                self.tbl[s] = r;
-                self.tbl_used += 1;
-                return;
+                if b - a > 1 {
+                    s[a..b].sort_unstable_by(|&x, &y| {
+                        self.name_bytes(x).cmp(self.name_bytes(y)).then(x.cmp(&y))
+                    });
+                }
+                a = b;
             }
-            s = (s + 1) & mask;
-        }
+        };
+        std::thread::scope(|sc| {
+            for part in parts {
+                sc.spawn(move || sort_runs(part));
+            }
+        });
+        self.kids = Chunks::from_sorted_plain(&v);
+        self.links_on = true;
     }
 
     /// Record `r` must already have its final parent/name.
-    fn tbl_insert(&mut self, r: u32) {
-        if (self.tbl_used + self.tbl_tomb + 1) * 10 > self.tbl.len() * 7 {
-            self.tbl_rebuild(); // includes r
-            return;
-        }
-        self.tbl_put(r);
+    fn kid_insert(&mut self, r: u32) {
+        let mut kids = std::mem::take(&mut self.kids);
+        let (p, name) = (self.parent[r as usize], self.name_bytes(r));
+        kids.insert(
+            r,
+            |x| self.kid_cmp(x, p, name, r) == Ordering::Less,
+            &mut Vec::new(),
+        );
+        self.kids = kids;
     }
 
     /// Call BEFORE changing parent/name/deleting `r`.
-    fn tbl_remove(&mut self, r: u32) {
-        let h = hash_key(self.parent[r as usize], self.name_bytes(r)) as usize;
-        let mask = self.tbl.len() - 1;
-        let mut s = h & mask;
-        loop {
-            let v = self.tbl[s];
-            if v == EMPTY {
-                return;
+    fn kid_remove(&mut self, r: u32) {
+        let (p, name) = (self.parent[r as usize], self.name_bytes(r));
+        let at = self
+            .kids
+            .lower_bound(|x| self.kid_cmp(x, p, name, r) == Ordering::Less);
+        if self.kids.get(at) == Some(r) {
+            self.kids.remove_at(at);
+        }
+    }
+
+    /// The children of folder `p`.
+    fn kids_of(&self, p: u32, out: &mut Vec<u32>) {
+        let mut at = self.kids.lower_bound(|x| self.parent[x as usize] < p);
+        while let Some(x) = self.kids.get(at) {
+            if self.parent[x as usize] != p {
+                break;
             }
-            if v == r {
-                self.tbl[s] = TOMB;
-                self.tbl_used -= 1;
-                self.tbl_tomb += 1;
-                return;
-            }
-            s = (s + 1) & mask;
+            out.push(x);
+            self.kids.advance(&mut at);
         }
     }
 
     fn tbl_find(&self, parent: u32, name: &[u8], kind: Option<bool>) -> Option<u32> {
-        if self.tbl.is_empty() {
-            return None;
-        }
-        let mask = self.tbl.len() - 1;
-        let mut s = (hash_key(parent, name) as usize) & mask;
-        loop {
-            let r = self.tbl[s];
-            if r == EMPTY {
+        let mut at = self
+            .kids
+            .lower_bound(|x| self.kid_cmp(x, parent, name, 0) == Ordering::Less);
+        while let Some(x) = self.kids.get(at) {
+            if self.parent[x as usize] != parent || self.name_bytes(x) != name {
                 return None;
             }
-            if r != TOMB {
-                let ri = r as usize;
-                if self.parent[ri] == parent
-                    && self.name_bytes(r) == name
-                    && kind.is_none_or(|k| (self.flags[ri] & F_DIR != 0) == k)
-                {
-                    return Some(r);
-                }
+            if kind.is_none_or(|k| (self.flags[x as usize] & F_DIR != 0) == k) {
+                return Some(x);
             }
-            s = (s + 1) & mask;
+            self.kids.advance(&mut at);
         }
+        None
     }
 
     /// Exact-name child lookup (builds the mutation structures on first use).
@@ -725,14 +771,12 @@ impl Index {
                     return e;
                 }
                 if self.flags[e as usize] & F_STUB != 0 {
-                    self.tbl_remove(e);
-                    self.unlink(e);
+                    self.kid_remove(e);
                     self.parent[e as usize] = parent;
                     self.set_name(e, name);
                     self.flags[e as usize] &= !F_STUB;
                     self.count_adj(vol, F_DIR, true);
-                    self.link(e);
-                    self.tbl_insert(e);
+                    self.kid_insert(e);
                     self.update_meta(e, size, mtime);
                     self.add_pending(e);
                 } else {
@@ -749,8 +793,7 @@ impl Index {
         }
         let flags = if is_dir { F_DIR } else { 0 };
         let i = self.alloc(vol, frn, parent, name, flags, size, mtime);
-        self.link(i);
-        self.tbl_insert(i);
+        self.kid_insert(i);
         if is_dir {
             self.folders.insert((vol, frn), i);
         }
@@ -770,17 +813,16 @@ impl Index {
         while let Some(r) = stack.pop() {
             all.push(r);
             if self.flags[r as usize] & F_DIR != 0 {
-                let mut c = self.first[r as usize];
-                while c != NONE {
-                    stack.push(c);
-                    c = self.next[c as usize];
-                }
+                self.kids_of(r, &mut stack);
             }
         }
-        self.unlink(idx);
+        // A big subtree leaves in one pass over the lookup structure, a small one entry by entry.
+        let bulk = all.len() > 4096;
         for &r in &all {
             let ru = r as usize;
-            self.tbl_remove(r);
+            if !bulk {
+                self.kid_remove(r);
+            }
             if self.flags[ru] & F_DIR != 0 {
                 let key = (self.vol[ru], self.frn[ru]);
                 if self.folders.get(&key) == Some(&r) {
@@ -790,9 +832,6 @@ impl Index {
             self.garbage += self.name_len[ru] as usize;
             self.name_len[ru] = 0;
             self.parent[ru] = NONE;
-            self.first[ru] = NONE;
-            self.next[ru] = NONE;
-            self.prev[ru] = NONE;
             self.count_adj(self.vol[ru], self.flags[ru], false);
             self.flags[ru] = (self.flags[ru] & (F_INORDER | F_PENDING)) | F_DELETED;
             if self.flags[ru] & F_INORDER != 0 {
@@ -805,6 +844,10 @@ impl Index {
             } else {
                 self.dirty = true;
             }
+        }
+        if bulk {
+            let flags = &self.flags;
+            self.kids.retain_all(|x| flags[x as usize] & F_DELETED == 0);
         }
         all.len()
     }
@@ -843,12 +886,10 @@ impl Index {
             guard += 1;
         }
         self.ensure_links();
-        self.tbl_remove(idx);
-        self.unlink(idx);
+        self.kid_remove(idx);
         self.parent[iu] = new_parent;
         self.set_name(idx, new_name);
-        self.link(idx);
-        self.tbl_insert(idx);
+        self.kid_insert(idx);
         if self.flags[iu] & F_STUB == 0 {
             self.mark_moved(idx);
         }
@@ -958,9 +999,8 @@ impl Index {
             .filter(|&r| self.flags[r as usize] & F_DELETED == 0)
             .collect();
         let mut old: Vec<u32> = self
-            .order
+            .sorted
             .iter()
-            .copied()
             .filter(|&r| self.flags[r as usize] & (F_DELETED | F_STALE) == 0)
             .collect();
         if add.len() * 8 > old.len() + add.len() + 64 {
@@ -974,43 +1014,68 @@ impl Index {
         }
     }
 
-    /// The up-to-date sorted order (borrowed when clean, computed when dirty).
-    pub fn clean_order(&self) -> Cow<'_, [u32]> {
+    /// The up-to-date sorted order as one list (a copy; merged when dirty).
+    pub fn order_vec(&self) -> Vec<u32> {
         if self.dirty {
-            Cow::Owned(self.merged())
+            self.merged()
         } else {
-            Cow::Borrowed(&self.order)
+            self.sorted.to_vec()
         }
+    }
+
+    /// The up-to-date sorted order for readers: the live chunks when clean, a merged copy
+    /// with dense ranks when dirty (a reader never mutates; the writer refreshes before it
+    /// releases the lock, so this fallback is rare).
+    pub(crate) fn order_view(&self) -> OrderView<'_> {
+        if self.dirty {
+            let order = self.merged();
+            let rank = self.compute_rank(&order);
+            OrderView::Flat { order, rank }
+        } else {
+            OrderView::Live {
+                ch: &self.sorted,
+                rank: &self.rank,
+            }
+        }
+    }
+
+    /// Install a sorted list as the order and code every rank from it.
+    pub(crate) fn set_sorted(&mut self, v: Vec<u32>) {
+        self.sorted = Chunks::from_sorted(&v, &mut self.rank, self.parent.len());
     }
 
     /// Fold pending mutations into the sorted order and recycle freed slots.
     ///
-    /// Small change sets (the USN steady state) are spliced in: removed positions come from
-    /// `rank`, insert positions from a binary search, the new order is built by segment
-    /// copies and only ranks from the first changed position on are rewritten. Nothing walks
-    /// every record's flags, so a few hundred changes on a 14M-record index cost one copy of
-    /// `order` plus the rank tail instead of ~0.5 s under the writer lock.
+    /// Small change sets (the USN steady state) touch only the blocks they land in: leavers
+    /// are dropped from the blocks their codes name, newcomers are binary-searched into
+    /// place, and only those blocks get their codes rewritten (Everything's chunked arrays:
+    /// an insert moves one 64 KB chunk). Nothing walks every record or copies the order, so
+    /// a batch costs microseconds whatever the index size.
     pub fn refresh(&mut self) {
         if !self.dirty {
             return;
         }
-        let n = self.order.len();
+        let n = self.sorted.len();
         if (self.pending.len() + self.touched.len()) * 8 > n + 64 {
             self.refresh_full();
             return;
         }
-        // Positions leaving `order` (renamed/moved: re-added from `pending`; deleted: gone).
-        let mut gone: Vec<usize> = self
+        if self.rank.len() < self.parent.len() {
+            let more = self.parent.len() - self.rank.len();
+            room(&mut self.rank, more);
+            self.rank.resize(self.parent.len(), NONE);
+        }
+        let leaving = |f: u8| f & F_INORDER != 0 && f & (F_DELETED | F_STALE) != 0;
+        let mut ch = std::mem::take(&mut self.sorted);
+        let mut blocks: Vec<u32> = Vec::new();
+        // Leavers (renamed/moved: re-added from `pending`; deleted: gone) leave their blocks.
+        let codes: Vec<u32> = self
             .touched
             .iter()
-            .filter(|&&r| {
-                self.flags[r as usize] & F_INORDER != 0
-                    && self.flags[r as usize] & (F_DELETED | F_STALE) != 0
-            })
-            .map(|&r| self.rank[r as usize] as usize)
+            .filter(|&&r| leaving(self.flags[r as usize]))
+            .map(|&r| self.rank[r as usize])
             .collect();
-        gone.sort_unstable();
-        gone.dedup();
+        ch.remove_where(&codes, |r| leaving(self.flags[r as usize]), &mut blocks);
         let mut add: Vec<u32> = self
             .pending
             .iter()
@@ -1018,44 +1083,16 @@ impl Index {
             .filter(|&r| self.flags[r as usize] & F_DELETED == 0)
             .collect();
         add.sort_unstable_by(|&a, &b| self.cmp_idx(a, b));
-        let ins: Vec<usize> = add.iter().map(|&a| self.insert_pos(a)).collect();
-
-        // Splice: copy runs of `order` between events; an insert goes before the entry at its position.
-        let mut new = Vec::with_capacity(n - gone.len() + add.len());
-        let (mut g, mut k, mut cur) = (0, 0, 0);
-        loop {
-            let next_ins = ins.get(k).copied().unwrap_or(usize::MAX);
-            let next_gone = gone.get(g).copied().unwrap_or(usize::MAX);
-            let e = next_ins.min(next_gone);
-            if e == usize::MAX {
-                break;
-            }
-            new.extend_from_slice(&self.order[cur..e]);
-            cur = e;
-            if next_ins == e {
-                new.push(add[k]);
-                k += 1;
-            } else {
-                cur = e + 1;
-                g += 1;
-            }
+        add.dedup();
+        for &a in &add {
+            ch.insert(a, |x| self.cmp_idx(x, a) == Ordering::Less, &mut blocks);
         }
-        new.extend_from_slice(&self.order[cur.min(n)..]);
-        let first = ins
-            .first()
-            .copied()
-            .unwrap_or(usize::MAX)
-            .min(gone.first().copied().unwrap_or(usize::MAX))
-            .min(new.len());
 
         // Flags, ranks of leavers and the free list: only the records that changed.
-        if self.rank.len() < self.parent.len() {
-            self.rank.resize(self.parent.len(), NONE);
-        }
         for i in 0..self.touched.len() {
             let r = self.touched[i] as usize;
             self.flags[r] &= !(F_INORDER | F_STALE);
-            self.rank[r] = NONE; // a re-added (moved) record gets its new rank below
+            self.rank[r] = NONE; // a re-added (moved) record gets its new code below
         }
         for i in 0..self.touched.len().max(self.pending.len()) {
             for r in [self.touched.get(i), self.pending.get(i)]
@@ -1078,8 +1115,8 @@ impl Index {
                 self.rank[r] = NONE;
             }
         }
-        Self::write_ranks(&mut self.rank, &new, first);
-        self.order = new;
+        ch.recode(&mut blocks, &mut self.rank);
+        self.sorted = ch;
         self.pending.clear();
         self.touched.clear();
         self.dirty = false;
@@ -1088,82 +1125,28 @@ impl Index {
         }
     }
 
-    /// Where `a` goes in `order` (number of staying entries that sort before it), skipping
-    /// entries that are leaving (`DELETED` / `STALE`: a stale entry already carries its new name).
-    fn insert_pos(&self, a: u32) -> usize {
-        let gone = |r: u32| self.flags[r as usize] & (F_DELETED | F_STALE) != 0;
-        let (mut lo, mut hi) = (0, self.order.len());
-        while lo < hi {
-            let mid = lo + (hi - lo) / 2;
-            let mut m = mid;
-            while m < hi && gone(self.order[m]) {
-                m += 1;
-            }
-            if m == hi {
-                hi = mid; // [mid, hi) is all leaving: any position in it is equivalent to mid
-            } else if self.cmp_idx(self.order[m], a) == Ordering::Less {
-                lo = m + 1;
-            } else {
-                hi = mid;
-            }
-        }
-        lo
-    }
-
-    /// `rank[order[k]] = k` for `k >= from`, split over threads when the tail is large.
-    fn write_ranks(rank: &mut [u32], order: &[u32], from: usize) {
-        let tail = &order[from.min(order.len())..];
-        let hw = std::thread::available_parallelism()
-            .map(|x| x.get())
-            .unwrap_or(1);
-        let nt = hw.min(tail.len() / (1 << 18)).max(1);
-        if nt == 1 {
-            for (k, &r) in tail.iter().enumerate() {
-                rank[r as usize] = (from + k) as u32;
-            }
-            return;
-        }
-        struct Ptr(*mut u32);
-        // SAFETY: shared only for disjoint writes (see below).
-        unsafe impl Sync for Ptr {}
-        let (p, len) = (Ptr(rank.as_mut_ptr()), rank.len());
-        let chunk = tail.len().div_ceil(nt);
-        std::thread::scope(|s| {
-            for (c, part) in tail.chunks(chunk).enumerate() {
-                let p = &p;
-                s.spawn(move || {
-                    let base = from + c * chunk;
-                    for (k, &r) in part.iter().enumerate() {
-                        assert!((r as usize) < len);
-                        // SAFETY: `order` holds each record once, so threads write disjoint in-bounds slots.
-                        unsafe { *p.0.add(r as usize) = (base + k) as u32 };
-                    }
-                });
-            }
-        });
-    }
-
     /// Whole-index refresh, for large change sets.
     fn refresh_full(&mut self) {
         let new = self.merged();
-        for &r in self.order.iter().chain(self.pending.iter()) {
+        let old = self.sorted.to_vec();
+        for &r in old.iter().chain(self.pending.iter()) {
             let f = &mut self.flags[r as usize];
             if *f & F_DELETED != 0 && *f & F_FREED == 0 {
                 *f |= F_FREED;
                 self.free.push(r);
             }
         }
-        for &r in &self.order {
+        for &r in &old {
             self.flags[r as usize] &= !(F_INORDER | F_STALE);
         }
+        drop(old);
         for &r in &self.pending {
             self.flags[r as usize] &= !F_PENDING;
         }
         for &r in &new {
             self.flags[r as usize] |= F_INORDER;
         }
-        self.rank = self.compute_rank(&new);
-        self.order = new;
+        self.set_sorted(new);
         self.pending.clear();
         self.touched.clear();
         self.dirty = false;
@@ -1192,8 +1175,7 @@ impl Index {
         for &r in &v {
             self.flags[r as usize] |= F_INORDER;
         }
-        self.rank = self.compute_rank(&v);
-        self.order = v;
+        self.set_sorted(v);
         self.pending.clear();
         self.touched.clear();
         self.dirty = false;
