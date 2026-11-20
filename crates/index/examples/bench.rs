@@ -245,6 +245,38 @@ fn main() {
         lat.iter().max().unwrap()
     );
 
+    // A paged query (the picture grid's ext list) after each batch: before, searchd re-ran the
+    // match over the whole index on every core; now it patches the cached slot set with the
+    // batch's records and rebuilds the name-order set from it (bit lookups only).
+    let q = Query::parse("ext:jpg;jpeg;png;gif;heic;webp;bmp;svg;tif;tiff");
+    let t = Instant::now();
+    let (_, mut set) = ix.name_matches_live(&q);
+    let rematch = t.elapsed();
+    let mut patch_rebuild = Vec::new();
+    for round in 0..20u64 {
+        let i = ix.insert(
+            b'C',
+            30_000_000 + round,
+            5,
+            &format!("p{round}.jpg"),
+            false,
+            0,
+            0,
+        );
+        ix.refresh();
+        let t = Instant::now();
+        set.set(i, ix.slot_matches(&q, i));
+        let r = ix.ranks_of(&set);
+        std::hint::black_box(r.total());
+        patch_rebuild.push(t.elapsed().as_micros());
+    }
+    println!(
+        "paged query after a batch: re-match {:?}  vs  patch + rebuild p50 {} us  max {} us",
+        rematch,
+        pct(&mut patch_rebuild.clone(), 0.5),
+        patch_rebuild.iter().max().unwrap()
+    );
+
     let path = std::env::temp_dir().join("winseek_bench.wsix");
     let t = Instant::now();
     let _ = ix.to_bytes();

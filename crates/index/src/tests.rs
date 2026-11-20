@@ -1319,3 +1319,112 @@ fn path_globs_match_whole_paths() {
         assert_eq!(got, want, "pattern {pat:?}");
     }
 }
+
+/// A cached query patched with only the records each batch touched must equal a fresh scan,
+/// round after round of inserts, renames in and out of the match, removals and a subtree
+/// removal (Everything keeps its open queries current this way).
+#[test]
+fn patched_live_matches_equal_a_fresh_scan() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 10, 5, "pics", true, 0, 0);
+    b.push(C, 11, 5, "docs", true, 0, 0);
+    b.push(C, 12, 10, "trip", true, 0, 0);
+    for f in 0..3000u64 {
+        let ext = ["jpg", "png", "txt", "PDF"][(f % 4) as usize];
+        let parent = [10, 11, 12][(f % 3) as usize];
+        b.push(
+            C,
+            1000 + f,
+            parent,
+            &format!("cat{f}.{ext}"),
+            false,
+            f * 7,
+            f as i64,
+        );
+    }
+    let mut ix = b.finish();
+    let queries = [
+        "ext:jpg;png",
+        "cat1",
+        "!cat2 ext:txt",
+        "size:>5000 file:",
+        "trip\\",
+    ];
+    let mut live: Vec<(Query, SlotSet)> = queries
+        .iter()
+        .map(|s| {
+            let q = Query::parse(s);
+            let (_, set) = ix.name_matches_live(&q);
+            (q, set)
+        })
+        .collect();
+    let mut seed = 0x9e37_79b9u64;
+    let mut rnd = |m: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % m
+    };
+    let mut next_frn = 50_000u64;
+    for round in 0..8 {
+        let mut touched: Vec<u32> = Vec::new();
+        for _ in 0..40 {
+            match rnd(4) {
+                0 => {
+                    next_frn += 1;
+                    let ext = ["jpg", "png", "txt"][rnd(3) as usize];
+                    let parent = [10, 11, 12][rnd(3) as usize];
+                    let name = format!("cat{}.{ext}", rnd(100_000));
+                    touched.push(ix.insert(C, next_frn, parent, &name, false, rnd(9000), 0));
+                }
+                1 => {
+                    let frn = 1000 + rnd(3000);
+                    if let Some(i) = ix.find_file(
+                        C,
+                        [10, 11, 12][(frn % 3) as usize],
+                        &format!(
+                            "cat{}.{}",
+                            frn - 1000,
+                            ["jpg", "png", "txt", "PDF"][(frn % 4) as usize]
+                        ),
+                    ) {
+                        let to = ix.folder_idx(C, [10, 11][rnd(2) as usize]).unwrap();
+                        let name = format!("dog{}.{}", rnd(1000), ["jpg", "txt"][rnd(2) as usize]);
+                        if ix.rename(i, to, &name) {
+                            touched.push(i);
+                        }
+                    }
+                }
+                _ => {
+                    let frn = 1000 + rnd(3000);
+                    let parent = [10, 11, 12][(frn % 3) as usize];
+                    let name = format!(
+                        "cat{}.{}",
+                        frn - 1000,
+                        ["jpg", "png", "txt", "PDF"][(frn % 4) as usize]
+                    );
+                    ix.remove_file(C, parent, &name);
+                }
+            }
+        }
+        if round == 5 {
+            let trip = ix.folder_idx(C, 12).unwrap();
+            ix.remove(trip); // a whole subtree goes: its slots stop being live, no touch needed
+        }
+        ix.refresh();
+        for (q, set) in &mut live {
+            for &i in &touched {
+                set.set(i, ix.slot_matches(q, i));
+            }
+            let patched = ix.ranks_of(set);
+            let fresh = ix.name_matches(q);
+            assert_eq!(patched.total(), fresh.total(), "round {round} query {q:?}");
+            assert_eq!(
+                ix.name_page(&patched, 0, usize::MAX, false),
+                ix.name_page(&fresh, 0, usize::MAX, false),
+                "round {round} query {q:?}"
+            );
+        }
+    }
+}

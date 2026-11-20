@@ -180,6 +180,44 @@ pub struct RankSet {
 
 const BLOCK: usize = 8; // words per directory entry (512 ranks)
 
+/// Matches by storage slot. A slot keeps its number while other records come and go (ranks
+/// shift on every insert), so a cached query stays current by re-testing only the records a
+/// batch touched — Everything patches its open queries the same way instead of re-running
+/// them — and rebuilds its [`RankSet`] from this with [`Index::ranks_of`] when paged again.
+#[derive(Debug, Clone, Default)]
+pub struct SlotSet {
+    bits: Vec<u64>,
+}
+
+impl SlotSet {
+    pub fn get(&self, i: u32) -> bool {
+        self.bits
+            .get((i >> 6) as usize)
+            .is_some_and(|w| (w >> (i & 63)) & 1 == 1)
+    }
+
+    pub fn set(&mut self, i: u32, on: bool) {
+        let w = (i >> 6) as usize;
+        if w >= self.bits.len() {
+            if !on {
+                return;
+            }
+            self.bits.resize(w + 1, 0);
+        }
+        let m = 1u64 << (i & 63);
+        if on {
+            self.bits[w] |= m;
+        } else {
+            self.bits[w] &= !m;
+        }
+    }
+
+    /// Heap bytes held (for cache accounting).
+    pub fn mem_bytes(&self) -> usize {
+        self.bits.len() * 8
+    }
+}
+
 impl RankSet {
     fn all(n: usize) -> Self {
         RankSet {
@@ -316,6 +354,17 @@ fn text_term(text: &str, negate: bool) -> Option<Term> {
 }
 
 impl Query {
+    /// Whether a record's match can change without the record itself changing: a path term
+    /// sees its ancestors, so a folder rename or move can flip every record below it.
+    pub fn path_sensitive(&self) -> bool {
+        self.terms.iter().any(|t| {
+            matches!(
+                t.cond,
+                Cond::Text { path: true, .. } | Cond::Glob { path: true, .. }
+            )
+        })
+    }
+
     pub fn parse(s: &str) -> Query {
         let ch: Vec<char> = s.chars().collect();
         let n = ch.len();
@@ -841,6 +890,75 @@ impl Index {
             self.scan_each(q, &memos, &view, lo, hi, |_, r| {
                 bits_ref[(r >> 6) as usize].fetch_or(1u64 << (r & 63), Ordering::Relaxed);
             })
+        });
+        RankSet::from_bits(bits.into_iter().map(AtomicU64::into_inner).collect(), n)
+    }
+
+    /// [`name_matches`](Self::name_matches) plus the same matches by storage slot, from one scan:
+    /// the [`SlotSet`] is what a cached query keeps current as the index changes.
+    pub fn name_matches_live(&self, q: &Query) -> (RankSet, SlotSet) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let view = self.order_view();
+        let (n, slots) = (view.len(), view.slots());
+        let words = |len: usize| -> Vec<AtomicU64> {
+            (0..len.div_ceil(64)).map(|_| AtomicU64::new(0)).collect()
+        };
+        let (ranks, by_slot) = (words(n), words(slots));
+        let (ranks_ref, slot_ref) = (&ranks, &by_slot);
+        let memos = self.path_memos(q);
+        self.parallel_scan(slots, |lo, hi| {
+            self.scan_each(q, &memos, &view, lo, hi, |i, r| {
+                ranks_ref[(r >> 6) as usize].fetch_or(1u64 << (r & 63), Ordering::Relaxed);
+                slot_ref[(i >> 6) as usize].fetch_or(1u64 << (i & 63), Ordering::Relaxed);
+            })
+        });
+        let take = |v: Vec<AtomicU64>| v.into_iter().map(AtomicU64::into_inner).collect();
+        (
+            RankSet::from_bits(take(ranks), n),
+            SlotSet {
+                bits: take(by_slot),
+            },
+        )
+    }
+
+    /// Whether record `i` is live and matches `q`: one record, no memo (a path term builds its
+    /// path), for patching a cached [`SlotSet`] with the records a batch touched.
+    pub fn slot_matches(&self, q: &Query, i: u32) -> bool {
+        if i as usize >= self.parent.len() || self.is_deleted(i) {
+            return false;
+        }
+        let mut sc = Scratch::default();
+        q.terms.iter().all(|t| self.eval(t, i, &mut sc, None))
+    }
+
+    /// The name-order [`RankSet`] of `set` under the current order: one parallel pass of bit
+    /// lookups, no matching. Slots that are no longer live drop out here.
+    pub fn ranks_of(&self, set: &SlotSet) -> RankSet {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        let view = self.order_view();
+        let n = view.len();
+        let bits: Vec<AtomicU64> = (0..n.div_ceil(64)).map(|_| AtomicU64::new(0)).collect();
+        let bits_ref = &bits;
+        self.parallel_scan(view.slots(), |lo, hi| {
+            // Walk the set's words, not every slot: a typical cached query holds a small share
+            // of the index, so most words are empty and cost one load.
+            let mut i = lo;
+            while i < hi {
+                let word = set.bits.get(i >> 6).copied().unwrap_or(0) >> (i & 63);
+                if word == 0 {
+                    i = ((i >> 6) + 1) << 6;
+                    continue;
+                }
+                i += word.trailing_zeros() as usize;
+                if i >= hi {
+                    break;
+                }
+                let r = view.rank(i);
+                if r != NONE {
+                    bits_ref[(r >> 6) as usize].fetch_or(1u64 << (r & 63), Ordering::Relaxed);
+                }
+                i += 1;
+            }
         });
         RankSet::from_bits(bits.into_iter().map(AtomicU64::into_inner).collect(), n)
     }

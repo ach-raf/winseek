@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use winseek_index::{Index, MetaKey, Query, RankSet, Rollup, VolKind};
+use winseek_index::{Index, MetaKey, Query, RankSet, Rollup, SlotSet, VolKind};
 use winseek_ipc::{
     ChangeKind, Hit, Monitor, Response, Sort, UsageDetail, UsageEntry, UsageTree, UsageType,
     VolumeState, VolumeStatus,
@@ -125,11 +125,24 @@ enum SortClass {
 type CacheKey = (String, SortClass);
 
 struct CacheEntry {
-    /// Index generation the result was computed under: any mutation bumps the generation,
-    /// so a stale entry never answers.
+    /// Index generation the result answers for: any mutation bumps the generation, so a
+    /// stale entry never answers. A name-order entry with `live` is carried to the new
+    /// generation by [`QCache::patch`] instead of being dropped.
     gen: u64,
     data: Arc<Cached>,
+    live: Option<Live>,
     used: Instant,
+}
+
+/// A name-order result kept current across USN batches, as Everything keeps its open
+/// queries: the matches by slot are re-tested only for the records a batch touched, and the
+/// name-order set is rebuilt from them (bit lookups, no matching) when next paged. Without it
+/// every page request after a change re-ran the query over the whole index on every core.
+struct Live {
+    q: Query,
+    set: SlotSet,
+    /// `data` was derived from `set` under the current generation.
+    fresh: bool,
 }
 
 #[derive(Default)]
@@ -138,28 +151,40 @@ struct QCache {
 }
 
 impl QCache {
-    fn get(&mut self, gen: u64, query: &str, class: SortClass) -> Option<Arc<Cached>> {
+    fn get(&mut self, gen: u64, query: &str, class: SortClass, ix: &Index) -> Option<Arc<Cached>> {
         let e = self.map.get_mut(&(query.to_string(), class))?;
         if e.gen != gen {
             return None;
         }
+        if let Some(l) = e.live.as_mut().filter(|l| !l.fresh) {
+            e.data = Arc::new(Cached::Names(ix.ranks_of(&l.set)));
+            l.fresh = true;
+        }
         e.used = Instant::now();
         Some(e.data.clone())
     }
-    fn put(&mut self, gen: u64, query: &str, class: SortClass, data: Arc<Cached>) {
+    fn put(
+        &mut self,
+        gen: u64,
+        query: &str,
+        class: SortClass,
+        data: Arc<Cached>,
+        live: Option<Live>,
+    ) {
         self.map.retain(|_, e| e.gen == gen); // a new generation invalidates everything older
         self.map.insert(
             (query.to_string(), class),
             CacheEntry {
                 gen,
                 data,
+                live,
                 used: Instant::now(),
             },
         );
         // Evict least-recently-used entries (never the only one left) over either budget.
         while self.map.len() > 1
             && (self.map.len() > QUERY_CACHE_ENTRIES
-                || self.map.values().map(|e| e.data.bytes()).sum::<usize>() > QUERY_CACHE_BYTES)
+                || self.map.values().map(CacheEntry::bytes).sum::<usize>() > QUERY_CACHE_BYTES)
         {
             let oldest = self
                 .map
@@ -172,6 +197,31 @@ impl QCache {
     }
     fn trim_idle(&mut self) {
         self.map.retain(|_, e| e.used.elapsed() < QUERY_CACHE_IDLE);
+    }
+    /// A batch moved the index from `from` to `to` and touched `touched`: carry the live
+    /// entries over (re-test just those records), drop the rest. A renamed or moved folder
+    /// changes the path of everything below it, so entries with a path term go then too.
+    fn patch(&mut self, from: u64, to: u64, ix: &Index, touched: &[u32], folder_renamed: bool) {
+        self.map.retain(|_, e| {
+            let Some(l) = e.live.as_mut() else {
+                return false;
+            };
+            if e.gen != from || (folder_renamed && l.q.path_sensitive()) {
+                return false;
+            }
+            for &i in touched {
+                l.set.set(i, ix.slot_matches(&l.q, i));
+            }
+            l.fresh = false;
+            e.gen = to;
+            true
+        });
+    }
+}
+
+impl CacheEntry {
+    fn bytes(&self) -> usize {
+        self.data.bytes() + self.live.as_ref().map_or(0, |l| l.set.mem_bytes())
     }
 }
 
@@ -580,14 +630,26 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
                 recent.push(hit_at(&ix, i));
             }
         }
-    }
-    let g = sh.gen.fetch_add(1, Ordering::Relaxed); // the query cache must not serve this batch's old results
-                                                    // The roll-up's overlay saw every change of this batch: it is still in step with the index.
-                                                    // (Any other writer bumps `gen` without this, which leaves the roll-up behind.)
-    if let Some(c) = sh.usage_cache.lock().unwrap().clone() {
-        let _ = c
-            .synced
-            .compare_exchange(g, g + 1, Ordering::Relaxed, Ordering::Relaxed);
+        // Still under the write lock, so no search sees the new index under the old
+        // generation: carry the cached name results over (re-test only what this batch
+        // touched), then bump, so the query cache never serves this batch's old results.
+        let touched: Vec<u32> = events.iter().filter_map(|e| e.idx).collect();
+        let folder_renamed = events
+            .iter()
+            .any(|e| e.is_dir && e.kind == ChangeKind::Renamed);
+        let g = sh.gen.load(Ordering::Relaxed);
+        sh.qcache
+            .lock()
+            .unwrap()
+            .patch(g, g + 1, &ix, &touched, folder_renamed);
+        sh.gen.fetch_add(1, Ordering::Relaxed);
+        // The roll-up's overlay saw every change of this batch: it is still in step with the index.
+        // (Any other writer bumps `gen` without this, which leaves the roll-up behind.)
+        if let Some(c) = sh.usage_cache.lock().unwrap().clone() {
+            let _ = c
+                .synced
+                .compare_exchange(g, g + 1, Ordering::Relaxed, Ordering::Relaxed);
+        }
     }
     publish(sh, recent, &events);
     sh.stats.batch(changes.len(), started.elapsed());
@@ -736,7 +798,7 @@ pub fn search(
     // The generation is read while holding the read lock, so it always matches the index
     // this scan is about to see (the writer bumps only after a mutation is done).
     let gen = sh.gen.load(Ordering::Relaxed);
-    let cached = sh.qcache.lock().unwrap().get(gen, query, class);
+    let cached = sh.qcache.lock().unwrap().get(gen, query, class, &ix);
     if lim == 0 {
         let total = cached.map_or_else(|| ix.count(&Query::parse(query)), |c| c.total());
         return (total as u64, Vec::new(), note);
@@ -748,7 +810,18 @@ pub fn search(
     });
     let data = usable.unwrap_or_else(|| {
         let q = Query::parse(query);
+        let mut live = None;
         let fresh = Arc::new(match class {
+            // Every query but the empty one (all ranks, nothing to scan) is kept live.
+            SortClass::Name if !q.terms.is_empty() => {
+                let (ranks, set) = ix.name_matches_live(&q);
+                live = Some(Live {
+                    q: q.clone(),
+                    set,
+                    fresh: true,
+                });
+                Cached::Names(ranks)
+            }
             SortClass::Name => Cached::Names(ix.name_matches(&q)),
             SortClass::Mtime | SortClass::Size | SortClass::Type => {
                 let key = match class {
@@ -779,7 +852,7 @@ pub fn search(
         sh.qcache
             .lock()
             .unwrap()
-            .put(gen, query, class, fresh.clone());
+            .put(gen, query, class, fresh.clone(), live);
         fresh
     });
     let slots: Vec<u32> = match &*data {
@@ -1571,5 +1644,75 @@ mod tests {
         assert!(under("c:\\docs", &normalize_root("C:/Docs")));
         assert!(!under("c:\\docsx\\a", &normalize_root("C:\\Docs")));
         assert!(under("c:\\a", &normalize_root("C:\\")));
+    }
+
+    fn names_of(sh: &Shared, q: &str) -> Vec<String> {
+        let (total, hits, _) = search(sh, q, 0, 100, Sort::NameAsc);
+        assert_eq!(total as usize, hits.len());
+        hits.into_iter().map(|h| h.name).collect()
+    }
+    fn entry_gen(sh: &Shared, q: &str) -> Option<u64> {
+        let c = sh.qcache.lock().unwrap();
+        c.map.get(&(q.to_string(), SortClass::Name)).map(|e| e.gen)
+    }
+
+    /// A paged name query survives USN batches: the batch patches it (no re-scan), and what
+    /// it then serves equals the truth. A folder rename drops entries with a path term.
+    #[test]
+    fn cached_name_results_are_patched_by_batches() {
+        let sh = shared();
+        let files = [
+            create(100, 10, "a.jpg"),
+            create(101, 10, "b.jpg"),
+            create(102, 10, "n.txt"),
+        ];
+        apply_batch(&sh, b'C', &files, CUR);
+        assert_eq!(names_of(&sh, "ext:jpg"), ["a.jpg", "b.jpg"]);
+        assert_eq!(names_of(&sh, r"docs\"), ["a.jpg", "b.jpg", "n.txt"]);
+        let del = Change::Delete(UsnRecord {
+            frn: 101,
+            parent_frn: 10,
+            usn: 0,
+            reason: 0,
+            attrs: 0x20,
+            name: "b.jpg".into(),
+        });
+        let ren = Change::Rename {
+            frn: 100,
+            old_parent: 10,
+            old_name: "a.jpg".into(),
+            new_parent: 10,
+            new_name: "a.txt".into(),
+        };
+        apply_batch(&sh, b'C', &[create(103, 10, "c.jpg"), ren, del], CUR);
+        let now = sh.gen.load(Ordering::Relaxed);
+        assert_eq!(entry_gen(&sh, "ext:jpg"), Some(now), "patched, not dropped");
+        assert_eq!(
+            entry_gen(&sh, r"docs\"),
+            Some(now),
+            "no folder moved: path entry kept"
+        );
+        assert_eq!(names_of(&sh, "ext:jpg"), ["c.jpg"]);
+        assert_eq!(names_of(&sh, r"docs\"), ["a.txt", "c.jpg", "n.txt"]);
+        let moved = Change::Rename {
+            frn: 10,
+            old_parent: 5,
+            old_name: "Docs".into(),
+            new_parent: 5,
+            new_name: "Papers".into(),
+        };
+        apply_batch(&sh, b'C', &[moved], CUR);
+        assert_eq!(
+            entry_gen(&sh, r"docs\"),
+            None,
+            "a folder rename drops path entries"
+        );
+        assert!(
+            entry_gen(&sh, "ext:jpg").is_some(),
+            "name-only entries live on"
+        );
+        assert!(names_of(&sh, r"docs\").is_empty());
+        assert_eq!(names_of(&sh, r"papers\"), ["a.txt", "c.jpg", "n.txt"]);
+        assert_eq!(names_of(&sh, "ext:jpg"), ["c.jpg"]);
     }
 }
