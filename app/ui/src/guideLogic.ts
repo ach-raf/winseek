@@ -73,7 +73,7 @@ export const GUIDE: GuideGroup[] = [
       { label: "file:", text: "file:", hint: "Only files, never folders" },
       { label: "ws:", text: "ws:", hint: "Match at the start of a word" },
       { label: "code:", text: "code:", hint: "Search inside source code" },
-      { label: "C:\\Users\\", text: "C:\\Users\\", hint: "A path fragment limits the folder" },
+      { label: "C:\\Users\\", text: "C:\\Users\\", hint: "Limits the folder — pasted JSON/ffmpeg/URL paths are cleaned" },
     ],
   },
 ];

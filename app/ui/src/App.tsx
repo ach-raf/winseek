@@ -3,6 +3,7 @@ import type { Backend, DriveSpace, Filter, FsDelta, Hit, Hotkeys, LaunchCfg, Lau
 import { SearchGuide } from "./SearchGuide";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
+import { pathQueryFromPaste } from "./pathNorm";
 import { previewSelectionText } from "./previewLogic";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
@@ -728,7 +729,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.onSetQuery(({ query }) => {
-      setQuery(query);
+      setQuery(pathQueryFromPaste(query) ?? query);
       requestAnimationFrame(() => { inputRef.current?.focus(); inputRef.current?.select(); });
     }).then((u) => (dead ? u() : (off = u)));
     return () => { dead = true; off?.(); };
@@ -1770,6 +1771,17 @@ export default function App({ backend }: { backend: Backend }) {
         ref={inputRef}
         value={query}
         onChange={(e) => { histAt.current = -1; setQuery(e.target.value); }}
+        onPaste={(e) => {
+          // a pasted path in any costume (JSON \\, ffmpeg quotes, file:/// URL) searches the file
+          const p = pathQueryFromPaste(e.clipboardData.getData("text"));
+          if (p === null) return; // ordinary text: default paste
+          e.preventDefault();
+          const el = e.currentTarget;
+          const at = el.selectionStart ?? el.value.length;
+          const end = el.selectionEnd ?? at;
+          histAt.current = -1;
+          setQuery(el.value.slice(0, at) + p + el.value.slice(end));
+        }}
         placeholder="Search apps, files and pictures"
         spellCheck={false}
         autoComplete="off"
