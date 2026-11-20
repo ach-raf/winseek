@@ -498,10 +498,14 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
 }
 
 /** The Status page, embedded as a Settings section: names index, meaning index, models and files. */
-function StatusSection({ backend, onError, onSection }: { backend: Backend; onError: (e: unknown) => void; onSection: (s: SettingsSection) => void }) {
+function StatusSection({ backend, onError, onSection, revealTick = 0 }: { backend: Backend; onError: (e: unknown) => void; onSection: (s: SettingsSection) => void; revealTick?: number }) {
   const [page, err, reload] = useStatusPage(backend);
   const [busy, setBusy] = useState<Set<string>>(new Set());
   const [open, setOpen] = useState<boolean | null>(null); // details fold: null = follow the verdict
+  // A search result picked in the sidebar targets a group that lives behind the details fold, so
+  // the fold must open before the jump effect can find and flash its row. The tick bumps once per
+  // pick: a manual "Hide details" still works, and a later pick re-opens.
+  useEffect(() => { if (revealTick > 0) setOpen(true); }, [revealTick]);
 
   const rescan = useCallback((letter: string) => {
     setBusy((b) => new Set(b).add(letter));
@@ -892,12 +896,16 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   // The row a picked result scrolls to and flashes once its section has mounted.
   const pendingJump = useRef<string | null>(null);
   const [pendingTick, setPendingTick] = useState(0);
+  // Bumped when a picked result lives in the Status section: its groups sit behind the details
+  // fold, and StatusSection opens that fold on this signal before the jump looks for the row.
+  const [statusReveal, setStatusReveal] = useState(0);
   const pick = (r: SettingEntry) => {
     onSection(r.section);
     setFind("");
     setActive(0);
     pendingJump.current = r.id;
     setPendingTick((t) => t + 1);
+    if (r.section === "status") setStatusReveal((n) => n + 1);
   };
   useEffect(() => {
     // Landing on a section puts the focus on its list entry so the arrow keys work at once; typing in
@@ -1041,7 +1049,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
           )}
           {section === "appearance" && <AppearanceBlock onError={onError} />}
           {section === "shortcuts" && <ShortcutsBlock backend={backend} onError={onError} />}
-          {section === "status" && <StatusSection backend={backend} onError={onError} onSection={onSection} />}
+          {section === "status" && <StatusSection backend={backend} onError={onError} onSection={onSection} revealTick={statusReveal} />}
           </div>
         </div>
         <footer className="set-foot">

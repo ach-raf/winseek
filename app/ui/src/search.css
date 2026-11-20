@@ -78,12 +78,17 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .qsug { display: flex; flex-direction: column; gap: var(--sp-2); padding: var(--sp-2) var(--sp-2) 0; }
 .qsrow { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; min-width: 0; }
 .qslab { flex: none; font-size: 12px; font-weight: 600; color: var(--fg3); }
+/* A row with its own Clear pins it to the top-right edge (a "clear all" action, not the last chip):
+ * the chips then wrap freely underneath and Clear can never orphan onto its own line at the far
+ * left (the full-window home with six long recent searches). The reservation keeps a wrapping chip
+ * from sliding under the button; rows without an action (Try) keep the plain flow. */
+.qsrow:has(.qs-clear) { position: relative; padding-right: 56px; }
 .qs-chip { flex: none; max-width: 240px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   border: 0; background: var(--bg3); color: var(--fg2); font-size: 12px; padding: 4px 11px; border-radius: 999px; cursor: pointer; }
 .qs-chip:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 8%, var(--bg3)); }
 .qs-chip.ex { background: none; color: var(--fg2); box-shadow: inset 0 0 0 1px var(--line); }
 .qs-chip.ex:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 4%, transparent); box-shadow: inset 0 0 0 1px var(--fg3); }
-.qs-clear { flex: none; border: 0; background: none; color: var(--fg3); font-size: 12px; padding: 3px 8px; border-radius: 999px; cursor: pointer; }
+.qs-clear { position: absolute; right: 0; top: 0; border: 0; background: none; color: var(--fg3); font-size: 12px; padding: 4px 8px; border-radius: 999px; cursor: pointer; }
 .qs-clear:hover { color: var(--fg); background: color-mix(in oklab, var(--fg) 6%, transparent); }
 .qsug .none.qnone { padding: var(--sp-5) var(--sp-5); }
 /* chips land on the same edge as the section headers: list 8 + qsug 8 = 16 (popup), 12 + 10 = 22 (full) */

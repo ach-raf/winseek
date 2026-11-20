@@ -256,7 +256,14 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
   }, [isEmpty]);
 
   useEffect(() => { setSel((s) => Math.max(0, Math.min(s, effTotal - 1))); }, [effTotal]);
-  useEffect(() => { root.current?.focus({ preventScroll: true }); }, [isEmpty]);
+  // Becoming empty (or filling again) hands the keyboard to the gallery — but never while the user
+  // is typing in a field: the timeline's picture search mounts this gallery mid-typing, and its
+  // results flipping empty↔full must not rip focus out of the search box.
+  useEffect(() => {
+    const ae = document.activeElement;
+    if (ae instanceof HTMLElement && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable)) return;
+    root.current?.focus({ preventScroll: true });
+  }, [isEmpty]);
 
   // Moving the selection (keys, rail) scrolls it into view below the sticky heading. A layout change under a
   // stationary selection — window resize, folded month, filter — instead re-anchors the scroll to the item's old
