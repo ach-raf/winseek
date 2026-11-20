@@ -506,7 +506,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
  * the search understood, an ignored name, a source label): flat grey pills that never hover — only
  * their remove button does. No third chip look: screens may set size/margins on these, not a new skin. */
 .fc { height: 28px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--fg2); white-space: nowrap; }
-.fc i { font-style: normal; font-size: 11.5px; color: var(--fg3); font-weight: 400; font-variant-numeric: tabular-nums; min-width: 4ch; } /* fixed count slot: a count appearing or changing never resizes the chip */
+.fc i { font-style: normal; font-size: 11.5px; color: var(--fg3); font-weight: 400; font-variant-numeric: tabular-nums; }
 .fc:hover { background: var(--bg3); }
 .fc.on { background: var(--acc); color: var(--acc-ink); } /* same specificity as .fc:hover, later here, so an active chip keeps its accent under the cursor */
 .fc.on i { color: color-mix(in oklab, var(--acc-ink) 72%, transparent); }

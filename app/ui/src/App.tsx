@@ -1687,7 +1687,7 @@ export default function App({ backend }: { backend: Backend }) {
                     if (k && parsed.kind !== f.id) dropChip(k.key); // a tab click overrides the kind found in the text; the same kind is already in force
                     setFilter(f.id); inputRef.current?.focus();
                   }}>
-            {f.label}<i title={n ? n.toLocaleString("en-US") : undefined}>{n !== undefined && n > 0 ? chipCount(n) : ""}</i>
+            {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
           </button>
         );
       })}
