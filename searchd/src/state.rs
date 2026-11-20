@@ -360,6 +360,30 @@ impl Shared {
         }
     }
 
+    /// One pass over every lock a request needs, in the order requests take them. `stage` says which
+    /// one the probe is waiting on (1 vols, 2 info, 3 index read, 4 query cache, 5 usage cache,
+    /// 6 usage build, 7 folder sizes, 8 ctl), 0 once the pass is through. The watchdog reads it to
+    /// name the culprit when a probe never finishes.
+    pub fn probe_locks(&self, stage: &std::sync::atomic::AtomicU8) {
+        stage.store(1, Ordering::SeqCst);
+        drop(self.vols.lock());
+        stage.store(2, Ordering::SeqCst);
+        drop(self.info.lock());
+        stage.store(3, Ordering::SeqCst);
+        drop(self.index.read());
+        stage.store(4, Ordering::SeqCst);
+        drop(self.qcache.lock());
+        stage.store(5, Ordering::SeqCst);
+        drop(self.usage_cache.lock());
+        stage.store(6, Ordering::SeqCst);
+        drop(self.usage_build.lock());
+        stage.store(7, Ordering::SeqCst);
+        drop(self.folder_sizes.lock());
+        stage.store(8, Ordering::SeqCst);
+        drop(self.ctl.lock());
+        stage.store(0, Ordering::SeqCst);
+    }
+
     pub fn set_state(&self, letter: char, st: VolumeState) {
         self.vols.lock().unwrap().insert(letter, st);
     }
@@ -645,7 +669,10 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         sh.gen.fetch_add(1, Ordering::Relaxed);
         // The roll-up's overlay saw every change of this batch: it is still in step with the index.
         // (Any other writer bumps `gen` without this, which leaves the roll-up behind.)
-        if let Some(c) = sh.usage_cache.lock().unwrap().clone() {
+        // `usage` is the cache this batch just updated through `ru` (it cannot change while the
+        // index write lock is held: builds install under the read lock). Do NOT lock the
+        // `usage_cache` mutex here: `ru` is held, and readers take that mutex before `ru`.
+        if let Some(c) = usage.as_ref() {
             let _ = c
                 .synced
                 .compare_exchange(g, g + 1, Ordering::Relaxed, Ordering::Relaxed);
@@ -1006,13 +1033,18 @@ impl Shared {
     /// Concurrent builds share one pass.
     fn usage_cache(&self) -> Result<Arc<UsageCache>, String> {
         self.note_usage_use();
-        if let Some(c) = self.usage_cache.lock().unwrap().clone() {
+        // The mutex guard must be gone before `usage_usable` runs: it takes the roll-up's own lock
+        // (`ru`), and the writer holds `ru` while it wants this mutex. (A guard in an `if let`
+        // header lives for the whole body: that was the deadlock that wedged searchd.)
+        let cur = self.usage_cache.lock().unwrap().clone();
+        if let Some(c) = cur {
             if Self::usage_usable(&c, self.gen.load(Ordering::Relaxed)) {
                 return Ok(c);
             }
         }
         let _one = self.usage_build.lock().unwrap();
-        if let Some(c) = self.usage_cache.lock().unwrap().clone() {
+        let cur = self.usage_cache.lock().unwrap().clone();
+        if let Some(c) = cur {
             if Self::usage_usable(&c, self.gen.load(Ordering::Relaxed)) {
                 return Ok(c);
             }
@@ -1244,6 +1276,59 @@ mod tests {
         assert!(usage(&sh, r"C:\nope", 0).is_err());
         let d = usage_detail(&sh, "", 5).unwrap();
         assert!(d.biggest.len() <= 1);
+    }
+
+    /// Regression: searchd wedged for good (every search and `status` hung) when a Disk-space request
+    /// held the `usage_cache` mutex while waiting for the roll-up's `ru` lock, and the writer held `ru`
+    /// while waiting for that mutex. Requests and batches must be able to run side by side forever.
+    #[test]
+    fn usage_requests_and_batches_do_not_deadlock() {
+        let sh = Arc::new(shared());
+        apply_batch(&sh, b'C', &[create(100, 10, "a.txt")], CUR);
+        usage(&sh, "", 0).unwrap(); // a roll-up exists, so every batch updates it through `ru`
+        let stop = Arc::new(AtomicBool::new(false));
+        let work = Arc::new(AtomicU64::new(0));
+        let mut threads = Vec::new();
+        {
+            let (sh, stop, work) = (sh.clone(), stop.clone(), work.clone());
+            threads.push(std::thread::spawn(move || {
+                let mut n = 1000u128;
+                while !stop.load(Ordering::Relaxed) {
+                    n += 1;
+                    apply_batch(&sh, b'C', &[create(n, 10, &format!("f{n}.txt"))], CUR);
+                    work.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        for _ in 0..3 {
+            let (sh, stop, work) = (sh.clone(), stop.clone(), work.clone());
+            threads.push(std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    let _ = sh.usage_cache();
+                    let _ = usage(&sh, "", 0);
+                    work.fetch_add(1, Ordering::Relaxed);
+                }
+            }));
+        }
+        // The cycle needs an unlucky interleaving: give it a few seconds, and fail (instead of
+        // hanging the test run) if the work counter ever stops moving.
+        let mut last = 0;
+        for _ in 0..30 {
+            std::thread::sleep(Duration::from_millis(100));
+            let now = work.load(Ordering::Relaxed);
+            if now == last && now > 0 && last > 0 {
+                std::thread::sleep(Duration::from_secs(3));
+                assert!(
+                    work.load(Ordering::Relaxed) != now,
+                    "writer and usage requests deadlocked"
+                );
+            }
+            last = now;
+        }
+        stop.store(true, Ordering::Relaxed);
+        for t in threads {
+            t.join().unwrap();
+        }
     }
 
     /// The cached roll-up, aged past the rebuild floor.

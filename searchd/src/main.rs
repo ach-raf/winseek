@@ -275,6 +275,7 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     };
     info!("ready; serving {PIPE_NAME} (Ctrl+C to stop)");
     ready();
+    spawn_watchdog(sh.clone());
 
     /// The periodic tick (trim / refresh / save checks); also the longest the loop waits.
     const TICK: Duration = Duration::from_millis(200);
@@ -337,6 +338,54 @@ fn run(args: &Args, stop: &AtomicBool, ready: &dyn Fn()) -> i32 {
     save_snapshot(&sh, &snap_path);
     info!("bye");
     0
+}
+
+/// How long a lock probe may take before searchd counts itself wedged. A snapshot save holds the
+/// index for ~15 s on a big index, so this is well above that.
+const WEDGE_AFTER: Duration = Duration::from_secs(60);
+
+/// Every 5 s a throwaway thread takes each lock a request needs. If one never gets through, the
+/// service is deadlocked (requests hang forever, the app shows empty results): log which lock it
+/// waited on and exit non-zero, so the service manager restarts it (see the service's recovery actions).
+fn spawn_watchdog(sh: Arc<Shared>) {
+    use std::sync::atomic::AtomicU8;
+    const NAMES: [&str; 9] = [
+        "none",
+        "vols",
+        "info",
+        "index (read)",
+        "query cache",
+        "usage cache",
+        "usage build",
+        "folder sizes",
+        "volume ctl",
+    ];
+    std::thread::spawn(move || loop {
+        std::thread::sleep(Duration::from_secs(5));
+        let stage = Arc::new(AtomicU8::new(0));
+        let done = Arc::new(AtomicBool::new(false));
+        {
+            let (sh, stage, done) = (sh.clone(), stage.clone(), done.clone());
+            std::thread::spawn(move || {
+                sh.probe_locks(&stage);
+                done.store(true, Ordering::SeqCst);
+            });
+        }
+        let t = Instant::now();
+        while !done.load(Ordering::SeqCst) {
+            if t.elapsed() >= WEDGE_AFTER {
+                let at = stage.load(Ordering::SeqCst) as usize;
+                error!(
+                    "WEDGED: no request can get the {} lock for {}s (gen {}); exiting so the service restarts",
+                    NAMES.get(at).copied().unwrap_or("?"),
+                    WEDGE_AFTER.as_secs(),
+                    sh.generation()
+                );
+                std::process::exit(3);
+            }
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    });
 }
 
 fn spawn_worker(
