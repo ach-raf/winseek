@@ -1563,10 +1563,14 @@ export default function App({ backend }: { backend: Backend }) {
 
   // Result stat in the search bar: "N results · 0.4 ms" (not on home).
   const statTotal = overview ? ov.sections.reduce((a, x) => a + x.total, 0) : data.total;
-  const statEl = !showPanel && !isRecent && loaded && !pending ? (
-    <span className="stat">
-      {statTotal.toLocaleString("en-US")}{data.partial ? "+" : ""} result{statTotal === 1 && !data.partial ? "" : "s"}
-      {data.elapsedMs !== null && <> {"·"} <b>{fmtMs(data.elapsedMs)} ms</b></>}
+  // The slot is always there (fixed width, see .stat) so the search box never resizes as the count comes and goes.
+  const statShown = !isRecent && loaded && !pending;
+  const statEl = !showPanel ? (
+    <span className="stat" aria-hidden={!statShown}>
+      {statShown && <>
+        {statTotal.toLocaleString("en-US")}{data.partial ? "+" : ""} result{statTotal === 1 && !data.partial ? "" : "s"}
+        {data.elapsedMs !== null && <> {"·"} <b>{fmtMs(data.elapsedMs)} ms</b></>}
+      </>}
     </span>
   ) : null;
 
@@ -1683,7 +1687,7 @@ export default function App({ backend }: { backend: Backend }) {
                     if (k && parsed.kind !== f.id) dropChip(k.key); // a tab click overrides the kind found in the text; the same kind is already in force
                     setFilter(f.id); inputRef.current?.focus();
                   }}>
-            {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
+            {f.label}<i title={n ? n.toLocaleString("en-US") : undefined}>{n !== undefined && n > 0 ? chipCount(n) : ""}</i>
           </button>
         );
       })}
@@ -1788,6 +1792,13 @@ export default function App({ backend }: { backend: Backend }) {
         autoFocus
         aria-label="Search"
       />
+      {/* Clear sits right after the text and Filters stays pinned at the far end; the X keeps its slot (hidden when empty) so nothing shifts. */}
+      <button className="clr" tabIndex={-1} aria-label="Clear the search" title="Clear the search" aria-hidden={query === ""}
+              style={query === "" ? { visibility: "hidden" } : undefined}
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { setQuery(""); histAt.current = -1; inputRef.current?.focus(); }}>
+        <IX size={13} />
+      </button>
       <span className="sg-wrap">
         <button className={"sg-btn" + (guide ? " on" : "")} tabIndex={-1} aria-expanded={guide} title="Filters and search syntax"
                 onMouseDown={(e) => e.preventDefault()} onClick={() => setGuide((v) => !v)}>
@@ -1795,13 +1806,6 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
         {guide && <SearchGuide query={query} parsed={parsed} onQuery={(q) => { histAt.current = -1; setQuery(q); inputRef.current?.focus(); }} onClose={() => setGuide(false)} />}
       </span>
-      {query !== "" && (
-        <button className="clr" tabIndex={-1} aria-label="Clear the search" title="Clear the search"
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => { setQuery(""); histAt.current = -1; inputRef.current?.focus(); }}>
-          <IX size={13} />
-        </button>
-      )}
     </>
   );
   const winControls = <WindowControls onMin={() => void backend.minimize()} onRestore={flipView} onClose={() => void backend.hide()} />;

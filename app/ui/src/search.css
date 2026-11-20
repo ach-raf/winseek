@@ -18,7 +18,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sbar input:focus-visible { outline: 0; }
 .sbar input::placeholder { color: var(--fg3); font-weight: 400; }
 .tbar .field input { font-size: 15.5px; }
-.stat { font-size: 12.5px; color: var(--fg3); white-space: nowrap; }
+.stat { font-size: 12.5px; color: var(--fg3); white-space: nowrap; min-width: 190px; flex: none; } /* fixed slot: "0 results" vs "9,204,976 results · 34 ms" must not move the search box */
 .stat b { font: 500 11.5px var(--mono); color: var(--fg2); }
 .ibtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--fg3); flex: none; }
 .ibtn:hover { background: var(--bg3); color: var(--fg); }
@@ -349,13 +349,13 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sg-t { height: 28px; padding: 0 11px; border-radius: 999px; font-size: 12.5px; background: var(--bg3); color: var(--fg); box-shadow: inset 0 0 0 1px transparent; }
 .sg-t:hover { box-shadow: inset 0 0 0 1px var(--line); }
 .sg-t.on { background: var(--acc); color: var(--acc-fg, #fff); }
-.sg-t.code { height: auto; min-height: 28px; padding: 5px 11px; border-radius: 9px; display: inline-flex; align-items: baseline; gap: 8px; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
-.sg-t.code em { font-family: inherit; font-style: normal; color: var(--fg3); font-size: 11.5px; }
+.sg-t.code { height: auto; min-height: 28px; padding: 6px 11px; border-radius: 9px; display: grid; grid-template-columns: 17ch minmax(0, 1fr); white-space: nowrap; align-items: start; gap: 10px; text-align: left; font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+.sg-t.code em { white-space: normal; font-family: inherit; font-style: normal; color: var(--fg3); font-size: 11.5px; }
 .sg-sec.advanced .sg-terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
 
 /* ---- popup polish ---- */
 /* The popup's filter row is narrow: chips keep their full label (never an ellipsis); counts show on the active chip only. */
 .shell:not(.full) .frow .fc { flex: none; overflow: visible; }
-.shell:not(.full) .frow .fc:not(.on) i { display: none; }
+.shell:not(.full) .frow .fc i { display: none; } /* popup: no counts at all (they would make the chips jump); they stay in the tooltip */
 /* List gutters: reserved scrollbar lane taken off the right padding, so rows sit evenly in the popup. */
 .shell:not(.full) .list { padding-right: max(0px, calc(var(--sp-2) - var(--sbw))); scrollbar-gutter: stable; }

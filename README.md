@@ -1,6 +1,6 @@
 # winseek
 
-[![CI](https://github.com/ach-raf/winseek/actions/workflows/ci.yml/badge.svg)](https://github.com/ach-raf/winseek/actions/workflows/ci.yml)
+[![CI](https://github.com/ach-raf/winseek/actions/workflows/ci.yml/badge.svg?branch=master)](https://github.com/ach-raf/winseek/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ach-raf/winseek?include_prereleases)](https://github.com/ach-raf/winseek/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
