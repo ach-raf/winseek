@@ -209,6 +209,79 @@ fn query_features() {
     assert_eq!(names(&ix, "!users\\ *.txt").len(), 2);
 }
 
+/// Paths arrive mangled — JSON-escaped doubles, console quotes, file:/// URLs — and must
+/// land on the same hits as their clean form (normalize_term_text / collapse_separators).
+#[test]
+fn path_terms_normalize_mangled_forms() {
+    let ix = sample();
+    // doubled backslashes from JSON text
+    assert_eq!(
+        names(&ix, "C:\\\\Users\\\\Alice"),
+        names(&ix, "C:\\Users\\Alice")
+    );
+    // doubled/mixed forward separators
+    let mut got = names(&ix, "users//bob//");
+    got.sort();
+    assert_eq!(
+        got,
+        vec![
+            "C:\\Users\\Bob\\notes.md".to_string(),
+            "C:\\Users\\Bob\\report.txt".to_string(),
+        ]
+    );
+    // file:/// URL
+    assert_eq!(
+        names(&ix, "file:///C:/Users/Alice/photo.jpg"),
+        vec!["C:\\Users\\Alice\\photo.jpg".to_string()]
+    );
+    // percent-encoding decodes even into the folder name
+    assert_eq!(
+        names(&ix, "file:///C:/Users/%41lice/photo.jpg"),
+        vec!["C:\\Users\\Alice\\photo.jpg".to_string()]
+    );
+    // capital scheme
+    assert_eq!(
+        names(&ix, "FILE:///C:/Users/Alice/photo.jpg"),
+        vec!["C:\\Users\\Alice\\photo.jpg".to_string()]
+    );
+    // two-slash host-less form
+    assert_eq!(
+        names(&ix, "file://C:/Users/Alice/photo.jpg"),
+        vec!["C:\\Users\\Alice\\photo.jpg".to_string()]
+    );
+    // glued single quotes from a console line
+    assert_eq!(
+        names(&ix, "'C:\\Users\\Alice\\photo.jpg'"),
+        vec!["C:\\Users\\Alice\\photo.jpg".to_string()]
+    );
+    // wildcard glob keeps working across collapsed separators
+    assert_eq!(names(&ix, "*\\\\bob\\\\*.txt").len(), 1);
+    // the file: operator itself is untouched (no // after the colon)
+    assert_eq!(names(&ix, "file:report").len(), 3);
+    // operator binds, path still matches (files only: Alice's folder itself drops out)
+    assert_eq!(names(&ix, "file:users/alice").len(), 3);
+    // negation with a doubled path
+    assert_eq!(
+        names(&ix, "!C:\\\\Users\\\\Bob\\\\report.txt").len(),
+        names(&ix, "").len() - 1
+    );
+
+    // spaced names: quoted phrase with JSON doubles, and a %20 URL
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(b'E', 7);
+    b.push(b'E', 60, 7, "my vids", true, 7, 9);
+    b.push(b'E', 61, 60, "a b.mp4", false, 7, 9);
+    let ix2 = b.finish();
+    assert_eq!(
+        names(&ix2, "\"E:\\\\my vids\\\\a b.mp4\""),
+        vec!["E:\\my vids\\a b.mp4".to_string()]
+    );
+    assert_eq!(
+        names(&ix2, "file:///E:/my%20vids/a%20b.mp4"),
+        vec!["E:\\my vids\\a b.mp4".to_string()]
+    );
+}
+
 #[test]
 fn word_start_term() {
     let mut b = IndexBuilder::new(false);

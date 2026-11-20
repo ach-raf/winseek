@@ -325,15 +325,86 @@ pub struct SearchResult {
     pub items: Vec<u32>,
 }
 
+/// Query-side cleanup before a term becomes a match condition. A path copied out of JSON
+/// (`E:\\a\\b`), a console/ffmpeg arg (`'C:/v/clip.mp4'`), or a `file:///E:/a%20b.mp4` URL
+/// must land on the same needle the stored single-backslash paths use. Syntax the user
+/// asked for on purpose (wildcards, operators, negation — stripped by the tokenizer) is
+/// untouched; only URL clothes, wrapping quotes, and separator runs are removed.
+fn normalize_term_text(text: &str) -> String {
+    let mut t = text.to_string();
+    let lower = t.to_ascii_lowercase();
+    let mut url = false;
+    if lower.starts_with("file:///") {
+        t.drain(..8);
+        url = true;
+    } else if lower.starts_with("file://") {
+        t.drain(..7);
+        url = true;
+    }
+    if url {
+        t = percent_decode(&t);
+    }
+    // one wrapping quote pair, e.g. 'C:\v\clip.mp4' glued into the term by a console line
+    let ch: Vec<char> = t.chars().collect();
+    if ch.len() >= 2 {
+        let f = ch[0];
+        if (f == '"' || f == '\'') && f == ch[ch.len() - 1] {
+            t = ch[1..ch.len() - 1].iter().collect();
+        }
+    }
+    t
+}
+
+/// Runs of `\` and `/`, doubled or mixed, become one `\` (`E:\\a\\b` from JSON text and
+/// `E:/a/b` both land on the stored form). A leading single `\` survives: `\Windows` stays
+/// an any-drive fragment.
+fn collapse_separators(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut prev_sep = false;
+    for c in text.chars() {
+        let sep = c == '\\' || c == '/';
+        if sep {
+            if !prev_sep {
+                out.push('\\');
+            }
+        } else {
+            out.push(c);
+        }
+        prev_sep = sep;
+    }
+    out
+}
+
+/// `%XX` -> byte, best effort; a `%` that is not a valid escape stays literal.
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
+    let hex = |c: u8| (c as char).to_digit(16);
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let (Some(hi), Some(lo)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
 fn text_term(text: &str, negate: bool) -> Option<Term> {
+    let text = normalize_term_text(text);
     if text.is_empty() {
         return None;
     }
     let path = text.contains('\\') || text.contains('/');
     let text = if path {
-        text.replace('/', "\\")
+        collapse_separators(&text)
     } else {
-        text.to_string()
+        text
     };
     let folded = fold_string(&text);
     let cond = if folded.contains('*') || folded.contains('?') {
@@ -392,8 +463,12 @@ impl Query {
             if j < n && ch[j] == ':' && j > start {
                 let w: String = ch[start..j].iter().collect::<String>().to_ascii_lowercase();
                 if matches!(w.as_str(), "ext" | "file" | "folder" | "size" | "dm" | "ws") {
-                    prefix = Some(w);
-                    i = j + 1;
+                    // `file://…` is a pasted URL, not the file-only operator
+                    let is_url = w == "file" && j + 2 < n && ch[j + 1] == '/' && ch[j + 2] == '/';
+                    if !is_url {
+                        prefix = Some(w);
+                        i = j + 1;
+                    }
                 }
             }
             let mut text = String::new();
