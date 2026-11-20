@@ -161,9 +161,8 @@
 .dl-opt-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
 .dl-opt-head .sz { margin-left: auto; color: var(--fg3); font-variant-numeric: tabular-nums; }
 
-/* full window: the preview pane uses the page gutter too — but the right side only carries the
- * scrollbar, so it gets the tight gutter (more text width in the 384px column) */
-.shell.full .pv { padding: var(--sp-4) var(--sp-3) var(--gut) var(--gut); }
+/* full window: the preview pane uses the page gutter on BOTH sides (the scrollbar overlays inside it) */
+.shell.full .pv { padding: var(--sp-4) max(var(--sp-2), calc(var(--gut) - var(--sbw))) var(--gut) var(--gut); scrollbar-gutter: stable; }
 /* Quick Look (Space): the pane is the whole page — the 720px reading cap leaves ~280px dead on
  * each side of a full window, so drop the cap and trim the side padding there as well */
 .cols.ql .pv { padding-left: var(--sp-3); padding-right: var(--sp-3); }

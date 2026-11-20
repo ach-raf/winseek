@@ -26,12 +26,15 @@ export interface GridMetrics {
  * Columns for `innerWidth` css px: as many exact-size tiles as fit (at least MIN_COLS, at most `maxCols`).
  * Tile size never changes with the width unless even MIN_COLS do not fit, so every surface shows the same tile.
  */
-export function gridMetrics(innerWidth: number, maxCols = Infinity): GridMetrics {
+export function gridMetrics(innerWidth: number, maxCols = Infinity, fill = false): GridMetrics {
   const w = Math.max(0, innerWidth);
   const fit = Math.floor((w + PIC_GAP) / (PIC_W + PIC_GAP));
   const cols = Math.max(MIN_COLS, Math.min(maxCols, fit));
   let tileW = PIC_W;
   if (cols * PIC_W + (cols - 1) * PIC_GAP > w && w > 0) tileW = Math.max(24, Math.floor((w - (cols - 1) * PIC_GAP) / cols));
+  // `fill`: spread the leftover width over the tiles so the grid's right edge meets the right gutter exactly
+  // (the left edge already sits on the left gutter) instead of leaving a dead strip beside the rail.
+  else if (fill && w > 0) tileW = Math.floor((w - (cols - 1) * PIC_GAP) / cols);
   const tileH = Math.round((tileW * 3) / 4);
   return { cols, tileW, tileH, gap: PIC_GAP, rowStride: tileH + PIC_GAP, width: cols * tileW + (cols - 1) * PIC_GAP };
 }

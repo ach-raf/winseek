@@ -300,20 +300,23 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
         {sub && <span className="hsub">{sub}</span>}
         <span className="sp" />
         {tab === "timeline" && summary !== null && visibleTotal > 0 && (
-          <div className="ttools">
-            <NameFilter value={photoQ} onChange={setPhotoQ} label="Search pictures" placeholder="Search pictures" />
-            <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
-              {TIMELINE_VIEWS.map((v) => (
-                <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
-                  {v.label}<i>{counts[v.id].toLocaleString("en-US")}</i>
-                </button>
-              ))}
-            </div>
-            <GalleryViewToggle view={gview} onChange={setGview} />
-          </div>
+          <NameFilter value={photoQ} onChange={setPhotoQ} label="Search pictures" placeholder="Search pictures" />
         )}
         {chrome}
       </div>
+      {tab === "timeline" && summary !== null && visibleTotal > 0 && (
+        <div className="tl-bar">
+          <div className="dseg tl-seg" role="tablist" aria-label="What the timeline shows">
+            {TIMELINE_VIEWS.map((v) => (
+              <button key={v.id} role="tab" aria-selected={tlView === v.id} className={tlView === v.id ? "on" : ""} title={v.hint} onClick={() => setTlView(v.id)}>
+                {v.label}<i>{counts[v.id].toLocaleString("en-US")}</i>
+              </button>
+            ))}
+          </div>
+          <span className="sp" />
+          <GalleryViewToggle view={gview} onChange={setGview} />
+        </div>
+      )}
       <main className="lib-body">
         {seen.timeline && keep("timeline", searching ? (
           <>

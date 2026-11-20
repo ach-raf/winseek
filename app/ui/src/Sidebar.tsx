@@ -87,7 +87,7 @@ export function WindowControls({ onMin, onRestore, onClose }: { onMin?: () => vo
   return (
     <div className="wc">
       {onMin && <button title="Minimize" aria-label="Minimize" tabIndex={-1} onClick={onMin}><IMin /></button>}
-      <button title="Back to popup (F11)" aria-label="Back to popup" tabIndex={-1} onClick={onRestore}><IContract /></button>
+      <button title="Back to popup (F11)" aria-label="Back to popup" tabIndex={-1} onClick={onRestore}><IContract size={14} /></button>
       <button title="Close" aria-label="Close" tabIndex={-1} onClick={onClose}><ICls /></button>
     </div>
   );

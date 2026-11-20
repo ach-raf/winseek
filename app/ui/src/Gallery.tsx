@@ -18,6 +18,8 @@ import {
 
 /** Left / right gutter of the grid (the window's --gut). */
 const PAD = 22;
+/** Width of the scroller's scrollbar lane (main.tsx measures it): taken off the right gutter so both visible gutters match. */
+const sbw = (): number => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sbw")) || 0;
 const HEAD_H = 44;
 const NO_HEAD = 6;
 const BOTTOM = 14;
@@ -235,7 +237,7 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
   );
 
   // The shared grid: exact-size tiles, as many columns as fit the grid column (the dock and the rail never move).
-  const g = useMemo(() => gridMetrics(size.w - PAD * 2), [size.w]);
+  const g = useMemo(() => gridMetrics(size.w - PAD - Math.max(8, PAD - sbw()), Infinity, true), [size.w]);
   const { cols, tileW, tileH, rowStride: stride } = g;
   const heads = useMemo(() => secs.map((s) => (s.label ? HEAD_H : NO_HEAD)), [secs]);
   const metrics = useMemo(() => sectionLayout(ix.effCount, heads, g, BOTTOM), [ix, heads, g]);

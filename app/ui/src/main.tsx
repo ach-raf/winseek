@@ -26,6 +26,17 @@ if (!inTauri) document.documentElement.classList.add("web");
 const library = new URLSearchParams(location.search).get("view") === "library" || location.hash === "#library";
 if (library) document.documentElement.classList.add("lib-view");
 
+// The real width of a vertical scrollbar here (thin Windows bars are ~11px, classic 17px). Scrollers reserve
+// that lane (scrollbar-gutter: stable) and take it off their right padding, so the visible gutters are equal.
+{
+  const probe = document.createElement("div");
+  probe.className = "list";
+  probe.style.cssText = "position:absolute;visibility:hidden;width:80px;height:40px;overflow-y:scroll";
+  document.body.appendChild(probe);
+  document.documentElement.style.setProperty("--sbw", `${probe.offsetWidth - probe.clientWidth}px`);
+  probe.remove();
+}
+
 applyAccent(loadAccent());
 applyThemeChoice(loadTheme());
 applyOpacity(loadOpacity());
