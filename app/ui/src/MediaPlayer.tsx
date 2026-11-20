@@ -21,7 +21,7 @@ function loadVolume(): { v: number; m: boolean } {
 }
 
 const I = {
-  play: <path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5Z" />,
+  play: <path d="M5.9 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 5.9 5.5Z" />,
   pause: <path d="M7 5h3.5v14H7zM13.5 5H17v14h-3.5z" />,
   back: <path d="M12 5V2L7 6.5 12 11V8a5 5 0 1 1-5 5H5a7 7 0 1 0 7-8Z" />,
   fwd: <path d="M12 5V2l5 4.5L12 11V8a5 5 0 1 0 5 5h2a7 7 0 1 1-7-8Z" />,
@@ -240,16 +240,18 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
         onKeyDown={onKey} onPointerMove={wake} onPointerDown={() => wrap.current?.focus()}
         onClick={toggle} onDoubleClick={toggleFull}
       >
-        {/* The frame is the picture's own box (any aspect: portrait, square, ultrawide): the controls live inside it. */}
-        <div className="mp-frame" style={{ "--ar": ar } as React.CSSProperties}>
-          <video ref={ref as React.RefObject<HTMLVideoElement>} playsInline {...common} />
-          {waiting && playing && <span className="mp-spin" aria-hidden />}
-          {!playing && !waiting && (
-            <span className="playb" aria-hidden><Icon d="play" /></span>
-          )}
+        <div className="mp-view">
+          {/* The frame is the picture's own box (any aspect ratio): nothing is cropped or zoomed. */}
+          <div className="mp-frame" style={{ "--ar": ar } as React.CSSProperties}>
+            <video ref={ref as React.RefObject<HTMLVideoElement>} playsInline {...common} />
+            {waiting && playing && <span className="mp-spin" aria-hidden />}
+            {!playing && !waiting && (
+              <span className="playb" aria-hidden><Icon d="play" /></span>
+            )}
+          </div>
           {at}
-          {bar}
         </div>
+        {bar}
       </div>
     );
   }

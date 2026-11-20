@@ -7,7 +7,7 @@ import { qk, refreshSpace } from "./qk";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
 import { errText, formatDate, formatSize } from "./format";
-import { IChevL, IUp, IRefresh } from "./icons";
+import { IChevL, IUp, IRefresh, ICopy } from "./icons";
 import { uniformRange, nameMatches, rangedBatch, toggledBatch, type SelMod } from "./libraryLogic";
 import { NameFilter } from "./NameFilter";
 import {
@@ -357,19 +357,49 @@ export function Space({ backend, hidden, actions, epoch, lead, start }: {
 
 function Crumbs({ path, onGo }: { path: string; onGo: (p: string) => void }) {
   const all = crumbs(path);
-  const fold = all.length > 5 ? all.length - 4 : 0;
+  // Deep paths keep the drive + the last three; the hidden middle is one click away in a list (not a guess).
+  const fold = all.length > 5 ? all.length - 3 : 0;
+  const hidden = fold ? all.slice(1, fold) : [];
+  const [open, setOpen] = useState(false);
+  const nav = useRef<HTMLElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const off = (e: Event) => { if (!nav.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape") { e.stopPropagation(); setOpen(false); } };
+    document.addEventListener("pointerdown", off);
+    document.addEventListener("keydown", esc, true);
+    return () => { document.removeEventListener("pointerdown", off); document.removeEventListener("keydown", esc, true); };
+  }, [open]);
+  useEffect(() => setOpen(false), [path]);
+  const copy = () => { void navigator.clipboard?.writeText(path).catch(() => {}); };
   return (
-    <nav className="su-crumbs" aria-label="Location">
+    <nav className="su-crumbs" aria-label="Location" ref={nav}>
       {all.map((c, i) => {
-        if (fold && i > 1 && i < fold) return i === 2 ? <span key="fold" className="su-cr"><i><IChevL size={12} /></i><button className="su-chip" title={all[fold - 1]?.path ?? ""} onClick={() => onGo(all[fold - 1]?.path ?? "")}>…</button></span> : null;
+        if (fold && i > 0 && i < fold) {
+          if (i !== 1) return null;
+          return (
+            <span key="fold" className="su-cr">
+              <i><IChevL size={12} /></i>
+              <button className="su-chip" aria-haspopup="menu" aria-expanded={open} title={`${hidden.length} folders in between`} onClick={() => setOpen((v) => !v)}>…</button>
+              {open && (
+                <div className="su-cmenu" role="menu">
+                  {hidden.map((h) => (
+                    <button key={h.path} role="menuitem" className="su-cm" title={h.path} onClick={() => { setOpen(false); onGo(h.path); }}>{h.label}</button>
+                  ))}
+                </div>
+              )}
+            </span>
+          );
+        }
         const last = i === all.length - 1;
         return (
-          <span key={c.path || "pc"} className="su-cr">
+          <span key={c.path || "pc"} className={"su-cr" + (last ? " last" : "")}>
             {i > 0 && <i><IChevL size={12} /></i>}
             <button className={"su-chip" + (last ? " now" : "")} aria-current={last ? "page" : undefined} title={c.path || "All drives"} onClick={() => !last && onGo(c.path)}>{c.label}</button>
           </span>
         );
       })}
+      {path && <button className="su-copy" title="Copy the full path" aria-label="Copy the full path" onClick={copy}><ICopy size={13} /></button>}
     </nav>
   );
 }

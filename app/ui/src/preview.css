@@ -103,35 +103,26 @@
 
 /* video / audio player (MediaPlayer.tsx) */
 .pv-media { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg2); outline: none; overflow: hidden; border-radius: 12px; }
-.pv-media.video { background: #000; cursor: pointer; container-type: size; }
+.pv-media.video { background: #000; cursor: pointer; container: mps / inline-size; }
+.mp-view { position: absolute; inset: 0; display: grid; place-items: center; container-type: size; }
 /* the picture's box: as large as fits at the clip's own aspect ratio, so a portrait clip is never cropped or zoomed */
-.mp-frame { position: relative; width: min(100cqw, calc(100cqh * var(--ar, 1.7778))); aspect-ratio: var(--ar, 1.7778); max-height: 100cqh; overflow: hidden; container: mpf / inline-size; }
-/* a narrow picture (portrait clip in the small pane): keep only what fits — play, seek, mute */
-@container mpf (max-width: 330px) {
-  .mp-skip, .mp-rate, .mp-volsl { display: none; }
-  .mp-seekrow { gap: 6px; }
-  .mp-time { min-width: 0; font-size: 11px; }
-  .mp.video .mp-bar { padding-left: 8px; padding-right: 8px; }
-}
+.mp-frame { position: relative; width: min(100cqw, calc(100cqh * var(--ar, 1.7778))); aspect-ratio: var(--ar, 1.7778); max-height: 100cqh; overflow: hidden; background: #000; box-shadow: 0 6px 30px rgba(0,0,0,.5); }
 .pv-media.video video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
 .pv-media.video.full { border-radius: 0; }
 .pv-media.video.idle { cursor: none; }
-.mp.video.full .mp-bar { padding-bottom: 14px; }
+@container mps (max-width: 300px) { .mp-skip, .mp-rate { display: none; } }
 .pv-media .playb {
-  position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
+  position: absolute; inset: 0; width: 64px; height: 64px; margin: auto; border-radius: 50%;
   background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; pointer-events: none;
   box-shadow: 0 0 0 1px rgba(255,255,255,.18), 0 8px 28px rgba(0,0,0,.45); backdrop-filter: blur(6px);
 }
-.pv-media .playb svg { width: 28px; height: 28px; margin-left: 3px; }
+.pv-media .playb svg { width: 30px; height: 30px; display: block; }
 .mp-spin { position: absolute; left: 50%; top: 50%; width: 34px; height: 34px; margin: -17px 0 0 -17px; border-radius: 50%; border: 3px solid rgba(255,255,255,.25); border-top-color: #fff; animation: spin 800ms linear infinite; pointer-events: none; }
 
 /* control bar: floats over the video (fades out while playing), sits at the bottom of the audio card */
 .mp-bar { display: flex; flex-direction: column; gap: 2px; width: 100%; cursor: default; color: var(--fg); }
-.mp.video .mp-bar {
-  position: absolute; left: 0; right: 0; bottom: 0; padding: 26px 12px 8px; color: #fff;
-  background: linear-gradient(to top, rgba(0,0,0,.82), rgba(0,0,0,.45) 60%, transparent);
-  transition: opacity 180ms, transform 180ms;
-}
+.mp.video .mp-bar { position: absolute; left: 0; right: 0; bottom: 0; z-index: 2; padding: 30px 14px 10px; color: #fff; background: linear-gradient(to top, rgba(0,0,0,.85), rgba(0,0,0,.45) 60%, transparent); transition: opacity 180ms, transform 180ms; }
+.mp.video.full .mp-bar { padding: 36px 20px 16px; }
 .mp.video.idle .mp-bar, .mp.video.idle .pv-at { opacity: 0; transform: translateY(6px); pointer-events: none; }
 .mp-seekrow { display: flex; align-items: center; gap: 10px; }
 .mp-row { display: flex; align-items: center; gap: 2px; min-width: 0; }

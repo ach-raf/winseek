@@ -20,8 +20,8 @@ import {
 const PAD = 22;
 /** Width of the scroller's scrollbar lane (main.tsx measures it): taken off the right gutter so both visible gutters match. */
 const sbw = (): number => parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sbw")) || 0;
-const HEAD_H = 44;
-const NO_HEAD = 6;
+const HEAD_H = 50; // 44px sticky heading + 6px air so the first row's selection ring (3px + 2px offset) is not tucked under it
+const NO_HEAD = 8; // >= ring 3px + offset 2px, else the first row's ring is clipped by the scroller edge
 const BOTTOM = 14;
 /** Rows drawn above and below the viewport (a fast scroll never shows a gap). */
 const OVERSCAN_ROWS = 2;

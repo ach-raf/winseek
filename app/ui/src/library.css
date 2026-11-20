@@ -471,3 +471,16 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .lg-results b { color: var(--fg); font-weight: 600; }
 .lg-results i { font-style: normal; font-size: 12.5px; color: var(--fg3); font-variant-numeric: tabular-nums; }
 .lg-results .sp { flex: 1; }
+
+/* ---------- disk space: the path gets its own full-width row (never squeezed between Up / totals / Refresh) ---------- */
+.su-top .su-crumbs { flex: 1 1 100%; order: 5; position: relative; overflow: visible; min-width: 0; padding: 2px 0 0; }
+.su-cr { flex: 0 1 auto; position: relative; }
+.su-cr .su-chip { min-width: 0; max-width: 260px; }
+.su-cr.last { flex-shrink: 1; }
+.su-cr.last .su-chip { max-width: min(520px, 60vw); }
+.su-copy { flex: none; margin-left: 4px; width: 26px; height: 26px; display: inline-grid; place-items: center; border-radius: var(--r-sm); color: var(--fg3); opacity: 0; transition: opacity .12s; }
+.su-crumbs:hover .su-copy, .su-copy:focus-visible { opacity: 1; }
+.su-copy:hover { background: var(--bg2); color: var(--fg); }
+.su-cmenu { position: absolute; top: calc(100% + 4px); left: 0; z-index: 20; min-width: 180px; max-width: min(360px, 80vw); max-height: 260px; overflow-y: auto; padding: 4px; border-radius: var(--r-md); background: var(--bg2); border: var(--card-border); box-shadow: var(--card-shadow); display: flex; flex-direction: column; }
+.su-cm { text-align: left; padding: 6px 10px; border-radius: var(--r-sm); font-size: 12.5px; color: var(--fg2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.su-cm:hover { background: var(--bg3); color: var(--fg); }

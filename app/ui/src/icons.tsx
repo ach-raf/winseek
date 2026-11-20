@@ -32,6 +32,7 @@ export const ICls = () => <svg width="11" height="11" viewBox="0 0 11 11" stroke
 export const IChevL = ({ size = 15, className }: P) => <S size={size} w={2.2} className={className}><path d="m15 18-6-6 6-6" /></S>;
 export const IUp = ({ size = 15, className }: P) => <S size={size} w={2.2} className={className}><path d="m6 14 6-6 6 6" /><path d="M12 8v12" /></S>;
 export const IRefresh = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><path d="M20 12a8 8 0 1 1-2.6-5.9" /><path d="M20 4v5h-5" /></S>;
+export const ICopy = ({ size = 15, className }: P) => <S size={size} w={2} className={className}><rect x="9" y="9" width="11" height="11" rx="2" /><path d="M5 15V6a2 2 0 0 1 2-2h8" /></S>;
 export const IFolder = () => (
   <svg viewBox="0 0 32 32" aria-hidden>
     <path d="M3 9a3 3 0 0 1 3-3h6.2a2 2 0 0 1 1.5.7L15.5 9H26a3 3 0 0 1 3 3v2H3z" fill="#e3a21a" />
