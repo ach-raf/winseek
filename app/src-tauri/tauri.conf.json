@@ -7,7 +7,7 @@
     "frontendDist": "../ui/dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm run dev --prefix ui",
-    "beforeBuildCommand": "npm run build --prefix ui"
+    "beforeBuildCommand": "cargo build --release -p searchd -p winseek-mcp -p winseek-cli && npm run build --prefix ui"
   },
   "app": {
     "withGlobalTauri": true,
