@@ -285,6 +285,12 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .dens.on, .sortb.on { color: var(--fg); background: var(--bg3); }
 
 /* ---- empty state: one-click ways out ---- */
+.sortb.custom { color: var(--fg); background: color-mix(in oklab, var(--acc) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
+.sortb.custom:hover { background: color-mix(in oklab, var(--acc) 26%, transparent); }
+.sortdot { width: 6px; height: 6px; border-radius: 50%; background: var(--acc); flex: none; }
+.sortnote { margin-top: 14px; font-size: 12.5px; color: var(--fg3); display: flex; align-items: center; justify-content: center; gap: 8px; }
+.sortnote b { display: inline; font-size: inherit; margin: 0; color: var(--fg); }
+.sortnote .fix { height: 26px; padding: 0 10px; }
 .fixes { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 16px; }
 .fix { height: 30px; padding: 0 12px; border-radius: 8px; background: var(--bg3); color: var(--fg); font-size: 12.5px; font-weight: 500; }
 .fix:hover { background: color-mix(in oklab, var(--acc) 22%, var(--bg3)); }

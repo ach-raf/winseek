@@ -89,6 +89,7 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
   const [full, setFull] = useState(false);
   const [idle, setIdle] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [ar, setAr] = useState(16 / 9);
   const idleTimer = useRef<number>(0);
   const isVideo = kind === "video";
 
@@ -174,8 +175,8 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
 
   const shown = scrub ?? time;
   const level = muted || vol === 0 ? "mute" : vol < 0.5 ? "low" : "vol";
-  const Btn = ({ d, title, onClick, big }: { d: keyof typeof I; title: string; onClick: () => void; big?: boolean }) => (
-    <button type="button" className={`mp-btn${big ? " big" : ""}`} title={title} aria-label={title} tabIndex={-1}
+  const Btn = ({ d, title, onClick, big, cls }: { d: keyof typeof I; title: string; onClick: () => void; big?: boolean; cls?: string }) => (
+    <button type="button" className={`mp-btn${big ? " big" : ""}${cls ? " " + cls : ""}`} title={title} aria-label={title} tabIndex={-1}
       onClick={(e) => { e.stopPropagation(); onClick(); wrap.current?.focus(); }} onDoubleClick={(e) => e.stopPropagation()}>
       <Icon d={d} />
     </button>
@@ -192,9 +193,9 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
         <span className="mp-time">{formatClock(dur)}</span>
       </div>
       <div className="mp-row">
-        <Btn d="back" title="Back 10 s (←)" onClick={() => skip(-10)} />
+        <Btn d="back" cls="mp-skip" title="Back 10 s (←)" onClick={() => skip(-10)} />
         <Btn d={playing ? "pause" : "play"} title={playing ? "Pause (Space)" : "Play (Space)"} onClick={toggle} big />
-        <Btn d="fwd" title="Forward 10 s (→)" onClick={() => skip(10)} />
+        <Btn d="fwd" cls="mp-skip" title="Forward 10 s (→)" onClick={() => skip(10)} />
         <span className="mp-gap" />
         <button type="button" className="mp-rate" tabIndex={-1} title="Playback speed" onClick={(e) => { e.stopPropagation(); cycleRate(); wrap.current?.focus(); }}>{rate}×</button>
         <div className="mp-vol">
@@ -226,6 +227,7 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
     onLoadedMetadata: (e: React.SyntheticEvent<HTMLMediaElement>) => {
       const el = e.currentTarget;
       el.volume = vol; el.muted = muted || vol === 0; el.playbackRate = rate;
+      if (el instanceof HTMLVideoElement && el.videoWidth > 0 && el.videoHeight > 0) setAr(el.videoWidth / el.videoHeight);
       const t = seekTarget(start, el.duration);
       if (t !== null) el.currentTime = t;
     },
@@ -238,13 +240,16 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
         onKeyDown={onKey} onPointerMove={wake} onPointerDown={() => wrap.current?.focus()}
         onClick={toggle} onDoubleClick={toggleFull}
       >
-        <video ref={ref as React.RefObject<HTMLVideoElement>} playsInline {...common} />
-        {waiting && playing && <span className="mp-spin" aria-hidden />}
-        {!playing && !waiting && (
-          <span className="playb" aria-hidden><Icon d="play" /></span>
-        )}
-        {at}
-        {bar}
+        {/* The frame is the picture's own box (any aspect: portrait, square, ultrawide): the controls live inside it. */}
+        <div className="mp-frame" style={{ "--ar": ar } as React.CSSProperties}>
+          <video ref={ref as React.RefObject<HTMLVideoElement>} playsInline {...common} />
+          {waiting && playing && <span className="mp-spin" aria-hidden />}
+          {!playing && !waiting && (
+            <span className="playb" aria-hidden><Icon d="play" /></span>
+          )}
+          {at}
+          {bar}
+        </div>
       </div>
     );
   }

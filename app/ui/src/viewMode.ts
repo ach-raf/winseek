@@ -4,7 +4,7 @@ export type ViewMode = "compact" | "full";
 export interface ViewState { default_view: ViewMode; current: ViewMode }
 
 export const VIEW_CHOICES: { id: ViewMode; label: string; blurb: string }[] = [
-  { id: "compact", label: "Compact popup", blurb: "The small Spotlight-style box in the upper third of the screen." },
+  { id: "compact", label: "Compact popup", blurb: "A small search box, always centred on the screen." },
   { id: "full", label: "Full window", blurb: "A bigger 1280x800 window: wide results, a preview pane, and a filter rail." },
 ];
 

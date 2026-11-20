@@ -103,9 +103,20 @@
 
 /* video / audio player (MediaPlayer.tsx) */
 .pv-media { position: absolute; inset: 0; display: grid; place-items: center; background: var(--bg2); outline: none; overflow: hidden; border-radius: 12px; }
-.pv-media.video { background: #000; cursor: pointer; }
-.pv-media.video video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+.pv-media.video { background: #000; cursor: pointer; container-type: size; }
+/* the picture's box: as large as fits at the clip's own aspect ratio, so a portrait clip is never cropped or zoomed */
+.mp-frame { position: relative; width: min(100cqw, calc(100cqh * var(--ar, 1.7778))); aspect-ratio: var(--ar, 1.7778); max-height: 100cqh; overflow: hidden; container: mpf / inline-size; }
+/* a narrow picture (portrait clip in the small pane): keep only what fits — play, seek, mute */
+@container mpf (max-width: 330px) {
+  .mp-skip, .mp-rate, .mp-volsl { display: none; }
+  .mp-seekrow { gap: 6px; }
+  .mp-time { min-width: 0; font-size: 11px; }
+  .mp.video .mp-bar { padding-left: 8px; padding-right: 8px; }
+}
+.pv-media.video video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: contain; background: #000; }
+.pv-media.video.full { border-radius: 0; }
 .pv-media.video.idle { cursor: none; }
+.mp.video.full .mp-bar { padding-bottom: 14px; }
 .pv-media .playb {
   position: absolute; left: 50%; top: 50%; width: 64px; height: 64px; margin: -32px 0 0 -32px; border-radius: 50%;
   background: rgba(0,0,0,.6); color: #fff; display: grid; place-items: center; pointer-events: none;

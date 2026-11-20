@@ -1606,6 +1606,13 @@ export default function App({ backend }: { backend: Backend }) {
       ))}
     </div>
   ) : null;
+  // A non-default sort can hide the match you expect: say so, one click back to Best match.
+  const sortNote = !isRecent && sort !== "rel" ? (
+    <div className="sortnote">
+      Sorted by <b>{SORT_LABEL[sort]}</b>.
+      <button className="fix" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => { setSort("rel"); inputRef.current?.focus(); }}>Use Best match</button>
+    </div>
+  ) : null;
 
   // Home suggestions (the empty state is never a dead end): recent searches fill the box, "Try" shows
   // what the query language understands. Most used apps and settings follow below in the Overview.
@@ -1703,7 +1710,10 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       )}
       {!isRecent && (
-        <button className="sortb" tabIndex={-1} title={tooltip("popup.sort")} onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
+        <button className={"sortb" + (sort !== "rel" ? " custom" : "")} tabIndex={-1}
+                title={sort !== "rel" ? `Sorted by ${sortLabel}, not Best match. Click to change.` : tooltip("popup.sort")}
+                onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
+          {sort !== "rel" && <i className="sortdot" aria-hidden="true" />}
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
@@ -1904,6 +1914,7 @@ export default function App({ backend }: { backend: Backend }) {
                   <b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>
                   {fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try fewer words."}
                   {fixEl}
+                  {sortNote}
                 </div>
               )}
             </div>
@@ -1930,7 +1941,7 @@ export default function App({ backend }: { backend: Backend }) {
               <div className="none">
                 {meaningScope && parsed.text.trim().length < 2
                   ? <><b>Search by meaning</b>Describe what the file shows or says, e.g. &ldquo;invoice for the plumber&rdquo;.</>
-                  : <><b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}</>}
+                  : <><b>No results{query.trim() ? <> for &ldquo;{query.trim()}&rdquo;</> : null}</b>{fixes.length > 0 ? "Nothing matches with these filters on." : "Check the spelling, or try describing what the file is about."}{fixEl}{sortNote}</>}
               </div>
             ) : <div className="list ov" />)}
 
