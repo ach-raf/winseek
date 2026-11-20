@@ -29,6 +29,27 @@ pub const QUANT: &str = "Q8_0";
 pub const IMAGE_BUDGET: u32 = 280;
 pub const DIMS: usize = 768;
 pub const IDLE_UNLOAD: Duration = Duration::from_secs(120);
+
+/// "Are the model files and a llama build on disk?", looked at once and then driven by events.
+/// A yes is kept until a spawn finds the files gone ([`forget`](Self::forget)); a no is not kept,
+/// so the moment a download lands the next ask sees it (the downloader kicks the worker). No timer:
+/// the disk is only walked at startup, while models are missing, and after a failed spawn.
+#[derive(Default)]
+pub struct PresentCache(std::cell::Cell<bool>);
+
+impl PresentCache {
+    pub fn check(&self, probe: impl FnOnce() -> bool) -> bool {
+        if !self.0.get() {
+            self.0.set(probe());
+        }
+        self.0.get()
+    }
+
+    /// The files went away under a kept yes: ask the disk again next time.
+    pub fn forget(&self) {
+        self.0.set(false);
+    }
+}
 /// Start of the error `start_index` returns while the parser holds the GPU.
 const GPU_BUSY: &str = "GPU is busy";
 /// The error `embed_audio` returns when the loaded mmproj has no audio encoder.
@@ -268,6 +289,7 @@ pub struct LlamaEmbedder {
     parity: ParityGuard,
     /// Which GPU model is loaded; shared with whatever spawns the parser so the two are phased.
     gpu: Arc<Mutex<GpuPhase>>,
+    present: PresentCache,
 }
 
 impl LlamaEmbedder {
@@ -287,6 +309,7 @@ impl LlamaEmbedder {
             backend: None,
             parity: ParityGuard::default(),
             gpu: Arc::new(Mutex::new(GpuPhase::new(profile))),
+            present: PresentCache::default(),
         }
     }
 
@@ -315,6 +338,7 @@ impl LlamaEmbedder {
 
     fn spawn_role(&mut self, role: Role) -> Result<Running> {
         if !self.files_present() || !self.any_exe() {
+            self.present.forget();
             return Err(EmbedError::ModelsMissing);
         }
         let (model, mmproj) =
@@ -530,7 +554,8 @@ impl Embedder for LlamaEmbedder {
     }
 
     fn models_present(&self) -> bool {
-        self.files_present() && self.any_exe()
+        self.present
+            .check(|| self.files_present() && self.any_exe())
     }
 
     fn tick_idle(&mut self) {
@@ -641,6 +666,28 @@ mod tests {
             e.embed_audio(&[vec![1]]),
             Err(EmbedError::ModelsMissing)
         ));
+    }
+
+    #[test]
+    fn present_cache_keeps_a_yes_never_a_no() {
+        let c = PresentCache::default();
+        let calls = std::cell::Cell::new(0);
+        let probe = |ans: bool| {
+            calls.set(calls.get() + 1);
+            ans
+        };
+        assert!(!c.check(|| probe(false)));
+        assert!(
+            c.check(|| probe(true)),
+            "a no is asked again: a download shows at once"
+        );
+        assert!(c.check(|| probe(false)), "a yes is kept");
+        c.forget(); // a spawn found the files gone
+        assert!(
+            !c.check(|| probe(false)),
+            "after forget the disk is asked again"
+        );
+        assert_eq!(calls.get(), 3);
     }
 
     #[test]

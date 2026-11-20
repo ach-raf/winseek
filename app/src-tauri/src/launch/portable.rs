@@ -307,6 +307,30 @@ pub fn scan(src: &dyn NameSource) -> Option<Vec<LaunchItem>> {
 mod tests {
     use super::*;
 
+    /// Time the sweep's pages against the live service.
+    /// `cargo test -p winseek-app --release diag_portable_pages -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diag_portable_pages() {
+        let src =
+            crate::pipe_source::PipeSource::connect(std::time::Duration::from_secs(1)).unwrap();
+        let t = std::time::Instant::now();
+        for page in 0..MAX_PAGES {
+            let t0 = std::time::Instant::now();
+            let r = src.search("ext:exe", "all", page * PAGE, PAGE, "name");
+            eprintln!(
+                "page {page}: {} hits of {} in {:?}",
+                r.hits.len(),
+                r.total,
+                t0.elapsed()
+            );
+            if r.hits.len() < PAGE {
+                break;
+            }
+        }
+        eprintln!("sweep {:?}", t.elapsed());
+    }
+
     fn exe(path: &str, size: u64, mtime: i64) -> Hit {
         let name = path.rsplit('\\').next().unwrap().to_string();
         Hit {

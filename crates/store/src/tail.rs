@@ -22,6 +22,12 @@ pub struct TailJob {
     pub path: String,
 }
 
+pub(crate) const NEXT_TAIL_SQL: &str =
+    "SELECT t.hash, t.next_page, t.total, t.attempts, f.path, MAX(f.mtime)
+     FROM pdf_tail t CROSS JOIN files f ON f.content_hash = t.hash AND f.state = 1
+     WHERE t.state = 0 AND t.hash NOT IN (SELECT hash FROM pending_vecs)
+     GROUP BY t.hash ORDER BY MAX(f.mtime) DESC, t.hash LIMIT ?1";
+
 /// Tail progress for the status page.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TailCounts {
@@ -46,13 +52,12 @@ impl Store {
 
     /// Up to `limit` tails, newest file first. Only content whose head is complete (every file with
     /// it `done`, nothing waiting for vectors) is offered, and only while a live file has it.
+    ///
+    /// The idle worker asks this every second. CROSS JOIN pins the loop order: walk the few queued
+    /// tails and look their files up by hash. Left to itself (no ANALYZE stats) SQLite walked every
+    /// done file and probed the tail table per row: 17 ms on a 41k-file index, for no job.
     pub fn next_tail(&self, limit: usize) -> Result<Vec<TailJob>> {
-        let mut st = self.conn.prepare_cached(
-            "SELECT t.hash, t.next_page, t.total, t.attempts, f.path, MAX(f.mtime)
-             FROM pdf_tail t JOIN files f ON f.content_hash = t.hash AND f.state = 1
-             WHERE t.state = 0 AND t.hash NOT IN (SELECT hash FROM pending_vecs)
-             GROUP BY t.hash ORDER BY MAX(f.mtime) DESC, t.hash LIMIT ?1",
-        )?;
+        let mut st = self.conn.prepare_cached(NEXT_TAIL_SQL)?;
         let rows = st.query_map([limit as i64], |r| {
             Ok(TailJob {
                 hash: r.get(0)?,
@@ -177,6 +182,37 @@ mod tests {
             kind: VecKind::Text,
             locator: Some(format!("{{\"page\":{}}}", chunk + 1)),
             vec: v.to_vec(),
+        }
+    }
+
+    /// The two queue pickers the idle worker runs every second must walk their (small) queue and
+    /// look files up by hash; walking every file instead cost ~20 ms per call on a real index.
+    #[test]
+    fn idle_queue_pickers_walk_the_queue_not_the_files() {
+        let s = store();
+        for (sql, queue) in [(NEXT_TAIL_SQL, "t"), (crate::NEXT_PARSE_SQL, "q")] {
+            let mut st = s
+                .conn
+                .prepare(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .unwrap();
+            let plan: Vec<String> = st
+                .query_map([1i64], |r| r.get::<_, String>(3))
+                .unwrap()
+                .map(|r| r.unwrap())
+                .collect();
+            let first = plan
+                .iter()
+                .find(|d| d.starts_with("SCAN ") || d.starts_with("SEARCH "))
+                .unwrap();
+            assert!(
+                first.starts_with(&format!("SCAN {queue} ")),
+                "outer loop must be the queue: {plan:?}"
+            );
+            assert!(
+                plan.iter()
+                    .any(|d| d.starts_with("SEARCH f USING INDEX files_hash")),
+                "files must be found by hash: {plan:?}"
+            );
         }
     }
 

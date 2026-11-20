@@ -17,7 +17,7 @@ use winseek_llama::{
     ModelProfile, ParseClient, Parsed, Profile, Role, SpawnConfig,
 };
 
-use super::embedder::{models_dir, Embedder, RuntimeInfo};
+use super::embedder::{models_dir, Embedder, PresentCache, RuntimeInfo};
 use super::gpu_phase::{Gpu, GpuPhase};
 
 pub const MODEL_ID: &str = "infinity-parser2-flash";
@@ -131,6 +131,7 @@ pub struct LlamaParser {
     running: Option<Running>,
     reaper: IdleReaper,
     backend: Option<Backend>,
+    present: PresentCache,
 }
 
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -153,6 +154,7 @@ impl LlamaParser {
             running: None,
             reaper: IdleReaper::new(IDLE_UNLOAD),
             backend: None,
+            present: PresentCache::default(),
         }
     }
 
@@ -170,6 +172,10 @@ impl LlamaParser {
     }
 
     fn spawn(&mut self) -> Result<Running, ParseError> {
+        if !self.files_present() || !self.any_exe() {
+            self.present.forget(); // removed since the last look: ask the disk again next time
+            return Err(ParseError::ModelsMissing);
+        }
         let (model, mmproj) = model_paths(&self.manifest, &models_dir(&self.root))
             .ok_or(ParseError::ModelsMissing)?;
         let start = *self.backend.get_or_insert_with(|| detect_backend().backend);
@@ -225,7 +231,8 @@ impl LlamaParser {
 
 impl Parser for LlamaParser {
     fn present(&self) -> bool {
-        self.files_present() && self.any_exe()
+        self.present
+            .check(|| self.files_present() && self.any_exe())
     }
 
     fn parse(&mut self, jpeg: &[u8]) -> Result<Parsed, ParseError> {

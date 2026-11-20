@@ -31,6 +31,13 @@ const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
 const STATE_FAILED: i64 = 2;
 const STATE_SKIPPED: i64 = 3;
+
+/// See [`Store::next_parse`]: the CROSS JOIN keeps the queue as the outer loop.
+pub(crate) const NEXT_PARSE_SQL: &str =
+    "SELECT q.hash, q.page, q.reason, q.attempts, f.path, MAX(f.mtime)
+     FROM parse_queue q CROSS JOIN files f ON f.content_hash = q.hash AND f.state IN (1, 4)
+     WHERE q.state = 0
+     GROUP BY q.hash, q.page ORDER BY MAX(f.mtime) DESC, q.hash, q.page LIMIT ?1";
 /// Text is extracted and in FTS, but the vectors still wait for the models ("pending vectors").
 const STATE_TEXT_ONLY: i64 = 4;
 
@@ -2276,13 +2283,11 @@ impl Store {
 
     /// Up to `limit` queued items, newest file first. Items whose content no live file has any more
     /// are left out (the next `gc` drops them).
+    ///
+    /// Asked every idle second. CROSS JOIN pins the loop order (queue rows, then their files by
+    /// hash); without it SQLite walked every live file and probed the queue: 21 ms for no job.
     pub fn next_parse(&self, limit: usize) -> Result<Vec<ParseJob>> {
-        let mut st = self.conn.prepare_cached(
-            "SELECT q.hash, q.page, q.reason, q.attempts, f.path, MAX(f.mtime)
-             FROM parse_queue q JOIN files f ON f.content_hash = q.hash AND f.state IN (1, 4)
-             WHERE q.state = 0
-             GROUP BY q.hash, q.page ORDER BY MAX(f.mtime) DESC, q.hash, q.page LIMIT ?1",
-        )?;
+        let mut st = self.conn.prepare_cached(NEXT_PARSE_SQL)?;
         let rows = st.query_map([limit as i64], |r| {
             Ok(ParseJob {
                 hash: r.get(0)?,

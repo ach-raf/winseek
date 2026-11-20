@@ -2505,6 +2505,79 @@ mod tests {
         }
     }
 
+    /// Time every call the idle worker makes once a second, against a copy of the installed store.
+    /// `WINSEEK_DIAG_DB=<copy of tier1.sqlite> cargo test -p winseek-app diag_idle -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn diag_idle() {
+        let Some(db) = std::env::var_os("WINSEEK_DIAG_DB") else {
+            return;
+        };
+        let root = data_root().unwrap();
+        let mut e = LlamaEmbedder::new(root, Manifest::embedded());
+        e.set_profile(Profile::Balanced);
+        let store = Store::open(std::path::Path::new(&db), &e.meta()).unwrap();
+        let store = Mutex::new(store);
+        let emb: Mutex<Box<dyn Embedder + Send>> = Mutex::new(Box::new(e));
+        struct Present;
+        impl Parser for Present {
+            fn present(&self) -> bool {
+                true
+            }
+            fn parse(&mut self, _: &[u8]) -> Result<winseek_llama::Parsed, parser::ParseError> {
+                Err(parser::ParseError::ModelsMissing)
+            }
+        }
+        let parser: Mutex<Box<dyn Parser + Send>> = Mutex::new(Box::new(Present));
+        let real_parser = parser::LlamaParser::new(
+            data_root().unwrap(),
+            Manifest::embedded(),
+            Profile::Balanced,
+            Arc::new(Mutex::new(gpu_phase::GpuPhase::new(Profile::Balanced))),
+        );
+        let paused = AtomicBool::new(false);
+        let mut proc = process::Processor::default();
+        let mut pp = parse_pass::ParsePass::default();
+        let time = |label: &str, f: &mut dyn FnMut() -> String| {
+            let mut best = Duration::MAX;
+            let mut out = String::new();
+            for _ in 0..5 {
+                let t0 = std::time::Instant::now();
+                out = f();
+                best = best.min(t0.elapsed());
+            }
+            eprintln!("{label:<18} {best:>12?}  {out}");
+        };
+        time("sync_media_gate", &mut || {
+            proc.sync_media_gate(&store);
+            String::new()
+        });
+        time("tick+present", &mut || {
+            let mut g = lock(&emb);
+            g.tick_idle();
+            g.models_present().to_string()
+        });
+        time("parser.present", &mut || real_parser.present().to_string());
+        time("has_index_work", &mut || {
+            proc.has_index_work(&store).to_string()
+        });
+        time("run_upgrade_pass", &mut || {
+            format!("{:?}", proc.run_upgrade_pass(&store, &emb, &paused))
+        });
+        time("run_pass", &mut || {
+            format!("{:?}", proc.run_pass(&store, &emb, &paused))
+        });
+        time("parse_pass", &mut || {
+            format!("{:?}", pp.run(&store, &emb, &parser, &paused))
+        });
+        time("run_tail_pass", &mut || {
+            format!("{:?}", proc.run_tail_pass(&store, &emb, &paused))
+        });
+        time("stats", &mut || {
+            format!("{:?}", lock(&store).stats().is_ok())
+        });
+    }
+
     #[test]
     fn semantic_search_ranks_and_filters_scope() {
         let t = tier(Box::new(Q), &[r"C:\Pics"]);
