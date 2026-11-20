@@ -10,9 +10,10 @@ import { Snippet } from "./Semantic";
 import { errText, formatDate, formatSize } from "./format";
 import { makeMatcher, pathKey } from "./fsDelta";
 import { useFsDeltaListener } from "./useFsDelta";
-import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, formatClock, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
+import { MediaPlayer } from "./MediaPlayer";
 
 
 /** What the popup's global key handler may drive while the preview is open (PRD B6). */
@@ -632,67 +633,11 @@ function ParseBar({ backend, path, page, available, dim, registerApi, query }: {
 // ---- video / audio ------------------------------------------------------------------------------------
 
 function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
-  const ref = useRef<HTMLMediaElement>(null);
   const [failed, setFailed] = useState(false);
-  const [playing, setPlaying] = useState(false);
-
-  const url = info.src;
-  useEffect(() => {
-    const el = ref.current;
-    if (!el || !url) return;
-    if (el.getAttribute("src") !== url) el.src = url; // re-arm after StrictMode's simulated unmount
-    return () => {
-      // Unmounting (selection moved on) must stop the download as well as the sound.
-      el.pause();
-      el.removeAttribute("src");
-      el.load();
-    };
-  }, [url]);
-
+  useEffect(() => setFailed(false), [info.src]);
   if (!info.src || failed) return <OtherView info={info} note="This format cannot be played here. Use Open." />;
-  const common = {
-    src: info.src, controls: true, preload: "metadata" as const,
-    onError: () => setFailed(true),
-    // The hit's moment: seek there as soon as the clip knows its length (the matching window or shot starts here).
-    onLoadedMetadata: (e: React.SyntheticEvent<HTMLMediaElement>) => {
-      const t = seekTarget(start, e.currentTarget.duration);
-      if (t !== null) e.currentTarget.currentTime = t;
-    },
-  };
-  const anchor = seekTarget(start, Infinity);
-  /** The "Match at 1:23" button: back to the hit's moment, and play from there. */
-  const jump = () => {
-    const el = ref.current;
-    const t = seekTarget(start, el?.duration ?? NaN);
-    if (!el || t === null) return;
-    el.currentTime = t;
-    void el.play().catch(() => {});
-  };
-  const at = anchor !== null && (
-    <button className="btn pv-at ov" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={jump} title="Jump to the moment that matched">
-      Match at {formatClock(anchor)}
-    </button>
-  );
-  return info.kind === "video" ? (
-    <div className="pv-media">
-      <video ref={ref as React.RefObject<HTMLVideoElement>} {...common} onPlay={() => setPlaying(true)} onPause={() => setPlaying(false)} onEnded={() => setPlaying(false)} />
-      {!playing && (
-        <span className="playb" aria-hidden>
-          <svg viewBox="0 0 24 24" fill="currentColor"><path d="M8 5.5v13a1 1 0 0 0 1.5.86l11-6.5a1 1 0 0 0 0-1.72l-11-6.5A1 1 0 0 0 8 5.5Z" /></svg>
-        </span>
-      )}
-      {at}
-    </div>
-  ) : (
-    <div className="pv-media audio">
-      <div className="wave" aria-hidden>{WAVE.map((h, j) => <i key={j} style={{ height: `${h}%` }} />)}</div>
-      <audio ref={ref as React.RefObject<HTMLAudioElement>} {...common} />
-      {at}
-    </div>
-  );
+  return <MediaPlayer kind={info.kind === "video" ? "video" : "audio"} src={info.src} name={info.name} start={start} onError={() => setFailed(true)} />;
 }
-
-const WAVE = Array.from({ length: 52 }, (_, j) => 16 + Math.abs(Math.sin(j * 0.7) * 52 + Math.sin(j * 2.3) * 28));
 
 // ---- text / code: formatted Markdown or Prism-highlighted source ---------------------------------------
 

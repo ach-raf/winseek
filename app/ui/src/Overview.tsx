@@ -410,7 +410,7 @@ export function Overview({ onMore, onGridCols, sections, sel, renaming, query, b
   const hasPics = sections.some((s) => s.id === "images" || s.id === "namepics");
   const innerW = useGridInner(scrollRef, hasPics);
   // One object per width: the memoised tiles compare it by identity.
-  const gm = useMemo(() => gridMetrics(innerW), [innerW]);
+  const gm = useMemo(() => gridMetrics(innerW, Infinity, true), [innerW]);
   const cols = innerW > 0 ? gm.cols : 0;
   useEffect(() => { if (cols > 0) onGridCols?.(cols); }, [cols, onGridCols]);
   const picEv = useMemo<PicTileEvents>(() => ({

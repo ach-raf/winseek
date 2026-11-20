@@ -3,7 +3,8 @@
    colour or keys off data-theme. */
 
 /* ---- shared panel shell: first-run counter, name-service setup, Settings ---- */
-.firstrun { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: center; padding: 0 44px 12px; gap: var(--sp-3); animation: fade 200ms var(--ease); outline: 0; }
+.firstrun { flex: 1; min-height: 0; display: flex; flex-direction: column; justify-content: safe center; overflow-y: auto; scrollbar-width: thin; padding: var(--sp-4) 44px var(--sp-4); gap: var(--sp-3); animation: fade 200ms var(--ease); outline: 0; }
+.firstrun > * { flex-shrink: 0; } /* a short window scrolls the panel instead of squashing or clipping it behind the search bar */
 .firstrun h2 { margin: 0; font-size: 22px; line-height: 1.2; font-weight: 700; letter-spacing: -.02em; }
 .firstrun p { margin: 0; max-width: 520px; color: var(--fg2); font-size: 14px; line-height: 1.5; }
 /* done steps (goal gradient): the setup never opens at zero — real completions tick, pending steps stay unsaid */
