@@ -564,3 +564,28 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 /* Typesetting, app-wide: no one-word last lines in descriptions, balanced headings. */
 p, .gtxt > span, .gnote, .lg-info, .su-hint { text-wrap: pretty; }
 h1, h2, h3, h4 { text-wrap: balance; }
+
+/* ---- forced colors (Windows High Contrast): state survives the palette swap ----
+ * Forced colors flatten every author background to the system pair, so selection that lives in a
+ * translucent tint and rings that live in box-shadows go invisible. Selected/active surfaces take
+ * the system Highlight pair (what Explorer itself uses for file selection), fills and knobs take
+ * system colors, and the treemap keeps its category colors - the color IS the data there, and the
+ * tiles carry their own designed ink. The !important is load-bearing twice over: the engine's
+ * replacement of author colors runs at a priority plain author declarations lose to, and these
+ * rules must also out-rank the later-loaded component sheets' tints (search.css .row.sel etc). */
+@media (forced-colors: active) {
+  .row.sel, .lg-row.sel, .atile.sel, .calc.sel, .gr-item.on, .bg-row.on, .su-row.on,
+  .co-idea.on, .lg-rm.on, .ck.on, .nv.on, .fc.on, .dseg button.on, .seg button.on,
+  .gv-seg button.on, .sres li.on, mark {
+    background-color: Highlight !important;
+    color: HighlightText !important;
+  }
+  .atile.sel { outline: 2px solid HighlightText !important; outline-offset: -2px; } /* its ring was a box-shadow; those are suppressed here */
+  .su-frame.on { outline: 3px solid Highlight !important; outline-offset: -3px; }
+  .meter i, .bar > i, .mp-fill { background-color: Highlight !important; }
+  .switch { background-color: ButtonFace !important; border: 1px solid ButtonBorder; }
+  .switch::after { background-color: CanvasText !important; box-shadow: none; }
+  .switch:has(input:checked) { background-color: Highlight !important; }
+  .mp-thumb { background-color: CanvasText !important; }
+  .su-tile:not(.rest), .su-legend i, .su-capbar i { forced-color-adjust: none; } /* category colors are the data */
+}
