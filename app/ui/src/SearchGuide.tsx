@@ -18,8 +18,18 @@ export function SearchGuide({ query, parsed, onQuery, onClose }: {
     return () => document.removeEventListener("mousedown", down);
   }, [onClose]);
   const pick = (t: GuideTerm) => onQuery(applyTerm(query, parsed, t));
+  // A press inside the guide keeps the caret in the search box and must not start a text selection —
+  // but the body's scrollbar is styled with ::-webkit-scrollbar, and Blink treats a scrollbar press
+  // as the default action of mousedown: a blanket preventDefault here would cancel dragging the
+  // thumb. Presses in the scrollbar's own lane (its real rendered width) are left to the engine.
+  const onDown = (e: React.MouseEvent) => {
+    const el = (e.target as HTMLElement).closest?.(".sg-body") as HTMLElement | null;
+    const lane = el ? el.offsetWidth - el.clientWidth : 0; // the scrollbar's width; 0 = not scrollable
+    if (el && lane > 0 && e.clientX >= el.getBoundingClientRect().right - lane) return;
+    e.preventDefault();
+  };
   return (
-    <div className="sg" ref={ref} role="dialog" aria-label="Narrow your search" onMouseDown={(e) => e.preventDefault()}>
+    <div className="sg" ref={ref} role="dialog" aria-label="Narrow your search" onMouseDown={onDown}>
       <header className="sg-head">
         <b>Narrow your search</b>
         <span>Or just type it: <i>pdf invoices from last summer</i></span>

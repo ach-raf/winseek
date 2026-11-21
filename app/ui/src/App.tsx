@@ -841,7 +841,10 @@ export default function App({ backend }: { backend: Backend }) {
       if (!t || !t.closest(".sbar.pop, .tbar, .side")) return;
       // Only empty bar background drags: the search field (icon, chips, text, clear), the filter row,
       // segmented tabs, chips and every control keep their own press (caret, text selection, click).
-      if (t.closest("button, input, textarea, select, a, [role=tab], [role=button], .rename, .field, .qchip, .dseg, .seg, .frow")) return;
+      // The guide panel (.sg) floats over the results and carries the scrollbar the user grabs — a
+      // press anywhere in it (its scrollbar, its chips, its empty gaps) is never a titlebar press,
+      // even in the popup where it hangs inside .sbar.pop (full mode already excluded it via .field).
+      if (t.closest("button, input, textarea, select, a, [role=tab], [role=button], .rename, .field, .qchip, .dseg, .seg, .frow, .sg")) return;
       e.preventDefault(); // a titlebar press: no text selection, no focus change
       backend.movePopup().catch(fail);
     };
