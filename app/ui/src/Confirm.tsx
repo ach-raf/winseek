@@ -4,7 +4,8 @@ import type { ConfirmAsk } from "./confirmLogic";
 /** The shared "are you sure" gate for destructive actions (recycle, folder removal): one native
  *  modal <dialog>, same shape as the F1 cheat sheet — the browser contains Tab and paints the
  *  ::backdrop veil. The verb button answers yes (it holds the focus, so Enter confirms), Esc,
- *  Cancel and a backdrop click answer no.
+ *  Cancel and a click anywhere outside it answer no — the backdrop click is the
+ *  dialog's own light dismiss (closedby="any"), which arrives here as a cancel.
  *
  *  The app's global Esc chains own the Esc key and preventDefault the native cancel away, so an
  *  owner must yield while `open` (Library does; panels check for a `dialog` ancestor and return).
@@ -42,9 +43,8 @@ function ConfirmDialog({ ask, onConfirm, onClose }: { ask: ConfirmAsk | null; on
     else ref.current?.close(); // also fires the DOM onClose → answer(false) again, which is a no-op then
   }, [ask]);
   return (
-    <dialog ref={ref} className="confirm" aria-label={shown?.title ?? "Confirm"}
-            onCancel={onClose} onClose={onClose}
-            onMouseDown={(e) => { if (e.target === ref.current) onClose(); /* a click on the ::backdrop */ }}>
+    <dialog ref={ref} className="confirm" closedby="any" aria-label={shown?.title ?? "Confirm"}
+            onCancel={onClose} onClose={onClose}>
       {shown && (
         <>
           <div className="confirm-body">
