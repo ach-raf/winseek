@@ -252,7 +252,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sem-hint .ibtn { width: 24px; height: 24px; border-radius: 6px; }
 
 /* ---- in-app context menu for launch rows: a native popover (top layer, light dismiss, Esc) ---- */
-.ctx-scrim { position: fixed; inset: 0; z-index: 60; }
+.ctx-scrim { position: fixed; inset: 0; z-index: 60; opacity: 1; transition: opacity 160ms var(--ease); }
+@starting-style { .ctx-scrim { opacity: 0; } } /* entry only: the scrim unmounts with the menu, so its exit is instant */
 .ctx-menu {
   position: fixed; inset: auto; margin: 0; border: 0; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
   background: var(--bg); box-shadow: var(--pop-shadow);
@@ -339,6 +340,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sg { position: absolute; z-index: 40; top: calc(100% + 8px); left: 0; right: auto; width: min(560px, calc(100vw - 300px)); max-height: min(70vh, 560px); display: flex; flex-direction: column;
   background: var(--bg2); border-radius: 14px; box-shadow: 0 0 0 1px var(--line), 0 18px 48px rgba(0, 0, 0, .35); overflow: hidden; }
 .sbar.pop .sg { left: var(--sp-4); right: var(--sp-4); width: auto; } /* popup: the full popup width inside its gutters, same with or without a query */
+/* the guide is a plain conditional element (not top layer): entry fade + lift only, its exit is an unmount */
+.sg { opacity: 1; transition: opacity 160ms var(--ease), translate 160ms var(--ease); }
+@starting-style { .sg { opacity: 0; translate: 0 4px; } }
+@media (prefers-reduced-motion: reduce) { .sg { transition-duration: 80ms; translate: none; } }
 .sg-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; padding: 14px 16px 10px; font-size: 13px; }
 .sg-head span { color: var(--fg3); font-size: 12px; }
 .sg-head i { font-style: normal; color: var(--fg2); }

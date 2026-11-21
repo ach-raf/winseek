@@ -2029,7 +2029,7 @@ export default function App({ backend }: { backend: Backend }) {
         onClose={() => { setLaunchMenu(null); refocus(); }}
       />}
 
-      {cheat && <Shortcuts scope="popup" bindings={hotkeyBindings} onClose={() => setCheat(false)} />}
+      <Shortcuts scope="popup" open={cheat} bindings={hotkeyBindings} onClose={() => setCheat(false)} />
 
       {full && toastEl && <div className="ftoast">{toastEl}</div>}
     </div>

@@ -339,7 +339,7 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
           <Cleanup backend={backend} images={personal} hidden={hidden} actions={actions} epoch={epoch} onError={fail} drive={drive} active={tab === "cleanup"} />
         ))}
       </main>
-      {cheat && <Shortcuts scope="library" onClose={() => setCheat(false)} />}
+      <Shortcuts scope="library" open={cheat} onClose={() => setCheat(false)} />
       {confirmNode}
       {toast && (
         <div className="lib-toast" role="status">

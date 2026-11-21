@@ -4,11 +4,19 @@ import { byScope, hint, KEYMAP } from "./keymap";
 /** The F1 / Ctrl+/ cheat sheet (PRD RB2): every shortcut of the current window, grouped, read
  *  from the one keymap table. A native modal <dialog>: the browser contains Tab inside the sheet
  *  and paints the veil via ::backdrop. The app's global Esc chain closes it first (it owns the
- *  key, preventDefault stops the native cancel), so onCancel/onClose here are the safety net. */
-export function Shortcuts({ scope, bindings, onClose }: { scope: "popup" | "library"; bindings?: Record<string, string>; onClose: () => void }) {
+ *  key, preventDefault stops the native cancel), so onCancel/onClose here are the safety net.
+ *
+ *  The dialog stays mounted (driven by the `open` prop, like the confirm dialog) so closing can
+ *  animate out of the top layer; unmounting it would cut the exit animation before it starts. */
+export function Shortcuts({ scope, open, bindings, onClose }: { scope: "popup" | "library"; open: boolean; bindings?: Record<string, string>; onClose: () => void }) {
   const groups = scope === "popup" ? [...byScope("global"), ...byScope("popup")] : byScope(scope);
   const ref = useRef<HTMLDialogElement>(null);
-  useEffect(() => { ref.current?.showModal(); }, []);
+  useEffect(() => {
+    const d = ref.current;
+    if (!d) return;
+    if (open) { if (!d.open) d.showModal(); }
+    else if (d.open) d.close();
+  }, [open]);
   return (
     <dialog ref={ref} className="cheat" aria-label="Keyboard shortcuts"
             onCancel={onClose} onClose={onClose}

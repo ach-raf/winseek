@@ -31,32 +31,38 @@ export function useConfirm() {
 
 function ConfirmDialog({ ask, onConfirm, onClose }: { ask: ConfirmAsk | null; onConfirm: () => void; onClose: () => void }) {
   const ref = useRef<HTMLDialogElement>(null);
+  // The exit animation keeps the closed dialog painted for 160ms; rendering the last ask stops it
+  // from emptying itself the moment the answer lands (the dialog is display:none whenever ask is null,
+  // so stale content is never visible except inside that fade).
+  const last = useRef<ConfirmAsk | null>(null);
+  if (ask) last.current = ask;
+  const shown = ask ?? last.current;
   useEffect(() => {
     if (ask) ref.current?.showModal();
     else ref.current?.close(); // also fires the DOM onClose → answer(false) again, which is a no-op then
   }, [ask]);
   return (
-    <dialog ref={ref} className="confirm" aria-label={ask?.title ?? "Confirm"}
+    <dialog ref={ref} className="confirm" aria-label={shown?.title ?? "Confirm"}
             onCancel={onClose} onClose={onClose}
             onMouseDown={(e) => { if (e.target === ref.current) onClose(); /* a click on the ::backdrop */ }}>
-      {ask && (
+      {shown && (
         <>
           <div className="confirm-body">
-            <h3>{ask.title}</h3>
-            {ask.body && <div className="cpath" title={ask.body}>{ask.body}</div>}
-            {ask.items && (
+            <h3>{shown.title}</h3>
+            {shown.body && <div className="cpath" title={shown.body}>{shown.body}</div>}
+            {shown.items && (
               <ul className="confirm-list">
-                {ask.items.map((i) => <li key={i}>{i}</li>)}
-                {ask.more ? <li className="cmore">… and {ask.more.toLocaleString("en-US")} more</li> : null}
+                {shown.items.map((i) => <li key={i}>{i}</li>)}
+                {shown.more ? <li className="cmore">… and {shown.more.toLocaleString("en-US")} more</li> : null}
               </ul>
             )}
-            {ask.note && <div className="confirm-note">{ask.note}</div>}
+            {shown.note && <div className="confirm-note">{shown.note}</div>}
           </div>
           <div className="confirm-btns">
             {/* focus lands on Cancel (showModal starts at the first button): Enter answers no —
                 going through with it is a deliberate Tab+Enter or a click */}
             <button className="btn secondary" onClick={onClose}>Cancel</button>
-            <button className="btn danger" onClick={onConfirm}>{ask.verb}</button>
+            <button className="btn danger" onClick={onConfirm}>{shown.verb}</button>
           </div>
         </>
       )}

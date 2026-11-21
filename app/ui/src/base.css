@@ -411,6 +411,39 @@ html.web .shell { box-shadow: var(--shadow); }
 @supports (anchor-name: --a) {
   .hint-pop { position-area: block-end span-inline-center; position-try-fallbacks: flip-block; }
 }
+/* ---- top-layer entry/exit: <dialog> and [popover] fade in with a small lift, and the ::backdrop
+   veil fades with them. Entry is @starting-style; exit animates because the `overlay` transition +
+   allow-discrete keeps the element in the top layer while it animates out (WebView2 117+, and the
+   CLAUDE.md browser-support policy says no fallbacks for anything older). ---- */
+dialog, [popover] {
+  opacity: 0;
+  transition-property: opacity, translate, display, overlay;
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease);
+  transition-behavior: allow-discrete;
+}
+dialog[open], [popover]:popover-open { opacity: 1; }
+@starting-style {
+  dialog[open], [popover]:popover-open { opacity: 0; translate: 0 4px; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  dialog, [popover] { translate: 0 4px; }
+  dialog[open], [popover]:popover-open { translate: 0 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  dialog, [popover] { transition-duration: 80ms; }
+}
+dialog::backdrop, [popover]::backdrop {
+  opacity: 0;
+  transition-property: opacity, display, overlay;
+  transition-duration: 160ms;
+  transition-timing-function: var(--ease);
+  transition-behavior: allow-discrete;
+}
+dialog[open]::backdrop, [popover]:popover-open::backdrop { opacity: 1; }
+@starting-style {
+  dialog[open]::backdrop, [popover]:popover-open::backdrop { opacity: 0; }
+}
 .list::-webkit-scrollbar, .ov::-webkit-scrollbar, .set-body::-webkit-scrollbar, .lg-scroll::-webkit-scrollbar, .sg-body::-webkit-scrollbar { width: 10px; }
 .list::-webkit-scrollbar-thumb, .ov::-webkit-scrollbar-thumb, .set-body::-webkit-scrollbar-thumb,
 .lg-scroll::-webkit-scrollbar-thumb, .sg-body::-webkit-scrollbar-thumb { background: var(--line); border-radius: 5px; border: 3px solid transparent; background-clip: content-box; }
