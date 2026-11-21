@@ -454,6 +454,7 @@ function Similar({ backend, hidden, actions, epoch, onError, bar }: {
     if (!running) return;
     let live = true;
     const t = window.setInterval(() => {
+      if (document.visibilityState !== "visible") return; // the scan runs anyway; the next visible tick reports it
       backend.libraryNearPoll().then((s) => { if (live && s.state !== "idle") setNear(s); }).catch(() => {});
     }, 500);
     return () => { live = false; window.clearInterval(t); };

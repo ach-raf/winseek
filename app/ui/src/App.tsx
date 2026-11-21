@@ -1649,7 +1649,7 @@ export default function App({ backend }: { backend: Backend }) {
     let dead = false;
     const load = () => backend.driveSpace(driveKey.split("").filter((l) => /[A-Za-z]/.test(l))).then((s) => { if (!dead) setSpace(s); }).catch(() => { /* the card falls back to file counts */ });
     void load();
-    const t = window.setInterval(load, 60000);
+    const t = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 60000);
     return () => { dead = true; window.clearInterval(t); };
   }, [backend, driveKey]);
   // A click on a drive in that card: its folders, biggest first ("what is taking the space").

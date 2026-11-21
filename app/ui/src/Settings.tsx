@@ -556,10 +556,11 @@ function AgentsSection({ backend, onError }: { backend: Backend; onError: (e: un
     backend.agentPathStatus().then(setPath).catch(onError);
     backend.agentLog(50).then(setLog).catch(onError);
   }, [backend, onError]);
-  // The log moves while an agent works; refresh while the section is on screen.
+  // The log moves while an agent works; refresh while the section is on screen (a hidden
+  // window does not need the log chasing it - the next tick after it is shown catches up).
   useEffect(() => {
     reload();
-    const t = setInterval(reload, 3000);
+    const t = setInterval(() => { if (document.visibilityState === "visible") reload(); }, 3000);
     return () => clearInterval(t);
   }, [reload]);
   const change = (patch: Partial<AgentConfig>) => {
