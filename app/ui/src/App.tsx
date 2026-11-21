@@ -295,7 +295,6 @@ export default function App({ backend }: { backend: Backend }) {
   const pinRef = useRef<number | null>(null);
   const pinTop = useRef(-1); // the scrollTop we set for the current pin (a different one = the user dragged)
   const voffRef = useRef(0);
-  const scrollTimer = useRef<number | undefined>(undefined);
   const rowsRef = useRef<(Hit | undefined)[]>([]);
   const recheckRef = useRef<() => void>(() => {}); // the live count check: re-reads the first page when the count moved
   const toastTimer = useRef<number | undefined>(undefined);
@@ -601,8 +600,6 @@ export default function App({ backend }: { backend: Backend }) {
       scrollRaf.current = requestAnimationFrame(() => { scrollRaf.current = 0; setScrollTop(scrollPending.current); });
     }
     setScrolling(true);
-    window.clearTimeout(scrollTimer.current);
-    scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
   }, []);
 
   // Past the scrollbar's resolution the wheel is applied to the list offset directly (one notch must stay a
@@ -616,12 +613,28 @@ export default function App({ backend }: { backend: Backend }) {
       const d = e.deltaMode === 1 ? e.deltaY * rowH : e.deltaMode === 2 ? e.deltaY * el.clientHeight : e.deltaY;
       scrollToVoff(voffRef.current + d);
       setScrolling(true);
-      window.clearTimeout(scrollTimer.current);
-      scrollTimer.current = window.setTimeout(() => setScrolling(false), 900);
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
   }, [data.total, rowH, scrollToVoff]);
+
+  // The scroll state chip hides when scrolling truly ends: scrollend fires after the last scroll
+  // event of the gesture, whatever drove it (wheel, scrollbar drag, clamped wheel-till writes),
+  // so no debouncing timer is needed.
+  useEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    // Clear on a zero timeout, not synchronously: a whole short gesture (a scrollbar flick, a clamped
+    // wheel-till write) can fire its last scroll and its scrollend inside one rendering frame, and a
+    // synchronous clear would batch true+false away before the chip ever committed. Timers are tasks,
+    // ordered after React's scheduler task, so the visible state lands first.
+    let tid = 0;
+    const done = () => {
+      if (tid === 0) tid = window.setTimeout(() => { tid = 0; setScrolling(false); }, 0);
+    };
+    el.addEventListener("scrollend", done);
+    return () => { if (tid !== 0) window.clearTimeout(tid); el.removeEventListener("scrollend", done); };
+  }, []);
 
   // Keep the list true while it is open: every few seconds ask the index how many files match now (a count
   // costs it almost nothing). When that changed - a download finished, something was deleted - the rows are
