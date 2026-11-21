@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, codeLanguage, fenceLanguage, fitScale, formatClock, highlight, isMarkdown, isWordDoc, markTextNodes, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode } from "./previewLogic.ts";
+import { boxesForView, boxRect, clampPage, clampView, cleanBoxes, codeLanguage, fenceLanguage, fitScale, formatClock, highlight, isMarkdown, matchRanges, isWordDoc, markTextNodes, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, seekTarget, tableLabel, toggleActual, zoomAt, type MdNode } from "./previewLogic.ts";
 
 test("clampPage keeps a PDF page inside the document", () => {
   assert.equal(clampPage(3, 10), 3);
@@ -141,6 +141,16 @@ test("highlight marks case-insensitive matches and keeps the text intact", () =>
   assert.deepEqual(highlight("a.b", ["a.b"]).segments, [{ text: "a.b", hit: true }]); // regex chars are escaped
   assert.equal(highlight("x".repeat(10), ["x"], 3).hits, 3);
   assert.deepEqual(highlight("text", []).segments, [{ text: "text", hit: false }]);
+});
+
+test("matchRanges gives the offsets highlight() splits on — one matcher, two views", () => {
+  const text = "Invoice due. invoice DUE";
+  const { ranges, hits } = matchRanges(text, ["invoice", "due"]);
+  assert.equal(hits, 4);
+  assert.deepEqual(ranges.map(([s, e]) => text.slice(s, e)), ["Invoice", "due", "invoice", "DUE"]);
+  assert.deepEqual(matchRanges("", ["x"]).ranges, []);
+  assert.deepEqual(matchRanges("abc", []).ranges, []);
+  assert.deepEqual(matchRanges("aXb", ["a.b"]).ranges, []); // regex chars are escaped, so no match
 });
 
 test("fit never enlarges, handles empty sizes", () => {

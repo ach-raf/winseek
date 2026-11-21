@@ -10,7 +10,7 @@ import { Snippet } from "./Semantic";
 import { errText, formatDate, formatSize } from "./format";
 import { makeMatcher, pathKey } from "./fsDelta";
 import { useFsDeltaListener } from "./useFsDelta";
-import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
+import { boxesForView, boxRect, clampPage, clampView, codeLanguage, crumbParts, extOf, fenceLanguage, fitScale, isMarkdown, isWordDoc, kindLabel, highlight, markTextNodes, matchRanges, MAX_SCALE, pdfRenderWidth, prettyJson, previewSelectionText, previewTerms, tableLabel, toggleActual, zoomAt, type MdNode, type View } from "./previewLogic";
 import { combos, hint } from "./keymap";
 import { tooltip } from "./Shortcuts";
 import { MediaPlayer } from "./MediaPlayer";
@@ -655,16 +655,43 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
     () => (t && lang === "json" ? prettyJson(t.content) ?? t.content : t?.content ?? ""),
     [t, lang],
   );
-  const { segments, hits } = useMemo(() => highlight(content, terms), [content, terms]);
+  // The plain text view paints its hits over its single text node (see the registry effect);
+  // the rich views still split their own nodes on the same matcher via highlight().
+  const { ranges, hits } = useMemo(() => matchRanges(content, terms), [content, terms]);
   const [mode, setMode] = useState<TextViewMode>("preview");
 
   // Scroll to the first hit (a third of the way down, so some context above it stays visible).
+  // Rich views own real <mark> elements; the plain view aims at the first range's own rect.
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
     const m = el.querySelector("mark");
-    el.scrollTop = m ? Math.max(0, (m as HTMLElement).offsetTop - el.clientHeight / 3) : 0;
-  }, [segments, mode]);
+    if (m) { el.scrollTop = Math.max(0, (m as HTMLElement).offsetTop - el.clientHeight / 3); return; }
+    const node = el.querySelector("pre")?.firstChild;
+    if (!node || ranges.length === 0) { el.scrollTop = 0; return; }
+    const r = document.createRange();
+    r.setStart(node, ranges[0]![0]);
+    r.setEnd(node, ranges[0]![1]);
+    el.scrollTop = Math.max(0, r.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight / 3);
+  }, [ranges, mode]);
+
+  // Register the plain view's hits in the document highlight registry while its <pre> is on
+  // screen; a term change swaps ranges without re-rendering a single node.
+  useEffect(() => {
+    const registry = (CSS as { highlights?: Map<string, unknown> }).highlights;
+    if (!registry) return; // older engine: hits stay unpainted, the count chip still reports them
+    const pre = box.current?.querySelector("pre");
+    const node = pre?.firstChild;
+    if (!pre || !node || ranges.length === 0) { registry.delete("pv-hits"); return; }
+    const parts = ranges.map(([s, e]) => {
+      const r = document.createRange();
+      r.setStart(node, s);
+      r.setEnd(node, e);
+      return r;
+    });
+    registry.set("pv-hits", new (window as unknown as { Highlight: new (...r: Range[]) => unknown }).Highlight(...parts));
+    return () => { registry.delete("pv-hits"); };
+  }, [ranges, mode]);
 
   if (!t) return <OtherView info={info} />;
   const keep = (e: React.MouseEvent) => e.preventDefault(); // keep focus in the search box
@@ -688,7 +715,7 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
       ) : lang ? (
         <CodeBlock content={content} lang={lang} terms={terms} numbers />
       ) : (
-        <pre>{segments.map((s, i) => (s.hit ? <mark key={i}>{s.text}</mark> : s.text))}</pre>
+        <pre>{content}</pre>
       )}
       {t.truncated && <div className="pv-trunc">Showing the beginning of the file</div>}
     </div>

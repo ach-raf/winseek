@@ -372,6 +372,9 @@ kbd {
   border-radius: 5px; background: var(--bg3); color: var(--fg2);
 }
 mark { background: var(--mark); color: var(--mark-fg); border-radius: 3px; font-weight: 600; }
+/* the plain-text view paints its hits with the Custom Highlight API over one text node (no
+ * <mark> wrappers) — same palette, only the props a highlight pseudo supports */
+::highlight(pv-hits) { background-color: var(--mark); color: var(--mark-fg); font-weight: 600; }
 ::selection { background: color-mix(in srgb, var(--acc) 32%, transparent); }
 
 .shell {
@@ -576,7 +579,7 @@ h1, h2, h3, h4 { text-wrap: balance; }
 @media (forced-colors: active) {
   .row.sel, .lg-row.sel, .atile.sel, .calc.sel, .gr-item.on, .bg-row.on, .su-row.on,
   .co-idea.on, .lg-rm.on, .ck.on, .nv.on, .fc.on, .dseg button.on, .seg button.on,
-  .gv-seg button.on, .sres li.on, mark {
+  .gv-seg button.on, .sres li.on, mark, ::highlight(pv-hits) {
     background-color: Highlight !important;
     color: HighlightText !important;
   }

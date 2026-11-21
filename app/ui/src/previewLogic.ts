@@ -49,21 +49,34 @@ export interface Segment {
 
 const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
-/** Split `text` into plain / matching segments (case-insensitive). At most `cap` matches are marked. */
-export function highlight(text: string, terms: string[], cap = 2000): { segments: Segment[]; hits: number } {
-  if (!terms.length || !text) return { segments: [{ text, hit: false }], hits: 0 };
+/** Find the query terms in `text` as [start, end) offsets — case-insensitive, longest term wins
+ *  at each position, at most `cap` matches. The one matcher every view paints from: the plain
+ *  text view turns the offsets straight into Custom Highlight ranges over its single text node,
+ *  the rich views (markdown AST, Prism tokens) split their nodes on them through highlight(). */
+export function matchRanges(text: string, terms: string[], cap = 2000): { ranges: Array<[number, number]>; hits: number } {
+  if (!terms.length || !text) return { ranges: [], hits: 0 };
   const re = new RegExp(
     terms.slice().sort((a, b) => b.length - a.length).map(escapeRe).join("|"),
     "gi",
   );
-  const segments: Segment[] = [];
-  let at = 0, hits = 0;
-  for (let m = re.exec(text); m && hits < cap; m = re.exec(text)) {
+  const ranges: Array<[number, number]> = [];
+  for (let m = re.exec(text); m && ranges.length < cap; m = re.exec(text)) {
     if (!m[0]) { re.lastIndex++; continue; }
-    if (m.index > at) segments.push({ text: text.slice(at, m.index), hit: false });
-    segments.push({ text: m[0], hit: true });
-    at = m.index + m[0].length;
-    hits++;
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+  return { ranges, hits: ranges.length };
+}
+
+/** Split `text` into plain / matching segments (case-insensitive). At most `cap` matches are marked. */
+export function highlight(text: string, terms: string[], cap = 2000): { segments: Segment[]; hits: number } {
+  const { ranges, hits } = matchRanges(text, terms, cap);
+  if (ranges.length === 0) return { segments: [{ text, hit: false }], hits: 0 };
+  const segments: Segment[] = [];
+  let at = 0;
+  for (const [s, e] of ranges) {
+    if (s > at) segments.push({ text: text.slice(at, s), hit: false });
+    segments.push({ text: text.slice(s, e), hit: true });
+    at = e;
   }
   if (at < text.length) segments.push({ text: text.slice(at), hit: false });
   return { segments, hits };
