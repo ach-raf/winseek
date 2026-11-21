@@ -358,7 +358,7 @@ html, body, #root { height: 100%; margin: 0; }
 body {
   background: transparent;
   color: var(--fg);
-  font: 400 14px/1.4 var(--font);
+  font: 400 0.875rem/1.4 var(--font);
   -webkit-font-smoothing: antialiased;
   overflow: hidden;
   user-select: none;
@@ -367,7 +367,7 @@ body {
 button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: default; }
 svg { flex: none; }
 kbd {
-  font: 500 11px/1 var(--font);
+  font: 500 0.6875rem/1 var(--font);
   min-width: 20px; height: 20px; padding: 0 5px; display: inline-grid; place-items: center;
   border-radius: 5px; background: var(--bg3); color: var(--fg2);
 }
@@ -408,7 +408,7 @@ html.web .shell { box-shadow: var(--shadow); }
   position: fixed; inset: auto; margin: 0; border: 0; border-radius: 8px;
   padding: 5px 9px; max-width: 320px;
   background: color-mix(in srgb, var(--fg) 90%, var(--bg)); color: var(--bg);
-  font-size: 12px; line-height: 1.45; box-shadow: var(--shadow);
+  font-size: 0.75rem; line-height: 1.45; box-shadow: var(--shadow);
 }
 .hint-pop:popover-open { display: block; }
 @supports (anchor-name: --a) {
@@ -455,7 +455,7 @@ dialog[open]::backdrop, [popover]:popover-open::backdrop { opacity: 1; }
 /* ---- buttons ---- */
 .btn {
   display: inline-flex; align-items: center; gap: 8px; height: 30px; padding: 0 14px;
-  border-radius: 6px; font-weight: 600; font-size: 13px; border: 1px solid transparent;
+  border-radius: 6px; font-weight: 600; font-size: 0.8125rem; border: 1px solid transparent;
 }
 .btn.primary { background: var(--acc); color: var(--acc-ink); }
 .btn.primary:hover:not(:disabled) { background: color-mix(in srgb, var(--acc) 88%, var(--acc-ink)); }
@@ -494,7 +494,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 [role="option"]:focus-visible, [role="menuitem"]:focus-visible { outline: 2px solid var(--acc); outline-offset: -2px; }
 .btn .shield { flex: none; }
 .spin { width: 14px; height: 14px; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 30%, transparent); border-top-color: currentColor; animation: spin 800ms linear infinite; flex: none; }
-.fr-error { color: var(--danger); font-size: 12.5px; max-width: 520px; }
+.fr-error { color: var(--danger); font-size: 0.78125rem; max-width: 520px; }
 
 /* iOS-style switch: a plain checkbox styled in place */
 .switch {
@@ -542,7 +542,7 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 .nfilter { height: 30px; padding: 0 6px 0 10px; border-radius: 9px; background: var(--well); display: inline-flex; align-items: center; gap: 7px; box-shadow: inset 0 0 0 1px var(--line); flex: none; }
 .nfilter:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--well-focus); }
 .nfilter > svg { width: 14px; height: 14px; color: var(--fg3); flex: none; }
-.nfilter input { width: 150px; font: inherit; font-size: 13px; color: var(--fg); background: none; border: 0; outline: 0; padding: 0; user-select: text; caret-color: var(--acc); }
+.nfilter input { width: 150px; font: inherit; font-size: 0.8125rem; color: var(--fg); background: none; border: 0; outline: 0; padding: 0; user-select: text; caret-color: var(--acc); }
 .nfilter input:focus-visible { outline: 0; }
 .nfilter input::placeholder { color: var(--fg3); }
 .nfilter .nfx { display: inline-flex; align-items: center; justify-content: center; width: 18px; height: 18px; border-radius: 5px; border: 0; background: none; color: var(--fg3); cursor: pointer; padding: 0; flex: none; }
@@ -553,13 +553,13 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
  * hover, and the active one is the row's only accent. Info chips (.qchip) are STATE display (what
  * the search understood, an ignored name, a source label): flat grey pills that never hover — only
  * their remove button does. No third chip look: screens may set size/margins on these, not a new skin. */
-.fc { height: 28px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--fg2); white-space: nowrap; }
-.fc i { font-style: normal; font-size: 11.5px; color: var(--fg3); font-weight: 400; font-variant-numeric: tabular-nums; }
+.fc { height: 28px; padding: 0 11px; display: inline-flex; align-items: center; gap: 6px; border-radius: 8px; font-size: 0.8125rem; font-weight: 500; color: var(--fg2); white-space: nowrap; }
+.fc i { font-style: normal; font-size: 0.71875rem; color: var(--fg3); font-weight: 400; font-variant-numeric: tabular-nums; }
 .fc:hover { background: var(--bg3); }
 .fc.on { background: var(--acc); color: var(--acc-ink); } /* same specificity as .fc:hover, later here, so an active chip keeps its accent under the cursor */
 .fc.on i { color: color-mix(in oklab, var(--acc-ink) 72%, transparent); }
 .fc.zero:not(.on) { opacity: .45; }
-.qchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 9px; border-radius: 999px; background: var(--bg3); font-size: 12.5px; font-weight: 500; white-space: nowrap; flex: none; }
+.qchip { display: inline-flex; align-items: center; gap: 4px; height: 26px; padding: 0 4px 0 9px; border-radius: 999px; background: var(--bg3); font-size: 0.78125rem; font-weight: 500; white-space: nowrap; flex: none; }
 .qchip span { color: var(--fg2); font-weight: 400; }
 .qchip button { width: 18px; height: 18px; display: grid; place-items: center; border-radius: 5px; color: var(--fg3); }
 .qchip button:hover { background: color-mix(in oklab, var(--fg) 10%, transparent); color: var(--fg); }

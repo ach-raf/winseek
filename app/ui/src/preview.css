@@ -10,11 +10,11 @@
  * flexes, everything below it keeps its height across selections, so nothing jumps around. */
 .pv-col { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 720px; margin: 0 auto; min-width: 0; }
 .pv h2 {
-  margin: 0; font-size: 18px; font-weight: 700; letter-spacing: -.015em; line-height: 1.25;
+  margin: 0; font-size: 1.125rem; font-weight: 700; letter-spacing: -.015em; line-height: 1.25;
   overflow-wrap: anywhere; /* the full filename, wrapped — never clipped, extension always on screen */
 }
 /* The Quick Look pane is as wide as the results area: names fit one line there. */
-.pv .kind { font-size: 13px; color: var(--fg3); margin-top: 2px; }
+.pv .kind { font-size: 0.8125rem; color: var(--fg3); margin-top: 2px; }
 .pv-title { min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
 .pv-title h2 { flex: 1 1 100%; }
 
@@ -25,11 +25,11 @@
   display: grid; place-items: center; box-shadow: inset 0 0 0 1px var(--line); transition: opacity 120ms;
 }
 .pbox.stale, .meta.stale, .pv-parse.stale { opacity: .55; }
-.pv-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg3); font-size: 13px; padding: 16px; text-align: center; }
+.pv-msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--fg3); font-size: 0.8125rem; padding: 16px; text-align: center; }
 
 /* location: one row when it fits. A long path collapses its middle into a "…+N" chip (click =
  * the full path, wrapped, scrolls past 4 rows); a long folder name wraps instead of being cut. */
-.crumbs { display: flex; flex-wrap: wrap; gap: 3px 5px; align-items: center; align-content: flex-start; font-size: 12.5px; line-height: 1.4; color: var(--fg2); min-width: 0; max-height: calc(4 * (1.4em + 5px) + 9px); overflow-y: auto; scrollbar-width: thin; }
+.crumbs { display: flex; flex-wrap: wrap; gap: 3px 5px; align-items: center; align-content: flex-start; font-size: 0.78125rem; line-height: 1.4; color: var(--fg2); min-width: 0; max-height: calc(4 * (1.4em + 5px) + 9px); overflow-y: auto; scrollbar-width: thin; }
 .crumbs .cr { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
 .crumbs b { font-weight: 600; color: var(--fg); padding: 2.5px 8px; border-radius: 6px; background: var(--bg3); min-width: 0; overflow-wrap: anywhere; }
 .crumbs i { font-style: normal; color: var(--fg3); }
@@ -38,12 +38,12 @@
 .crumbs .cr-less { margin-left: auto; font-weight: 500; color: var(--fg3); }
 
 /* why it is here (bounded: a long snippet must not push the facts around) */
-.whyb { padding: var(--sp-3) var(--sp-4); border-radius: 12px; background: var(--sel); font-size: 14px; line-height: 1.4; color: var(--fg); max-height: 6em; overflow: hidden; }
-.whyb b { display: block; font-size: 12px; font-weight: 600; color: var(--fg2); margin-bottom: 3px; }
+.whyb { padding: var(--sp-3) var(--sp-4); border-radius: 12px; background: var(--sel); font-size: 0.875rem; line-height: 1.4; color: var(--fg); max-height: 6em; overflow: hidden; }
+.whyb b { display: block; font-size: 0.75rem; font-weight: 600; color: var(--fg2); margin-bottom: 3px; }
 
 /* facts: as many per row as the pane's width allows (the drive letter is already the first crumb;
  * EXIF "None" / GPS "No" are not rows) */
-.meta { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 0; padding: 7px 0 1px; border-top: 1px solid var(--line); font-size: 12.5px; }
+.meta { display: flex; flex-wrap: wrap; gap: 2px 16px; margin: 0; padding: 7px 0 1px; border-top: 1px solid var(--line); font-size: 0.78125rem; }
 .meta > div { display: inline-flex; gap: 6px; min-width: 0; }
 .meta dt { color: var(--fg3); flex: none; }
 .meta dd { margin: 0; font-weight: 600; min-width: 0; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -51,19 +51,19 @@
 /* buttons */
 .pv .btn {
   height: 36px; padding: 0 14px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
-  border: 0; border-radius: 10px; font-size: 13.5px; font-weight: 600; background: var(--bg3); color: var(--fg); white-space: nowrap;
+  border: 0; border-radius: 10px; font-size: 0.84375rem; font-weight: 600; background: var(--bg3); color: var(--fg); white-space: nowrap;
 }
 .pv .btn:hover:not(:disabled) { filter: brightness(.97); }
 .pv .btn:active:not(:disabled) { filter: brightness(.93); }
 .pv .btn:disabled { opacity: .45; }
 .btns { display: grid; grid-template-columns: minmax(0, 1.5fr) auto auto; gap: 6px; }
-.pv .btn.pri { background: var(--acc); color: var(--acc-ink); font-size: 14px; }
+.pv .btn.pri { background: var(--acc); color: var(--acc-ink); font-size: 0.875rem; }
 .pv .btn.pri:hover:not(:disabled) { filter: brightness(1.07); }
 .pv .btn.pri kbd { background: color-mix(in oklab, var(--acc-ink) 14%, transparent); color: var(--acc-ink); }
 .pv .btn kbd { background: color-mix(in oklab, var(--fg) 9%, transparent); }
 .pv .btn.quiet { background: transparent; color: var(--fg2); font-weight: 500; }
 .pv .btn.quiet:hover:not(:disabled) { background: var(--bg3); color: var(--fg); filter: none; }
-.pv .btn.pv-btn { height: 28px; padding: 0 10px; font-size: 12.5px; border-radius: 8px; flex: none; }
+.pv .btn.pv-btn { height: 28px; padding: 0 10px; font-size: 0.78125rem; border-radius: 8px; flex: none; }
 
 /* image stage: zoom / pan inside .pbox */
 .pv-stage { position: absolute; inset: 0; overflow: hidden; cursor: zoom-in; touch-action: none; user-select: none; }
@@ -85,18 +85,18 @@
 }
 .pv-zb {
   min-width: 22px; height: 22px; padding: 0 6px; border: 0; border-radius: 999px;
-  background: transparent; color: rgba(255,255,255,.92); font: 600 12.5px/1 var(--font); cursor: pointer;
+  background: transparent; color: rgba(255,255,255,.92); font: 600 0.78125rem/1 var(--font); cursor: pointer;
 }
 .pv-zb:hover:not(:disabled) { background: rgba(255,255,255,.16); color: #fff; }
 .pv-zb:disabled { opacity: .4; cursor: default; }
-.pv-zfit { font-size: 11px; }
-.pv-zp { min-width: 4ch; text-align: center; font: 600 11px/1.5 var(--font); color: #fff; font-variant-numeric: tabular-nums; }
-.pv-zn { padding: 0 6px 0 2px; font: 500 11px/1.5 var(--font); color: rgba(255,255,255,.72); }
+.pv-zfit { font-size: 0.6875rem; }
+.pv-zp { min-width: 4ch; text-align: center; font: 600 0.6875rem/1.5 var(--font); color: #fff; font-variant-numeric: tabular-nums; }
+.pv-zn { padding: 0 6px 0 2px; font: 500 0.6875rem/1.5 var(--font); color: rgba(255,255,255,.72); }
 
 /* PDF */
 .pv-pdf { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.pv-pdfbar { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 8px; background: var(--bg); box-shadow: 0 1px 0 var(--line); font-size: 12.5px; font-weight: 500; color: var(--fg2); font-variant-numeric: tabular-nums; }
-.pv .pv-pdfbar .btn.pv-btn { width: 30px; padding: 0; font-size: 16px; line-height: 1; }
+.pv-pdfbar { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 8px; background: var(--bg); box-shadow: 0 1px 0 var(--line); font-size: 0.78125rem; font-weight: 500; color: var(--fg2); font-variant-numeric: tabular-nums; }
+.pv .pv-pdfbar .btn.pv-btn { width: 30px; padding: 0; font-size: 1rem; line-height: 1; }
 .pv-pdfbar .pv-btn:disabled { opacity: .35; }
 .pv-pdfpage { position: relative; flex: 1; min-height: 0; transition: opacity 120ms; }
 .pv-pdfpage.stale { opacity: .55; }
@@ -127,7 +127,7 @@
 .mp-seekrow { display: flex; align-items: center; gap: 10px; }
 .mp-row { display: flex; align-items: center; gap: 2px; min-width: 0; }
 .mp-gap { flex: 1; }
-.mp-time { font: 500 11.5px/1 var(--font); font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; opacity: .85; }
+.mp-time { font: 500 0.71875rem/1 var(--font); font-variant-numeric: tabular-nums; min-width: 36px; text-align: center; opacity: .85; }
 .mp-btn {
   display: grid; place-items: center; width: 32px; height: 32px; padding: 0; border: 0; border-radius: 50%;
   background: transparent; color: inherit; cursor: pointer; transition: background 120ms, transform 80ms;
@@ -138,7 +138,7 @@
 .mp-btn.big { width: 40px; height: 40px; background: var(--acc); color: var(--acc-ink); margin: 0 4px; }
 .mp-btn.big:hover { background: color-mix(in oklab, var(--acc) 88%, white); }
 .mp-btn.big svg { width: 22px; height: 22px; }
-.mp-rate { height: 26px; padding: 0 8px; border: 0; border-radius: 13px; background: transparent; color: inherit; font: 600 12px/1 var(--font); font-variant-numeric: tabular-nums; cursor: pointer; }
+.mp-rate { height: 26px; padding: 0 8px; border: 0; border-radius: 13px; background: transparent; color: inherit; font: 600 0.75rem/1 var(--font); font-variant-numeric: tabular-nums; cursor: pointer; }
 .mp-rate:hover { background: color-mix(in srgb, currentColor 16%, transparent); }
 .mp-vol { display: flex; align-items: center; }
 .mp-volsl { width: 0; opacity: 0; margin: 0; transition: width 160ms, opacity 160ms, margin 160ms; }
@@ -165,7 +165,7 @@
 }
 .mp-art svg { width: 44px; height: 44px; }
 .mp-art.on { transform: scale(1.05); }
-.mp-name { max-width: 100%; font-weight: 600; font-size: 13.5px; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mp-name { max-width: 100%; font-weight: 600; font-size: 0.84375rem; text-align: center; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wave { display: flex; align-items: center; gap: 2px; height: 56px; width: 100%; cursor: pointer; touch-action: none; }
 .wave i { flex: 1; min-width: 1px; border-radius: 2px; background: var(--fg3); opacity: .45; transition: background 120ms, opacity 120ms; }
 .wave i.done { background: var(--acc); opacity: 1; }
@@ -189,7 +189,7 @@
 @container scroll-state(scrollable: block-start) { .pv-text::before { opacity: 1; } }
 @container scroll-state(scrollable: block-end) { .pv-text::after { opacity: 1; } }
 .pv-text pre {
-  margin: 0; padding: var(--sp-3) var(--sp-4); font: 12px/1.5 var(--mono); color: var(--fg);
+  margin: 0; padding: var(--sp-3) var(--sp-4); font: 0.75rem/1.5 var(--mono); color: var(--fg);
   white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; user-select: text;
 }
 /* sticky bar over a text file: view toggle (Markdown) + match count, content scrolls under it */
@@ -199,9 +199,9 @@
 @container pvtb scroll-state(stuck: top) { .pv-textbar::after { opacity: 1; } }
 .pv-textbar > * { pointer-events: auto; }
 .pv-textbar .dseg { padding: 1px; }
-.pv-textbar .dseg button { height: 20px; padding: 0 9px; font-size: 11.5px; }
-.pv-hits { margin-left: auto; padding: 1px 9px; border-radius: 999px; background: var(--sel); color: var(--fg); font: 600 11px/1.6 var(--font); }
-.pv-trunc { padding: 6px var(--sp-4) var(--sp-3); font-size: 12px; color: var(--fg3); }
+.pv-textbar .dseg button { height: 20px; padding: 0 9px; font-size: 0.71875rem; }
+.pv-hits { margin-left: auto; padding: 1px 9px; border-radius: 999px; background: var(--sel); color: var(--fg); font: 600 0.6875rem/1.6 var(--font); }
+.pv-trunc { padding: 6px var(--sp-4) var(--sp-3); font-size: 0.75rem; color: var(--fg3); }
 
 /* everything else */
 .pv-other { position: absolute; inset: 0; overflow: auto; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; padding: 14px; text-align: center; }
@@ -209,13 +209,13 @@
 .pv-bigicon img { max-width: 100%; max-height: 150px; object-fit: contain; }
 .pv-bigicon .ficon { width: 96px; height: 96px; border-radius: 22px; }
 .pv-bigicon .ficon svg { width: 52px; height: 52px; }
-.pv-note { font-size: 12.5px; color: var(--warn); max-width: 28ch; }
+.pv-note { font-size: 0.78125rem; color: var(--warn); max-width: 28ch; }
 
 /* on-demand parser */
 .pv-parse { flex: none; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
 .pv-parse-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .pv .pv-parse-bar .btn.pv-btn { background: var(--bg3); color: var(--fg); font-weight: 600; }
-.pv-parse-state { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--fg3); }
+.pv-parse-state { display: inline-flex; align-items: center; gap: 6px; font-size: 0.78125rem; color: var(--fg3); }
 .pv-parse-state.bad { color: var(--danger); }
 .pv-parse-state .spin { width: 12px; height: 12px; }
 .pv-pick { display: flex; flex-direction: column; align-items: stretch; gap: 2px; padding: 4px; border-radius: 12px; background: var(--bg2); box-shadow: inset 0 0 0 1px var(--line); }
@@ -223,14 +223,14 @@
 .pv .pv-pick .btn.pv-btn:hover { background: var(--bg3); }
 .pv-parse-panel { display: flex; flex-direction: column; min-height: 0; max-height: 34vh; border-radius: 12px; background: var(--bg2); box-shadow: inset 0 0 0 1px var(--line); overflow: hidden; }
 /* the head wraps: on a narrow pane the Rendered/Plain toggle takes its own line */
-.pv-parse-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: var(--sp-2) 10px 4px var(--sp-4); font-size: 12.5px; }
+.pv-parse-head { flex: none; display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: var(--sp-2) 10px 4px var(--sp-4); font-size: 0.78125rem; }
 .pv-parse-head b { font-weight: 600; }
 .pv-parse-head .muted { flex: 1; }
 .pv-parse-head .dseg { order: 10; flex-basis: 100%; }
-.pv-parse-head .dseg button { height: 20px; padding: 0 9px; font-size: 11.5px; }
-.pv-parse-panel pre { margin: 0; padding: 4px var(--sp-4) var(--sp-3); overflow: auto; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
+.pv-parse-head .dseg button { height: 20px; padding: 0 9px; font-size: 0.71875rem; }
+.pv-parse-panel pre { margin: 0; padding: 4px var(--sp-4) var(--sp-3); overflow: auto; font: 0.75rem/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
 .dl-opt { display: flex; flex-direction: column; gap: 2px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
-.dl-opt-head { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.dl-opt-head { display: flex; align-items: center; gap: 8px; font-size: 0.8125rem; }
 .dl-opt-head .sz { margin-left: auto; color: var(--fg3); font-variant-numeric: tabular-nums; }
 
 /* full window: the preview pane uses the page gutter on BOTH sides (the scrollbar overlays inside it) */
@@ -246,7 +246,7 @@
 /* ---- rich text & code: formatted Markdown, Prism-highlighted source ------------------------------------ */
 
 /* formatted Markdown (a .md file's Preview view, the parser panel's Rendered view) */
-.pv-md { padding: var(--sp-2) var(--sp-4) var(--sp-3); font-size: 13px; line-height: 1.55; color: var(--fg); overflow-wrap: anywhere; user-select: text; }
+.pv-md { padding: var(--sp-2) var(--sp-4) var(--sp-3); font-size: 0.8125rem; line-height: 1.55; color: var(--fg); overflow-wrap: anywhere; user-select: text; }
 .pv-md > :first-child { margin-top: 0; }
 .pv-md h1, .pv-md h2 { font-size: 1.25em; font-weight: 650; line-height: 1.3; margin: 1em 0 0.45em; padding-bottom: 0.25em; border-bottom: 1px solid var(--line); }
 .pv-md h3 { font-size: 1.1em; font-weight: 650; margin: 0.9em 0 0.4em; }
@@ -261,19 +261,19 @@
 .pv-md hr { border: 0; border-top: 1px solid var(--line); margin: 1em 0; }
 .pv-md img { max-width: 100%; }
 /* GFM tables: block so a wide one scrolls instead of squashing the pane */
-.pv-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6em 0; font-size: 12px; }
+.pv-md table { display: block; max-width: 100%; overflow-x: auto; border-collapse: collapse; margin: 0.6em 0; font-size: 0.75rem; }
 .pv-md th, .pv-md td { border: 1px solid var(--line); padding: 3px 9px; text-align: left; vertical-align: top; }
 .pv-md th { background: var(--bg3); font-weight: 650; }
 /* inline code — structural selector so fenced code (pre > code) is untouched */
-.pv-md :not(pre) > code { background: var(--bg3); border-radius: 5px; padding: 1px 5px; font: 12px var(--mono); }
+.pv-md :not(pre) > code { background: var(--bg3); border-radius: 5px; padding: 1px 5px; font: 0.75rem var(--mono); }
 /* fenced block without a known language */
-.pv-md .pv-mdblock { margin: 0.5em 0; padding: 8px 10px; background: var(--bg3); border-radius: 8px; font: 12px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
+.pv-md .pv-mdblock { margin: 0.5em 0; padding: 8px 10px; background: var(--bg3); border-radius: 8px; font: 0.75rem/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; color: var(--fg); }
 .pv-md .pv-mdblock code { font: inherit; background: transparent; padding: 0; border-radius: 0; }
 
 /* highlighted source (Prism). `.pv-text pre` would wrap it: re-assert the code layout. */
 .pv-text pre.pv-code {
   margin: 0; padding: var(--sp-3) 0 var(--sp-3) var(--sp-4); counter-reset: pvline;
-  font: 12px/1.55 var(--mono); color: var(--fg); white-space: pre; overflow-wrap: normal;
+  font: 0.75rem/1.55 var(--mono); color: var(--fg); white-space: pre; overflow-wrap: normal;
   tab-size: 4; user-select: text; width: max-content; min-width: 100%;
 }
 /* one row per line; reset the global inline-code pill (settings.css styles bare `code`) */

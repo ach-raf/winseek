@@ -3,9 +3,9 @@
 .dot.warn { background: var(--warn); }
 .sp { flex: 1; }
 .side { width: 216px; flex: none; background: var(--side); border-right: 1px solid var(--line); display: flex; flex-direction: column; padding: var(--sp-4) 10px 10px; gap: 2px; }
-.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-size: 16px; font-weight: 700; letter-spacing: -.02em; }
+.brand { display: flex; align-items: center; gap: 9px; padding: 4px 8px 16px; font-size: 1rem; font-weight: 700; letter-spacing: -.02em; }
 .logo { width: 24px; height: 24px; border-radius: 7px; background: var(--acc); color: var(--acc-ink); display: grid; place-items: center; }
-.nv { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 9px; font-size: 14px; font-weight: 500; color: var(--fg2); text-align: left; width: 100%; }
+.nv { height: 36px; padding: 0 10px; display: flex; align-items: center; gap: 11px; border-radius: 9px; font-size: 0.875rem; font-weight: 500; color: var(--fg2); text-align: left; width: 100%; }
 .nv svg { width: 18px; height: 18px; color: var(--fg3); }
 /* Hover/selected ride as translucent ink overlays, not bg steps: the rail carries its own
    surface per theme (light flat grey, dark tinted graphite), and a bg3-keyed row would blend
@@ -13,19 +13,19 @@
 .nv:hover { background: color-mix(in oklab, var(--fg) 7%, transparent); }
 .nv.on { background: color-mix(in oklab, var(--fg) 12%, transparent); color: var(--fg); font-weight: 600; }
 .nv.on svg { color: var(--fg); }
-.nv i { margin-left: auto; font-style: normal; font-size: 12px; color: var(--fg3); font-weight: 400; }
-.nlab { padding: 16px 10px 6px; font-size: 12px; font-weight: 600; color: var(--fg3); }
-.side .idx { margin: 0 2px 8px; padding: 12px; border-radius: 12px; background: var(--side-card); border: var(--card-border); box-shadow: var(--card-shadow); font-size: 12.5px; color: var(--fg2); display: grid; gap: 8px; max-width: none; }
+.nv i { margin-left: auto; font-style: normal; font-size: 0.75rem; color: var(--fg3); font-weight: 400; }
+.nlab { padding: 16px 10px 6px; font-size: 0.75rem; font-weight: 600; color: var(--fg3); }
+.side .idx { margin: 0 2px 8px; padding: 12px; border-radius: 12px; background: var(--side-card); border: var(--card-border); box-shadow: var(--card-shadow); font-size: 0.78125rem; color: var(--fg2); display: grid; gap: 8px; max-width: none; }
 .idx .h { display: flex; align-items: center; gap: 8px; font-weight: 600; color: var(--fg); }
-.idx .d { display: grid; grid-template-columns: 20px 1fr 44px; gap: 8px; align-items: center; font-size: 11.5px; color: var(--fg3); }
+.idx .d { display: grid; grid-template-columns: 20px 1fr 44px; gap: 8px; align-items: center; font-size: 0.71875rem; color: var(--fg3); }
 .idx .d b { color: var(--fg2); font-weight: 600; }
 .idx .d span { text-align: right; font-variant-numeric: tabular-nums; }
 .meter { height: 5px; border-radius: 3px; background: var(--meter-track); overflow: hidden; }
 .meter i { display: block; height: 100%; width: calc(var(--u) * 100%); border-radius: 3px; background: var(--fg3); }
 .main-col { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 .tbar { height: 60px; flex: none; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-3) 0 var(--gut); min-width: 0; }
-.tbar h1 { margin: 0; font-size: 20px; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; flex: none; }
-.tbar .hsub { font-size: 13px; color: var(--fg3); margin-left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
+.tbar h1 { margin: 0; font-size: 1.25rem; font-weight: 700; letter-spacing: -.02em; white-space: nowrap; flex: none; }
+.tbar .hsub { font-size: 0.8125rem; color: var(--fg3); margin-left: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; flex: 0 1 auto; }
 .tbar .field { flex: 1; max-width: 640px; height: 40px; padding: 0 var(--sp-3); border-radius: 11px; background: var(--well); display: flex; align-items: center; gap: 10px; box-shadow: inset 0 0 0 1px var(--line); }
 .tbar .field:focus-within { box-shadow: inset 0 0 0 2px var(--acc); background: var(--well-focus); }
 /* Window chrome: one fixed cluster, vertically centred in the 60px bar, hairline divider before it. */
@@ -41,9 +41,9 @@
 /* ---- drives card: is search current, and how much room is left where ---- */
 .side .idx { gap: 5px; padding: 12px 8px 8px; }
 .idx .h { padding: 0 4px; }
-.idx .sub { padding: 0 4px 0 20px; margin-top: -3px; font-size: 11.5px; color: var(--fg3); font-variant-numeric: tabular-nums; }
-.idx .dl { padding: 6px 4px 0; font-size: 11px; font-weight: 600; color: var(--fg3); }
-.idx button.d { width: 100%; grid-template-columns: 20px 1fr auto; padding: 4px; border-radius: 6px; font: inherit; font-size: 11.5px; text-align: left; cursor: default; }
+.idx .sub { padding: 0 4px 0 20px; margin-top: -3px; font-size: 0.71875rem; color: var(--fg3); font-variant-numeric: tabular-nums; }
+.idx .dl { padding: 6px 4px 0; font-size: 0.6875rem; font-weight: 600; color: var(--fg3); }
+.idx button.d { width: 100%; grid-template-columns: 20px 1fr auto; padding: 4px; border-radius: 6px; font: inherit; font-size: 0.71875rem; text-align: left; cursor: default; }
 .idx button.d:not(:disabled):hover { background: color-mix(in oklab, var(--fg) 7%, transparent); color: var(--fg); }
 .idx button.d span { min-width: 52px; color: var(--fg2); }
 .idx .meter i { background: color-mix(in oklab, var(--fg3) 80%, var(--fg)); min-width: 3px; }
@@ -59,7 +59,7 @@
 .shell-row { flex: 1; min-width: 0; min-height: 0; display: flex; }
 
 /* ---- jobs bar: the always-visible bottom strip that names the work in progress ---- */
-.jbar { position: relative; flex: none; height: 32px; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--gut); border-top: 1px solid color-mix(in oklab, var(--acc) 55%, var(--line)); background: color-mix(in oklab, var(--acc) 16%, var(--bg3-0)); cursor: pointer; box-shadow: 0 -4px 10px -6px rgba(10,12,18,.22); color: var(--fg); font-size: 13px; font-weight: 500; overflow: hidden; }
+.jbar { position: relative; flex: none; height: 32px; display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--gut); border-top: 1px solid color-mix(in oklab, var(--acc) 55%, var(--line)); background: color-mix(in oklab, var(--acc) 16%, var(--bg3-0)); cursor: pointer; box-shadow: 0 -4px 10px -6px rgba(10,12,18,.22); color: var(--fg); font-size: 0.8125rem; font-weight: 500; overflow: hidden; }
 .jbar .jspin { flex: none; width: 12px; height: 12px; border-radius: 50%; border: 2px solid color-mix(in oklab, var(--fg) 22%, transparent); border-top-color: var(--fg); animation: jspin 900ms linear infinite; }
 /* solid mix (--bg3-0, not the window-alpha --bg3): the strip never shows the desktop through it */
 .jbar:hover { background: color-mix(in oklab, var(--acc) 26%, var(--bg3-0)); }
