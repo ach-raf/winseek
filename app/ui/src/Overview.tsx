@@ -129,9 +129,11 @@ export function typeCell(name: string, isDir: boolean): string {
 }
 
 /** A file / folder row (also the virtualised list's row): 36 px icon, name + folder, date, size, "Open ↵" when selected. */
-export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, renaming, top, app, sem, title, y }: {
+export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, renaming, top, app, sem, title, y, fresh }: {
   hit: Hit; i: number; sel: boolean; query: string; backend: Backend; h: ItemHandlers; renaming: boolean;
   top?: boolean; app?: boolean; sem?: OvItem["sem"]; title?: string;
+  /** The row just arrived through the live index: one flash-in animation. */
+  fresh?: boolean;
   /** Virtualised list: the row's offset in px (it is absolutely positioned). */
   y?: number;
 }) {
@@ -141,7 +143,7 @@ export const HitRow = memo(function HitRow({ hit, i, sel, query, backend, h, ren
   const pct = matchPct(sem);
   const reason = reasonOf(sem, kind === "image");
   return (
-    <div className={"row" + (top ? " top" : "") + (sel ? " sel" : "")} role="option" aria-selected={sel} style={y === undefined ? undefined : { transform: `translateY(${y}px)` }}
+    <div className={"row" + (top ? " top" : "") + (sel ? " sel" : "") + (fresh ? " row-new" : "")} role="option" aria-selected={sel} style={y === undefined ? undefined : { transform: `translateY(${y}px)` }}
          data-sel={sel ? "1" : undefined} data-i={i} title={title ?? hit.path}
          onClick={renaming ? undefined : () => h.onSelect(i)} onDoubleClick={renaming ? undefined : () => h.onOpen(i)}
          onContextMenu={(e) => h.onMenu(i, e)} onPointerDown={(e) => h.onDown(i, e)}>

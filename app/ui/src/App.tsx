@@ -32,6 +32,7 @@ import { errText, kindOf, formatSize, chipCount } from "./format";
 import { pagesToEvict, scrollTopFor, vlist, vlistClipped } from "./vlist";
 import { noteScroll } from "./thumbQueue";
 import { PIC_SEARCH_PAGE, readPictureNames } from "./pictureSearch";
+import { flushSync } from "react-dom";
 import { fsDelta, hasArrivals, hitAt, makeMatcher, pruneList, pruneRows, shiftIndex } from "./fsDelta";
 import { pushLocalDelta } from "./fsDeltaPatch";
 import { useFsDelta, useFsDeltaListener } from "./useFsDelta";
@@ -110,6 +111,16 @@ function readKindFolds(raw: string | null): Record<string, boolean> {
   } catch { return {}; }
 }
 
+// ---- view transitions (evergreen WebView2): full-window page switches cross-fade (goPage) and
+// Quick Look morphs the selected row into the preview pane (setQuickLook). Both skip silently for
+// reduced motion or a hidden window, and any engine without the API just updates the DOM — the
+// CLAUDE.md browser-support policy needs no fallbacks beyond that.
+const canViewTransition = () =>
+  typeof document.startViewTransition === "function"
+  && document.visibilityState === "visible"
+  && !matchMedia("(prefers-reduced-motion: reduce)").matches;
+const EMPTY_SET: ReadonlySet<string> = new Set();
+
 export default function App({ backend }: { backend: Backend }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -165,6 +176,30 @@ export default function App({ backend }: { backend: Backend }) {
   // not a space.
   const [pvOpen, setPvOpen] = useState(false);
   const navigated = useRef(false);
+  const vtRun = useRef(0);
+  /** Every Quick Look open/close goes through here: outside the animated path it is just setPvOpen,
+   *  inside it the selected row and the pane swap one shared view-transition-name (`.vt-src` /
+   *  `.vt-hero`, the same `pv-hero` name) so the row appears to become the preview and shrink back
+   *  into its row on close. The classes exist only for the length of that one transition. */
+  const setQuickLook = useCallback((open: boolean) => {
+    if (!canViewTransition()) { setPvOpen(open); return; }
+    const row = document.querySelector<HTMLElement>(".row.sel");
+    const pane = document.querySelector<HTMLElement>(".pv");
+    const run = ++vtRun.current;
+    const cleanup = () => {
+      if (run !== vtRun.current) return; // a newer morph owns the classes now
+      document.querySelectorAll(".vt-src, .vt-hero").forEach((el) => el.classList.remove("vt-src", "vt-hero"));
+    };
+    if (!open) (pane ?? row)?.classList.add("vt-hero"); // closing: the pane holds the name in the old snapshot
+    else row?.classList.add("vt-src"); // opening: the row holds it
+    document.startViewTransition(() => {
+      flushSync(() => setPvOpen(open));
+      pane?.classList.remove("vt-hero"); // in the full window the pane persists docked; drop its old-state name
+      row?.classList.remove("vt-src");
+      (open ? document.querySelector<HTMLElement>(".pv") : document.querySelector<HTMLElement>(".row.sel"))
+        ?.classList.add(open ? "vt-hero" : "vt-src");
+    }).finished.finally(cleanup).catch(() => { /* a skipped transition rejects; cleanup already ran */ });
+  }, []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   // The last section is remembered across sessions of the popup (the Library window shares the key).
   const [settingsSection, setSettingsSection] = useStoredSection();
@@ -173,6 +208,15 @@ export default function App({ backend }: { backend: Backend }) {
   const full = viewMode === "full";
   // Full window: which page the sidebar shows (the compact popup is always "search").
   const [page, setPage] = useState<Page>("search");
+  /** The one path for user-driven full-window page switches (clicks, Esc, tray items): outside the
+   *  animated path a plain setPage, inside it the switch runs inside startViewTransition so the old
+   *  page cross-fades into the new one. A re-pick of the current page stays a no-op — the drive
+   *  cards re-trigger through setSpaceAt, not through a page change. */
+  const goPage = useCallback((p: Page) => {
+    if (p === page) return;
+    if (!canViewTransition()) { setPage(p); return; }
+    document.startViewTransition(() => flushSync(() => setPage(p)));
+  }, [page]);
   // Once a library page has been opened, the Library stays mounted (hidden while other pages show):
   // remounting it refetched the whole image list, dup groups and collection results on every switch,
   // which is what made rapid moves between Search / Clean up / Collections feel broken.
@@ -798,18 +842,18 @@ export default function App({ backend }: { backend: Backend }) {
   const openStatus = useCallback(() => {
     setSetupOpen(false);
     setSettingsSection("status");
-    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    if (full) { setSettingsOpen(false); goPage("settings"); } else setSettingsOpen(true);
     refreshT1();
-  }, [refreshT1, full, setSettingsSection]);
+  }, [refreshT1, full, setSettingsSection, goPage]);
 
   /** The jobs strip: the job's own Settings section (meaning/models -> Search by meaning with its
    *  Pause button, everything else -> Status with the drive and parser detail). */
   const openJob = useCallback((job: JobKey) => {
     setSetupOpen(false);
     setSettingsSection(job === "meaning" || job === "models" ? "meaning" : "status");
-    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    if (full) { setSettingsOpen(false); goPage("settings"); } else setSettingsOpen(true);
     refreshT1();
-  }, [refreshT1, full, setSettingsSection]);
+  }, [refreshT1, full, setSettingsSection, goPage]);
 
   const semSel = ovItem?.sem;
   const current: Hit | undefined = overview ? ovItem?.hit : data.rows[sel];
@@ -949,6 +993,11 @@ export default function App({ backend }: { backend: Backend }) {
   const reselectAt = useRef<number | null>(null);
   const arrivalTimer = useRef<number | undefined>(undefined);
   useEffect(() => () => window.clearTimeout(arrivalTimer.current), []);
+  // Rows that just arrived through the live index (fs-delta added / renamed-in) flash in once; the
+  // set expires so scrolled-back rows do not re-animate.
+  const freshTimer = useRef<number | undefined>(undefined);
+  const [fresh, setFresh] = useState<ReadonlySet<string>>(EMPTY_SET);
+  useEffect(() => () => window.clearTimeout(freshTimer.current), []);
   // The home list (recently changed files) after something new arrived: re-read quietly, the selection stays.
   const refreshRecent = () => {
     if (!drive) return; // the unscoped home lists no files
@@ -993,6 +1042,12 @@ export default function App({ backend }: { backend: Backend }) {
       if (sp && (m.isGone(sp) || m.rewrite(sp) !== sp)) reselectAt.current = osel;
     }
     if (d.overflow || hasArrivals(d)) {
+      if (hasArrivals(d)) {
+        const added = [...d.added, ...d.renamed.map((rn) => rn.to)].slice(0, 500); // capped: a bulk copy cannot grow the set unbounded
+        window.clearTimeout(freshTimer.current);
+        setFresh(new Set(added));
+        freshTimer.current = window.setTimeout(() => setFresh(EMPTY_SET), 2200);
+      }
       window.clearTimeout(arrivalTimer.current);
       arrivalTimer.current = window.setTimeout(() => {
         if (data.recent) refreshRecent();
@@ -1181,7 +1236,7 @@ export default function App({ backend }: { backend: Backend }) {
       // Full window, another page: the page owns the keyboard. Esc leaves Settings for the search —
       // unless a confirm dialog inside it is open: that dialog owns the key until it is answered.
       if (full && page !== "search") {
-        if (e.key === "Escape" && page === "settings" && !(e.target as HTMLElement | null)?.closest?.("dialog")) { e.preventDefault(); setPage("search"); refocus(); }
+        if (e.key === "Escape" && page === "settings" && !(e.target as HTMLElement | null)?.closest?.("dialog")) { e.preventDefault(); goPage("search"); refocus(); }
         return;
       }
       // Alt combos (physical-key matching, so Alt+1 works on AZERTY) must preventDefault:
@@ -1281,9 +1336,9 @@ export default function App({ backend }: { backend: Backend }) {
           // arrowing, or after clicking a row). Launch rows have no preview: Space is a no-op there.
           // Closing hands the space back to the query, so composing "ab cd" right after works.
           if (ovItem?.launch) break;
-          if (pvOpen) { e.preventDefault(); setPvOpen(false); } // Space stays a Quick Look toggle until you type
+          if (pvOpen) { e.preventDefault(); setQuickLook(false); } // Space stays a Quick Look toggle until you type
           else if (current && !showPanelRef.current && !setupOpenRef.current && (e.ctrlKey || navigated.current || query.trim() === "")) {
-            e.preventDefault(); setPvOpen(true); recordQuery();
+            e.preventDefault(); setQuickLook(true); recordQuery();
           }
           break;
         case "Enter":
@@ -1304,7 +1359,7 @@ export default function App({ backend }: { backend: Backend }) {
           else if (armed) setArmed(null);
           else if (delArm) disarmDel();
           else if (launchMenu) setLaunchMenu(null);
-          else if (pvOpen) { setPvOpen(false); navigated.current = false; }
+          else if (pvOpen) { setQuickLook(false); navigated.current = false; }
           else if (expand && !setupOpenRef.current) setExpand(null);
           else if (setupOpenRef.current) { setSetupOpen(false); setSettingsOpen(false); refocus(); } else void backend.hide();
           break;
@@ -1385,7 +1440,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1439,19 +1494,19 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => { if (query.trim()) { setSetupOpen(false); setSettingsOpen(false); } }, [query]); // typing leaves the panels (a download keeps going)
   const openSetup = useCallback(() => {
     setSettingsOpen(false);
-    if (full) setPage("search"); // the setup panel lives on the search page
+    if (full) goPage("search"); // the setup panel lives on the search page
     setSetupOpen(true);
     models.refreshPlan();
     refreshT1();
-  }, [models, refreshT1, full]);
+  }, [models, refreshT1, full, goPage]);
   const closeSetup = useCallback(() => { setSetupOpen(false); refocus(); }, [refocus]);
   const openSettings = useCallback(() => {
     setSetupOpen(false);
-    if (full) { setSettingsOpen(false); setPage("settings"); } else setSettingsOpen(true);
+    if (full) { setSettingsOpen(false); goPage("settings"); } else setSettingsOpen(true);
     refreshT1();
-  }, [refreshT1, full]);
+  }, [refreshT1, full, goPage]);
   openSettingsRef.current = openSettings;
-  const closeSettings = useCallback(() => { setSettingsOpen(false); setPage("search"); refocus(); }, [refocus]);
+  const closeSettings = useCallback(() => { setSettingsOpen(false); goPage("search"); refocus(); }, [refocus, goPage]);
   useEffect(() => {
     let off: (() => void) | undefined, dead = false;
     backend.onOpenStatus(openStatus).then((u) => (dead ? u() : (off = u)));
@@ -1521,11 +1576,11 @@ export default function App({ backend }: { backend: Backend }) {
       const why = data.recent ? "" : whyName(h, nameQ, chipLabels, semMap.get(pathKey(h.path))?.score);
       out.push(
         <HitRow key={i} hit={h} i={i} sel={i === sel} query={parsed.text} backend={backend} h={rowHandlers}
-                renaming={renaming && i === sel} y={vl.top + i * rowH - vl.voff} title={why ? `${h.path}\n${why}` : h.path} />,
+                renaming={renaming && i === sel} y={vl.top + i * rowH - vl.voff} fresh={fresh.has(h.path)} title={why ? `${h.path}\n${why}` : h.path} />,
       );
     }
     return out;
-  }, [first, last, vl.voff, vl.top, rowH, pending, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers]); // eslint-disable-line react-hooks/exhaustive-deps -- data.ver counts in-place mutations of the sparse rows array
+  }, [first, last, vl.voff, vl.top, rowH, pending, data.rows, data.ver, data.recent, parsed.text, nameQ, chipLabels, semMap, sel, backend, renaming, rowHandlers, fresh]); // eslint-disable-line react-hooks/exhaustive-deps -- data.ver counts in-place mutations of the sparse rows array
 
   const ovHandlers: ItemHandlers = useMemo(() => ({
     onSelect: (i) => {
@@ -1588,7 +1643,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [spaceAt, setSpaceAt] = useState<{ letter: string; n: number } | undefined>(undefined);
   const showDrive = (letter: string) => {
     setSpaceAt((s) => ({ letter, n: (s?.n ?? 0) + 1 }));
-    setPage("cleanup");
+    goPage("cleanup");
   };
 
   // ---- nothing found: the filters that are narrowing the search, each one click to lift ----
@@ -1824,7 +1879,7 @@ export default function App({ backend }: { backend: Backend }) {
   const canPreview = hasSel && !isCalcSel && !launchSelHit && !!current;
   const actions = !showPanel && hasSel ? (
     <>
-      {canPreview && <><button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => setPvOpen((o) => !o)}>{pvOpen ? "Close preview" : "Preview"} <kbd>Space</kbd></button><span className="vr" /></>}
+      {canPreview && <><button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => setQuickLook(!pvOpen)}>{pvOpen ? "Close preview" : "Preview"} <kbd>Space</kbd></button><span className="vr" /></>}
       <button className="act pri" tabIndex={-1} onMouseDown={keep} onClick={() => enter(false, false)}>{primary} <kbd>{"↵"}</kbd></button>
       {second && <><span className="vr" /><button className="act" tabIndex={-1} onMouseDown={keep} onClick={second.run}>{second.label} {second.keys.map((k) => <kbd key={k}>{k}</kbd>)}</button></>}
       {!isCalcSel && <button className="act" tabIndex={-1} onMouseDown={keep} onClick={() => menuAtRef.current()} title="Rename (F2), Recycle (Del), Copy path, Properties and more">More <kbd>Ctrl</kbd><kbd>K</kbd></button>}
@@ -1859,7 +1914,7 @@ export default function App({ backend }: { backend: Backend }) {
       {/* The shell is a column everywhere so the jobs strip can sit at the very bottom; the sidebar
           and the page columns live in this row. The strip below is on every screen, both modes. */}
       <div className="shell-row">
-      {full && <Sidebar page={page} onPage={(p) => { setSpaceAt(undefined); setPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
+      {full && <Sidebar page={page} onPage={(p) => { setSpaceAt(undefined); goPage(p); if (p === "search") refocus(); }} status={status} space={space} onDrive={showDrive} />}
       <div className="main-col" hidden={full && page !== "search"}>
         {full ? (
           <header className="tbar">
@@ -2006,14 +2061,14 @@ export default function App({ backend }: { backend: Backend }) {
       {full && page === "settings" && (
         <div className="main-col">
           <Settings backend={backend} t1={t1} models={models} onFolders={setFolders} onRemoveFolder={removeFolder} onPause={pauseIndexing}
-                    onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={() => setPage("timeline")}
+                    onSetup={openSetup} onClose={closeSettings} onHide={() => void backend.hide()} onLibrary={() => goPage("timeline")}
                     section={settingsSection} onSection={setSettingsSection} onError={fail} embedded chrome={winControls} />
         </div>
       )}
       {full && libSeen && (
         <div className="main-col" hidden={!libPage}>
           <Library backend={backend} embedded tab={libPage ? page : "timeline"} active={libPage}
-                   drive={spaceAt} onBack={() => { setPage("search"); refocus(); }} chrome={winControls} />
+                   drive={spaceAt} onBack={() => { goPage("search"); refocus(); }} chrome={winControls} />
         </div>
       )}
       </div>

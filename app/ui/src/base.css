@@ -516,6 +516,18 @@ input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 2px
 @keyframes indet { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
 @keyframes pop { from { opacity: 0; transform: translateY(6px) scale(0.985); } to { opacity: 1; transform: none; } }
 @keyframes grow { from { transform: scaleY(0.3); opacity: 0; } to { transform: none; opacity: 1; } }
+@keyframes row-in { from { opacity: 0; translate: 0 3px; } }
+/* a row that just arrived through the live index flashes in once (the fresh set expires, so
+   scrolling back never re-animates it) */
+.row.row-new { animation: row-in 220ms var(--ease); }
+/* the Quick Look morph (setQuickLook) lends the row and the pane one shared view-transition-name
+   for the length of a single transition */
+.vt-src, .vt-hero { view-transition-name: pv-hero; }
+/* view transitions are not CSS animations, so the reduced-motion kill does not reach their
+   pseudo-elements: switch them off explicitly */
+@media (prefers-reduced-motion: reduce) {
+  ::view-transition-group(*), ::view-transition-old(*), ::view-transition-new(*) { animation: none !important; }
+}
 @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
