@@ -1066,7 +1066,9 @@ export const mockBackend: Backend = {
     if (page < 1 || page > pages) throw new Error(`page ${page} of ${pages}`);
     return new Blob([svgPdfPage(e.name, page, pages, width)], { type: "image/svg+xml" });
   },
-  async statusPage() { await sleep(20); return mockStatusPage(); },
+  // ?statusdelay=<ms> slows the read like the real backend's IPC roundtrip, so search jumps into
+  // Status can be verified against rows that arrive late (the plain mock answers in 20ms).
+  async statusPage() { await sleep(20 + Number(params.get("statusdelay") ?? 0)); return mockStatusPage(); },
   async rescanVolume(letter) {
     await sleep(60);
     if (svc !== "running" || params.get("searchd") === "down") throw new Error("The name service is not running");

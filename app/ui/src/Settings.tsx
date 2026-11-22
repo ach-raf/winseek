@@ -900,6 +900,8 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
   const results = useMemo(() => searchSettings(find), [find]);
   // The row a picked result scrolls to and flashes once its section has mounted.
   const pendingJump = useRef<string | null>(null);
+  // The section the pick named, so a manual section switch can overtake a still-pending jump.
+  const jumpSection = useRef<SettingsSection | null>(null);
   const [pendingTick, setPendingTick] = useState(0);
   // Bumped when a picked result lives in the Status section: its groups sit behind the details
   // fold, and StatusSection opens that fold on this signal before the jump looks for the row.
@@ -909,6 +911,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     setFind("");
     setActive(0);
     pendingJump.current = r.id;
+    jumpSection.current = r.section;
     setPendingTick((t) => t + 1);
     if (r.section === "status") setStatusReveal((n) => n + 1);
   };
@@ -919,26 +922,48 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
     (navRef.current?.querySelector<HTMLElement>(".nv.on")
       ?? bodyRef.current?.querySelector<HTMLElement>("input, button"))?.focus();
   }, [section]);
-  // A picked result lands after the section switch: wait two frames (the section mounts on the
-  // render), scroll the row to the middle and flash it once. A few retries cover sections whose
-  // rows appear only after their first backend read; silently give up if it never shows.
+  // A picked result lands after the section switch, and the row itself can land later still:
+  // sections whose rows appear only after their first backend read (Status mounts on a
+  // statusPage roundtrip) keep the row missing for hundreds of ms, and Status's groups sit
+  // behind the details fold. Retry every frame within a 2s budget, scroll the row to the middle
+  // and flash it once — then re-check twice, because a statusPage refetch replacing warm data
+  // can land while the smooth scroll is running and grow the rows above the target, stopping
+  // the scroll short of the row. Re-aim only when the row drifted out of the middle band.
   useEffect(() => {
     const id = pendingJump.current;
     if (!id) return;
+    if (jumpSection.current !== section) { pendingJump.current = null; return; } // a manual section switch overtook the pick
     const reduced = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-    let tries = 0, raf = 0, flash = 0;
+    const started = performance.now();
+    let raf = 0, flash = 0;
+    const checks: number[] = [];
+    const aim = (el: HTMLElement) => {
+      el.scrollIntoView({ block: "center", behavior: reduced ? "auto" : "smooth" });
+      if (el.classList.contains("flash")) return; // the first aim owns the one flash
+      el.classList.add("flash");
+      flash = window.setTimeout(() => el.classList.remove("flash"), 1400);
+    };
+    // True while the row sits around the middle of the pane, where the jump leaves it.
+    const centered = (el: HTMLElement) => {
+      const pane = bodyRef.current?.getBoundingClientRect();
+      if (!pane) return true;
+      const box = el.getBoundingClientRect();
+      return Math.abs(box.top + box.height / 2 - (pane.top + pane.height / 2)) < pane.height * 0.25;
+    };
     const look = () => {
       const el = bodyRef.current?.querySelector<HTMLElement>(`[data-setting="${CSS.escape(id)}"]`);
       if (el) {
-        el.scrollIntoView({ block: "center", behavior: reduced ? "auto" : "smooth" });
-        el.classList.add("flash");
-        flash = window.setTimeout(() => el.classList.remove("flash"), 1400);
         pendingJump.current = null;
-      } else if (++tries < 3) raf = requestAnimationFrame(look);
-      else pendingJump.current = null;
+        aim(el);
+        // Once the animation had its run, and once more after late content: correct a scroll
+        // that layout movement left short of the row.
+        checks.push(window.setTimeout(() => { if (el.isConnected && !centered(el)) aim(el); }, 350));
+        checks.push(window.setTimeout(() => { if (el.isConnected && !centered(el)) aim(el); }, 850));
+      } else if (performance.now() - started < 2000) raf = requestAnimationFrame(look);
+      else { pendingJump.current = null; console.info(`settings jump: no row for "${id}"`); }
     };
     raf = requestAnimationFrame(() => { raf = requestAnimationFrame(look); });
-    return () => { cancelAnimationFrame(raf); window.clearTimeout(flash); };
+    return () => { cancelAnimationFrame(raf); window.clearTimeout(flash); checks.forEach((c) => window.clearTimeout(c)); };
   }, [section, pendingTick]);
   // Arrow keys walk the sidebar; the popup's global key handler skips everything inside panels.
   const navKey = (e: React.KeyboardEvent) => {

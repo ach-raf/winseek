@@ -4,7 +4,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import App from "./App";
 import Library from "./Library";
 import { ErrorBoundary } from "./ErrorBoundary";
-import { createQueryClient } from "./qk";
+import { createQueryClient, qk } from "./qk";
 import { applyAccent, loadAccent } from "./accent";
 import { loadTheme, watchSystemTheme } from "./theme";
 import { applyThemeChoice } from "./themeChoice";
@@ -55,6 +55,10 @@ watchSystemTheme(() => { if (loadTheme() === "system") applyThemeChoice("system"
 loadBackend().then((backend) => {
   // One client per window: the popup and the library window are separate JS contexts.
   const queryClient = createQueryClient();
+  // Web-only verify hook: drop the shared statusPage answer so a jump into Status starts cold,
+  // like a real session whose poll has been down or garbage-collected (window.__statusForget).
+  if (!inTauri) (window as unknown as { __statusForget?: () => void }).__statusForget =
+    () => queryClient.removeQueries({ queryKey: qk.statusPage });
   createRoot(document.getElementById("root")!).render(
     <StrictMode>
       <ErrorBoundary>
