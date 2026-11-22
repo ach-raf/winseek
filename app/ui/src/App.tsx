@@ -121,6 +121,34 @@ const canViewTransition = () =>
   && !matchMedia("(prefers-reduced-motion: reduce)").matches;
 const EMPTY_SET: ReadonlySet<string> = new Set();
 
+/** Open/closed + outside-click/Escape dismissal + the viewport clamp, shared by the filter row's
+ *  two chip menus (drive, sort) so the pair cannot drift apart. The menu hangs off the chip's
+ *  right edge; on a narrow (scaled or wrapped) row the chip can sit near the left edge, where
+ *  right-anchoring would clip the menu out of the window — nudge it back inside once per open
+ *  (the Filters popover solves the same problem from the other side). */
+function useChipMenu() {
+  const [open, setOpen] = useState(false);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (!open) return;
+    const away = (e: MouseEvent) => { if (!wrapRef.current?.contains(e.target as Node)) setOpen(false); };
+    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !e.isComposing) { e.stopPropagation(); setOpen(false); } };
+    window.addEventListener("mousedown", away);
+    window.addEventListener("keydown", esc, true);
+    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc, true); };
+  }, [open]);
+  useEffect(() => {
+    if (!open) return;
+    const el = menuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) { el.style.right = "8px"; el.style.left = "auto"; }
+    else if (r.left < 8) { el.style.left = "8px"; el.style.right = "auto"; }
+  }, [open]);
+  return { open, setOpen, wrapRef, menuRef };
+}
+
 export default function App({ backend }: { backend: Backend }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
@@ -148,28 +176,9 @@ export default function App({ backend }: { backend: Backend }) {
   const totalRef = useRef(0);
   const [space, setSpace] = useState<DriveSpace[]>([]);
   // Drive scope: a row of buttons while it fits, one chip with a menu in the popup or with many drives.
-  const [driveOpen, setDriveOpen] = useState(false);
-  const drivePickRef = useRef<HTMLDivElement>(null);
-  const driveMenuRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!driveOpen) return;
-    const away = (e: MouseEvent) => { if (!drivePickRef.current?.contains(e.target as Node)) setDriveOpen(false); };
-    const esc = (e: KeyboardEvent) => { if (e.key === "Escape" && !e.isComposing) { e.stopPropagation(); setDriveOpen(false); } };
-    window.addEventListener("mousedown", away);
-    window.addEventListener("keydown", esc, true);
-    return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc, true); };
-  }, [driveOpen]);
-  // The menu hangs off the chip's right edge; on a narrow (scaled or wrapped) row the chip can sit
-  // near the left edge, where right-anchoring would clip the menu out of the window. Nudge it back
-  // inside once per open — the Filters popover solves the same problem from the other side.
-  useEffect(() => {
-    if (!driveOpen) return;
-    const el = driveMenuRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.right > window.innerWidth - 8) { el.style.right = "8px"; el.style.left = "auto"; }
-    else if (r.left < 8) { el.style.left = "8px"; el.style.right = "auto"; }
-  }, [driveOpen]);
+  const driveCtl = useChipMenu();
+  // Sort: the same chip + menu, one slot over — the filter row's select-box pair.
+  const sortCtl = useChipMenu();
   const [liveVer, setLiveVer] = useState(0); // bumped when a live refresh found the results changed // shows the "row N of M" tag while the list moves
   const [viewH, setViewH] = useState(360);
   const [epoch, setEpoch] = useState(0); // bumped when the popup is re-shown
@@ -328,6 +337,16 @@ export default function App({ backend }: { backend: Backend }) {
   // queried yet. One effective sort feeds the queries, the chip, the cycle and the column headers
   // so none of them can disagree with the list.
   const effSort: Sort = drive && query.trim() === "" && sort === "rel" ? "size" : sort;
+  const driveLanding = drive !== "" && query.trim() === "";
+  // The orders the sort menu offers and Alt+S cycles. On the drive landing Best match is
+  // substituted by Size (effSort — there is no query to rank against), so offering Best match
+  // there would bounce straight back to Size: exactly the "sort can't be changed" bug. Hide it
+  // until a query exists, and cycling never sets a sort the landing would silently override.
+  const sortOpts = useMemo(() => SORTS.filter((s) => !(driveLanding && s.id === "rel")), [driveLanding]);
+  const cycleSort = useCallback((dir: 1 | -1) => {
+    setSort(sortOpts[(sortOpts.findIndex((s) => s.id === effSort) + dir + sortOpts.length) % sortOpts.length]!.id);
+    inputRef.current?.focus();
+  }, [sortOpts, effSort, setSort]);
 
   // ---- natural filters -----------------------------------------------------
   // "photos from last summer" -> chips + free text. A removed chip's key goes into `off`; its words then count as text.
@@ -1285,10 +1304,10 @@ export default function App({ backend }: { backend: Backend }) {
           inputRef.current?.focus();
           return;
         }
-        if (matchesKey(e, "Alt+S")) {
+        // matchesKey is modifier-exact, so the keymap's promised back-cycle needs its own guard
+        if (matchesKey(e, "Alt+S") && !e.shiftKey || matchesKey(e, "Alt+Shift+S")) {
           e.preventDefault();
-          setSort(SORTS[(SORTS.findIndex((s) => s.id === effSort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
-          inputRef.current?.focus();
+          cycleSort(e.shiftKey ? -1 : 1);
           return;
         }
         if (matchesKey(e, "Alt+Right")) { e.preventDefault(); const ex = expandable(ovItem); if (ex) setExpand(ex); return; }
@@ -1473,7 +1492,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, effSort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, effSort, recordQuery, full, page, gridCols, setSort, cycleSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1578,7 +1597,6 @@ export default function App({ backend }: { backend: Backend }) {
       : null;
   const sortLabel = SORT_LABEL[effSort];
   const chipLabel = SORTS.find((s) => s.id === effSort)?.label ?? sortLabel; // the chip face is short ("Modified"); prose keeps the full label
-  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === effSort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
   const rowHandlers: ItemHandlers = useMemo(() => ({
@@ -1807,32 +1825,44 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       )}
       {!isRecent && (
-        <button className={"sortb" + (sort !== "rel" ? " custom" : "")} tabIndex={-1}
-                title={sort !== "rel" ? `Sorted by ${sortLabel}, not Best match. Click to change.` : tooltip("popup.sort")}
-                onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
-          {effSort !== "rel" && <i className="sortdot" aria-hidden="true" />}
-          {chipLabel}
-          <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
-        </button>
+        <div className="dpick" ref={sortCtl.wrapRef}>
+          <button className={"sortb" + (effSort !== "rel" ? " custom" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={sortCtl.open}
+                  title={effSort !== "rel" ? `Sorted by ${sortLabel}, not Best match` : tooltip("popup.sort")}
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => sortCtl.setOpen((o) => !o)}>
+            {effSort !== "rel" && <i className="sortdot" aria-hidden="true" />}
+            {chipLabel}
+            <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
+          </button>
+          {sortCtl.open && (
+            <div className="dmenu" ref={sortCtl.menuRef} role="listbox" aria-label="Sort">
+              {sortOpts.map((s) => (
+                <button key={s.id} role="option" aria-selected={effSort === s.id} className={effSort === s.id ? "on" : ""} tabIndex={-1}
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => { setSort(s.id); sortCtl.setOpen(false); inputRef.current?.focus(); }}>
+                  <span>{SORT_LABEL[s.id]}</span>
+                  {effSort === s.id && <i aria-hidden="true">✓</i>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
       {status.length > 0 && (driveMenu ? (
-        <div className="dpick" ref={drivePickRef}>
-          {/* `on`, not `set`: settings.css owns a global `.set` root (a 216px grid) and a chip with
-              that class once grew into it — the popup overflow the drive menu dangled out of. */}
-          <button className={"sortb" + (drive ? " on" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={driveOpen} title="Limit the search to one drive"
-                  onMouseDown={(e) => e.preventDefault()} onClick={() => setDriveOpen((o) => !o)}>
+        <div className="dpick" ref={driveCtl.wrapRef}>
+          <button className={"sortb" + (drive ? " on" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={driveCtl.open} title="Limit the search to one drive"
+                  onMouseDown={(e) => e.preventDefault()} onClick={() => driveCtl.setOpen((o) => !o)}>
             {drive && <i className="sortdot" aria-hidden="true" />}
             {drive ? `Drive ${drive}` : "All drives"}
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
           </button>
-          {driveOpen && (
-            <div className="dmenu" ref={driveMenuRef} role="listbox" aria-label="Drive">
+          {driveCtl.open && (
+            <div className="dmenu" ref={driveCtl.menuRef} role="listbox" aria-label="Drive">
               {[{ letter: "" }, ...status].map((v) => {
                 const sp = space.find((x) => x.letter.toUpperCase() === v.letter.toUpperCase());
                 return (
                   <button key={v.letter || "all"} role="option" aria-selected={drive === v.letter} className={drive === v.letter ? "on" : ""} tabIndex={-1}
                           onMouseDown={(e) => e.preventDefault()}
-                          onClick={() => { setDrive(v.letter); setDriveOpen(false); inputRef.current?.focus(); }}>
+                          onClick={() => { setDrive(v.letter); driveCtl.setOpen(false); inputRef.current?.focus(); }}>
                     <span>{v.letter ? `${v.letter}:` : "All drives"}</span>
                     {sp && <i>{formatSize(sp.free)} free</i>}
                   </button>
@@ -1857,7 +1887,6 @@ export default function App({ backend }: { backend: Backend }) {
   // drive's free space and one tile per kind with its count — each tile drills into that kind's
   // list below (the list itself is biggest-first, see effSort). Nothing here depends on the USN
   // ring or file recency, so the screen never reshuffles while it sits there.
-  const driveLanding = drive !== "" && query.trim() === "";
   const driveSpaceRow = space.find((x) => x.letter.toUpperCase() === drive.toUpperCase());
   const driveHomeEl = driveLanding && loaded && (
     <div className="dhome">
