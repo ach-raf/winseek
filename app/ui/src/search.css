@@ -116,6 +116,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .row.sel .pct { background: color-mix(in oklab, var(--acc) 40%, var(--bg)); color: var(--fg); }
 .dt, .sz { font-size: 0.78125rem; color: var(--fg2); white-space: nowrap; text-align: right; font-variant-numeric: tabular-nums; }
 .sz { display: none; }
+/* a size-sorted list (the drive landing, any "Size" order in the popup) shows the size in the
+   date slot — the number the order is about; a selected row still trades the slot for Open ↵ */
+.shell:not(.full) .vlist.bysize .row .sz { display: block; }
+.shell:not(.full) .vlist.bysize .row .dt { display: none; }
+.shell:not(.full) .vlist.bysize .row.sel .sz { display: none; }
 .go { display: none; align-items: center; gap: 7px; font-size: 0.78125rem; font-weight: 500; color: var(--fg2); white-space: nowrap; }
 .row.sel .go { display: inline-flex; }
 .row.sel .dt { display: none; }
@@ -273,6 +278,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* compact popup (780px): tighter chips so every count fits whole instead of clipping */
 .shell:not(.full) .frow { gap: 2px; }
 .shell:not(.full) .frow .fc { padding: 0 8px; gap: 4px; }
+/* the popup is one row by design: the kind chips shrink (ellipsis) as the elastic buffer, while
+   the sort chip and the drive chip never wrap or shrink — they stay pinned at the row's end */
+.shell:not(.full) .frow { flex-wrap: nowrap; }
+.shell:not(.full) .frow .sortb, .shell:not(.full) .frow .dpick { flex: none; }
 /* a row that cannot fit (scaled-down popup, fitted tiny full window) wraps to a second line —
    clipping the drive chip out of the window is what made its menu unusable */
 
@@ -316,6 +325,18 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .dmenu button:hover { background: var(--bg3); color: var(--fg); }
 .dmenu button.on { color: var(--fg); font-weight: 600; background: var(--bg3); }
 .dmenu button i { font-style: normal; font-size: 0.75rem; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
+
+/* the drive landing's at-a-glance strip: the scope's free space, then one tile per kind with its
+   count; a tile is a quiet chip until hovered, and drills the list below into that kind */
+.dhome { padding: 10px var(--sp-4) 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+.dhome-line { display: flex; align-items: baseline; gap: 10px; font-size: 0.8125rem; color: var(--fg3); }
+.dhome-line b { color: var(--fg); font-size: 0.875rem; font-weight: 600; }
+.dhome-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
+.dtile { height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px; border-radius: 8px; font-size: 0.8125rem; font-weight: 500; color: var(--fg2); background: var(--bg3); white-space: nowrap; }
+.dtile:hover { background: color-mix(in oklab, var(--acc) 20%, var(--bg3)); color: var(--fg); }
+.dtile.on { color: var(--fg); background: color-mix(in oklab, var(--acc) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
+.dtile.zero { color: var(--fg3); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
+.dtile i { font-style: normal; font-size: 0.71875rem; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
 .frow .fc { overflow: hidden; text-overflow: ellipsis; }
 /* the full window's page gutter (--gut, base.css): filter pills, column heads and row content start on it */
 .shell.full .frow { padding: 0 var(--gut) var(--sp-3); }
@@ -362,8 +383,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sg-sec.advanced .sg-terms { display: grid; grid-template-columns: repeat(auto-fill, minmax(290px, 1fr)); }
 
 /* ---- popup polish ---- */
-/* The popup's filter row is narrow: chips keep their full label (never an ellipsis); counts show on the active chip only. */
-.shell:not(.full) .frow .fc { flex: none; overflow: visible; }
+/* The popup's filter row is one row by design: counts show on the active chip only, and the chips
+   themselves are the row's elastic buffer — they only ever ellipsize when the window is genuinely
+   too small (fitted-small monitor), which beats clipping the sort/drive chips out of the window. */
+.shell:not(.full) .frow .fc { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .shell:not(.full) .frow .fc:not(.on) i { display: none; }
 /* List gutters: reserved scrollbar lane taken off the right padding, so rows sit evenly in the popup. */
 .shell:not(.full) .list { padding-right: max(0px, calc(var(--sp-2) - var(--sbw))); scrollbar-gutter: stable; }

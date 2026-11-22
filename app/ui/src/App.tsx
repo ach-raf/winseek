@@ -66,7 +66,7 @@ const FILTERS: { id: Filter; label: string }[] = [
 const SORTS: { id: Sort; label: string }[] = [
   { id: "rel", label: "Best match" },
   { id: "name", label: "Name" },
-  { id: "date", label: "Date modified" },
+  { id: "date", label: "Modified" }, // chip face; prose (titles, notes) uses SORT_LABEL's full "Date modified"
   { id: "size", label: "Size" },
 ];
 // Every order, including the reversed ones the column headers reach (the chip cycles the four above).
@@ -323,10 +323,11 @@ export default function App({ backend }: { backend: Backend }) {
   // every file the drive touched.
   const isRecent = query.trim() === "" && !drive && filter === "all" && sort === "rel";
   // A drive scope with an empty box has nothing for "Best match" to match, and the tiers disagree
-  // on what it would mean (searchd keeps name order, Tier 0 falls back to newest): the landing asks
-  // for Date modified outright. One effective sort feeds the queries, the chip, the cycle and the
-  // column headers so none of them can disagree with the list.
-  const effSort: Sort = drive && query.trim() === "" && sort === "rel" ? "date" : sort;
+  // on what it would mean (searchd keeps name order, Tier 0 falls back to newest): the landing is
+  // the drive's biggest first — the one order that says something about a drive you haven't
+  // queried yet. One effective sort feeds the queries, the chip, the cycle and the column headers
+  // so none of them can disagree with the list.
+  const effSort: Sort = drive && query.trim() === "" && sort === "rel" ? "size" : sort;
 
   // ---- natural filters -----------------------------------------------------
   // "photos from last summer" -> chips + free text. A removed chip's key goes into `off`; its words then count as text.
@@ -1566,15 +1567,17 @@ export default function App({ backend }: { backend: Backend }) {
     ? "Recent"
     : query.trim() === ""
       ? (() => {
+        if (drive) return null; // the drive landing carries its own header (the dhome strip)
         const label = FILTERS.find((f) => f.id === filter)?.label ?? "Files";
         const where = drive ? ` on ${drive}:` : "";
         if (sort === "size" && filter === "folders") return `Biggest folders${where}`;
-        if (effSort === "date") return `Recent · ${label}${where}`; // the drive scope's empty box lands newest-first on every tier
+        if (effSort === "date") return `Recent · ${label}${where}`; // newest-first on every tier
         if (sort === "rel") return `Recent · ${label}`; // the unscoped empty tabs (Tier 0 answers newest-first here too)
         return `${label}${where} · ${SORT_LABEL[effSort]}`;
       })()
       : null;
   const sortLabel = SORT_LABEL[effSort];
+  const chipLabel = SORTS.find((s) => s.id === effSort)?.label ?? sortLabel; // the chip face is short ("Modified"); prose keeps the full label
   const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === effSort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
@@ -1808,7 +1811,7 @@ export default function App({ backend }: { backend: Backend }) {
                 title={sort !== "rel" ? `Sorted by ${sortLabel}, not Best match. Click to change.` : tooltip("popup.sort")}
                 onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
           {effSort !== "rel" && <i className="sortdot" aria-hidden="true" />}
-          {sortLabel}
+          {chipLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
       )}
@@ -1848,6 +1851,39 @@ export default function App({ backend }: { backend: Backend }) {
         </div>
       ))}
     </nav>
+  );
+
+  // The drive landing (drive chosen, nothing typed) opens with the scope's own at-a-glance: the
+  // drive's free space and one tile per kind with its count — each tile drills into that kind's
+  // list below (the list itself is biggest-first, see effSort). Nothing here depends on the USN
+  // ring or file recency, so the screen never reshuffles while it sits there.
+  const driveLanding = drive !== "" && query.trim() === "";
+  const driveSpaceRow = space.find((x) => x.letter.toUpperCase() === drive.toUpperCase());
+  const driveHomeEl = driveLanding && loaded && (
+    <div className="dhome">
+      <div className="dhome-line">
+        <b>Drive {drive}:</b>
+        {driveSpaceRow && <span>{formatSize(driveSpaceRow.free)} free of {formatSize(driveSpaceRow.total)}</span>}
+      </div>
+      <div className="dhome-kinds">
+        {FILTERS.filter((f) => f.id !== "settings" && f.id !== "meaning" && f.id !== "all").map((f) => {
+          const n = countOf(f.id);
+          return (
+            <button key={f.id} className={"dtile" + (effFilter === f.id ? " on" : "") + (n === 0 ? " zero" : "")} tabIndex={-1}
+                    aria-label={`Show ${f.label}${n !== undefined && n > 0 ? ` (${chipCount(n)})` : ""} on drive ${drive}`}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => {
+                      const k = parsed.chips.find((c) => c.type === "kind");
+                      if (k && parsed.kind !== f.id) dropChip(k.key);
+                      setFilter(f.id);
+                      inputRef.current?.focus();
+                    }}>
+              {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 
   // ---- search box (compact: the popup's top bar; full: the field in the top bar) ----
@@ -1981,6 +2017,7 @@ export default function App({ backend }: { backend: Backend }) {
 
         <div className={"cols" + (quickLook ? " ql" : "")} hidden={showPanel}>
           <div className="lcol">
+            {driveHomeEl}
             {full && !isRecent && (
               <div className={"colh" + (dense ? " dense" : "")}>
                 <span />
@@ -2015,7 +2052,7 @@ export default function App({ backend }: { backend: Backend }) {
               </div>
             )}
 
-            <div className={"list vlist" + (dense ? " dense" : "")} hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
+            <div className={"list vlist" + (dense ? " dense" : "") + (effSort === "size" || effSort === "size_asc" ? " bysize" : "")} hidden={showPanel || !showList} ref={listRef} onScroll={onListScroll} role="listbox">
               <div className="spacer-v" style={{ height: vl.height }}>{visible}</div>
               {!pending && loaded && data.total === 0 && (
                 <div className="none">
