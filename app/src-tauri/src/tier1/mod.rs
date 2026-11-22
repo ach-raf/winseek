@@ -86,8 +86,11 @@ const RERANK_MIN_DOCS: usize = 3;
 /// A document is cut to this many characters (the server's 2048-token context holds query +
 /// document; dense non-English text runs ~0.7 tokens per character).
 const RERANK_DOC_CHARS: usize = 1000;
-/// On-demand parse results kept in memory (by content hash and page).
-const DOC_CACHE: usize = 8;
+/// Fingerprint of the on-demand extraction cache: cache layout + parser model + prompt version.
+/// While the stored `parse_cache_ver` setting differs, the cached pages are dropped once so
+/// "Extract text" re-runs under the current parser (the code chunker's gate, applied to the
+/// on-demand cache). Asserted against its parts in the tests below.
+pub const PARSE_CACHE_FINGERPRINT: &str = "parsecache1|infinity-parser2-flash|doc2json-v1";
 
 pub struct Tier1 {
     pub store: Mutex<Store>,
@@ -96,8 +99,6 @@ pub struct Tier1 {
     parser: Mutex<Box<dyn Parser + Send>>,
     /// The optional reranker (Qwen3-Reranker). Locked on its own, never together with another model.
     reranker: Mutex<Box<dyn Reranker + Send>>,
-    /// Last on-demand parse results, newest last.
-    doc_cache: Mutex<Vec<((String, u32), ParsedDoc)>>,
     /// Effective pause flag read by the processor: user pause or an automatic reason.
     paused: AtomicBool,
     user_paused: AtomicBool,
@@ -237,7 +238,8 @@ pub struct ParsedDoc {
     pub markdown: String,
     pub tables: Vec<Table>,
     pub elements_count: usize,
-    /// Answered from the in-memory cache (same content and page parsed a moment ago).
+    /// Answered from the persistent extraction cache (same content and page parsed before —
+    /// possibly in an earlier session). A re-extract (`force`) never sets it.
     pub cached: bool,
 }
 
@@ -524,7 +526,6 @@ impl Tier1 {
             embedder: Mutex::new(embedder),
             parser: Mutex::new(parser),
             reranker: Mutex::new(Box::new(NoReranker)),
-            doc_cache: Mutex::new(Vec::new()),
             paused: AtomicBool::new(false),
             user_paused: AtomicBool::new(false),
             auto_pause: AtomicU8::new(0),
@@ -943,9 +944,16 @@ impl Tier1 {
 
     /// "Extract text" for one image or PDF page (preview footer): the page is rendered at 1024 px, run
     /// through the parser (loading it, and unloading the index model, as needed) and returned as
-    /// markdown plus tables. Nothing is stored. The last [`DOC_CACHE`] results are kept in memory by
-    /// content hash and page, so Copy table / Copy as Markdown right after do not parse again.
-    pub fn parse_document(&self, path: &str, page: Option<u32>) -> Result<ParsedDoc, String> {
+    /// markdown plus tables. Results persist in the store's `parse_cache` by content hash and
+    /// page — so a re-open, or an agent/CLI read of the same content, answers instantly across
+    /// sessions until the parser fingerprint changes or the LRU trims the row. `force` skips the
+    /// cache and re-parses (the preview's "Re-extract"; the result still replaces the cached one).
+    pub fn parse_document(
+        &self,
+        path: &str,
+        page: Option<u32>,
+        force: bool,
+    ) -> Result<ParsedDoc, String> {
         use crate::preview::{classify, ext_of, Kind};
         if !self.parser_present() {
             return Err("The document parser is not installed. Add it in Setup.".into());
@@ -961,10 +969,27 @@ impl Tier1 {
         }
         let bytes = guard::read_guarded(std::path::Path::new(path))
             .map_err(|e| format!("Cannot read file: {e}"))?;
-        let key = (process::sha256_hex(&bytes), page);
-        if let Some(mut d) = self.cached_doc(&key) {
-            d.cached = true;
-            return Ok(d);
+        let key = process::sha256_hex(&bytes);
+        self.check_parse_cache_gate();
+        if !force {
+            if let Some(row) = lock(&self.store)
+                .cached_parse(&key, page)
+                .map_err(|e| e.to_string())?
+            {
+                let tables: Vec<Table> =
+                    serde_json::from_str(&row.tables_json).map_err(|e| e.to_string())?;
+                eprintln!(
+                    "winseek: parse_document: cache hit {} p{page} ({} chars)",
+                    &key[..12],
+                    row.markdown.chars().count()
+                );
+                return Ok(ParsedDoc {
+                    markdown: row.markdown,
+                    tables,
+                    elements_count: row.elements.max(0) as usize,
+                    cached: true,
+                });
+            }
         }
         let jpeg = if page == 0 {
             let bytes = heic::normalize(path, bytes.clone())
@@ -980,26 +1005,59 @@ impl Tier1 {
         };
         let parsed =
             parser::parse_phased(&self.parser, &self.embedder, &jpeg).map_err(|e| e.to_string())?;
+        let tables = parsed.tables();
         let doc = ParsedDoc {
             markdown: parsed.markdown(),
-            tables: parsed.tables(),
+            tables: tables.clone(),
             elements_count: parsed.elements.len(),
             cached: false,
         };
-        let mut cache = lock(&self.doc_cache);
-        cache.retain(|(k, _)| *k != key);
-        cache.push((key, doc.clone()));
-        if cache.len() > DOC_CACHE {
-            cache.remove(0);
-        }
+        let tables_json =
+            serde_json::to_string(&tables).map_err(|e| e.to_string())?;
+        let dropped = lock(&self.store)
+            .save_parse(
+                &key,
+                page,
+                &doc.markdown,
+                &tables_json,
+                doc.elements_count,
+            )
+            .map_err(|e| e.to_string())?;
+        eprintln!(
+            "winseek: parse_document: parsed {} p{page} ({} element(s), cached; trim dropped {dropped})",
+            &key[..12],
+            doc.elements_count
+        );
         Ok(doc)
     }
 
-    fn cached_doc(&self, key: &(String, u32)) -> Option<ParsedDoc> {
-        lock(&self.doc_cache)
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, d)| d.clone())
+    /// The parser (model or prompt) changed since the cache was written: drop the cached pages
+    /// once so "Extract text" re-runs under the current parser, and re-stamp the fingerprint.
+    /// Cheap enough to check per call — one settings row.
+    fn check_parse_cache_gate(&self) {
+        let mut s = lock(&self.store);
+        let stored = s
+            .get_setting(winseek_store::SETTING_PARSE_CACHE_VER)
+            .ok()
+            .flatten();
+        if stored.as_deref() == Some(PARSE_CACHE_FINGERPRINT) {
+            return;
+        }
+        match s.clear_parse_cache() {
+            Ok(n) if n > 0 => eprintln!(
+                "winseek: parser changed ({} -> {}); dropped {n} cached extraction(s)",
+                stored.as_deref().unwrap_or("none"),
+                PARSE_CACHE_FINGERPRINT
+            ),
+            Ok(_) => {}
+            Err(e) => eprintln!("winseek: could not drop the stale extraction cache: {e}"),
+        }
+        if let Err(e) = s.set_setting(
+            winseek_store::SETTING_PARSE_CACHE_VER,
+            Some(PARSE_CACHE_FINGERPRINT),
+        ) {
+            eprintln!("winseek: could not record the extraction cache fingerprint: {e}");
+        }
     }
 
     /// Reset the store (embeddings dropped, files back to pending) and make the crawler re-run.
@@ -2176,15 +2234,17 @@ pub async fn tier1_pause(
     Ok(())
 }
 
-/// "Extract text" for an image or one PDF page (`page` is 1-based, ignored for images).
+/// "Extract text" for an image or one PDF page (`page` is 1-based, ignored for images; `force`
+/// re-parses even when the persistent extraction cache has the answer).
 #[tauri::command]
 pub async fn parse_document(
     h: tauri::State<'_, Handle>,
     path: String,
     page: Option<u32>,
+    force: Option<bool>,
 ) -> Result<ParsedDoc, String> {
     let t = h.get()?;
-    tauri::async_runtime::spawn_blocking(move || t.parse_document(&path, page))
+    tauri::async_runtime::spawn_blocking(move || t.parse_document(&path, page, force.unwrap_or(false)))
         .await
         .map_err(|e| e.to_string())?
 }
@@ -3916,7 +3976,7 @@ mod tests {
         let (parser, probe) = FakeParser::boxed(true);
         let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
         let path = write_png(dir.path(), "invoice.png");
-        let d = t.parse_document(&path, Some(7)).unwrap(); // the page is ignored for images
+        let d = t.parse_document(&path, Some(7), false).unwrap(); // the page is ignored for images
         assert!(!d.cached);
         assert_eq!(d.elements_count, 2);
         assert_eq!(
@@ -3927,7 +3987,7 @@ mod tests {
             (d.tables.len(), d.tables[0].tsv.as_str()),
             (1, "Item\tQty\nCard\t1")
         );
-        let again = t.parse_document(&path, None).unwrap();
+        let again = t.parse_document(&path, None, false).unwrap();
         assert!(again.cached, "same content: no second parse");
         assert_eq!(
             (again.markdown, again.elements_count),
@@ -3937,26 +3997,31 @@ mod tests {
         // the same bytes under another name hit the cache too; different bytes do not
         std::fs::copy(&path, dir.path().join("copy.png")).unwrap();
         assert!(
-            t.parse_document(&dir.path().join("copy.png").to_string_lossy(), None)
+            t.parse_document(&dir.path().join("copy.png").to_string_lossy(), None, false)
                 .unwrap()
                 .cached
         );
         let other = image::RgbImage::from_pixel(61, 40, image::Rgb([1, 2, 3]));
         other.save(dir.path().join("other.png")).unwrap();
         assert!(
-            !t.parse_document(&dir.path().join("other.png").to_string_lossy(), None)
+            !t.parse_document(&dir.path().join("other.png").to_string_lossy(), None, false)
                 .unwrap()
                 .cached
         );
         assert_eq!(probe.calls.load(Ordering::SeqCst), 2);
+        // force re-parses the same content and leaves it cached again afterwards
+        let fresh = t.parse_document(&path, None, true).unwrap();
+        assert!(!fresh.cached);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 3);
+        assert!(t.parse_document(&path, None, false).unwrap().cached);
     }
 
     #[test]
-    fn parse_document_cache_keeps_the_last_eight() {
+    fn parse_document_cache_persists_force_and_fingerprint() {
         let dir = test_tmp();
         let (parser, probe) = FakeParser::boxed(true);
         let t = tier_with(Box::new(Q), parser, &[r"C:\Pics"]);
-        let paths: Vec<String> = (0..9u32)
+        let paths: Vec<String> = (0..3u32)
             .map(|i| {
                 let img = image::RgbImage::from_pixel(10 + i, 10, image::Rgb([i as u8, 0, 0]));
                 let p = dir.path().join(format!("{i}.png"));
@@ -3965,19 +4030,47 @@ mod tests {
             })
             .collect();
         for p in &paths {
-            t.parse_document(p, None).unwrap();
+            t.parse_document(p, None, false).unwrap();
         }
-        assert_eq!(probe.calls.load(Ordering::SeqCst), 9);
-        assert!(t.parse_document(&paths[8], None).unwrap().cached);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 3);
+        // the cache is persistent, not the old 8-entry memory ring: every page hits
+        for p in &paths {
+            assert!(t.parse_document(p, None, false).unwrap().cached);
+        }
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 3);
+        // a parser change drops the cache once and re-stamps the fingerprint
+        let mut s = lock(&t.store);
+        s.set_setting(winseek_store::SETTING_PARSE_CACHE_VER, Some("older-parser"))
+            .unwrap();
+        drop(s);
+        let d = t.parse_document(&paths[0], None, false).unwrap();
         assert!(
-            t.parse_document(&paths[1], None).unwrap().cached,
-            "the 8 newest are kept"
+            !d.cached,
+            "stale fingerprint: the row was dropped, so this re-parsed"
         );
-        assert!(
-            !t.parse_document(&paths[0], None).unwrap().cached,
-            "the oldest was evicted"
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 4);
+        assert_eq!(
+            lock(&t.store)
+                .get_setting(winseek_store::SETTING_PARSE_CACHE_VER)
+                .unwrap()
+                .as_deref(),
+            Some(PARSE_CACHE_FINGERPRINT)
         );
-        assert_eq!(probe.calls.load(Ordering::SeqCst), 10);
+        // the re-parsed page answers from cache again for the next call
+        assert!(t.parse_document(&paths[0], None, false).unwrap().cached);
+        assert_eq!(probe.calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn parse_cache_fingerprint_tracks_the_parser() {
+        assert_eq!(
+            PARSE_CACHE_FINGERPRINT,
+            format!(
+                "parsecache1|{}|{}",
+                parser::MODEL_ID,
+                winseek_llama::PARSE_PROMPT_VERSION
+            )
+        );
     }
 
     #[test]
@@ -3988,17 +4081,17 @@ mod tests {
         let txt = dir.path().join("a.txt");
         std::fs::write(&txt, "hello").unwrap();
         assert!(t
-            .parse_document(&txt.to_string_lossy(), None)
+            .parse_document(&txt.to_string_lossy(), None, false)
             .unwrap_err()
             .contains("images and PDF"));
         assert!(t
-            .parse_document(&dir.path().join("missing.png").to_string_lossy(), None)
+            .parse_document(&dir.path().join("missing.png").to_string_lossy(), None, false)
             .unwrap_err()
             .contains("Cannot read"));
         let bad = dir.path().join("bad.png");
         std::fs::write(&bad, b"not an image").unwrap();
         assert!(t
-            .parse_document(&bad.to_string_lossy(), None)
+            .parse_document(&bad.to_string_lossy(), None, false)
             .unwrap_err()
             .contains("decode"));
         assert_eq!(probe.calls.load(Ordering::SeqCst), 0);
@@ -4006,7 +4099,7 @@ mod tests {
         let none = tier(Box::new(Q), &[r"C:\Pics"]);
         let png = write_png(dir.path(), "x.png");
         assert!(none
-            .parse_document(&png, None)
+            .parse_document(&png, None, false)
             .unwrap_err()
             .contains("not installed"));
     }

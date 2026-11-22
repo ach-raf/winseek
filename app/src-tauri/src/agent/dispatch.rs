@@ -521,7 +521,7 @@ fn parse_document(deps: &Deps, args: &Value) -> Result<Value, String> {
     if !t.parser_present() {
         return Err("parser not installed".into());
     }
-    let doc = t.parse_document(&path, page)?;
+    let doc = t.parse_document(&path, page, false)?;
     serde_json::to_value(doc).map_err(|e| e.to_string())
 }
 
