@@ -602,12 +602,12 @@ fn watch_start_menu_dir(dir: String, app: AppHandle) {
 // ---------- Tauri commands ----------
 
 #[tauri::command]
-pub fn launch_search(
+pub async fn launch_search(
     state: tauri::State<'_, Launcher>,
     query: String,
     limit: usize,
-) -> Vec<LaunchHit> {
-    state.search(&query, limit)
+) -> Result<Vec<LaunchHit>, String> {
+    Ok(state.search(&query, limit))
 }
 
 #[tauri::command]

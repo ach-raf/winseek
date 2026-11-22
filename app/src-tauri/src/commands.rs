@@ -10,7 +10,7 @@ impl AppState {
             source: RwLock::new(source),
             paused: AtomicBool::new(false),
             latest_search: Arc::default(),
-            search_gate: Arc::default(),
+            search_gates: Default::default(),
         }
     }
     pub fn source(&self) -> Arc<dyn NameSource> {
@@ -27,11 +27,12 @@ impl AppState {
 pub struct AppState {
     pub source: RwLock<Arc<dyn NameSource>>,
     pub paused: AtomicBool,
-    /// The newest `search` call of each stream. Searches queue on the one searchd connection; a queued
-    /// search for a query the user has already typed past is dropped instead of run (typing "report"
-    /// must not run "r", "re", "rep", ... one after another).
+    /// The newest `search` call of each stream. Searches of one stream queue behind each other on
+    /// that stream's gate, and a queued search the user has already typed past is dropped instead
+    /// of run (typing "report" must not run "r", "re", "rep", ... one after another). Different
+    /// streams run at the same time, each on its own pooled pipe connection.
     latest_search: Arc<Mutex<LatestSearch>>,
-    search_gate: Arc<Mutex<()>>,
+    search_gates: Mutex<std::collections::HashMap<String, Arc<Mutex<()>>>>,
 }
 
 /// The newest search key of each *stream* (the result list, the picture grid, ...). A search is superseded
@@ -66,6 +67,14 @@ fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+fn empty() -> SearchResult {
+    SearchResult {
+        total: 0,
+        hits: vec![],
+        elapsed_us: 0,
+    }
+}
+
 #[tauri::command]
 pub async fn search(
     state: tauri::State<'_, AppState>,
@@ -81,15 +90,21 @@ pub async fn search(
     let sort = sort.unwrap_or_else(|| "rel".into());
     let key = format!("{query}\u{1}{filter}\u{1}{sort}");
     lock(&state.latest_search).begin(stream.as_deref(), &key);
-    let (latest, gate) = (state.latest_search.clone(), state.search_gate.clone());
+    let latest = state.latest_search.clone();
+    let gate = stream.as_deref().map(|s| {
+        lock(&state.search_gates)
+            .entry(s.to_string())
+            .or_default()
+            .clone()
+    });
     blocking(move || {
-        let _turn = lock(&gate);
+        // Superseded before it even queued: drop it without waiting for the gate.
         if lock(&latest).superseded(stream.as_deref(), &key) {
-            return SearchResult {
-                total: 0,
-                hits: vec![],
-                elapsed_us: 0,
-            }; // superseded: the UI drops it anyway
+            return empty();
+        }
+        let _turn = gate.as_deref().map(lock);
+        if lock(&latest).superseded(stream.as_deref(), &key) {
+            return empty();
         }
         src.search(&query, &filter, offset, limit.min(5000), &sort)
     })

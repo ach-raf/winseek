@@ -1,10 +1,12 @@
-//! `NameSource` backed by `searchd` over the named pipe. One connection behind a mutex;
-//! on any I/O error the connection is dropped and re-established (one retry per call).
+//! `NameSource` backed by `searchd` over the named pipe. A small pool of connections: each call
+//! takes an idle one (or opens one), so a slow request (a Space walk) never holds up a search.
+//! searchd serves every connection on its own thread. On an I/O error the connection is dropped,
+//! the idle pool is cleared (a restarted searchd kills them all) and the call retries once.
 
 use std::io;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use winseek_ipc::pipe::{connect, PipeConn};
 use winseek_ipc::{
@@ -14,18 +16,30 @@ use winseek_ipc::{
 use crate::source::{Hit, NameSource, SearchResult, Tier0Detail, VolumeDetail, VolumeStatus};
 
 const RECONNECT_TIMEOUT: Duration = Duration::from_millis(300);
+/// Idle connections kept for reuse. Concurrency is not capped here: it is bounded by the callers
+/// (one per in-flight Tauri command).
+const MAX_IDLE: usize = 4;
+/// A call slower than this is logged (wall time vs searchd's own time tells queueing from work).
+const SLOW_CALL: Duration = Duration::from_millis(150);
 
 pub struct PipeSource {
-    conn: Mutex<Option<PipeConn>>,
+    name: String,
+    idle: Mutex<Vec<PipeConn>>,
     next_id: AtomicU64,
 }
 
 impl PipeSource {
     /// Connect once (used at startup to decide between searchd and demo data).
     pub fn connect(timeout: Duration) -> io::Result<Self> {
-        let c = connect(PIPE_NAME, timeout)?;
+        Self::connect_to(PIPE_NAME, timeout)
+    }
+
+    /// Same as `connect`, to any pipe name (tests use a private one).
+    pub fn connect_to(name: &str, timeout: Duration) -> io::Result<Self> {
+        let c = connect(name, timeout)?;
         Ok(PipeSource {
-            conn: Mutex::new(Some(c)),
+            name: name.to_string(),
+            idle: Mutex::new(vec![c]),
             next_id: AtomicU64::new(1),
         })
     }
@@ -34,25 +48,67 @@ impl PipeSource {
         self.next_id.fetch_add(1, Ordering::Relaxed)
     }
 
-    /// Send one request and read its response; reconnect and retry once on failure.
+    fn idle(&self) -> std::sync::MutexGuard<'_, Vec<PipeConn>> {
+        self.idle.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Send one request on its own connection and read its response; on failure, retry once on a
+    /// fresh connection. The pool lock is held only to pop/push, never across I/O.
     fn call(&self, req: &Request) -> io::Result<Response> {
-        let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let t = Instant::now();
         let mut last = None;
-        for _ in 0..2 {
-            if guard.is_none() {
-                *guard = Some(connect(PIPE_NAME, RECONNECT_TIMEOUT)?);
-            }
-            let c = guard.as_mut().unwrap();
-            let r = write_message(c, req).and_then(|_| read_message::<_, Response>(c));
-            match r {
-                Ok(resp) => return Ok(resp),
+        for attempt in 0..2 {
+            let pooled = if attempt == 0 {
+                self.idle().pop()
+            } else {
+                None
+            };
+            let mut c = match pooled {
+                Some(c) => c,
+                None => connect(&self.name, RECONNECT_TIMEOUT)?,
+            };
+            match write_message(&mut c, req).and_then(|_| read_message::<_, Response>(&mut c)) {
+                Ok(resp) => {
+                    {
+                        let mut idle = self.idle();
+                        if idle.len() < MAX_IDLE {
+                            idle.push(c);
+                        }
+                    }
+                    if t.elapsed() > SLOW_CALL {
+                        eprintln!(
+                            "winseek: slow searchd call {} took {:.0?}",
+                            kind_of(req),
+                            t.elapsed()
+                        );
+                    }
+                    return Ok(resp);
+                }
                 Err(e) => {
-                    *guard = None;
+                    self.idle().clear();
+                    if attempt == 0 {
+                        eprintln!(
+                            "winseek: searchd connection failed ({e}); retrying on a fresh one"
+                        );
+                    }
                     last = Some(e);
                 }
             }
         }
         Err(last.unwrap())
+    }
+}
+
+/// The request's name for the slow-call log line.
+fn kind_of(req: &Request) -> &'static str {
+    match req {
+        Request::Search { .. } => "search",
+        Request::Status { .. } => "status",
+        Request::Recent { .. } => "recent",
+        Request::Rescan { .. } => "rescan",
+        Request::Usage { .. } => "usage",
+        Request::UsageDetail { .. } => "usage_detail",
+        Request::Subscribe { .. } => "subscribe",
     }
 }
 
@@ -332,5 +388,85 @@ mod tests {
         assert_eq!(filter_clause("folders"), "folder:");
         assert_eq!(filter_clause("all"), "");
         assert!(filter_clause("images").starts_with("ext:"));
+    }
+
+    /// A thread-per-connection accept loop shaped like searchd's `spawn_accept_loop`, answering
+    /// `Status` at once and `Usage` after a slow walk (then an error, which `usage` maps to `Err`).
+    fn spawn_fake_searchd(name: &str) {
+        use winseek_ipc::pipe::PipeServer;
+        let mut server = PipeServer::bind(name).unwrap();
+        std::thread::spawn(move || loop {
+            match server.accept() {
+                Ok(mut conn) => {
+                    std::thread::spawn(move || loop {
+                        let req: Request = match read_message(&mut conn) {
+                            Ok(r) => r,
+                            Err(_) => return,
+                        };
+                        let resp = match req {
+                            Request::Usage { id, .. } => {
+                                std::thread::sleep(Duration::from_millis(600));
+                                Response::Error {
+                                    id,
+                                    message: "slow walk".into(),
+                                }
+                            }
+                            Request::Status { id } => Response::StatusResult {
+                                id,
+                                volumes: vec![],
+                                uptime_s: 1,
+                            },
+                            _ => return,
+                        };
+                        if write_message(&mut conn, &resp).is_err() {
+                            return;
+                        }
+                    });
+                }
+                Err(_) => return,
+            }
+        });
+    }
+
+    #[test]
+    fn a_slow_call_does_not_hold_up_a_fast_one() {
+        let name = format!(r"\\.\pipe\winseek-test-pool-{}", std::process::id());
+        spawn_fake_searchd(&name);
+        let src =
+            std::sync::Arc::new(PipeSource::connect_to(&name, Duration::from_secs(1)).unwrap());
+        let slow = {
+            let src = src.clone();
+            std::thread::spawn(move || src.usage("C:", 10))
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        let t = std::time::Instant::now();
+        let volumes = src.status();
+        assert!(
+            t.elapsed() < Duration::from_millis(200),
+            "status waited {:.0?} behind the slow usage call",
+            t.elapsed()
+        );
+        assert!(volumes.is_empty(), "status answered {:?}", volumes);
+        slow.join().unwrap().unwrap_err(); // the walk finished (with the fake error) and did not panic
+    }
+
+    #[test]
+    fn concurrent_calls_each_get_their_own_connection() {
+        let name = format!(r"\\.\pipe\winseek-test-pool4-{}", std::process::id());
+        spawn_fake_searchd(&name);
+        let src =
+            std::sync::Arc::new(PipeSource::connect_to(&name, Duration::from_secs(1)).unwrap());
+        let mut threads = Vec::new();
+        for _ in 0..4 {
+            let src = src.clone();
+            threads.push(std::thread::spawn(move || {
+                for _ in 0..20 {
+                    assert!(src.status().is_empty());
+                }
+            }));
+        }
+        for t in threads {
+            t.join().unwrap();
+        }
     }
 }
