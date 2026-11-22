@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type KeyboardEvent, type ReactNode } from "react";
 import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, McpPath, ModelGroup, Profile, StatusModels, StatusReranker, Tier1Status, UpdateState } from "./types";
-import type { Models } from "./hooks";
+import { useSessionState, useStoredValue, type Models } from "./hooks";
 import { refinerView, rowAction, type RowAction } from "./modelRows";
 import { argsPreview, pathNote, snippets } from "./agentLogic";
 import { Bar, IndexRow, Models as ModelsPane, Names, ParseCacheRow, RebuildRow, StatusMeaning, useStatusPage } from "./Status";
@@ -38,7 +38,7 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
   const [filter, setFilter] = useState("");
   const [text, setText] = useState("");
   const [bad, setBad] = useState<string | null>(null);
-  const [more, setMore] = useState(false); // the full list of names is opened on request (it never scrolls inside the card)
+  const [more, setMore] = useSessionState("settings.ignoredAll", false); // the full list opens on request (it never scrolls inside the card): the choice survives leaving the section, but a restart collapses it again so no huge remembered list greets every launch
   useEffect(() => { backend.tier1GetIgnore().then(setIg).catch(onError); }, [backend, onError]);
 
   const save = useCallback((list: string[] | null) => { backend.tier1SetIgnore(list).then(setIg).catch(onError); }, [backend, onError]);
@@ -92,7 +92,7 @@ function IgnoredNames({ backend, onError }: { backend: Backend; onError: (e: unk
           {ig && shown.length === 0 && <li className="none">{ig.list.length ? "No name matches the filter" : "Nothing is ignored"}</li>}
           {!filter.trim() && shown.length > IG_PEEK && (
             <li className="none">
-              <button className="ig-more" onClick={() => setMore((m) => !m)}>{more ? "Show fewer" : `Show all ${fmt(shown.length)}`}</button>
+              <button className="ig-more" onClick={() => setMore(!more)}>{more ? "Show fewer" : `Show all ${fmt(shown.length)}`}</button>
             </li>
           )}
         </ul>
@@ -501,15 +501,25 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
   );
 }
 
+/** The details fold choice: "auto" follows the verdict (open unless everything is fine); an
+ *  explicit toggle is remembered like every other display preference (the settings section,
+ *  kind folds, month folds), so coming back to Status keeps whatever the user last chose. */
+type DetailsPref = "auto" | "open" | "closed";
+const readDetailsPref = (raw: string | null): DetailsPref => (raw === "open" || raw === "closed" ? raw : "auto");
+// The writer is hoisted so the stored-value setter keeps a stable identity (an inline arrow would
+// re-identify every render and re-fire the reveal effect below, re-opening a just-hidden fold).
+const writeDetailsPref = (v: DetailsPref) => v;
+
 /** The Status page, embedded as a Settings section: names index, meaning index, models and files. */
 function StatusSection({ backend, onError, onSection, revealTick = 0 }: { backend: Backend; onError: (e: unknown) => void; onSection: (s: SettingsSection) => void; revealTick?: number }) {
   const [page, err, reload] = useStatusPage(backend);
   const [busy, setBusy] = useState<Set<string>>(new Set());
-  const [open, setOpen] = useState<boolean | null>(null); // details fold: null = follow the verdict
+  const [open, setOpen] = useStoredValue<DetailsPref>("winseek.statusDetails", readDetailsPref, writeDetailsPref);
   // A search result picked in the sidebar targets a group that lives behind the details fold, so
   // the fold must open before the jump effect can find and flash its row. The tick bumps once per
-  // pick: a manual "Hide details" still works, and a later pick re-opens.
-  useEffect(() => { if (revealTick > 0) setOpen(true); }, [revealTick]);
+  // pick: a manual "Hide details" still works, and a later pick re-opens. The opened choice
+  // persists — a pick named a row behind the fold, so the user wanted the details.
+  useEffect(() => { if (revealTick > 0) setOpen("open"); }, [revealTick, setOpen]);
 
   const rescan = useCallback((letter: string) => {
     setBusy((b) => new Set(b).add(letter));
@@ -523,16 +533,17 @@ function StatusSection({ backend, onError, onSection, revealTick = 0 }: { backen
       ? <div className="fr-error" role="alert">Could not read the status: {err}</div>
       : <Grp title="Status"><div className="grow stack"><Bar value={null} label="Loading" /></div></Grp>;
   }
-  // One calm verdict up top; the groups stay, collapsed under it unless something needs attention.
+  // One calm verdict up top; the groups stay, collapsed under it unless something needs attention
+  // or the user's remembered choice says otherwise.
   const v = statusVerdict(page);
-  const detailsOpen = open ?? v.tone !== "ok";
+  const detailsOpen = open === "open" || (open === "auto" && v.tone !== "ok");
   return (
     <>
       <div className={"verdict " + v.tone} role="status">
         <span className="dot" aria-hidden="true" />
         <div className="vtx"><b>{v.headline}</b>{v.sub && <span className="vsub">{v.sub}</span>}</div>
       </div>
-      <button type="button" className="st-toggle" aria-expanded={detailsOpen} onClick={() => setOpen(!detailsOpen)}>{detailsOpen ? "Hide details" : "Show details"}</button>
+      <button type="button" className="st-toggle" aria-expanded={detailsOpen} onClick={() => setOpen(detailsOpen ? "closed" : "open")}>{detailsOpen ? "Hide details" : "Show details"}</button>
       {detailsOpen && (
         <>
           <Names t0={page.tier0} busy={busy} onRescan={rescan} />

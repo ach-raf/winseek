@@ -164,6 +164,16 @@ export function useStoredSection(): [SettingsSection, (s: SettingsSection) => vo
   return useStoredValue("winseek.settingsSection", parseSection, (s) => s);
 }
 
+/** Session-scoped state: survives unmount/remount (a Settings section switch, closing and
+ *  reopening the page) but is dropped when the app exits, unlike `useStoredValue`. For display
+ *  state too bulky to greet every launch expanded, but too sticky to lose on the way back. */
+const sessionSlots = new Map<string, unknown>();
+export function useSessionState<T>(key: string, initial: T): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => (sessionSlots.has(key) ? (sessionSlots.get(key) as T) : initial));
+  const put = useCallback((n: T) => { sessionSlots.set(key, n); setV(n); }, [key]);
+  return [v, put];
+}
+
 /** `value`, but a change reaches the caller only after it has stayed put for `ms` (trailing
  *  debounce: the fetch or save fires once, when the typing / slider goes quiet). */
 export function useDebouncedValue<T>(value: T, ms: number): T {
