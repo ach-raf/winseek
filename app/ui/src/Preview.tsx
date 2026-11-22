@@ -650,6 +650,23 @@ function MediaView({ info, start }: { info: PreviewInfo; start?: number }) {
 /** Which way a Markdown file is shown: formatted ("Preview") or highlighted source ("Source"). */
 type TextViewMode = "preview" | "source";
 
+/** One Range over the plain view's single text node — or null when the offsets cannot be
+ *  honored. Guards the node type and clamps to the text length: a wrong node (a rich view
+ *  reached the fallback without a <mark>, so its offsets point into raw content, not this
+ *  node) must degrade to "no aim" instead of throwing a Range error ("There is no child at
+ *  offset N") that takes the whole app down through the error boundary. */
+function plainRange(node: Node, start: number, end: number): Range | null {
+  if (node.nodeType !== Node.TEXT_NODE) return null;
+  const len = node.textContent?.length ?? 0;
+  const s = Math.max(0, Math.min(start, len));
+  const e = Math.max(s, Math.min(end, len));
+  if (s >= e) return null;
+  const r = document.createRange();
+  r.setStart(node, s);
+  r.setEnd(node, e);
+  return r;
+}
+
 function TextView({ info, query }: { info: PreviewInfo; query: string }) {
   const box = useRef<HTMLDivElement>(null);
   const t = info.text;
@@ -667,34 +684,34 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
   const [mode, setMode] = useState<TextViewMode>("preview");
 
   // Scroll to the first hit (a third of the way down, so some context above it stays visible).
-  // Rich views own real <mark> elements; the plain view aims at the first range's own rect.
+  // Rich views own real <mark> elements; the plain view aims at the first range of its own
+  // text node (pre.pv-plain). A rich view without a mark (a term split across Prism tokens or
+  // markdown syntax) has no node its raw-content offsets could aim at — it keeps the scroll
+  // position instead of throwing a Range error that would take the whole app down.
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
     const m = el.querySelector("mark");
     if (m) { el.scrollTop = Math.max(0, (m as HTMLElement).offsetTop - el.clientHeight / 3); return; }
-    const node = el.querySelector("pre")?.firstChild;
-    if (!node || ranges.length === 0) { el.scrollTop = 0; return; }
-    const r = document.createRange();
-    r.setStart(node, ranges[0]![0]);
-    r.setEnd(node, ranges[0]![1]);
+    const node = el.querySelector("pre.pv-plain")?.firstChild;
+    const r = node && ranges.length > 0 ? plainRange(node, ranges[0]![0], ranges[0]![1]) : null;
+    if (!r) { el.scrollTop = 0; return; }
     el.scrollTop = Math.max(0, r.getBoundingClientRect().top - el.getBoundingClientRect().top + el.scrollTop - el.clientHeight / 3);
   }, [ranges, mode]);
 
   // Register the plain view's hits in the document highlight registry while its <pre> is on
-  // screen; a term change swaps ranges without re-rendering a single node.
+  // screen; a term change swaps ranges without re-rendering a single node. Only the plain view
+  // registers (rich views paint real <mark> elements), and every range goes through plainRange
+  // so an unexpected node can never throw here.
   useEffect(() => {
     const registry = (CSS as { highlights?: Map<string, unknown> }).highlights;
     if (!registry) return; // older engine: hits stay unpainted, the count chip still reports them
-    const pre = box.current?.querySelector("pre");
+    const pre = box.current?.querySelector("pre.pv-plain");
     const node = pre?.firstChild;
-    if (!pre || !node || ranges.length === 0) { registry.delete("pv-hits"); return; }
-    const parts = ranges.map(([s, e]) => {
-      const r = document.createRange();
-      r.setStart(node, s);
-      r.setEnd(node, e);
-      return r;
-    });
+    const parts = node && ranges.length > 0
+      ? ranges.flatMap(([s, e]) => { const r = plainRange(node, s, e); return r ? [r] : []; })
+      : [];
+    if (parts.length === 0) { registry.delete("pv-hits"); return; }
     registry.set("pv-hits", new (window as unknown as { Highlight: new (...r: Range[]) => unknown }).Highlight(...parts));
     return () => { registry.delete("pv-hits"); };
   }, [ranges, mode]);
@@ -721,7 +738,7 @@ function TextView({ info, query }: { info: PreviewInfo; query: string }) {
       ) : lang ? (
         <CodeBlock content={content} lang={lang} terms={terms} numbers />
       ) : (
-        <pre>{content}</pre>
+        <pre className="pv-plain">{content}</pre>
       )}
       {t.truncated && <div className="pv-trunc">Showing the beginning of the file</div>}
     </div>
