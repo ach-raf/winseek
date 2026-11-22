@@ -21,3 +21,19 @@ test("eventToCombo rejects non-shortcuts", () => {
   assert.equal(eventToCombo(ev({ key: "F1" })), null, "F1-F12 must carry a modifier");
   assert.equal(eventToCombo(ev({ key: "Escape" })), null, "Esc is the recorder's cancel, not a combo");
 });
+
+test("Shift alone cannot be a global shortcut (Flow.Launcher's rule)", () => {
+  assert.equal(eventToCombo(ev({ key: "a", code: "KeyA", shiftKey: true })), null, "would swallow capital A everywhere");
+  assert.equal(eventToCombo(ev({ key: "F5", code: "F5", shiftKey: true })), null);
+  assert.equal(eventToCombo(ev({ key: "F24", code: "F24", shiftKey: true })), "Shift+F24", "F13-F24 stay free");
+});
+
+test("punctuation keys record as the physical key, on any layout", () => {
+  // The user's ask: Alt+< must bind. US shape: < is Shift+Comma.
+  assert.equal(eventToCombo(ev({ key: "<", code: "Comma", altKey: true, shiftKey: true })), "Alt+Shift+,");
+  // German shape: < sits on the ISO extra key whose code is Backquote — stored as the key it is.
+  assert.equal(eventToCombo(ev({ key: "<", code: "Backquote", altKey: true, shiftKey: true })), "Alt+Shift+`");
+  // An AZERTY ; prints é on the Semicolon key; the combo is still the key, not the print.
+  assert.equal(eventToCombo(ev({ key: "é", code: "Semicolon", ctrlKey: true })), "Ctrl+;");
+  assert.equal(eventToCombo(ev({ key: "5", code: "Numpad5", ctrlKey: true })), "Ctrl+Num5");
+});

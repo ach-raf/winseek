@@ -104,11 +104,24 @@ function eventKey(e: Pick<KeyboardEvent, "key" | "code">): string {
   if (m) return m[1]!; // the one capture group always takes part in a match
   m = /^Digit([0-9])$/.exec(code);
   if (m) return m[1]!;
-  // Symbol keys with layout-independent codes (PRD RB1a: = - / , and the numpad twins).
+  // Symbol keys with layout-independent codes (PRD RB1a: = - / , the whole punctuation row and
+  // the numpad twins). The physical code decides — the recorder stores what the key is, not what
+  // this layout prints on it, so Alt+< on a German < key records as Alt+Shift+` (Backquote) and
+  // re-fires on any layout (and the global registration maps the name to the same physical key).
   if (code === "Equal" || code === "NumpadAdd") return "=";
   if (code === "Minus" || code === "NumpadSubtract") return "-";
-  if (code === "Slash") return "/";
+  if (code === "Slash" || code === "NumpadDivide") return "/";
   if (code === "Comma") return ",";
+  if (code === "Period" || code === "NumpadDecimal") return ".";
+  if (code === "NumpadMultiply") return "*";
+  if (code === "Backquote") return "`";
+  if (code === "BracketLeft") return "[";
+  if (code === "BracketRight") return "]";
+  if (code === "Backslash") return "\\";
+  if (code === "Semicolon") return ";";
+  if (code === "Quote") return "'";
+  m = /^Numpad([0-9])$/.exec(code);
+  if (m) return `Num${m[1]}`;
   const k = e.key ?? "";
   switch (k) {
     case "Escape": return "Esc";

@@ -179,8 +179,10 @@ pub fn save_to(root: &std::path::Path, b: &Bindings) -> Result<(), String> {
     std::fs::write(path(root), json).map_err(|e| e.to_string())
 }
 
-/// "Ctrl+Alt+Space" -> Shortcut. Key names follow the UI keymap (Up, PgUp, Esc, …). A modifier
-/// is required unless the key is F13-F24 (which nothing else claims).
+/// "Ctrl+Alt+Space" -> Shortcut. Key names follow the UI keymap (Up, PgUp, Esc, and the whole
+/// punctuation row: , . / ; ' [ ] ` \\ = - with the numpad twins). Ctrl/Alt/Win is required
+/// unless the key is F13-F24 (which nothing else claims) — Shift alone would swallow the key
+/// while typing everywhere, so it is not enough (Flow.Launcher's rule).
 pub fn parse(combo: &str) -> Option<Shortcut> {
     let mut parts = combo.split('+');
     let mut mods = Modifiers::empty();
@@ -201,7 +203,8 @@ pub fn parse(combo: &str) -> Option<Shortcut> {
     if parts.next().is_some() {
         return None; // two keys after the modifiers
     }
-    if mods.is_empty() && !is_function_key(key) {
+    let real = mods.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER);
+    if !real && !is_function_key(key) {
         return None;
     }
     let code = Code::from_str(&code_name(key)).ok()?;
@@ -214,7 +217,7 @@ fn is_function_key(key: &str) -> bool {
         .is_some_and(|n| (13..=24).contains(&n))
 }
 
-/// Keymap name -> keyboard_types `Code` name ("Up" -> "ArrowUp", "A" -> "KeyA").
+/// Keymap name -> keyboard_types `Code` name ("Up" -> "ArrowUp", "A" -> "KeyA", "," -> "Comma").
 fn code_name(key: &str) -> String {
     match key {
         "Esc" => "Escape".into(),
@@ -229,7 +232,22 @@ fn code_name(key: &str) -> String {
         "," => "Comma".into(),
         "=" => "Equal".into(),
         "-" => "Minus".into(),
+        "." => "Period".into(),
+        "`" => "Backquote".into(),
+        "[" => "BracketLeft".into(),
+        "]" => "BracketRight".into(),
+        "\\" => "Backslash".into(),
+        ";" => "Semicolon".into(),
+        "'" => "Quote".into(),
+        "*" => "NumpadMultiply".into(), // the numpad * key (Shift+8 types "8": it has Digit8's code)
         other => {
+            // the numpad digits are stored as Num0..Num9 so "+" stays the only separator; the
+            // numpad operators need no names — the keymap aliases them onto = - / . (their twins)
+            if let Some(d) = other.strip_prefix("Num").and_then(|r| r.parse::<u8>().ok()) {
+                if d <= 9 {
+                    return format!("Numpad{d}");
+                }
+            }
             if let Some(c) = other.chars().next() {
                 if other.len() == 1 && c.is_ascii_uppercase() {
                     return format!("Key{c}");
@@ -243,7 +261,7 @@ fn code_name(key: &str) -> String {
     }
 }
 
-/// The canonical keymap name of a shortcut's key ("KeyA" -> "A", "ArrowUp" -> "Up").
+/// The canonical keymap name of a shortcut's key ("KeyA" -> "A", "ArrowUp" -> "Up", "Comma" -> ",").
 fn key_name(code: &Code) -> String {
     let n = code.to_string();
     match n.as_str() {
@@ -259,7 +277,27 @@ fn key_name(code: &Code) -> String {
         "Comma" => ",".into(),
         "Equal" => "=".into(),
         "Minus" => "-".into(),
+        "Period" => ".".into(),
+        "Backquote" => "`".into(),
+        "BracketLeft" => "[".into(),
+        "BracketRight" => "]".into(),
+        "Backslash" => "\\".into(),
+        "Semicolon" => ";".into(),
+        "Quote" => "'".into(),
+        "NumpadAdd" => "=".into(), // the keymap's numpad twins of = - / .
+        "NumpadSubtract" => "-".into(),
+        "NumpadDivide" => "/".into(),
+        "NumpadDecimal" => ".".into(),
+        "NumpadMultiply" => "*".into(),
         other => {
+            if let Some(d) = other
+                .strip_prefix("Numpad")
+                .and_then(|r| r.parse::<u8>().ok())
+            {
+                if d <= 9 {
+                    return format!("Num{d}");
+                }
+            }
             if let Some(c) = other.strip_prefix("Key") {
                 if c.len() == 1 {
                     return c.into();
@@ -376,7 +414,7 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
     let new_sc = match combo_str.as_deref() {
         None => None,
         Some(c) => Some(parse(c).ok_or_else(|| {
-            format!("\"{c}\" is not a valid shortcut — combine Ctrl, Alt, Shift or Win with a key (or F13-F24)")
+            format!("\"{c}\" is not a valid shortcut — combine Ctrl, Alt or Win with a key (Shift alone can't be global), or use F13-F24 on its own")
         })?),
     };
     if which == "popup" && new_sc.is_none() {
@@ -466,6 +504,9 @@ mod tests {
         // no modifier, not an F13+ key
         assert_eq!(parse("Space"), None);
         assert_eq!(parse("A"), None);
+        // Shift alone is not enough (Flow.Launcher's rule): a global Shift+A swallows capital A
+        assert_eq!(parse("Shift+A"), None);
+        assert_eq!(parse("Shift+F5"), None);
         // garbage
         assert_eq!(parse("Ctrl+"), None);
         assert_eq!(parse(""), None);
@@ -473,6 +514,31 @@ mod tests {
         assert_eq!(parse("Ctrl+1+2"), None, "two main keys");
         // F13-F24 are legal bare
         assert!(parse("F13").is_some());
+    }
+
+    #[test]
+    fn parse_oem_and_numpad_keys() {
+        // every punctuation key the UI keymap can emit roundtrips through combo()
+        for c in [
+            "Ctrl+;",
+            "Alt+[",
+            "Ctrl+]",
+            "Win+\\",
+            "Ctrl+Shift+'",
+            "Alt+.",
+            "Ctrl+Shift+,",
+        ] {
+            assert_eq!(combo(&parse(c).unwrap()), c, "roundtrip {c}");
+        }
+        // Alt+< : the US shape (Shift+Comma) and the ISO-key shape (German < on Backquote)
+        assert_eq!(parse("Alt+Shift+,").unwrap().key, Code::Comma);
+        assert_eq!(parse("Alt+Shift+`").unwrap().key, Code::Backquote);
+        // the numpad: digits carry their own names (Num0..Num9), the operators are twins of = - * .
+        assert_eq!(parse("Ctrl+Num5").unwrap().key, Code::Numpad5);
+        assert_eq!(combo(&parse("Ctrl+Num5").unwrap()), "Ctrl+Num5");
+        assert_eq!(parse("Ctrl+*").unwrap().key, Code::NumpadMultiply);
+        assert_eq!(combo(&parse("Ctrl+*").unwrap()), "Ctrl+*");
+        assert_eq!(parse("Ctrl+-").unwrap().key, Code::Minus);
     }
 
     #[test]
