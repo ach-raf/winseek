@@ -25,7 +25,7 @@ use relevance::{Candidate, Modality};
 use serde::{Deserialize, Serialize};
 pub use tail::{TailCounts, TailJob};
 
-const SCHEMA_VERSION: i64 = 6;
+const SCHEMA_VERSION: i64 = 7;
 
 const STATE_PENDING: i64 = 0;
 const STATE_DONE: i64 = 1;
@@ -504,6 +504,27 @@ pub const SETTING_INDEX_STAMPED_UNIX: &str = "index_stamped_unix";
 /// (`tier1::chunk::CODE_CHUNKER_FINGERPRINT`). While it differs from the running one, indexed
 /// code files are forgotten once so the new chunking (and its line locators) applies whole.
 pub const SETTING_CODE_CHUNKER: &str = "code_chunker";
+/// Settings key: fingerprint of the on-demand extraction cache (`tier1::PARSE_CACHE_FINGERPRINT`:
+/// parser model + prompt + cache layout). While it differs from the stored one, the cached pages
+/// are dropped once so the current parser re-extracts them.
+pub const SETTING_PARSE_CACHE_VER: &str = "parse_cache_ver";
+/// Rows kept in `parse_cache` before [`Store::save_parse`] drops the least-recently-used rest.
+pub const PARSE_CACHE_MAX_ENTRIES: usize = 2000;
+
+/// One cached on-demand extraction (the preview's "Extract text" / agent `parse_document`): the
+/// parser's markdown and its tables as JSON, keyed by content hash and page (`page` 0 = a
+/// standalone image). Preview/agent-side state — distinct from the index-time `parse_queue`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CachedParse {
+    pub hash: String,
+    pub page: u32,
+    pub markdown: String,
+    /// The parser's tables, serde_json-encoded (`Vec<Table>` on the tier1 side).
+    pub tables_json: String,
+    pub elements: i64,
+    pub created_unix: i64,
+    pub last_used_unix: i64,
+}
 
 /// One queued item for the document parser. `page` 0 is a standalone image.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2603,6 +2624,86 @@ impl Store {
         )?;
         Ok(())
     }
+
+    // --------------------------------- on-demand extraction cache (parse_document)
+
+    /// The cached extraction for one content hash and page, if any. A hit also bumps
+    /// `last_used` — the recency [`Store::save_parse`] trims by.
+    pub fn cached_parse(&self, hash: &str, page: u32) -> Result<Option<CachedParse>> {
+        let row = self
+            .conn
+            .query_row(
+                "SELECT markdown, tables_json, elements, created_unix, last_used_unix
+                 FROM parse_cache WHERE hash = ?1 AND page = ?2",
+                params![hash, page],
+                |r| {
+                    Ok(CachedParse {
+                        hash: hash.to_string(),
+                        page,
+                        markdown: r.get(0)?,
+                        tables_json: r.get(1)?,
+                        elements: r.get(2)?,
+                        created_unix: r.get(3)?,
+                        last_used_unix: r.get(4)?,
+                    })
+                },
+            )
+            .optional()?;
+        if row.is_some() {
+            self.conn.execute(
+                "UPDATE parse_cache SET last_used_unix = ?3 WHERE hash = ?1 AND page = ?2",
+                params![hash, page, unix_now()],
+            )?;
+        }
+        Ok(row)
+    }
+
+    /// Store (or overwrite) the extraction for one content hash and page, then trim the cache to
+    /// its newest [`PARSE_CACHE_MAX_ENTRIES`] rows. Returns the rows the trim dropped.
+    pub fn save_parse(
+        &mut self,
+        hash: &str,
+        page: u32,
+        markdown: &str,
+        tables_json: &str,
+        elements: usize,
+    ) -> Result<u64> {
+        let now = unix_now();
+        let tx = self.conn.transaction()?;
+        tx.execute(
+            "INSERT INTO parse_cache(hash, page, markdown, tables_json, elements, created_unix, last_used_unix)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6)
+             ON CONFLICT(hash, page) DO UPDATE SET
+                 markdown = excluded.markdown, tables_json = excluded.tables_json,
+                 elements = excluded.elements, last_used_unix = excluded.last_used_unix",
+            params![hash, page, markdown, tables_json, elements as i64, now],
+        )?;
+        // Same-second writes tie on both stamps; rowid DESC breaks the tie newest-insert-first.
+        let dropped = tx.execute(
+            "DELETE FROM parse_cache WHERE rowid NOT IN (
+                 SELECT rowid FROM parse_cache
+                 ORDER BY last_used_unix DESC, created_unix DESC, rowid DESC
+                 LIMIT ?1)",
+            [PARSE_CACHE_MAX_ENTRIES as i64],
+        )? as u64;
+        tx.commit()?;
+        Ok(dropped)
+    }
+
+    /// Rows currently held in the on-demand extraction cache.
+    pub fn parse_cache_count(&self) -> Result<u64> {
+        let n: i64 = self
+            .conn
+            .query_row("SELECT COUNT(*) FROM parse_cache", [], |r| r.get(0))?;
+        Ok(n.max(0) as u64)
+    }
+
+    /// Drop every cached extraction (parser fingerprint changed, or the user cleared it from
+    /// Settings). Returns the rows removed.
+    pub fn clear_parse_cache(&mut self) -> Result<u64> {
+        let n = self.conn.execute("DELETE FROM parse_cache", [])? as u64;
+        Ok(n)
+    }
 }
 
 // ---------------------------------------------------------------- internals
@@ -2951,6 +3052,24 @@ fn migrate(conn: &Connection) -> Result<()> {
             }
         }
         conn.execute_batch("PRAGMA user_version = 6; COMMIT;")?;
+    }
+    if v < 7 {
+        // On-demand "Extract text" results (the preview's parse_document / agent parse), keyed by
+        // content hash and page, so a re-open or an agent read answers from cache instead of
+        // re-running the document parser. Purely additive: nothing existing is rewritten, and the
+        // table is deliberately left out of `clear_derived` — a rebuild keeps content hashes, so
+        // the cached pages stay valid.
+        conn.execute_batch(
+            "BEGIN;
+             CREATE TABLE IF NOT EXISTS parse_cache(
+                 hash TEXT NOT NULL, page INTEGER NOT NULL,
+                 markdown TEXT NOT NULL, tables_json TEXT NOT NULL,
+                 elements INTEGER NOT NULL,
+                 created_unix INTEGER NOT NULL, last_used_unix INTEGER NOT NULL,
+                 PRIMARY KEY(hash, page));
+             PRAGMA user_version = 7;
+             COMMIT;",
+        )?;
     }
     Ok(())
 }
@@ -3509,6 +3628,56 @@ mod tests {
         s.set_image_dims(&[("h1".into(), 800, 600)]).unwrap();
         let d = s.image_dims().unwrap();
         assert_eq!((d["h1"], d["h2"], d.len()), ((800, 600), (0, 0), 2));
+    }
+
+    #[test]
+    fn parse_cache_roundtrip_touch_and_clear() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        assert_eq!(s.parse_cache_count().unwrap(), 0);
+        assert!(s.cached_parse("h1", 0).unwrap().is_none());
+        s.save_parse("h1", 0, "# md", "[{\"tsv\":\"a\"}]", 3).unwrap();
+        s.save_parse("h1", 2, "page two", "[]", 1).unwrap();
+        assert_eq!(s.parse_cache_count().unwrap(), 2);
+        let hit = s.cached_parse("h1", 0).unwrap().unwrap();
+        assert_eq!(
+            (
+                hit.markdown.as_str(),
+                hit.tables_json.as_str(),
+                hit.elements,
+                hit.page,
+                hit.hash.as_str()
+            ),
+            ("# md", "[{\"tsv\":\"a\"}]", 3, 0, "h1")
+        );
+        assert!(hit.created_unix > 0 && hit.last_used_unix >= hit.created_unix);
+        // An unknown page of the same content still misses, and a clear drops everything.
+        assert!(s.cached_parse("h1", 9).unwrap().is_none());
+        assert_eq!(s.clear_parse_cache().unwrap(), 2);
+        assert_eq!(s.parse_cache_count().unwrap(), 0);
+        assert!(s.cached_parse("h1", 0).unwrap().is_none());
+    }
+
+    #[test]
+    fn parse_cache_overwrite_and_lru_trim() {
+        let mut s = Store::open_in_memory(&meta()).unwrap();
+        s.save_parse("h1", 1, "old", "[]", 0).unwrap();
+        // A re-extract of the same content and page overwrites, never doubles the row.
+        s.save_parse("h1", 1, "new", "[]", 2).unwrap();
+        assert_eq!(s.parse_cache_count().unwrap(), 1);
+        assert_eq!(s.cached_parse("h1", 1).unwrap().unwrap().markdown, "new");
+        // Fill past the cap: the stalest inserts fall out first, the freshest survive.
+        for i in 0..(PARSE_CACHE_MAX_ENTRIES + 5) as u32 {
+            s.save_parse(&format!("h{i}"), 0, "m", "[]", 0).unwrap();
+        }
+        assert_eq!(
+            s.parse_cache_count().unwrap(),
+            PARSE_CACHE_MAX_ENTRIES as u64
+        );
+        assert!(s.cached_parse("h0", 0).unwrap().is_none());
+        assert!(s
+            .cached_parse(&format!("h{}", PARSE_CACHE_MAX_ENTRIES + 4), 0)
+            .unwrap()
+            .is_some());
     }
 
     #[test]
