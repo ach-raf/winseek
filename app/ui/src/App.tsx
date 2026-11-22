@@ -150,6 +150,7 @@ export default function App({ backend }: { backend: Backend }) {
   // Drive scope: a row of buttons while it fits, one chip with a menu in the popup or with many drives.
   const [driveOpen, setDriveOpen] = useState(false);
   const drivePickRef = useRef<HTMLDivElement>(null);
+  const driveMenuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (!driveOpen) return;
     const away = (e: MouseEvent) => { if (!drivePickRef.current?.contains(e.target as Node)) setDriveOpen(false); };
@@ -157,6 +158,17 @@ export default function App({ backend }: { backend: Backend }) {
     window.addEventListener("mousedown", away);
     window.addEventListener("keydown", esc, true);
     return () => { window.removeEventListener("mousedown", away); window.removeEventListener("keydown", esc, true); };
+  }, [driveOpen]);
+  // The menu hangs off the chip's right edge; on a narrow (scaled or wrapped) row the chip can sit
+  // near the left edge, where right-anchoring would clip the menu out of the window. Nudge it back
+  // inside once per open — the Filters popover solves the same problem from the other side.
+  useEffect(() => {
+    if (!driveOpen) return;
+    const el = driveMenuRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    if (r.right > window.innerWidth - 8) { el.style.right = "8px"; el.style.left = "auto"; }
+    else if (r.left < 8) { el.style.left = "8px"; el.style.right = "auto"; }
   }, [driveOpen]);
   const [liveVer, setLiveVer] = useState(0); // bumped when a live refresh found the results changed // shows the "row N of M" tag while the list moves
   const [viewH, setViewH] = useState(360);
@@ -305,7 +317,16 @@ export default function App({ backend }: { backend: Backend }) {
   const suppressClick = useRef(false);
   const launchOnce = useRef(makeLaunchGuard()).current;
 
-  const isRecent = query.trim() === "" && filter === "all" && sort === "rel";
+  // The launcher home (Most used tiles) is the unscoped empty state only; a chosen drive turns the
+  // empty box into an ordinary scope ("Recent · All files on D:"), with the sort chip and the
+  // full window's column headers — not the USN recent ring, which re-read and reshuffled on
+  // every file the drive touched.
+  const isRecent = query.trim() === "" && !drive && filter === "all" && sort === "rel";
+  // A drive scope with an empty box has nothing for "Best match" to match, and the tiers disagree
+  // on what it would mean (searchd keeps name order, Tier 0 falls back to newest): the landing asks
+  // for Date modified outright. One effective sort feeds the queries, the chip, the cycle and the
+  // column headers so none of them can disagree with the list.
+  const effSort: Sort = drive && query.trim() === "" && sort === "rel" ? "date" : sort;
 
   // ---- natural filters -----------------------------------------------------
   // "photos from last summer" -> chips + free text. A removed chip's key goes into `off`; its words then count as text.
@@ -365,7 +386,7 @@ export default function App({ backend }: { backend: Backend }) {
   // The overview reads the first of them; the opened list reads them all, in pages, and fills as they arrive.
   const picQ = `${scopeDrive(wordQuery(nameQ), drive)} ${rangeClause(parsed)}`.trim();
   const picWords = picQ !== scopedQ;
-  const picsWanted = !isRecent && !settingsScope && sort === "rel" && (effFilter === "all" || effFilter === "images");
+  const picsWanted = !isRecent && !settingsScope && effSort === "rel" && (effFilter === "all" || effFilter === "images");
   // Culling: the opened grid holds only as many pictures as the scroll has reached (a page at a time, `picLimit`),
   // never the whole library; scrolling near the end of what is loaded raises the limit (`morePics`).
   const [picLimit, setPicLimit] = useState(PIC_PAGE);
@@ -423,7 +444,7 @@ export default function App({ backend }: { backend: Backend }) {
     () => (data.recent || data.full ? data.rows : data.rows.slice(0, PAGE)),
     [data.rows, data.recent, data.full],
   );
-  const overview = (sort === "rel" || meaningScope) && expand !== "files"; // home (Most used + Recent files) is an overview too
+  const overview = (sort === "rel" || meaningScope) && expand !== "files" && !(drive && query.trim() === ""); // a drive scope with an empty box lands on the plain sortable list, not grouped sections
   // The calculator Top Hit belongs to "all" only — a type filter means "show me that kind of file".
   const calcResult = useMemo(() => (settingsScope || expand || effFilter !== "all" ? null : calc(parsed.text)), [parsed.text, settingsScope, expand, effFilter]);
   // Launcher rows follow the type filter (a Folders search must not put a settings page in the Top Hit slot).
@@ -456,14 +477,14 @@ export default function App({ backend }: { backend: Backend }) {
     : defaultHits ?? []), [mru, drive, defaultHits]);
   const ov = useMemo(
     () => (isRecent
-      ? buildHome({ mru: mruHits, recent: drive && data.recent ? headRows : [], maxTiles: gridCols.mostused! * HOME_ROWS, recentCap: full ? 40 : 7 })
+      ? buildHome({ mru: mruHits, maxTiles: gridCols.mostused! * HOME_ROWS })
       : buildOverview({
         names: settingsScope || meaningScope ? [] : headRows, nameTotal: settingsScope || meaningScope ? 0 : data.total, sem: semHits, semMore: sem.more, reranked: sem.reranked, text: parsed.text,
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
       })),
-    [isRecent, drive, mruHits, gridCols, full, data.recent, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
+    [isRecent, mruHits, gridCols, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
   );
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
@@ -492,19 +513,13 @@ export default function App({ backend }: { backend: Backend }) {
     }
     scopeRef.current = sk;
     (async () => {
-      if (isRecent && !drive) {
+      if (isRecent) {
         // The home is Most used tiles only: no recent-files read (no USN ring IPC).
         if (my !== seq.current) return;
         rowsRef.current = [];
         setData({ total: 0, rows: [], elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
-      } else if (isRecent) {
-        const all = await backend.recent(300);
-        if (my !== seq.current) return;
-        const hits = all.filter((h) => onDrive(h.path, drive)).slice(0, 40);
-        rowsRef.current = hits;
-        setData({ total: hits.length, rows: hits, elapsedMs: null, recent: true, full: false, partial: false, ver: 0 });
       } else {
-        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort, filter: nameFilter, stream: "list" });
+        const r = await backend.search({ query: scopedQ, offset: 0, limit: PAGE, sort: effSort, filter: nameFilter, stream: "list" });
         if (my !== seq.current) return;
         // Only the loaded rows are stored (`data.total` is the length); a one-letter query can match
         // millions of names and must not allocate a slot for each on every keystroke.
@@ -521,7 +536,7 @@ export default function App({ backend }: { backend: Backend }) {
       setPin(null);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, scopedQ, drive, nameFilter, rangeKey, sort, isRecent, epoch]);
+  }, [backend, scopedQ, drive, nameFilter, rangeKey, sort, effSort, isRecent, epoch]);
 
   // Page loader: only ever fetches what the list shows *now*. While the scrollbar is dragged across millions
   // of rows the positions it passed are never requested (two requests at most are in flight; when one lands
@@ -535,7 +550,7 @@ export default function App({ backend }: { backend: Backend }) {
       if (pagesRef.current.has(p) || inflight.current.has(p) || p * PAGE >= data.total) continue;
       if ((emptyTries.current.get(p) ?? 0) >= 3) continue; // the service keeps answering nothing: stop asking
       inflight.current.add(p);
-      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort, filter: nameFilter, stream: "list" }).then((r) => {
+      backend.search({ query: scopedQ, offset: p * PAGE, limit: PAGE, sort: effSort, filter: nameFilter, stream: "list" }).then((r) => {
         if (my !== seq.current) return;
         inflight.current.delete(p);
         if (r.hits.length === 0) {
@@ -556,7 +571,7 @@ export default function App({ backend }: { backend: Backend }) {
         pumpRef.current();
       }).catch((e) => { if (my === seq.current) { inflight.current.delete(p); setLoadErr(true); } console.error(e); });
     }
-  }, [backend, data.recent, data.full, data.total, scopedQ, sort, nameFilter]);
+  }, [backend, data.recent, data.full, data.total, scopedQ, effSort, nameFilter]);
   pumpRef.current = pump;
 
   const dense = full && compactRows && !overview;
@@ -642,7 +657,7 @@ export default function App({ backend }: { backend: Backend }) {
   useEffect(() => {
     if (isRecent || data.recent || !loaded || renaming) return;
     const my = seq.current;
-    const args = { query: scopedQ, sort, filter: nameFilter, stream: "list" as const };
+    const args = { query: scopedQ, sort: effSort, filter: nameFilter, stream: "list" as const };
     const tick = () => {
       if (document.visibilityState !== "visible" || my !== seq.current) return;
       backend.search({ ...args, offset: 0, limit: 0 }).then((c) => {
@@ -665,7 +680,7 @@ export default function App({ backend }: { backend: Backend }) {
     recheckRef.current = tick;
     const t = window.setInterval(tick, 5000);
     return () => { window.clearInterval(t); if (recheckRef.current === tick) recheckRef.current = () => {}; };
-  }, [backend, scopedQ, sort, nameFilter, isRecent, data.recent, loaded, renaming]);
+  }, [backend, scopedQ, sort, effSort, nameFilter, isRecent, data.recent, loaded, renaming]);
 
   // The numbers on the type chips: one limit-1 search per type for the typed query, once it has
   // settled for 140 ms (newest wins). Not for home, and not while a date / size filter is active
@@ -1014,17 +1029,6 @@ export default function App({ backend }: { backend: Backend }) {
   const freshTimer = useRef<number | undefined>(undefined);
   const [fresh, setFresh] = useState<ReadonlySet<string>>(EMPTY_SET);
   useEffect(() => () => window.clearTimeout(freshTimer.current), []);
-  // The home list (recently changed files) after something new arrived: re-read quietly, the selection stays.
-  const refreshRecent = () => {
-    if (!drive) return; // the unscoped home lists no files
-    const my = seq.current;
-    backend.recent(300).then((all) => {
-      if (my !== seq.current) return;
-      const hits = all.filter((h) => onDrive(h.path, drive)).slice(0, 40);
-      rowsRef.current = hits;
-      setData((x) => (x.recent ? { ...x, total: hits.length, rows: hits, ver: x.ver + 1 } : x));
-    }).catch(() => { /* the next change asks again */ });
-  };
 
   const onFsDelta = (d: FsDelta) => {
     const m = makeMatcher(d);
@@ -1066,8 +1070,7 @@ export default function App({ backend }: { backend: Backend }) {
       }
       window.clearTimeout(arrivalTimer.current);
       arrivalTimer.current = window.setTimeout(() => {
-        if (data.recent) refreshRecent();
-        else recheckRef.current();
+        if (!data.recent) recheckRef.current(); // the home lists no files, so nothing to re-read
       }, 300);
     }
   };
@@ -1283,7 +1286,7 @@ export default function App({ backend }: { backend: Backend }) {
         }
         if (matchesKey(e, "Alt+S")) {
           e.preventDefault();
-          setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
+          setSort(SORTS[(SORTS.findIndex((s) => s.id === effSort) + (e.shiftKey ? SORTS.length - 1 : 1)) % SORTS.length]!.id);
           inputRef.current?.focus();
           return;
         }
@@ -1469,7 +1472,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, effSort, recordQuery, full, page, gridCols, setSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1566,12 +1569,13 @@ export default function App({ backend }: { backend: Backend }) {
         const label = FILTERS.find((f) => f.id === filter)?.label ?? "Files";
         const where = drive ? ` on ${drive}:` : "";
         if (sort === "size" && filter === "folders") return `Biggest folders${where}`;
-        if (sort === "rel" || sort === "date") return `Recent · ${label}${where}`;
-        return `${label}${where} · ${SORT_LABEL[sort]}`;
+        if (effSort === "date") return `Recent · ${label}${where}`; // the drive scope's empty box lands newest-first on every tier
+        if (sort === "rel") return `Recent · ${label}`; // the unscoped empty tabs (Tier 0 answers newest-first here too)
+        return `${label}${where} · ${SORT_LABEL[effSort]}`;
       })()
       : null;
-  const sortLabel = SORT_LABEL[sort];
-  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === sort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
+  const sortLabel = SORT_LABEL[effSort];
+  const nextSort = () => { setSort(SORTS[(SORTS.findIndex((s) => s.id === effSort) + 1) % SORTS.length]!.id); inputRef.current?.focus(); };
 
   // Virtualised list (Show all files, sorted lists): the rows share the overview's row.
   const rowHandlers: ItemHandlers = useMemo(() => ({
@@ -1695,8 +1699,9 @@ export default function App({ backend }: { backend: Backend }) {
       ))}
     </div>
   ) : null;
-  // A non-default sort can hide the match you expect: say so, one click back to Best match.
-  const sortNote = !isRecent && sort !== "rel" ? (
+  // A non-default sort can hide the match you expect: say so, one click back to Best match. With an
+  // empty box there is no match to hide, so the note would only be noise.
+  const sortNote = !isRecent && query.trim() !== "" && sort !== "rel" ? (
     <div className="sortnote">
       Sorted by <b>{SORT_LABEL[sort]}</b>.
       <button className="fix" tabIndex={-1} onMouseDown={(e) => e.preventDefault()} onClick={() => { setSort("rel"); inputRef.current?.focus(); }}>Use Best match</button>
@@ -1739,8 +1744,8 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
       )}
-      {loaded && ov.flat.length === 0 && (drive || defaultHits) && (
-        <div className="none qnone"><b>Nothing here yet</b>{drive ? "Files you open or change on this drive show up here. " : ""}Start typing to search.</div>
+      {loaded && ov.flat.length === 0 && defaultHits && (
+        <div className="none qnone"><b>Nothing here yet</b>Start typing to search.</div>
       )}
     </div>
   ) : null;
@@ -1802,20 +1807,23 @@ export default function App({ backend }: { backend: Backend }) {
         <button className={"sortb" + (sort !== "rel" ? " custom" : "")} tabIndex={-1}
                 title={sort !== "rel" ? `Sorted by ${sortLabel}, not Best match. Click to change.` : tooltip("popup.sort")}
                 onMouseDown={(e) => e.preventDefault()} onClick={nextSort}>
-          {sort !== "rel" && <i className="sortdot" aria-hidden="true" />}
+          {effSort !== "rel" && <i className="sortdot" aria-hidden="true" />}
           {sortLabel}
           <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
         </button>
       )}
       {status.length > 0 && (driveMenu ? (
         <div className="dpick" ref={drivePickRef}>
-          <button className={"sortb" + (drive ? " set" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={driveOpen} title="Limit the search to one drive"
+          {/* `on`, not `set`: settings.css owns a global `.set` root (a 216px grid) and a chip with
+              that class once grew into it — the popup overflow the drive menu dangled out of. */}
+          <button className={"sortb" + (drive ? " on" : "")} tabIndex={-1} aria-haspopup="listbox" aria-expanded={driveOpen} title="Limit the search to one drive"
                   onMouseDown={(e) => e.preventDefault()} onClick={() => setDriveOpen((o) => !o)}>
-            {drive ? `Drive ${drive}:` : "All drives"}
+            {drive && <i className="sortdot" aria-hidden="true" />}
+            {drive ? `Drive ${drive}` : "All drives"}
             <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m7 10 5 5 5-5" /></svg>
           </button>
           {driveOpen && (
-            <div className="dmenu" role="listbox" aria-label="Drive">
+            <div className="dmenu" ref={driveMenuRef} role="listbox" aria-label="Drive">
               {[{ letter: "" }, ...status].map((v) => {
                 const sp = space.find((x) => x.letter.toUpperCase() === v.letter.toUpperCase());
                 return (
@@ -1977,17 +1985,17 @@ export default function App({ backend }: { backend: Backend }) {
               <div className={"colh" + (dense ? " dense" : "")}>
                 <span />
                 {COLS.filter((c) => !c.dense || dense).map((c, ci) => {
-                  const on = sort === c.a || sort === c.b;
+                  const on = effSort === c.a || effSort === c.b;
                   return (
                     <Fragment key={c.label}>
                     <button tabIndex={-1} className={(on ? "on" : "") + (c.dense ? " ty" : "")} onMouseDown={keep}
-                            aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[sort]}` : ""}`}
-                            title={on ? `${SORT_LABEL[sort]}. Click to reverse.` : c.hint}
-                            onClick={() => { setSort(sort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
+                            aria-label={`${c.hint}${on ? `, now ${SORT_LABEL[effSort]}` : ""}`}
+                            title={on ? `${SORT_LABEL[effSort]}. Click to reverse.` : c.hint}
+                            onClick={() => { setSort(effSort === c.a ? c.b : c.a); inputRef.current?.focus(); }}>
                       {c.label}
                       {on && (
                         <svg viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d={sort === c.up ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
+                          <path d={effSort === c.up ? "m6 15 6-6 6 6" : "m6 9 6 6 6-6"} />
                         </svg>
                       )}
                     </button>

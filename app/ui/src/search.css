@@ -30,7 +30,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 
 /* ---- filter row ---- */
 /* popup gutter: chips start at var(--sp-4), the same x as the search field above and the rows below */
-.frow { display: flex; align-items: center; gap: 6px; flex: none; padding: 0 var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--line); }
+.frow { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; padding: 0 var(--sp-4) var(--sp-3); border-bottom: 1px solid var(--line); }
 /* .fc (filter chip) lives in base.css — one definition for the archetype; active = the row's only accent */
 .dseg { display: inline-flex; padding: 2px; border-radius: 8px; background: var(--seg-track); }
 .dseg button { height: 24px; padding: 0 9px; border-radius: 6px; font-size: 0.75rem; font-weight: 600; color: var(--fg3); }
@@ -273,8 +273,8 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 /* compact popup (780px): tighter chips so every count fits whole instead of clipping */
 .shell:not(.full) .frow { gap: 2px; }
 .shell:not(.full) .frow .fc { padding: 0 8px; gap: 4px; }
-/* compact popup: the sort chip joins the row (780px wide), so let it wrap instead of clipping */
-.shell:not(.full) .frow { flex-wrap: nowrap; }
+/* a row that cannot fit (scaled-down popup, fitted tiny full window) wraps to a second line —
+   clipping the drive chip out of the window is what made its menu unusable */
 
 /* ---- compact rows (full window): one line per file with a Location column, like a file manager ---- */
 .colh.dense, .shell.full .vlist.dense .row { grid-template-columns: 22px minmax(0, 1.15fr) minmax(0, 1fr) 72px 104px 76px; }
@@ -307,8 +307,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 
 /* drive scope as one chip + menu (popup, or more drives than fit as buttons) */
 .dpick { position: relative; flex: none; }
-.dpick .sortb.set { color: var(--fg); background: var(--bg3); }
-.dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: var(--pop-shadow); display: flex; flex-direction: column; gap: 1px; }
+/* a chosen drive is an active filter: the accent chip family (same treatment as a custom sort).
+   `on`, never `set` — settings.css's root grid is a bare global `.set`. */
+.dpick .sortb.on { color: var(--fg); background: color-mix(in oklab, var(--acc) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
+.dpick .sortb.on:hover { background: color-mix(in oklab, var(--acc) 26%, transparent); }
+.dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; max-height: calc(100vh - 132px); overflow-y: auto; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: var(--pop-shadow); display: flex; flex-direction: column; gap: 1px; }
 .dmenu button { height: 32px; padding: 0 10px; display: flex; align-items: center; justify-content: space-between; gap: 16px; border-radius: 7px; font-size: 0.8125rem; font-weight: 500; color: var(--fg2); text-align: left; white-space: nowrap; }
 .dmenu button:hover { background: var(--bg3); color: var(--fg); }
 .dmenu button.on { color: var(--fg); font-weight: 600; background: var(--bg3); }
