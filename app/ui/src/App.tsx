@@ -169,6 +169,8 @@ export default function App({ backend }: { backend: Backend }) {
   // skeletons and the overview stays blank until the answer lands. Typing does NOT set this —
   // the name index answers in a few ms, and skeletons on every keystroke would flicker.
   const [pending, setPending] = useState(false);
+  // A page-0 refetch while old rows stay on screen (typing): dims the stat chip when slow.
+  const [refetching, setRefetching] = useState(false);
   // Row density of the full window's file list, remembered.
   const [compactRows, setCompactRows] = useStoredValue<boolean>("winseek.density",
     (v) => v === "compact", (c) => (c ? "compact" : "comfortable"));
@@ -248,6 +250,8 @@ export default function App({ backend }: { backend: Backend }) {
   const [drive, setDrive] = useState("");
   // Per-type result counts of the typed query (the numbers on the filter chips).
   const [nameCounts, setNameCounts] = useState<Partial<Record<Filter, number>> | null>(null);
+  // Which settled counts-key the numbers on screen belong to (stale detection dims them).
+  const [countsFor, setCountsFor] = useState<string | null>(null);
   // "Most used" apps on home: a launch count kept here (the backend has no usage listing).
   const [mru, setMru] = useStoredValue<MruEntry[]>("winseek.mru", readMru, JSON.stringify);
   const [guide, setGuide] = useState(false); // the "Narrow your search" filter guide
@@ -521,7 +525,8 @@ export default function App({ backend }: { backend: Backend }) {
     // previous scope's rows must not sit under the new tab until the answer arrives. Typing keeps
     // the previous rows visible instead — per-keystroke skeletons would flicker.
     const sk = `${effFilter}\u0000${drive}\u0000${sort}\u0000${rangeKey}`;
-    if (scopeRef.current !== null && scopeRef.current !== sk) {
+    const scopeChanged = scopeRef.current !== null && scopeRef.current !== sk;
+    if (scopeChanged) {
       setPending(true);
       setSel(0);
       pinRef.current = null;
@@ -530,6 +535,8 @@ export default function App({ backend }: { backend: Backend }) {
       if (listRef.current) listRef.current.scrollTop = 0;
     }
     scopeRef.current = sk;
+    // Typing keeps the old rows painted: the stat chip dims instead (only when slow — see .stat.busy).
+    if (!scopeChanged) setRefetching(true);
     (async () => {
       if (isRecent) {
         // The home is Most used tiles only: no recent-files read (no USN ring IPC).
@@ -548,6 +555,7 @@ export default function App({ backend }: { backend: Backend }) {
       }
       setLoaded(true);
       setPending(false);
+      setRefetching(false);
       setSel(0);
       setScrollTop(0);
       pinRef.current = null;
@@ -706,14 +714,18 @@ export default function App({ backend }: { backend: Backend }) {
   const countsOn = query.trim() !== "";
   const countsKey = useDebouncedValue(countsOn ? `${epoch}|${liveVer}|${scopedQ}` : null, 140);
   useEffect(() => {
-    if (countsKey === null) { setNameCounts(null); return; }
+    if (countsKey === null) { setNameCounts(null); setCountsFor(null); return; }
     let dead = false;
     const kinds: Filter[] = ["all", "files", "images", "docs", "video", "audio", "folders"];
     backend.kindCounts(scopedQ, kinds)
-      .then((n) => { if (!dead) setNameCounts(Object.fromEntries(kinds.map((f, i) => [f, n[i]]))); })
+      .then((n) => { if (!dead) { setNameCounts(Object.fromEntries(kinds.map((f, i) => [f, n[i]]))); setCountsFor(countsKey); } })
       .catch(() => { if (!dead) setNameCounts(null); });
     return () => { dead = true; };
   }, [backend, countsKey, scopedQ, epoch]);
+  // The chips keep the previous totals while the new ones are on their way; they dim once the
+  // query on screen no longer matches the key the numbers were computed for.
+  const countsWant = countsOn ? `${epoch}|${liveVer}|${scopedQ}` : null;
+  const countsStale = nameCounts !== null && countsFor !== countsWant;
 
   // ---- status / window events ---------------------------------------------
   const fast = counting && !summary; // 250 ms while the first scan is being watched
@@ -1672,7 +1684,7 @@ export default function App({ backend }: { backend: Backend }) {
   // The slot is always there (fixed width, see .stat) so the search box never resizes as the count comes and goes.
   const statShown = !isRecent && loaded && !pending;
   const statEl = !showPanel ? (
-    <span className="stat" aria-hidden={!statShown}>
+    <span className={"stat" + (refetching ? " busy" : "")} aria-hidden={!statShown}>
       {statShown && <>
         {statTotal.toLocaleString("en-US")}{data.partial ? "+" : ""} result{statTotal === 1 && !data.partial ? "" : "s"}
         {data.elapsedMs !== null && <> {"·"} <b>{fmtMs(data.elapsedMs)} ms</b></>}
@@ -1794,7 +1806,7 @@ export default function App({ backend }: { backend: Backend }) {
                     if (k && parsed.kind !== f.id) dropChip(k.key); // a tab click overrides the kind found in the text; the same kind is already in force
                     setFilter(f.id); inputRef.current?.focus();
                   }}>
-            {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
+            {f.label}{n !== undefined && n > 0 && <i className={countsStale ? "stale" : undefined} title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
           </button>
         );
       })}

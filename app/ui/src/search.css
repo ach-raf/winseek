@@ -18,8 +18,10 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .sbar input:focus-visible { outline: 0; }
 .sbar input::placeholder { color: var(--fg3); font-weight: 400; }
 .tbar .field input { font-size: 0.96875rem; }
-.stat { font-size: 0.78125rem; color: var(--fg3); white-space: nowrap; min-width: 190px; flex: none; } /* fixed slot: "0 results" vs "9,204,976 results · 34 ms" must not move the search box */
+.stat { font-size: 0.78125rem; color: var(--fg3); white-space: nowrap; min-width: 190px; flex: none; transition: opacity 120ms ease; transition-delay: 0s; } /* fixed slot: "0 results" vs "9,204,976 results · 34 ms" must not move the search box */
 .stat b { font: 500 0.71875rem var(--mono); color: var(--fg2); }
+.stat.busy { opacity: .55; transition-delay: 150ms; } /* answers under 150 ms never show it */
+.fc i.stale { opacity: .5; transition: opacity 120ms ease 150ms; } /* stale chip counts keep their numbers, dimmed */
 .ibtn { width: 32px; height: 32px; display: grid; place-items: center; border-radius: 8px; color: var(--fg3); flex: none; }
 .ibtn:hover { background: var(--bg3); color: var(--fg); }
 /* .qchip (info chip) lives in base.css — one definition for the archetype */
