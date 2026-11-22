@@ -331,18 +331,16 @@ export default function App({ backend }: { backend: Backend }) {
   // full window's column headers — not the USN recent ring, which re-read and reshuffled on
   // every file the drive touched.
   const isRecent = query.trim() === "" && !drive && filter === "all" && sort === "rel";
-  // A drive scope with an empty box has nothing for "Best match" to match, and the tiers disagree
-  // on what it would mean (searchd keeps name order, Tier 0 falls back to newest): the landing is
-  // the drive's biggest first — the one order that says something about a drive you haven't
-  // queried yet. One effective sort feeds the queries, the chip, the cycle and the column headers
-  // so none of them can disagree with the list.
-  const effSort: Sort = drive && query.trim() === "" && sort === "rel" ? "size" : sort;
+  // One effective sort everywhere: the queries, the chip, the cycle and the column headers all
+  // read the same stored choice, so none of them can disagree with the list. A drive landing
+  // with an empty box ranks by the tiers' rel fallback — the same order every other empty scope
+  // (a filter tab with no query) already shows; nothing is substituted behind the user's back.
+  const effSort: Sort = sort;
   const driveLanding = drive !== "" && query.trim() === "";
-  // The orders the sort menu offers and Alt+S cycles. On the drive landing Best match is
-  // substituted by Size (effSort — there is no query to rank against), so offering Best match
-  // there would bounce straight back to Size: exactly the "sort can't be changed" bug. Hide it
-  // until a query exists, and cycling never sets a sort the landing would silently override.
-  const sortOpts = useMemo(() => SORTS.filter((s) => !(driveLanding && s.id === "rel")), [driveLanding]);
+  // The orders the sort menu offers and Alt+S cycles: exactly SORTS on every surface — one
+  // source of truth, no per-scope filtering. Best match is choosable on a drive landing like
+  // anywhere else, and the pick sticks (it is the stored `sort`, never bounced back).
+  const sortOpts = SORTS;
   const cycleSort = useCallback((dir: 1 | -1) => {
     setSort(sortOpts[(sortOpts.findIndex((s) => s.id === effSort) + dir + sortOpts.length) % sortOpts.length]!.id);
     inputRef.current?.focus();
@@ -556,7 +554,7 @@ export default function App({ backend }: { backend: Backend }) {
       setPin(null);
       if (listRef.current) listRef.current.scrollTop = 0;
     })().catch(console.error);
-  }, [backend, scopedQ, drive, nameFilter, rangeKey, sort, effSort, isRecent, epoch]);
+  }, [backend, scopedQ, drive, nameFilter, effFilter, rangeKey, sort, effSort, isRecent, epoch]);
 
   // Page loader: only ever fetches what the list shows *now*. While the scrollbar is dragged across millions
   // of rows the positions it passed are never requested (two requests at most are in flight; when one lands
