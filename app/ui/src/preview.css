@@ -5,10 +5,16 @@
   border-left: 1px solid var(--line); overflow: auto; background: var(--bg);
   animation: fade 160ms var(--ease);
   scrollbar-width: thin; scrollbar-color: var(--line) transparent;
+  position: relative; /* the extract panel anchors here when it opens over the stage (split mode) */
+  container: pv / inline-size; /* the split-inspector switch queries the pane's own width */
 }
 /* One centred column; wide (Quick Look) panes cap it. The column is a fixed skeleton: the stage
- * flexes, everything below it keeps its height across selections, so nothing jumps around. */
+ * flexes, everything below it keeps its height across selections, so nothing jumps around.
+ * On panes ≥600px the split-inspector block below turns the skeleton into stage-left /
+ * rail-right; the rail then carries every info node. */
 .pv-col { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: 10px; width: 100%; max-width: 720px; margin: 0 auto; min-width: 0; }
+/* Pass-through box below 600px (the stacked column is unchanged); the split block styles it. */
+.pv-rail { min-width: 0; display: flex; flex-direction: column; gap: 10px; }
 .pv h2 {
   margin: 0; font-size: 1.125rem; font-weight: 700; letter-spacing: -.015em; line-height: 1.25;
   overflow-wrap: anywhere; /* the full filename, wrapped — never clipped, extension always on screen */
@@ -93,12 +99,15 @@
 .pv-zp { min-width: 4ch; text-align: center; font: 600 0.6875rem/1.5 var(--font); color: #fff; font-variant-numeric: tabular-nums; }
 .pv-zn { padding: 0 6px 0 2px; font: 500 0.6875rem/1.5 var(--font); color: rgba(255,255,255,.72); }
 
-/* PDF */
+/* PDF — the pager floats as a pill over the page's top edge (same veil family as the zoom bar:
+ * constant ink, so it reads over any rendered page in either theme); the page fills the stage. */
 .pv-pdf { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.pv-pdfbar { flex: none; display: flex; align-items: center; justify-content: center; gap: 12px; padding: 6px 8px; background: var(--bg); box-shadow: 0 1px 0 var(--line); font-size: 0.78125rem; font-weight: 500; color: var(--fg2); font-variant-numeric: tabular-nums; }
-.pv .pv-pdfbar .btn.pv-btn { width: 30px; padding: 0; font-size: 1rem; line-height: 1; }
+.pv-pdfbar { position: absolute; left: 50%; top: 8px; transform: translateX(-50%); z-index: 4; display: flex; align-items: center; gap: 2px; padding: 3px 5px; border-radius: 999px; background: rgba(14,16,20,.72); backdrop-filter: blur(10px); box-shadow: 0 0 0 1px rgba(255,255,255,.08), 0 4px 14px rgba(0,0,0,.35); font-size: 0.78125rem; font-weight: 500; color: rgba(255,255,255,.88); font-variant-numeric: tabular-nums; }
+.pv-pdfbar .pv-pageno { padding: 0 6px; white-space: nowrap; }
+.pv .pv-pdfbar .btn.pv-btn { width: 26px; padding: 0; font-size: 1rem; line-height: 1; color: rgba(255,255,255,.92); }
+.pv .pv-pdfbar .btn.pv-btn:hover:not(:disabled) { background: rgba(255,255,255,.16); color: #fff; filter: none; }
 .pv-pdfbar .pv-btn:disabled { opacity: .35; }
-.pv-pdfpage { position: relative; flex: 1; min-height: 0; transition: opacity 120ms; }
+.pv-pdfpage { position: absolute; inset: 0; transition: opacity 120ms; }
 .pv-pdfpage.stale { opacity: .55; }
 
 /* video / audio player (MediaPlayer.tsx) */
@@ -315,3 +324,27 @@
 
 /* right-click menu over selected preview text (the .pv-pick look, parked at the cursor) */
 .pv-copymenu { position: fixed; z-index: 30; min-width: 132px; }
+
+/* ---- split inspector: stage left, one info rail right (approved direction B) ----
+ * Panes ≥600px wide only; narrower keeps the stacked column above. The rail is budgeted to
+ * fit the popup pane with NO scrolling: the snippet and crumbs keep the bounds they already
+ * have everywhere (whyb max-height, crumbs 4-row cap), facts stay the compact wrapping strip,
+ * parser tools compress to a 2×2 grid, and Open / Show in folder / Copy path pin to the rail's
+ * bottom. overflow-y:auto stays only as the last-resort valve for pathological names.
+ * The extract panel opens OVER the stage: reading needs the width, the rail must not scroll. */
+@container pv (min-width: 600px) {
+  .pv-col { flex-direction: row; align-items: stretch; gap: 12px; max-width: none; }
+  .pv-col > .pbox { flex: 1 1 0; min-width: 0; }
+  .pv-rail { width: 268px; flex: none; gap: 6px; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--line) transparent; }
+  .pv-rail .pv-title h2 { font-size: 0.90625rem; line-height: 1.3; }
+  .pv-rail .whyb { padding: 8px 12px; font-size: 0.8125rem; max-height: 7.5em; }
+  .pv-rail .meta { padding: 7px 0 0; gap: 2px 12px; }
+  .pv-rail .pv-parse-bar { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; }
+  .pv-rail .pv-parse-bar .btn.pv-btn { height: 26px; padding: 0 6px; font-size: 0.71875rem; justify-content: center; }
+  .pv-rail .pv-parse-bar > .btn:only-child { grid-column: 1 / -1; } /* "Install the document parser in Setup" */
+  .pv-rail .pv-parse-state { grid-column: 1 / -1; }
+  .pv .pv-parse-panel { position: absolute; z-index: 6; left: var(--sp-4); top: var(--sp-4); bottom: var(--sp-4); right: calc(268px + 12px + var(--sp-4)); max-height: none; box-shadow: var(--pop-shadow), 0 24px 60px -12px rgba(0, 0, 0, .5); }
+  .pv-rail .btns { grid-template-columns: 1fr 1fr; gap: 5px; margin-top: auto; }
+  .pv-rail .btns .btn.pri { grid-column: 1 / -1; height: 34px; }
+  .pv-rail .btns .btn:not(.pri) { height: 32px; padding: 0 8px; font-size: 0.8125rem; }
+}

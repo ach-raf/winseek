@@ -152,26 +152,28 @@ export function Preview({ backend, hit, query, snippet, start, page, boxes, matc
             <div className="pv-msg"><span className="spin" aria-label="Loading" /></div>
           )}
         </div>
-        <div className="pv-title">
-          <h2 title={hit.name} dir="auto">{hit.name}</h2>
-          <div className="kind">{label}</div>
-          {matchPct != null && (
-            <span className="pv-pct" title="How closely this file matches what you typed">{matchPct}% match{page ? ` · page ${page}` : ""}</span>
+        <div className="pv-rail">
+          <div className="pv-title">
+            <h2 title={hit.name} dir="auto">{hit.name}</h2>
+            <div className="kind">{label}</div>
+            {matchPct != null && (
+              <span className="pv-pct" title="How closely this file matches what you typed">{matchPct}% match{page ? ` · page ${page}` : ""}</span>
+            )}
+          </div>
+          <Crumbs key={hit.path} parts={crumbs} path={hit.path} />
+          {snippet && (
+            <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
           )}
-        </div>
-        <Crumbs key={hit.path} parts={crumbs} path={hit.path} />
-        {snippet && (
-          <div className="whyb"><b>Why it&rsquo;s here</b><Snippet text={snippet} /></div>
-        )}
-        {metaInfo && <Meta info={metaInfo} folderSize={hit.is_dir ? hit.size : null} dim={stale} />}
-        {metaInfo && parser !== null && (metaInfo.kind === "image" || (metaInfo.kind === "pdf" && metaInfo.pdf?.engine && metaInfo.pdf.pages !== null)) && (
-          <ParseBar backend={backend} path={metaInfo.path} available={parser} dim={stale} registerApi={registerApi} query={query}
-                    page={metaInfo.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, metaInfo.pdf?.pages ?? null)) : null} />
-        )}
-        <div className="btns">
-          <button className="btn pri" tabIndex={-1} onMouseDown={keep} onClick={onOpen} title={tooltip("preview.open")}>Open <kbd>↵</kbd></button>
-          <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onReveal} title={tooltip("preview.reveal")}>Show in folder</button>
-          <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
+          {metaInfo && <Meta info={metaInfo} folderSize={hit.is_dir ? hit.size : null} dim={stale} />}
+          {metaInfo && parser !== null && (metaInfo.kind === "image" || (metaInfo.kind === "pdf" && metaInfo.pdf?.engine && metaInfo.pdf.pages !== null)) && (
+            <ParseBar backend={backend} path={metaInfo.path} available={parser} dim={stale} registerApi={registerApi} query={query}
+                      page={metaInfo.kind === "pdf" ? (pdfPage ?? clampPage(page ?? 1, metaInfo.pdf?.pages ?? null)) : null} />
+          )}
+          <div className="btns">
+            <button className="btn pri" tabIndex={-1} onMouseDown={keep} onClick={onOpen} title={tooltip("preview.open")}>Open <kbd>↵</kbd></button>
+            <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onReveal} title={tooltip("preview.reveal")}>Show in folder</button>
+            <button className="btn" tabIndex={-1} onMouseDown={keep} onClick={onCopyPath} title={tooltip("preview.copyPath")}>Copy path</button>
+          </div>
         </div>
       </div>
       {copyMenu && <CopyMenu x={copyMenu.x} y={copyMenu.y} text={copyMenu.text} copy={copyText} onClose={() => setCopyMenu(null)} />}
