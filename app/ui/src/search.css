@@ -325,17 +325,11 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 .dmenu button.on { color: var(--fg); font-weight: 600; background: var(--bg3); }
 .dmenu button i { font-style: normal; font-size: 0.75rem; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
 
-/* the drive landing's at-a-glance strip: the scope's free space, then one tile per kind with its
-   count; a tile is a quiet chip until hovered, and drills the list below into that kind */
-.dhome { padding: 10px var(--sp-4) 12px; border-bottom: 1px solid var(--line); display: flex; flex-direction: column; gap: 8px; }
+/* the drive landing's at-a-glance strip: the scope's free space (kind filtering stays in the
+   one frow above — a second chip row here duplicated it) */
+.dhome { padding: 10px var(--sp-4) 12px; border-bottom: 1px solid var(--line); }
 .dhome-line { display: flex; align-items: baseline; gap: 10px; font-size: 0.8125rem; color: var(--fg3); }
 .dhome-line b { color: var(--fg); font-size: 0.875rem; font-weight: 600; }
-.dhome-kinds { display: flex; flex-wrap: wrap; gap: 6px; }
-.dtile { height: 30px; padding: 0 11px; display: inline-flex; align-items: center; gap: 7px; border-radius: 8px; font-size: 0.8125rem; font-weight: 500; color: var(--fg2); background: var(--bg3); white-space: nowrap; }
-.dtile:hover { background: color-mix(in oklab, var(--acc) 20%, var(--bg3)); color: var(--fg); }
-.dtile.on { color: var(--fg); background: color-mix(in oklab, var(--acc) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
-.dtile.zero { color: var(--fg3); background: transparent; box-shadow: inset 0 0 0 1px var(--line); }
-.dtile i { font-style: normal; font-size: 0.71875rem; font-weight: 400; color: var(--fg3); font-variant-numeric: tabular-nums; }
 .frow .fc { overflow: hidden; text-overflow: ellipsis; }
 /* the full window's page gutter (--gut, base.css): filter pills, column heads and row content start on it */
 .shell.full .frow { padding: 0 var(--gut) var(--sp-3); }

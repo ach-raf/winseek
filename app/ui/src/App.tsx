@@ -1884,33 +1884,15 @@ export default function App({ backend }: { backend: Backend }) {
   );
 
   // The drive landing (drive chosen, nothing typed) opens with the scope's own at-a-glance: the
-  // drive's free space and one tile per kind with its count — each tile drills into that kind's
-  // list below (the list itself is biggest-first, see effSort). Nothing here depends on the USN
-  // ring or file recency, so the screen never reshuffles while it sits there.
+  // drive's free space. Kind filtering stays in the one filter row (frow) above — a second set of
+  // kind chips here duplicated it. The list itself is biggest-first, see effSort. Nothing here
+  // depends on the USN ring or file recency, so the screen never reshuffles while it sits there.
   const driveSpaceRow = space.find((x) => x.letter.toUpperCase() === drive.toUpperCase());
   const driveHomeEl = driveLanding && loaded && (
     <div className="dhome">
       <div className="dhome-line">
         <b>Drive {drive}:</b>
         {driveSpaceRow && <span>{formatSize(driveSpaceRow.free)} free of {formatSize(driveSpaceRow.total)}</span>}
-      </div>
-      <div className="dhome-kinds">
-        {FILTERS.filter((f) => f.id !== "settings" && f.id !== "meaning" && f.id !== "all").map((f) => {
-          const n = countOf(f.id);
-          return (
-            <button key={f.id} className={"dtile" + (effFilter === f.id ? " on" : "") + (n === 0 ? " zero" : "")} tabIndex={-1}
-                    aria-label={`Show ${f.label}${n !== undefined && n > 0 ? ` (${chipCount(n)})` : ""} on drive ${drive}`}
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => {
-                      const k = parsed.chips.find((c) => c.type === "kind");
-                      if (k && parsed.kind !== f.id) dropChip(k.key);
-                      setFilter(f.id);
-                      inputRef.current?.focus();
-                    }}>
-              {f.label}{n !== undefined && n > 0 && <i title={n.toLocaleString("en-US")}>{chipCount(n)}</i>}
-            </button>
-          );
-        })}
       </div>
     </div>
   );
