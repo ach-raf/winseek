@@ -1,4 +1,4 @@
-/* ===== Settings / Setup / first-run / status panels (v4). Classes: (.set .snav .scont .grp .gcard .grow .sw .seg .gbtn .sfind) =====
+/* ===== Settings / Setup / first-run / status panels (v4). Classes: (.settings-root .snav .scont .grp .gcard .grow .sw .seg .gbtn .sfind) =====
    Light + dark both come from the base.css token palettes; nothing here hard-codes a theme
    colour or keys off data-theme. */
 
@@ -60,7 +60,9 @@
 .sfind input:focus-visible { outline: 0; }
 .sfind input::placeholder { color: var(--fg3); }
 
-.set { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
+/* The settings root grid: named .settings-root so it can never collide with another component's
+   modifier class — a chip with class `set` once grew into this 216px grid (fixed 2026-11-22). */
+.settings-root { flex: 1; min-height: 0; display: grid; grid-template-columns: 216px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
 /* popup settings gutter: 16px (--sp-4) — sidebar rows, cards, title and footer all start on it.
    Row look comes from shell.css .nv (36px / 14px / 18px icons), the same recipe as the app sidebar.
    The find field lives at the top of the sidebar (Windows 11 / macOS position); .sres (results
@@ -93,7 +95,7 @@
 .scont::-webkit-scrollbar-thumb:hover { background: var(--fg3); background-clip: content-box; border: 3px solid transparent; }
 .set-foot { grid-column: 2; grid-row: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: var(--sp-2) var(--sp-4) var(--sp-3); font-size: 0.78125rem; color: var(--fg3); }
 .set-foot kbd { margin: 0 1px; }
-@media (max-width: 640px) { .set { grid-template-columns: 150px minmax(0, 1fr); } .scont { padding-right: 16px; } }
+@media (max-width: 640px) { .settings-root { grid-template-columns: 150px minmax(0, 1fr); } .scont { padding-right: 16px; } }
 
 /* ---- groups, cards, rows ---- */
 .grp { max-width: 640px; margin-bottom: var(--sp-5); }

@@ -316,8 +316,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 
 /* drive scope as one chip + menu (popup, or more drives than fit as buttons) */
 .dpick { position: relative; flex: none; }
-/* a chosen drive is an active filter: the accent chip family (same treatment as a custom sort).
-   `on`, never `set` — settings.css's root grid is a bare global `.set`. */
+/* a chosen drive is an active filter: the accent chip family (same treatment as a custom sort) */
 .dpick .sortb.on { color: var(--fg); background: color-mix(in oklab, var(--acc) 16%, transparent); box-shadow: inset 0 0 0 1px color-mix(in oklab, var(--acc) 45%, transparent); }
 .dpick .sortb.on:hover { background: color-mix(in oklab, var(--acc) 26%, transparent); }
 .dmenu { position: absolute; right: 0; top: calc(100% + 6px); z-index: 20; min-width: 190px; max-height: calc(100vh - 132px); overflow-y: auto; padding: 5px; border-radius: 11px; background: var(--bg2); border: 1px solid var(--line); box-shadow: var(--pop-shadow); display: flex; flex-direction: column; gap: 1px; }

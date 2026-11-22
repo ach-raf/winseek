@@ -1022,7 +1022,7 @@ export function Settings({ backend, t1, models, onFolders, onRemoveFolder, onPau
         <span className="sp" />
         {chrome}
       </header>
-      <div className="set">
+      <div className="settings-root">
         <aside className="snav-wrap">
           <label className="sfind">
             <ISearch size={16} />
