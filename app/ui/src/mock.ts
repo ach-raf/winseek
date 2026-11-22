@@ -750,6 +750,11 @@ const tlBaseFromLib = (): TlBase => {
 const tlBaseFromSynth = (): TlBase => ({ n: SYNTH!.n, path: (i) => SYNTH!.path(i), size: (i) => SYNTH!.size[i]!, mtime: (i) => SYNTH!.mtime[i]!, cls: (i) => SYNTH!.className(i) });
 
 export const mockBackend: Backend = {
+  async kindCounts(query, kinds) {
+    return Promise.all(
+      kinds.map(async (f) => (await this.search({ query, offset: 0, limit: 0, sort: "rel", filter: f })).total)
+    );
+  },
   async search({ query, offset, limit, sort, filter }) {
     const t0 = performance.now();
     // ?big=9000000: every typed search matches that many synthetic rows (row N is "file 000000N"), to exercise
@@ -1319,7 +1324,7 @@ export const mockBackend: Backend = {
 // library round-trips make, so a Playwright round can assert that switching screens does not refetch
 // everything. Kept in mock.ts so the shipped app carries no counting code.
 export const mockCalls: Record<string, number> = {};
-const COUNTED = ["libraryImages", "libraryTimelineLoad", "libraryTimelineView", "libraryTimelineRows", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage", "status", "agentLog", "driveSpace", "libraryNearPoll"] as const;
+const COUNTED = ["search", "kindCounts", "launchSearch", "libraryImages", "libraryTimelineLoad", "libraryTimelineView", "libraryTimelineRows", "libraryCollections", "libraryCollection", "libraryDupGroups", "libraryBigFiles", "diskUsage", "status", "agentLog", "driveSpace", "libraryNearPoll"] as const;
 for (const m of COUNTED) {
   const fn = mockBackend[m].bind(mockBackend) as (...args: unknown[]) => unknown;
   (mockBackend as unknown as Record<string, (...args: unknown[]) => unknown>)[m] = (...args: unknown[]) => {

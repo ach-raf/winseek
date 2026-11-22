@@ -677,6 +677,8 @@ export interface Backend {
   openPopup(): Promise<void>;
   // ---- launcher ----
   launchSearch(query: string, limit: number): Promise<LaunchHit[]>;
+  /** Totals of the query per type chip, in the order of `kinds` — one call for all of them. */
+  kindCounts(query: string, kinds: Filter[]): Promise<number[]>;
   launchRun(id: string, query: string, admin: boolean): Promise<void>;
   /** Record a pick the UI handled itself (winseek Settings / Library). */
   launchRecord(id: string, query: string): Promise<void>;

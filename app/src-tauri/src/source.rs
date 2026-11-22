@@ -87,6 +87,13 @@ pub trait NameSource: Send + Sync {
     ) -> Result<winseek_ipc::UsageDetail, String> {
         Err("Disk usage needs the name service, which is not running.".into())
     }
+    /// Totals of `query` per type chip, in the order given (UI filter names: "all", "files", ...).
+    fn kind_counts(&self, query: &str, kinds: &[String]) -> Vec<u64> {
+        kinds
+            .iter()
+            .map(|k| self.search(query, k, 0, 0, "rel").total)
+            .collect()
+    }
 }
 
 struct Entry {

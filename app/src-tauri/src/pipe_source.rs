@@ -108,6 +108,7 @@ fn kind_of(req: &Request) -> &'static str {
         Request::Rescan { .. } => "rescan",
         Request::Usage { .. } => "usage",
         Request::UsageDetail { .. } => "usage_detail",
+        Request::KindCounts { .. } => "kind_counts",
         Request::Subscribe { .. } => "subscribe",
     }
 }
@@ -305,6 +306,23 @@ impl NameSource for PipeSource {
             Ok(Response::Error { message, .. }) => Err(message),
             Ok(_) => Err("Unexpected answer from the name service.".into()),
             Err(e) => Err(format!("The name service did not answer: {e}")),
+        }
+    }
+
+    fn kind_counts(&self, query: &str, kinds: &[String]) -> Vec<u64> {
+        let req = Request::KindCounts {
+            id: self.id(),
+            query: query.into(),
+            kinds: kinds.iter().map(|k| filter_clause(k).to_string()).collect(),
+        };
+        match self.call(&req) {
+            Ok(Response::KindCountsResult { counts, .. }) => counts,
+            // An older searchd answers Error ("bad request"); so does a broken pipe. One count
+            // at a time keeps the chips working.
+            _ => kinds
+                .iter()
+                .map(|k| self.search(query, k, 0, 0, "rel").total)
+                .collect(),
         }
     }
 

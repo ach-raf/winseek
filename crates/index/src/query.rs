@@ -949,6 +949,42 @@ impl Index {
         .sum()
     }
 
+    /// How many matches of `q` also match each of `kinds` (the type-chip counters), in ONE pass:
+    /// `out[k] == self.count(q AND kinds[k])`. A kind with a path term falls back to its own count.
+    pub fn count_kinds(&self, q: &Query, kinds: &[Query]) -> Vec<usize> {
+        if kinds.iter().any(|k| k.path_sensitive()) {
+            return kinds
+                .iter()
+                .map(|k| {
+                    let mut both = q.clone();
+                    both.terms.extend(k.terms.iter().cloned());
+                    self.count(&both)
+                })
+                .collect();
+        }
+        let view = self.order_view();
+        let memos = self.path_memos(q);
+        self.parallel_scan(view.slots(), |lo, hi| {
+            let mut n = vec![0usize; kinds.len()];
+            let mut sc = Scratch::default();
+            self.scan_each(q, &memos, &view, lo, hi, |slot, _| {
+                for (k, kq) in kinds.iter().enumerate() {
+                    if kq.terms.iter().all(|t| self.eval(t, slot, &mut sc, None)) {
+                        n[k] += 1;
+                    }
+                }
+            });
+            n
+        })
+        .into_iter()
+        .fold(vec![0usize; kinds.len()], |mut a, b| {
+            for (x, y) in a.iter_mut().zip(b) {
+                *x += y;
+            }
+            a
+        })
+    }
+
     /// Every match as a [`RankSet`] (name order). One parallel pass over the names; the
     /// scan threads set their bits directly, so nothing is collected or sorted.
     pub fn name_matches(&self, q: &Query) -> RankSet {

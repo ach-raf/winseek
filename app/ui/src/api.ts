@@ -30,6 +30,7 @@ function tauriBackend(t: TauriGlobal): Backend {
   const inv = t.core.invoke;
   return {
     search: (a) => inv("search", a),
+    kindCounts: (query, kinds) => inv<number[]>("kind_counts", { query, kinds }),
     status: () => inv("status"),
     appVersion: () => inv<string>("app_version").catch(() => null),
     driveSpace: (letters) => inv("drive_space", { letters }),

@@ -119,6 +119,10 @@ fn respond(sh: &Shared, req: Request) -> Response {
             Ok(detail) => Response::UsageDetailResult { id, detail },
             Err(message) => Response::Error { id, message },
         },
+        Request::KindCounts { id, query, kinds } => Response::KindCountsResult {
+            id,
+            counts: state::kind_counts(sh, &query, &kinds),
+        },
         Request::Subscribe { id, .. } => Response::Error {
             id,
             message: "subscribe handled elsewhere".into(),

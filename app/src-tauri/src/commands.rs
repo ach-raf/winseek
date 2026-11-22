@@ -111,6 +111,17 @@ pub async fn search(
     .await
 }
 
+/// Totals of the query per type chip, in the order of `kinds` — one searchd call for all of them.
+#[tauri::command]
+pub async fn kind_counts(
+    state: tauri::State<'_, AppState>,
+    query: String,
+    kinds: Vec<String>,
+) -> Result<Vec<u64>, String> {
+    let src = state.source();
+    blocking(move || src.kind_counts(&query, &kinds)).await
+}
+
 #[tauri::command]
 pub async fn status(state: tauri::State<'_, AppState>) -> Result<Vec<VolumeStatus>, String> {
     let src = state.source();

@@ -700,18 +700,17 @@ export default function App({ backend }: { backend: Backend }) {
     return () => { window.clearInterval(t); if (recheckRef.current === tick) recheckRef.current = () => {}; };
   }, [backend, scopedQ, sort, effSort, nameFilter, isRecent, data.recent, loaded, renaming]);
 
-  // The numbers on the type chips: one limit-1 search per type for the typed query, once it has
-  // settled for 140 ms (newest wins). Not for home, and not while a date / size filter is active
-  // (those are applied here, so the totals would lie).
+  // The numbers on the type chips: one searchd call answers all seven totals, once the query
+  // has settled for 140 ms (newest wins). Not for home, and not while a date / size filter is
+  // active (those are applied here, so the totals would lie).
   const countsOn = query.trim() !== "";
   const countsKey = useDebouncedValue(countsOn ? `${epoch}|${liveVer}|${scopedQ}` : null, 140);
   useEffect(() => {
     if (countsKey === null) { setNameCounts(null); return; }
     let dead = false;
     const kinds: Filter[] = ["all", "files", "images", "docs", "video", "audio", "folders"];
-    // limit 0 = count only: the service neither builds rows nor caches a result list for these
-    Promise.all(kinds.map((f) => backend.search({ query: scopedQ, offset: 0, limit: 0, sort: "rel", filter: f }).then((r) => [f, r.total] as const)))
-      .then((rows) => { if (!dead) setNameCounts(Object.fromEntries(rows)); })
+    backend.kindCounts(scopedQ, kinds)
+      .then((n) => { if (!dead) setNameCounts(Object.fromEntries(kinds.map((f, i) => [f, n[i]]))); })
       .catch(() => { if (!dead) setNameCounts(null); });
     return () => { dead = true; };
   }, [backend, countsKey, scopedQ, epoch]);

@@ -818,6 +818,18 @@ pub fn hit_at(ix: &Index, i: u32) -> Hit {
     }
 }
 
+/// Totals of `query` per type chip, in the order of `kinds` (index clauses). One index pass
+/// answers all of them; `Query::parse` accepts the empty clause ("" counts everything).
+pub fn kind_counts(sh: &Shared, query: &str, kinds: &[String]) -> Vec<u64> {
+    let ix = sh.index.read().unwrap();
+    let q = Query::parse(query);
+    let parsed: Vec<Query> = kinds.iter().map(|k| Query::parse(k)).collect();
+    ix.count_kinds(&q, &parsed)
+        .into_iter()
+        .map(|n| n as u64)
+        .collect()
+}
+
 /// Returns (total, hits, note). Every protocol sort is a real order; `PathAsc` is the one
 /// gap and answers in name order with a note (logged server-side, once).
 ///

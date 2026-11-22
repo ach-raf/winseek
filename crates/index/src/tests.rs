@@ -54,6 +54,22 @@ fn names(ix: &Index, q: &str) -> Vec<String> {
         .collect()
 }
 
+/// The one-pass `count_kinds` must agree with a plain `count` of `q AND kind` for every kind,
+/// including the drive-scoped (`ws:C:\`) query that takes the per-kind fallback path.
+#[test]
+fn count_kinds_matches_per_kind_counts() {
+    let ix = sample();
+    let kinds = ["", "file:", "folder:", "ext:jpg;png"];
+    let kind_qs: Vec<Query> = kinds.iter().map(|k| Query::parse(k)).collect();
+    for q in ["", "a", "report", "ws:cat", "ws:C:\\"] {
+        let got = ix.count_kinds(&Query::parse(q), &kind_qs);
+        for (i, k) in kinds.iter().enumerate() {
+            let expected = ix.count(&Query::parse(&format!("{q} {k}")));
+            assert_eq!(got[i], expected, "q={q:?} kind={k:?}");
+        }
+    }
+}
+
 #[test]
 fn builder_resolves_parents_and_paths() {
     let ix = sample();

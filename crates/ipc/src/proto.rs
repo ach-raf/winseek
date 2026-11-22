@@ -60,6 +60,13 @@ pub enum Request {
         path: String,
         top_files: u32,
     },
+    /// Totals of `query` per type chip, in the order of `kinds` (index clauses: "", "file:",
+    /// "ext:jpg;png", ...). One index pass answers all of them.
+    KindCounts {
+        id: u64,
+        query: String,
+        kinds: Vec<String>,
+    },
 }
 
 impl Request {
@@ -71,7 +78,8 @@ impl Request {
             | Request::Subscribe { id, .. }
             | Request::Rescan { id, .. }
             | Request::Usage { id, .. }
-            | Request::UsageDetail { id, .. } => *id,
+            | Request::UsageDetail { id, .. }
+            | Request::KindCounts { id, .. } => *id,
         }
     }
 }
@@ -221,6 +229,11 @@ pub enum Response {
     /// rescanned and swapped in, or a drive was dropped): whatever a client cached about files
     /// may be stale and must be read again.
     Resync,
+    /// Totals of the query per type chip, in the request's `kinds` order.
+    KindCountsResult {
+        id: u64,
+        counts: Vec<u64>,
+    },
     Error {
         id: u64,
         message: String,
@@ -319,5 +332,24 @@ mod tests {
             .id(),
             8
         );
+    }
+
+    #[test]
+    fn kind_counts_roundtrip() {
+        let r = Request::KindCounts {
+            id: 9,
+            query: "report".into(),
+            kinds: vec![String::new(), "file:".into(), "ext:jpg;png".into()],
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains(r#""type":"kind_counts""#), "{s}");
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+        let p = Response::KindCountsResult {
+            id: 9,
+            counts: vec![14, 9, 1],
+        };
+        let s = serde_json::to_string(&p).unwrap();
+        assert!(s.contains(r#""type":"kind_counts_result""#), "{s}");
+        assert_eq!(serde_json::from_str::<Response>(&s).unwrap(), p);
     }
 }

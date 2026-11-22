@@ -94,6 +94,7 @@ fn main() {
             agent::agent_path_status,
             agent::agent_path_set,
             commands::search,
+            commands::kind_counts,
             commands::status,
             commands::app_version,
             commands::drive_space,
