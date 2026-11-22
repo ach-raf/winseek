@@ -550,15 +550,16 @@ function ParseBar({ backend, path, page, available, dim, registerApi, query }: {
     );
   }
 
-  const load = async (): Promise<ParsedDoc | null> => {
-    if (doc) return doc;
+  const load = async (force = false): Promise<ParsedDoc | null> => {
+    if (doc && !force) return doc;
     const my = ++run.current;
     setBusy(true);
     setMsg(null);
     try {
-      const d = await backend.parseDocument(path, page ?? undefined);
+      const d = await backend.parseDocument(path, page ?? undefined, force);
       if (my !== run.current) return null;
       setDoc(d);
+      if (force) setMsg({ text: "Re-extracted", bad: false });
       return d;
     } catch (e) {
       if (my === run.current) setMsg({ text: errText(e), bad: true });
@@ -572,6 +573,7 @@ function ParseBar({ backend, path, page, available, dim, registerApi, query }: {
     catch (e) { setMsg({ text: errText(e), bad: true }); }
   };
   const extract = async () => { const d = await load(); if (d) { setPick(false); setPanel(true); } };
+  const reextract = async () => { const d = await load(true); if (d) { setPick(false); setPanel(true); } };
   const copyTable = async () => {
     const d = await load();
     if (!d) return;
@@ -592,8 +594,12 @@ function ParseBar({ backend, path, page, available, dim, registerApi, query }: {
         {btn("Extract text", extract, `Read the text on this page with the document parser (${hint("preview.extract")})`)}
         {btn("Copy table", copyTable, "Copy the table on this page, ready to paste into a spreadsheet")}
         {btn("Copy as Markdown", copyMarkdown, "Copy the whole page as Markdown")}
+        {btn("Re-extract", reextract, "Read the page again, ignoring the saved extraction")}
         {busy && <span className="pv-parse-state"><span className="spin" aria-hidden /> Reading the page…</span>}
         {msg && <span className={"pv-parse-state" + (msg.bad ? " bad" : "")} role={msg.bad ? "alert" : "status"}>{msg.text}</span>}
+        {doc?.cached && !busy && !msg && (
+          <span className="pv-parse-state" title="Answered from the saved extraction — Re-extract reads the page again">from cache</span>
+        )}
       </div>
       {pick && doc && (
         <div className="pv-pick" role="menu" aria-label="Tables on this page">

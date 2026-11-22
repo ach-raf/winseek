@@ -3,7 +3,7 @@ import type { AgentConfig, AgentLogEntry, AgentPathState, Backend, Hotkeys, Igno
 import type { Models } from "./hooks";
 import { refinerView, rowAction, type RowAction } from "./modelRows";
 import { argsPreview, pathNote, snippets } from "./agentLogic";
-import { Bar, IndexRow, Models as ModelsPane, Names, RebuildRow, StatusMeaning, useStatusPage } from "./Status";
+import { Bar, IndexRow, Models as ModelsPane, Names, ParseCacheRow, RebuildRow, StatusMeaning, useStatusPage } from "./Status";
 import { errText, formatDate, formatDuration, formatPages, formatRate, formatSize } from "./format";
 import { fileName } from "./reasonText";
 import { eventToCombo } from "./hotkeyLogic";
@@ -366,6 +366,9 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
     setRebuilding(true);
     backend.tier1Rebuild().then(reload).catch(onError).finally(() => setRebuilding(false));
   }, [backend, reload, onError]);
+  const clearCache = useCallback(() => {
+    backend.parseCacheClear().then(reload).catch(onError);
+  }, [backend, reload, onError]);
   useEffect(() => { refreshPlan(); }, [refreshPlan]);
   // A download that ends (or fails) shows its result right away, not at the next status poll.
   const wasRunning = useRef(running);
@@ -491,6 +494,7 @@ function Meaning({ backend, t1, models, onPause, onSetup, onError }: {
       <Performance backend={backend} onError={onError} />
       <Grp title="Maintenance">
         <RebuildRow canRebuild={!!st?.can_rebuild} rebuilding={rebuilding} onRebuild={rebuild} />
+        <ParseCacheRow pages={st?.parse_cache_pages ?? 0} disabled={!st} onClear={clearCache} />
       </Grp>
       {st?.error && <div className="fr-error" role="alert">Last error: {st.error}</div>}
     </>

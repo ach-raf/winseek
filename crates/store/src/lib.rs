@@ -3635,7 +3635,8 @@ mod tests {
         let mut s = Store::open_in_memory(&meta()).unwrap();
         assert_eq!(s.parse_cache_count().unwrap(), 0);
         assert!(s.cached_parse("h1", 0).unwrap().is_none());
-        s.save_parse("h1", 0, "# md", "[{\"tsv\":\"a\"}]", 3).unwrap();
+        s.save_parse("h1", 0, "# md", "[{\"tsv\":\"a\"}]", 3)
+            .unwrap();
         s.save_parse("h1", 2, "page two", "[]", 1).unwrap();
         assert_eq!(s.parse_cache_count().unwrap(), 2);
         let hit = s.cached_parse("h1", 0).unwrap().unwrap();

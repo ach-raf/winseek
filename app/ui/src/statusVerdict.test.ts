@@ -13,7 +13,7 @@ const page = (over: {
   tier0: { source: "searchd", service: "running", uptime_s: 3600, volumes: [vol("C"), vol("D")], can_rescan: true, rescan_hint: null, ...over.tier0 },
   tier1: {
     state: "idle", paused_reason: null, error: null, stats: { done: 500, pending: 0, files: 3000, vectors: 500, text_only: 4, failed: 0, skipped: 2 },
-    coverage: 0.83, queue: 0, rate: null, eta_s: null, can_rebuild: true, ocr_unavailable: false, waiting: [], failed_reasons: [], skipped_reasons: [],
+    coverage: 0.83, queue: 0, rate: null, eta_s: null, can_rebuild: true, parse_cache_pages: 0, ocr_unavailable: false, waiting: [], failed_reasons: [], skipped_reasons: [],
     ffmpeg: null, index: null, ...over.tier1,
   },
   models: {

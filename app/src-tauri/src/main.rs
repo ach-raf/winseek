@@ -162,6 +162,7 @@ fn main() {
             status::status_page,
             status::rescan_volume,
             status::tier1_rebuild,
+            status::parse_cache_clear,
             models::models_plan,
             models::models_download,
             models::models_cancel,

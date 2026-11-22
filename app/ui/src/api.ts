@@ -80,7 +80,8 @@ function tauriBackend(t: TauriGlobal): Backend {
     },
     semanticSearch: (query, k, offset) => inv<SemanticResult>("semantic_search", { query, k, offset: offset ?? 0 }),
     parserPresent: () => inv<boolean>("parser_present"),
-    parseDocument: (path, page) => inv<ParsedDoc>("parse_document", { path, page: page ?? null }),
+    parseDocument: (path, page, force) =>
+      inv<ParsedDoc>("parse_document", { path, page: page ?? null, force: force ?? false }),
     copyTextHtml: (text, html) => inv("copy_text_html", { text, html: html ?? null }),
     getProfile: () => inv<Profile>("get_profile"),
     setProfile: (profile) => inv<Profile>("set_profile", { profile }),
@@ -93,6 +94,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     statusPage: () => inv<StatusPage>("status_page"),
     rescanVolume: (letter) => inv("rescan_volume", { letter }),
     tier1Rebuild: () => inv("tier1_rebuild"),
+    parseCacheClear: () => inv<number>("parse_cache_clear"),
     autostartGet: () => inv<boolean>("autostart_get"),
     autostartSet: (on) => inv<boolean>("autostart_set", { on }),
     modelsPlan: () => inv<ModelsPlan>("models_plan"),

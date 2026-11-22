@@ -323,6 +323,7 @@ function mockStatusPage(): StatusPage {
       rate: t1.state === "indexing" ? rate : null,
       eta_s: rate && queue > 0 ? Math.ceil(queue / rate) : null,
       can_rebuild: t1.state !== "unavailable",
+      parse_cache_pages: parserHave() ? parsedCache.size : 0,
       ocr_unavailable: params.get("noocr") === "1",
       waiting: [],
       ffmpeg: null,
@@ -1025,10 +1026,10 @@ export const mockBackend: Backend = {
     return { state: st, hits, total: deep ? all.length : hits.length, more: offset + hits.length < all.length, reranked: refined };
   },
   async parserPresent() { await sleep(20); return parserHave(); },
-  async parseDocument(path, page): Promise<ParsedDoc> {
+  async parseDocument(path, page, force): Promise<ParsedDoc> {
     if (!parserHave()) throw new Error("The document parser is not installed. Add it in Setup.");
     const key = `${path}#${page ?? 0}`;
-    const cached = parsedCache.has(key);
+    const cached = !force && parsedCache.has(key);
     await sleep(cached ? 40 : 800);
     parsedCache.add(key);
     lastParseAt = performance.now();
@@ -1078,6 +1079,12 @@ export const mockBackend: Backend = {
     indexed = 0;
     indexTick = performance.now();
     rateSamples = [];
+  },
+  async parseCacheClear() {
+    await sleep(60);
+    const n = parsedCache.size;
+    parsedCache.clear();
+    return n;
   },
   async tier1Estimate(path): Promise<FolderEstimate> {
     await sleep(400);

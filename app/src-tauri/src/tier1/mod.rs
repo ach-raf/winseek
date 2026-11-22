@@ -1012,16 +1012,9 @@ impl Tier1 {
             elements_count: parsed.elements.len(),
             cached: false,
         };
-        let tables_json =
-            serde_json::to_string(&tables).map_err(|e| e.to_string())?;
+        let tables_json = serde_json::to_string(&tables).map_err(|e| e.to_string())?;
         let dropped = lock(&self.store)
-            .save_parse(
-                &key,
-                page,
-                &doc.markdown,
-                &tables_json,
-                doc.elements_count,
-            )
+            .save_parse(&key, page, &doc.markdown, &tables_json, doc.elements_count)
             .map_err(|e| e.to_string())?;
         eprintln!(
             "winseek: parse_document: parsed {} p{page} ({} element(s), cached; trim dropped {dropped})",
@@ -2244,9 +2237,11 @@ pub async fn parse_document(
     force: Option<bool>,
 ) -> Result<ParsedDoc, String> {
     let t = h.get()?;
-    tauri::async_runtime::spawn_blocking(move || t.parse_document(&path, page, force.unwrap_or(false)))
-        .await
-        .map_err(|e| e.to_string())?
+    tauri::async_runtime::spawn_blocking(move || {
+        t.parse_document(&path, page, force.unwrap_or(false))
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// Are the document parser's model files installed (the preview offers its actions only then)?
@@ -4085,7 +4080,11 @@ mod tests {
             .unwrap_err()
             .contains("images and PDF"));
         assert!(t
-            .parse_document(&dir.path().join("missing.png").to_string_lossy(), None, false)
+            .parse_document(
+                &dir.path().join("missing.png").to_string_lossy(),
+                None,
+                false
+            )
             .unwrap_err()
             .contains("Cannot read"));
         let bad = dir.path().join("bad.png");

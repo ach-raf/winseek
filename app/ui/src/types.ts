@@ -102,7 +102,7 @@ export interface ParsedDoc {
   markdown: string;
   tables: { html: string; tsv: string }[];
   elements_count: number;
-  /** Answered from the in-memory cache (same content and page parsed a moment ago). */
+  /** Answered from the persistent extraction cache (same content and page parsed before — possibly in an earlier session). */
   cached: boolean;
 }
 /** Searches of one stream supersede each other (typing on); different streams never do. No stream = never superseded. */
@@ -205,6 +205,8 @@ export interface StatusTier1 {
   rate: number | null;
   eta_s: number | null;
   can_rebuild: boolean;
+  /** Pages held by the on-demand extraction cache (the preview's "Extract text" results). */
+  parse_cache_pages: number;
   /** No Windows OCR language is installed, so screenshot text is not read. */
   ocr_unavailable: boolean;
   /** Queued files that cannot run yet, and what they wait for. */
@@ -621,8 +623,10 @@ export interface Backend {
   semanticSearch(query: string, k: number, offset?: number): Promise<SemanticResult>;
   /** Are the document parser's files installed? The preview offers its actions only then. */
   parserPresent(): Promise<boolean>;
-  /** Read an image or one PDF page (1-based, ignored for images) with the document parser. Takes a few seconds. */
-  parseDocument(path: string, page?: number): Promise<ParsedDoc>;
+  /** Read an image or one PDF page (1-based, ignored for images) with the document parser. Answers
+   *  instantly from the persistent extraction cache when this content was parsed before; `force`
+   *  skips the cache and re-parses. Takes a few seconds only on a miss. */
+  parseDocument(path: string, page?: number, force?: boolean): Promise<ParsedDoc>;
   /** Put text on the clipboard, with an HTML twin (a table) when given. */
   copyTextHtml(text: string, html?: string | null): Promise<void>;
   getProfile(): Promise<Profile>;
@@ -638,6 +642,8 @@ export interface Backend {
   rescanVolume(letter: string): Promise<void>;
   /** Drop all embeddings and index the chosen folders again. Never touches the name index. */
   tier1Rebuild(): Promise<void>;
+  /** Drop every cached "Extract text" result. Returns the pages removed. */
+  parseCacheClear(): Promise<number>;
   /** "Start with Windows" (HKCU Run value). */
   updatesGet(): Promise<UpdateState>;
   /** Daily update check on/off. Nothing is sent while off. */

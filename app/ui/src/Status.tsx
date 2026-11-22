@@ -210,6 +210,33 @@ export function RebuildRow({ canRebuild, rebuilding, onRebuild }: { canRebuild: 
   );
 }
 
+/** The on-demand extraction cache (Settings › Search by meaning › Maintenance): pages "Extract
+ *  text" has already read, kept so re-opens answer instantly. Clearing only makes the next
+ *  extraction re-run — it never touches the index or the embeddings. */
+export function ParseCacheRow({ pages, disabled, onClear }: { pages: number; disabled: boolean; onClear: () => void }) {
+  const [ask, setAsk] = useState(false);
+  if (!ask) {
+    return (
+      <Row id="parseCache" title="Extracted text cache" desc={'Pages already read by "Extract text", kept for instant re-opens'}>
+        <span className="rr-chip" role="status">{pages} {pages === 1 ? "page" : "pages"}</span>
+        <button className="gbtn" disabled={disabled || pages === 0} onClick={() => setAsk(true)}
+                title={pages > 0 ? "Drop the saved extractions; the next extract reads the parser again" : "Nothing cached yet"}>
+          Clear…
+        </button>
+      </Row>
+    );
+  }
+  return (
+    <div className="grow wrap" role="alertdialog" aria-label="Confirm cache clear">
+      <div className="gtxt"><b>Drop every saved extraction?</b><span>The next "Extract text" of the same content runs the parser again. Nothing else changes.</span></div>
+      <div className="gctl">
+        <button className="gbtn pri" autoFocus onClick={() => { setAsk(false); onClear(); }}>Clear</button>
+        <button className="gbtn" onClick={() => setAsk(false)}>Cancel</button>
+      </div>
+    </div>
+  );
+}
+
 const backendName = (m: StatusModels) => (m.backend === "cuda12" ? "CUDA 12" : m.backend === "vulkan" ? "Vulkan" : "CPU");
 
 /** Whether the meaning index matches this build (Settings › Search by meaning and Status › Meaning).

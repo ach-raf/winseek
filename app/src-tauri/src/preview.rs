@@ -472,10 +472,17 @@ pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<
     crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| {
         "This file cannot be read (credential file or cloud-only placeholder).".to_string()
     })?;
-    pdf_page_png_with(&PAGE_CACHE, pages_dir().as_deref(), path, page, width, |p, n, w| {
-        let rt = pdf::runtime().map_err(|e| e.to_string())?;
-        pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
-    })
+    pdf_page_png_with(
+        &PAGE_CACHE,
+        pages_dir().as_deref(),
+        path,
+        page,
+        width,
+        |p, n, w| {
+            let rt = pdf::runtime().map_err(|e| e.to_string())?;
+            pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
+        },
+    )
 }
 
 fn pdf_page_png_with(
@@ -570,7 +577,12 @@ fn page_disk_file(
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     let h = Sha256::digest(
-        format!("v1|{}|{ns}|{}|p{page}|w{bucket}", path.to_lowercase(), md.len()).as_bytes(),
+        format!(
+            "v1|{}|{ns}|{}|p{page}|w{bucket}",
+            path.to_lowercase(),
+            md.len()
+        )
+        .as_bytes(),
     );
     let k = format!("{h:x}");
     dir.join(&k[..2]).join(format!("{k}.png"))
@@ -584,7 +596,7 @@ static PAGE_WRITES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32:
 
 fn note_page_write(dir: &Path) {
     let ord = std::sync::atomic::Ordering::Relaxed;
-    if (PAGE_WRITES.fetch_add(1, ord) + 1) % PAGE_TRIM_EVERY == 0 {
+    if (PAGE_WRITES.fetch_add(1, ord) + 1).is_multiple_of(PAGE_TRIM_EVERY) {
         trim_pages(dir, PAGE_DISK_CAP_BYTES);
     }
 }

@@ -58,6 +58,8 @@ pub struct Tier1PageDto {
     pub rate: Option<f64>,
     pub eta_s: Option<u64>,
     pub can_rebuild: bool,
+    /// Pages held by the on-demand extraction cache (the preview's "Extract text" results).
+    pub parse_cache_pages: u64,
     /// Screenshots could not be read for text: no Windows OCR language is installed.
     pub ocr_unavailable: bool,
     /// Queued files that cannot run yet, and what they wait for.
@@ -451,6 +453,7 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
             rate: None,
             eta_s: None,
             can_rebuild: false,
+            parse_cache_pages: 0,
             ocr_unavailable: false,
             waiting: vec![],
             failed_reasons: vec![],
@@ -497,6 +500,11 @@ fn tier1_section(t: Option<&Tier1>, unavailable: Option<String>) -> Tier1PageDto
         queue,
         rate,
         can_rebuild: true,
+        parse_cache_pages: t
+            .store
+            .lock()
+            .map(|s| s.parse_cache_count().unwrap_or(0))
+            .unwrap_or(0),
         ocr_unavailable: t.store.lock().map(|s| ocr_unavailable(&s)).unwrap_or(false),
         index: Some(index_section(t)),
     }
@@ -758,6 +766,19 @@ pub async fn tier1_rebuild(h: tauri::State<'_, tier1::Handle>) -> Result<(), Str
             s.reset_in_place(&meta)
                 .map_err(|e| format!("reset store: {e}"))
         })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// Drop every cached "Extract text" result (Settings › Maintenance). The next extraction of the
+/// same content re-parses; nothing else changes (no rebuild, no re-embed). Returns rows removed.
+#[tauri::command]
+pub async fn parse_cache_clear(h: tauri::State<'_, tier1::Handle>) -> Result<u64, String> {
+    let t = h.get()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut s = t.store.lock().unwrap_or_else(|e| e.into_inner());
+        s.clear_parse_cache().map_err(|e| e.to_string())
     })
     .await
     .map_err(|e| e.to_string())?
