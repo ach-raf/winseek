@@ -2108,7 +2108,9 @@ export default function App({ backend }: { backend: Backend }) {
 
             {!showPanel && overview && (pending ? (
               <div className="list ov" /> // a scope switch is being fetched: blank beats the old scope's rows under the new tab
-            ) : ov.flat.length > 0 || isRecent ? (
+              // "Empty" is a data verdict, never a fold one: a collapsed kind group still reports total > 0 and keeps its
+              // reopenable heading, so folds can never produce the dead "No results" screen (folds persist in storage).
+            ) : ov.flat.length > 0 || ov.sections.some((s) => s.total > 0) || isRecent ? (
               <Overview onMore={morePics} onGridCols={setPicCols} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (

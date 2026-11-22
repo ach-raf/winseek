@@ -319,6 +319,16 @@ test("groupByKind: a collapsed group hides its rows but keeps the count", () => 
   assert.deepEqual(flat.filter((i) => i.section === "k:doc"), [], "the flat selection list skips the collapsed group");
 });
 
+test("groupByKind: collapsing the only group empties the flat list, but the data verdict stays non-empty", () => {
+  // A kind tab whose single group is folded must never read as "No results": the App gate treats a
+  // section with total > 0 as data behind a fold, and Overview keeps the reopenable heading.
+  const names = [hit("song.flac"), hit("take2.flac"), hit("take3.flac")];
+  const { sections, flat } = buildOverview({ names, nameTotal: 3, sem: [], text: "q", expand: null, isImage, groupByKind: true, kindFolds: { audio: true } });
+  assert.deepEqual(flat, [], "every group folded: no selectable rows");
+  assert.equal(sections.some((s) => s.total > 0), true, "folded rows are still data — the overview is not empty");
+  assert.equal(sections.find((s) => s.id === "k:audio")?.title, "Audio", "the folded heading stays on screen");
+});
+
 test("without groupByKind the Files section stays flat", () => {
   const names = [hit("notes.pdf"), hit("song.flac")];
   const { sections } = buildOverview({ names, nameTotal: 2, sem: [], text: "q", expand: null, isImage });
