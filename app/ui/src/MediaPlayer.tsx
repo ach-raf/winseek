@@ -158,7 +158,7 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
     if (e.ctrlKey || e.metaKey || e.altKey) return;
     const k = e.key.toLowerCase();
     let handled = true;
-    if (k === " " || k === "k") toggle();
+    if (k === "k") toggle(); // Space is left for the pane's expand-preview toggle, so it must bubble up unhandled.
     else if (k === "arrowleft" || k === "j") skip(e.shiftKey ? -30 : -10);
     else if (k === "arrowright" || k === "l") skip(e.shiftKey ? 30 : 10);
     else if (k === "arrowup") setVol(vol + 0.1);
@@ -194,7 +194,7 @@ export function MediaPlayer({ kind, src, name, start, onError }: {
       </div>
       <div className="mp-row">
         <Btn d="back" cls="mp-skip" title="Back 10 s (←)" onClick={() => skip(-10)} />
-        <Btn d={playing ? "pause" : "play"} title={playing ? "Pause (Space)" : "Play (Space)"} onClick={toggle} big />
+        <Btn d={playing ? "pause" : "play"} title={playing ? "Pause (K)" : "Play (K)"} onClick={toggle} big />
         <Btn d="fwd" cls="mp-skip" title="Forward 10 s (→)" onClick={() => skip(10)} />
         <span className="mp-gap" />
         <button type="button" className="mp-rate" tabIndex={-1} title="Playback speed" onClick={(e) => { e.stopPropagation(); cycleRate(); wrap.current?.focus(); }}>{rate}×</button>
