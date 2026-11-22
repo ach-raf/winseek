@@ -15,7 +15,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { buildHome, buildOverview, bumpMru, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, removeMru, restoreMru, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IFilter, IGear, IMag, IX } from "./icons";
@@ -82,7 +82,7 @@ const COLS: { label: string; a: Sort; b: Sort; up: Sort; hint: string; dense?: b
   { label: "Size", a: "size", b: "size_asc", up: "size_asc", hint: "Sort by size" },
 ];
 
-type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] } | { kind: "unhide"; id: string };
+type Undo = { kind: "rename"; newPath: string; oldName: string } | { kind: "recycle"; paths: string[] } | { kind: "unhide"; id: string } | { kind: "mru"; entries: MruEntry[] };
 
 interface Data {
   total: number; rows: (Hit | undefined)[]; elapsedMs: number | null; recent: boolean;
@@ -240,7 +240,7 @@ export default function App({ backend }: { backend: Backend }) {
   const [launchVer, setLaunchVer] = useState(0);
   const [lcfg, setLcfg] = useState<LaunchCfg | null>(null);
   const [armed, setArmed] = useState<string | null>(null);
-  const [launchMenu, setLaunchMenu] = useState<{ hit: LaunchHit; x: number; y: number } | null>(null);
+  const [launchMenu, setLaunchMenu] = useState<{ hit: LaunchHit; x: number; y: number; home?: boolean } | null>(null);
   const [menuIdx, setMenuIdx] = useState(0); // roving focus in the launcher menu
   const menuRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -1133,22 +1133,35 @@ export default function App({ backend }: { backend: Backend }) {
         setLaunchVer((v) => v + 1);
         flash("Back in the results");
         setEpoch((e) => e + 1); // launcher rows are not files: re-run the search
+      } else if (u.kind === "mru") {
+        setMru(restoreMru(mru, u.entries));
+        flash("Back in Most used");
       } else {
         const n = await backend.restoreRecycled(u.paths);
         pushLocalDelta(qc, fsDelta({ added: u.paths }));
         flash(n > 0 ? "Restored" : "Nothing to restore");
       }
     } catch (e) { fail(e); }
-  }, [backend, qc, flash, fail]);
+  }, [backend, qc, flash, fail, mru, setMru]);
 
   const hideLaunch = useCallback((h: LaunchHit) => {
     setLaunchMenu(null);
     void backend.launchHide(h.item.id).then(() => {
       setLaunch((prev) => prev.filter((x) => x.item.id !== h.item.id));
-      setMru(mru.filter((e) => e.item.id !== h.item.id));
+      setMru(removeMru(mru, h.item.id));
       pushUndo({ kind: "unhide", id: h.item.id }, "Hidden from results");
     }).catch(fail);
   }, [backend, pushUndo, fail, mru, setMru]);
+
+  /** "Remove from this list" on a Most-used tile: drop the entry and its launch weight from the
+   *  home history (no results hide — launching it again counts 1 and brings the tile back). */
+  const removeLaunchMru = useCallback((h: LaunchHit) => {
+    setLaunchMenu(null);
+    const gone = mru.find((e) => e.item.id === h.item.id);
+    if (!gone) return; // not in the history (defaults or a stale menu): nothing to remove
+    setMru(removeMru(mru, h.item.id));
+    pushUndo({ kind: "mru", entries: [gone] }, "Removed from Most used");
+  }, [mru, setMru, pushUndo]);
 
   const openMenu = useCallback(async (i: number, x: number, y: number) => {
     const h = rowsRef.current[i];
@@ -1236,7 +1249,7 @@ export default function App({ backend }: { backend: Backend }) {
           const sr = ovRef.current?.querySelector('[data-sel="1"]')?.getBoundingClientRect();
           if (!sr) return;
           const x = sr.left + Math.min(120, sr.width / 2), y = sr.top + sr.height / 2;
-          if (ovItem?.launch) { setLaunchMenu({ hit: ovItem.launch, x, y }); return; }
+          if (ovItem?.launch) { setLaunchMenu({ hit: ovItem.launch, x, y, home: ovItem.section === "mostused" }); return; }
           if (curIdx !== undefined) void openMenu(curIdx, x, y); else void openSemMenu(current.path, x, y);
           return;
         }
@@ -1620,7 +1633,7 @@ export default function App({ backend }: { backend: Backend }) {
       const it = ov.flat[i];
       if (!it || it.calc !== undefined) return;
       ovGo(i);
-      if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY }); return; }
+      if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY, home: it.section === "mostused" }); return; }
       if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
     },
     onDown: (i, e) => { const it = ov.flat[i]; if (!it) return; if (it.launch) suppressClick.current = false; else onRowDown(e, it.hit); }, // launch rows do not drag
@@ -2096,6 +2109,7 @@ export default function App({ backend }: { backend: Backend }) {
         menu={{ hit: launchMenu.hit, x: launchMenu.x, y: launchMenu.y }} idx={menuIdx} setIdx={setMenuIdx}
         listRef={menuRef}
         onRun={(mode) => { setLaunchMenu(null); void launchAct(launchMenu.hit, mode); }}
+        onRemove={launchMenu.home ? () => removeLaunchMru(launchMenu.hit) : undefined}
         onHide={() => hideLaunch(launchMenu.hit)}
         onClose={() => { setLaunchMenu(null); refocus(); }}
       />}

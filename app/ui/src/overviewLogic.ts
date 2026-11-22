@@ -377,11 +377,26 @@ export const MRU_MAX = 24;
 /** Rows of tiles the home shows. */
 export const HOME_ROWS = 3;
 
+/** Most launched first; ties: most recent first (the one order bump/restore must agree on). */
+const mruOrder = (a: MruEntry, b: MruEntry): number => b.n - a.n || b.t - a.t;
+
 /** Count one more launch of `item`; most launched first (ties: most recent first), at most MRU_MAX. */
 export function bumpMru(list: MruEntry[], item: LaunchItem, now: number): MruEntry[] {
   const cur = list.find((e) => e.item.id === item.id);
   const next = cur ? list.map((e) => (e === cur ? { item, n: e.n + 1, t: now } : e)) : [...list, { item, n: 1, t: now }];
-  return next.sort((a, b) => b.n - a.n || b.t - a.t).slice(0, MRU_MAX);
+  return next.sort(mruOrder).slice(0, MRU_MAX);
+}
+
+/** Drop the entry for `id` — its launch weight goes with it (used again, it starts fresh at 1). */
+export function removeMru(list: MruEntry[], id: string): MruEntry[] {
+  return list.filter((e) => e.item.id !== id);
+}
+
+/** Undo a "Remove from this list": reinstate `back` (skipping ids the user has since launched again),
+ *  most launched first (ties: most recent first), at most MRU_MAX. */
+export function restoreMru(list: MruEntry[], back: MruEntry[]): MruEntry[] {
+  const ids = new Set(back.map((e) => e.item.id));
+  return [...list.filter((e) => !ids.has(e.item.id)), ...back].sort(mruOrder).slice(0, MRU_MAX);
 }
 
 /** Home (empty query): "Most used" apps and settings as a tile grid (at most `maxTiles`). Only a drive-scoped

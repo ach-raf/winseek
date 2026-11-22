@@ -3,13 +3,16 @@ import type { LaunchHit } from "./types";
 
 /** The launcher context menu (PRD B5): full keyboard support — the first item is focused on
  *  open, ↑ ↓ (wrap) Home End move, Enter/Space activate, and the underlined access letters
- *  (Open O, admin A, location L, Copy C, Hide H) jump straight to the action. */
-export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose }: {
+ *  (Open O, admin A, location L, Copy C, Remove R, Hide H) jump straight to the action. */
+export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onRemove, onHide, onClose }: {
   menu: { hit: LaunchHit; x: number; y: number };
   idx: number;
   setIdx: (i: number) => void;
   listRef: RefObject<HTMLDivElement | null>;
   onRun: (mode: "open" | "admin" | "reveal" | "copy") => void;
+  /** Only on a "Most used" tile: drop the entry and its weight from the home history
+   *  (not a results hide — launching the app again brings it back). */
+  onRemove?: () => void;
   onHide: () => void;
   onClose: () => void;
 }) {
@@ -20,6 +23,7 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onHide, onClose 
     ...(kind === "app" ? [{ id: "reveal", label: "Open file location", acc: "l", run: () => onRun("reveal") }] : []),
     ...(kind === "setting" ? [{ id: "copy", label: "Copy link", acc: "c", run: () => onRun("copy") }] : []),
     ...(kind === "app" ? [{ id: "copy", label: "Copy target", acc: "c", run: () => onRun("copy") }] : []),
+    ...(onRemove ? [{ id: "remove", label: "Remove from this list", acc: "r", run: onRemove }] : []),
     { id: "hide", label: "Hide from results", acc: "h", run: onHide },
   ];
   const refs = useRef<(HTMLButtonElement | null)[]>([]);

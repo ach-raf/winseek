@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, removeMru, restoreMru, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
 import { chipCount, relDate } from "./format.ts";
 import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
@@ -210,6 +210,22 @@ test("bumpMru keeps settings next to apps, most used first, capped at MRU_MAX", 
   for (let i = 0; i < 40; i++) l = bumpMru(l, it("x" + i), 10 + i);
   assert.equal(l.length, MRU_MAX);
   assert.equal(l[0]?.item.id, "ms-settings:display");
+});
+
+test("removeMru drops the entry and its weight; restoreMru reinstates it under the same order and cap", () => {
+  const it = (id: string) => app(id, id, 0).item;
+  let l = bumpMru([], it("a"), 1);
+  l = bumpMru(l, it("b"), 2);
+  l = bumpMru(l, it("b"), 3); // b weighs 2, a weighs 1
+  assert.deepEqual(l.map((e) => e.item.id), ["b", "a"]);
+  assert.deepEqual(removeMru(l, "b").map((e) => e.item.id), ["a"], "the weight leaves with the entry");
+  assert.deepEqual(removeMru(l, "nope"), l, "unknown id is a no-op");
+  const back = [l[1]!]; // undo removes "a" after "b" was launched again meanwhile
+  const cur = bumpMru(bumpMru([], it("b"), 8), it("b"), 9); // b back at weight 2
+  const r = restoreMru(cur, back);
+  assert.deepEqual(r.map((e) => [e.item.id, e.n]), [["b", 2], ["a", 1]], "re-learned b keeps its new weight, a comes back");
+  const many = Array.from({ length: MRU_MAX }, (_, i) => ({ item: it("y" + i), n: 1, t: i }));
+  assert.equal(restoreMru(many, back).length, MRU_MAX, "restore respects the same cap");
 });
 
 test("nicePath drops the home folder and joins with a chevron", () => {
