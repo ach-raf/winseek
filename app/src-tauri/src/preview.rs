@@ -467,12 +467,12 @@ impl PageCache {
 
 static PAGE_CACHE: std::sync::Mutex<PageCache> = std::sync::Mutex::new(PageCache::new());
 
-/// `path` page `page` (1-based) as a PNG about `width` px wide, cached.
+/// `path` page `page` (1-based) as a PNG about `width` px wide, cached in memory and on disk.
 pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<Vec<u8>>, String> {
     crate::tier1::guard::check_readable(Path::new(path)).map_err(|_| {
         "This file cannot be read (credential file or cloud-only placeholder).".to_string()
     })?;
-    pdf_page_png_with(&PAGE_CACHE, path, page, width, |p, n, w| {
+    pdf_page_png_with(&PAGE_CACHE, pages_dir().as_deref(), path, page, width, |p, n, w| {
         let rt = pdf::runtime().map_err(|e| e.to_string())?;
         pdf::render_page_png(rt, Path::new(p), n, w).map_err(|e| e.to_string())
     })
@@ -480,6 +480,7 @@ pub fn pdf_page_png(path: &str, page: u32, width: u32) -> Result<std::sync::Arc<
 
 fn pdf_page_png_with(
     cache: &std::sync::Mutex<PageCache>,
+    disk: Option<&Path>,
     path: &str,
     page: u32,
     width: u32,
@@ -503,12 +504,138 @@ fn pdf_page_png_with(
     if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
         return Ok(hit);
     }
+    // Disk tier: one render per file version, page and width bucket, so re-opening a PDF (or
+    // re-flipping after a restart) does not re-render. Buckets round up, so the stored image is
+    // never narrower than the request that reads it; the memory LRU stays exact-width for the
+    // hot pages.
+    let bucket = width_bucket(width);
+    let file = disk.map(|d| page_disk_file(d, path, &md, page, bucket));
+    if let Some(f) = &file {
+        if let Ok(bytes) = std::fs::read(f) {
+            if !bytes.is_empty() {
+                let png = std::sync::Arc::new(bytes);
+                cache
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .put(key, png.clone());
+                return Ok(png);
+            }
+        }
+        let png = std::sync::Arc::new(render(path, page, bucket)?);
+        match crate::fsutil::write_atomic(f, &png) {
+            Ok(()) => note_page_write(disk.expect("file implies disk")),
+            Err(e) => eprintln!("winseek: preview: page cache write failed: {e}"),
+        }
+        cache
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .put(key, png.clone());
+        return Ok(png);
+    }
     let png = std::sync::Arc::new(render(path, page, width)?);
     cache
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .put(key, png.clone());
     Ok(png)
+}
+
+/// `%LOCALAPPDATA%\winseek\pages` — the rendered-PDF-page disk cache (`None`: skip the tier).
+fn pages_dir() -> Option<std::path::PathBuf> {
+    crate::tier1::data_root().map(|d| d.join("pages"))
+}
+
+/// Disk renders happen at bucketed widths ([`PAGE_DISK_BUCKET`] px steps, rounded up): a page
+/// keeps at most a handful of disk entries however the pane is resized.
+const PAGE_DISK_BUCKET: u32 = 512;
+
+fn width_bucket(width: u32) -> u32 {
+    width.div_ceil(PAGE_DISK_BUCKET) * PAGE_DISK_BUCKET
+}
+
+/// Disk key for one rendered page: file identity (path, mtime ns, length) + page + width bucket,
+/// hashed like the thumbnails' `thumb_key` — an edited file lands under a new key by construction.
+fn page_disk_file(
+    dir: &Path,
+    path: &str,
+    md: &std::fs::Metadata,
+    page: u32,
+    bucket: u32,
+) -> std::path::PathBuf {
+    use sha2::{Digest, Sha256};
+    let ns = md
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let h = Sha256::digest(
+        format!("v1|{}|{ns}|{}|p{page}|w{bucket}", path.to_lowercase(), md.len()).as_bytes(),
+    );
+    let k = format!("{h:x}");
+    dir.join(&k[..2]).join(format!("{k}.png"))
+}
+
+/// The rendered-page disk cache holds about this much before the oldest pages are dropped.
+const PAGE_DISK_CAP_BYTES: u64 = 256 * 1024 * 1024;
+/// Trim on every Nth write — an inline walk costs a few ms, rare enough not to matter.
+const PAGE_TRIM_EVERY: u32 = 64;
+static PAGE_WRITES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+fn note_page_write(dir: &Path) {
+    let ord = std::sync::atomic::Ordering::Relaxed;
+    if (PAGE_WRITES.fetch_add(1, ord) + 1) % PAGE_TRIM_EVERY == 0 {
+        trim_pages(dir, PAGE_DISK_CAP_BYTES);
+    }
+}
+
+/// Drop the oldest cached renders until `dir` holds at most `cap` bytes. Best effort: files that
+/// refuse to be deleted are skipped and retried by a later trim.
+fn trim_pages(dir: &Path, cap: u64) {
+    let Ok(shards) = std::fs::read_dir(dir) else {
+        return; // nothing cached yet (or the data root is gone): nothing to trim
+    };
+    let mut files: Vec<(std::time::SystemTime, std::path::PathBuf, u64)> = Vec::new();
+    let mut total = 0u64;
+    for shard in shards.flatten() {
+        let Ok(pngs) = std::fs::read_dir(shard.path()) else {
+            continue;
+        };
+        for png in pngs.flatten() {
+            let Ok(md) = png.metadata() else {
+                continue;
+            };
+            total += md.len();
+            files.push((
+                md.modified().unwrap_or(std::time::UNIX_EPOCH),
+                png.path(),
+                md.len(),
+            ));
+        }
+    }
+    if total <= cap {
+        return;
+    }
+    files.sort(); // oldest mtime first
+    let mut dropped = 0u32;
+    let mut refused = 0u32;
+    for (_, f, len) in files {
+        if total <= cap {
+            break;
+        }
+        if std::fs::remove_file(&f).is_ok() {
+            total -= len;
+            dropped += 1;
+        } else {
+            refused += 1;
+        }
+    }
+    if dropped > 0 {
+        eprintln!("winseek: preview: page cache trim: dropped {dropped} render(s) over the cap, {total} byte(s) remain");
+    }
+    if refused > 0 {
+        eprintln!("winseek: preview: page cache trim: {refused} file(s) could not be deleted (retried by the next trim)");
+    }
 }
 
 /// One PDF page as PNG bytes (raw `ArrayBuffer` on the JS side). Runs on a worker thread.
@@ -869,36 +996,36 @@ mod tests {
             seen.lock().unwrap().push((n, w));
             Ok(vec![n as u8; 10])
         };
-        let a = pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        let a = pdf_page_png_with(&cache, None, p, 2, 600, render).unwrap();
         assert_eq!(a.as_ref(), &vec![2u8; 10]);
         // same page + width: served from the cache, no render
-        pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        pdf_page_png_with(&cache, None, p, 2, 600, render).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         // other page / other width render again; widths are clamped to the allowed range
-        pdf_page_png_with(&cache, p, 3, 600, render).unwrap();
-        pdf_page_png_with(&cache, p, 3, 5, render).unwrap();
-        pdf_page_png_with(&cache, p, 3, 99_999, render).unwrap();
+        pdf_page_png_with(&cache, None, p, 3, 600, render).unwrap();
+        pdf_page_png_with(&cache, None, p, 3, 5, render).unwrap();
+        pdf_page_png_with(&cache, None, p, 3, 99_999, render).unwrap();
         assert_eq!(
             *seen.lock().unwrap(),
             [(2, 600), (3, 600), (3, PDF_WIDTH_MIN), (3, PDF_WIDTH_MAX)]
         );
         // a changed file is a different cache entry
         std::fs::write(&f, b"%PDF-fake-but-longer").unwrap();
-        pdf_page_png_with(&cache, p, 2, 600, render).unwrap();
+        pdf_page_png_with(&cache, None, p, 2, 600, render).unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 5);
         // errors are passed on and not cached
-        let err = pdf_page_png_with(&cache, p, 9, 600, |_, _, _| Err("page 9 of 2".into()));
+        let err = pdf_page_png_with(&cache, None, p, 9, 600, |_, _, _| Err("page 9 of 2".into()));
         assert_eq!(err.unwrap_err(), "page 9 of 2");
         // validation: only PDFs, only files that exist
         let txt = dir.path().join("a.txt");
         std::fs::write(&txt, b"x").unwrap();
         assert_eq!(
-            pdf_page_png_with(&cache, txt.to_str().unwrap(), 1, 600, render).unwrap_err(),
+            pdf_page_png_with(&cache, None, txt.to_str().unwrap(), 1, 600, render).unwrap_err(),
             "Not a PDF file"
         );
         let missing = dir.path().join("none.pdf");
         assert_eq!(
-            pdf_page_png_with(&cache, missing.to_str().unwrap(), 1, 600, render).unwrap_err(),
+            pdf_page_png_with(&cache, None, missing.to_str().unwrap(), 1, 600, render).unwrap_err(),
             "File not found"
         );
     }
@@ -936,6 +1063,80 @@ mod tests {
     }
 
     #[test]
+    fn pdf_pages_persist_to_disk_by_bucket_and_invalidate_on_change() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let tmp = tempfile::tempdir().unwrap();
+        let disk = tempfile::tempdir().unwrap();
+        let f = tmp.path().join("a.pdf");
+        std::fs::write(&f, b"%PDF-fake").unwrap();
+        let p = f.to_str().unwrap();
+        let cache = std::sync::Mutex::new(PageCache::new());
+        let calls = AtomicUsize::new(0);
+        let seen = std::sync::Mutex::new(Vec::new());
+        let render = |_: &str, n: u32, w: u32| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            seen.lock().unwrap().push((n, w));
+            Ok(vec![n as u8; w as usize])
+        };
+        // the first render happens at the bucket width, not the exact request
+        let a = pdf_page_png_with(&cache, Some(disk.path()), p, 2, 600, render).unwrap();
+        assert_eq!(a.as_ref(), &vec![2u8; width_bucket(600) as usize]);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // a narrower request in the same bucket is served from disk without a render
+        let b = pdf_page_png_with(&cache, Some(disk.path()), p, 2, 513, render).unwrap();
+        assert_eq!(b.as_ref(), a.as_ref());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        // a wider bucket renders again, and both buckets now sit on disk
+        pdf_page_png_with(&cache, Some(disk.path()), p, 2, 1100, render).unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        let files: usize = std::fs::read_dir(disk.path())
+            .unwrap()
+            .map(|s| std::fs::read_dir(s.unwrap().path()).unwrap().count())
+            .sum();
+        assert_eq!(files, 2);
+        // a changed file invalidates by construction: new identity, new key, fresh render
+        std::fs::write(&f, b"%PDF-fake-but-longer").unwrap();
+        let c = pdf_page_png_with(&cache, Some(disk.path()), p, 2, 600, render).unwrap();
+        assert_eq!(c.as_ref(), &vec![2u8; width_bucket(600) as usize]);
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+    }
+
+    #[test]
+    fn page_disk_cache_trims_oldest_over_cap() {
+        let disk = tempfile::tempdir().unwrap();
+        let mut stamps: Vec<(std::path::PathBuf, std::time::SystemTime)> = Vec::new();
+        for i in 0..4u32 {
+            let dir = disk.path().join(format!("{i:02}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            let f = dir.join(format!("p{i}.png"));
+            std::fs::write(&f, vec![0u8; 100]).unwrap();
+            stamps.push((
+                f.clone(),
+                std::time::UNIX_EPOCH + std::time::Duration::from_secs(i as u64),
+            ));
+        }
+        for (f, t) in &stamps {
+            std::fs::File::options()
+                .write(true)
+                .open(f)
+                .unwrap()
+                .set_times(std::fs::FileTimes::new().set_modified(*t))
+                .unwrap();
+        }
+        // the cap fits three files: the oldest is dropped, the rest survive
+        trim_pages(disk.path(), 300);
+        assert!(!stamps[0].0.exists());
+        assert!(stamps[1].0.exists() && stamps[2].0.exists() && stamps[3].0.exists());
+        // a cap of zero empties the cache
+        trim_pages(disk.path(), 0);
+        let left: usize = std::fs::read_dir(disk.path())
+            .unwrap()
+            .map(|s| std::fs::read_dir(s.unwrap().path()).unwrap().count())
+            .sum();
+        assert_eq!(left, 0);
+    }
+
+    #[test]
     fn real_pdf_page_renders_through_pdfium_and_info_counts_pages() {
         use crate::tier1::pdf::testutil::{make_pdf, pdfium};
         let Some(p) = pdfium() else { return };
@@ -943,7 +1144,7 @@ mod tests {
         let f = dir.path().join("two.pdf");
         std::fs::write(&f, make_pdf(p, &[Some("first page"), Some("second page")])).unwrap();
         let cache = std::sync::Mutex::new(PageCache::new());
-        let png = pdf_page_png_with(&cache, f.to_str().unwrap(), 1, 300, |path, n, w| {
+        let png = pdf_page_png_with(&cache, None, f.to_str().unwrap(), 1, 300, |path, n, w| {
             crate::tier1::pdf::render_page_png(p, Path::new(path), n, w).map_err(|e| e.to_string())
         })
         .unwrap();
