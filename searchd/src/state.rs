@@ -569,6 +569,33 @@ pub fn writer_loop(sh: &Shared, rx: Receiver<Msg>) {
     }
 }
 
+/// How long a writer polls before it falls back to a blocking (queueing) write. A long read is a
+/// few seconds at most; USN changes simply land that much later.
+const WRITE_PATIENCE: Duration = Duration::from_secs(10);
+
+/// Take the index write lock *without queueing behind a long reader*. std's RwLock prefers
+/// writers: a writer blocked in `write()` makes every new `read()` wait, so a USN batch that
+/// arrives during a multi-second read (usage roll-up, folder totals) would freeze all searches
+/// until that read ends. Polling `try_write` never marks a writer as waiting; searches keep
+/// running. After `WRITE_PATIENCE` it blocks normally so the writer cannot starve.
+pub(crate) fn write_index(sh: &Shared) -> std::sync::RwLockWriteGuard<'_, Index> {
+    use std::sync::TryLockError;
+    let t = Instant::now();
+    loop {
+        match sh.index.try_write() {
+            Ok(g) => return g,
+            Err(TryLockError::WouldBlock) if t.elapsed() < WRITE_PATIENCE => {
+                std::thread::sleep(Duration::from_millis(2))
+            }
+            Err(TryLockError::WouldBlock) => {
+                warn!("index writer waited {:.0?}; queueing", t.elapsed());
+                return sh.index.write().unwrap();
+            }
+            Err(TryLockError::Poisoned(_)) => return sh.index.write().unwrap(), // same panic as before
+        }
+    }
+}
+
 fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) {
     let started = Instant::now();
     let mut events: Vec<Event> = Vec::new();
@@ -576,7 +603,7 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
     // lock is released: disk (or antivirus) latency must never stall searches.
     let mut to_stat: Vec<(u32, usize)> = Vec::new();
     {
-        let mut ix = sh.index.write().unwrap();
+        let mut ix = write_index(sh);
         // Lock order everywhere: index, then the roll-up. Builds install under the index read
         // lock, so no change can fall between a build and its overlay.
         let usage = sh.usage_cache.lock().unwrap().clone();
@@ -628,7 +655,7 @@ fn apply_batch(sh: &Shared, vol: u8, changes: &[Change], cursor: JournalCursor) 
         .collect();
     let mut recent: Vec<Hit> = Vec::new();
     {
-        let mut ix = sh.index.write().unwrap();
+        let mut ix = write_index(sh);
         let usage = sh.usage_cache.lock().unwrap().clone();
         let mut ru = usage.as_ref().map(|c| c.ru.write().unwrap());
         for (i, st) in stats {
@@ -687,7 +714,7 @@ fn apply_paths(sh: &Shared, vol: u8, ops: &[PathOp]) {
     let mut recent: Vec<Hit> = Vec::new();
     let mut events: Vec<Event> = Vec::new();
     {
-        let mut ix = sh.index.write().unwrap();
+        let mut ix = write_index(sh);
         if ix.root_of(vol).is_none() {
             return; // not scanned yet (or dropped): the scan/rescan covers these
         }
@@ -709,7 +736,7 @@ fn apply_paths(sh: &Shared, vol: u8, ops: &[PathOp]) {
 fn drop_volume(sh: &Shared, vol: u8) {
     let t = Instant::now();
     {
-        let mut ix = sh.index.write().unwrap();
+        let mut ix = write_index(sh);
         let old = std::mem::take(&mut *ix);
         *ix = retain_volumes(old, |v| v.letter != vol);
     }
@@ -758,7 +785,7 @@ fn replace(sh: &Shared, fresh: Index) {
         }
     };
     let new = merged.unwrap_or(fresh);
-    let old = std::mem::replace(&mut *sh.index.write().unwrap(), new);
+    let old = std::mem::replace(&mut *write_index(sh), new);
     drop(old);
     sh.gen.fetch_add(1, Ordering::Relaxed);
     sh.notify_resync();
@@ -1246,6 +1273,59 @@ mod tests {
         b.add_volume(b'C', 5);
         b.push(b'C', 10, 5, "Docs", true, 0, 0);
         Shared::new(b.finish(), &['C'])
+    }
+
+    /// std's RwLock prefers writers: a *waiting* writer blocks new readers. This is why a long read
+    /// (Space roll-up, folder totals) plus one USN batch used to freeze every search.
+    #[test]
+    fn std_rwlock_waiting_writer_blocks_new_readers() {
+        use std::sync::{Arc, RwLock, TryLockError};
+        let l = Arc::new(RwLock::new(0u32));
+        let r = l.read().unwrap();
+        let l2 = l.clone();
+        let w = std::thread::spawn(move || {
+            *l2.write().unwrap() += 1;
+        });
+        std::thread::sleep(std::time::Duration::from_millis(100));
+        let blocked = matches!(l.try_read(), Err(TryLockError::WouldBlock));
+        drop(r);
+        w.join().unwrap();
+        assert!(blocked, "std RwLock let a reader past a waiting writer");
+    }
+
+    /// `write_index` polls instead of queueing, so a USN batch arriving during a long read (the
+    /// roll-up stand-in below) no longer freezes searches that start while the read is running.
+    #[test]
+    fn a_waiting_writer_no_longer_blocks_searches() {
+        let sh = Arc::new(shared());
+        // Thread R: a long read holds the index (a roll-up / folder-totals pass).
+        let reader = {
+            let sh = Arc::clone(&sh);
+            std::thread::spawn(move || {
+                let _r = sh.index.read().unwrap();
+                std::thread::sleep(Duration::from_millis(400));
+            })
+        };
+        std::thread::sleep(Duration::from_millis(50));
+        // Thread W: a USN batch wants in and polls (`write_index`) instead of queueing.
+        let writer = {
+            let sh = Arc::clone(&sh);
+            std::thread::spawn(move || {
+                drop(write_index(&sh));
+            })
+        };
+        std::thread::sleep(Duration::from_millis(100));
+        // The search must run now, not after R releases the lock (~300 ms from here on the old code).
+        let t = Instant::now();
+        let _ = search(&sh, "a", 0, 10, Sort::NameAsc);
+        assert!(
+            t.elapsed() < Duration::from_millis(150),
+            "search waited {:.0?} behind the waiting writer",
+            t.elapsed()
+        );
+        reader.join().unwrap();
+        // W must have got the lock only after R released it: joining proves it completed.
+        writer.join().unwrap();
     }
     fn create(frn: u128, parent: u128, name: &str) -> Change {
         Change::Create(UsnRecord {
