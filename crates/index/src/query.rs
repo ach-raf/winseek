@@ -14,8 +14,15 @@
 //!
 //! Matching is case-insensitive (see `fold`). Execution scans the sorted order array in
 //! parallel chunks (so hits are already in name order), cheapest terms first.
+//!
+//! [`Order::Relevance`] (Best match) then orders the hits by how useful they are for what was
+//! typed ([`crate::rank`]): the whole name or its start before a word inside it, that before the
+//! letters inside a word; then folders, recent, shallow, outside build and cache folders.
 
 use crate::fold::*;
+use crate::rank::{
+    age_days, is_noise_dir, now_filetime, rank_key, rank_score, MatchClass, RankFacts,
+};
 use crate::store::*;
 
 #[derive(Debug, Clone, PartialEq)]
@@ -151,6 +158,9 @@ pub enum Order {
     TypeAsc,
     /// Exact reverse of `TypeAsc`.
     TypeDesc,
+    /// Best match first ([`crate::rank`]). A query with no typed word to rank by (filters, a
+    /// path, wildcards only) is a name search: it answers in `NameAsc` order.
+    Relevance,
 }
 
 /// Which stored column a meta order sorts by.
@@ -563,6 +573,37 @@ impl Query {
         });
         Query { terms }
     }
+
+    /// Has a typed word that [`MatchClass`] can place in a name, so Best match has something to
+    /// rank by? Filters, wildcards, path terms and negations only decide *whether* a record matches.
+    pub fn ranks_by_name(&self) -> bool {
+        self.terms.iter().any(|t| {
+            !t.negate && matches!(t.cond, Cond::Text { path: false, .. } | Cond::Word { .. })
+        })
+    }
+
+    /// The terms that give a match its class (those of [`Query::ranks_by_name`]), and their
+    /// typed letters in bytes together.
+    fn classed_terms(&self) -> (Vec<usize>, usize) {
+        let mut idx = Vec::new();
+        let mut typed = 0;
+        for (k, t) in self.terms.iter().enumerate() {
+            if t.negate {
+                continue;
+            }
+            if let Cond::Text {
+                needle,
+                path: false,
+                ..
+            }
+            | Cond::Word { needle, .. } = &t.cond
+            {
+                idx.push(k);
+                typed += needle.len();
+            }
+        }
+        (idx, typed)
+    }
 }
 
 #[derive(Default)]
@@ -668,6 +709,29 @@ fn ends_folded(hay: &[u8], suf: &str, ascii: bool, fold: &mut String) -> bool {
             fold.ends_with(suf)
         }
         Err(_) => false,
+    }
+}
+
+/// Is folded `hay` exactly `needle` (folding `hay`)?
+fn eq_folded(hay: &[u8], needle: &str, ascii: bool, fold: &mut String) -> bool {
+    if ascii && hay.is_ascii() {
+        return hay.eq_ignore_ascii_case(needle.as_bytes());
+    }
+    match std::str::from_utf8(hay) {
+        Ok(s) => {
+            fold_into(s, fold);
+            fold == needle
+        }
+        Err(_) => false,
+    }
+}
+
+/// `name` without its last extension, when it has one that is not the whole name (`.gitignore`
+/// and `Makefile` keep theirs; `awb.xlsx` is `awb`).
+fn stem_of(name: &[u8]) -> &[u8] {
+    match name.iter().rposition(|&b| b == b'.') {
+        Some(d) if d > 0 && d + 1 < name.len() => &name[..d],
+        _ => name,
     }
 }
 
@@ -1105,6 +1169,152 @@ impl Index {
         all
     }
 
+    // ------------------------------------------------------------------ Best match
+    /// How `cond`, a typed word the name of record `i` holds, sits in that name. `None` for every
+    /// other condition: they decide whether a record matches, not how good it is.
+    fn name_class(&self, i: u32, cond: &Cond, sc: &mut Scratch) -> Option<MatchClass> {
+        let (needle, ascii) = match cond {
+            Cond::Text {
+                needle,
+                ascii,
+                path: false,
+            } => (needle, *ascii),
+            Cond::Word { needle, ascii, .. } => (needle, *ascii),
+            _ => return None,
+        };
+        let hay = self.name_bytes(i);
+        if eq_folded(hay, needle, ascii, &mut sc.fold) {
+            return Some(MatchClass::Exact);
+        }
+        let stem = stem_of(hay);
+        if stem.len() != hay.len()
+            && !self.is_dir(i)
+            && eq_folded(stem, needle, ascii, &mut sc.fold)
+        {
+            return Some(MatchClass::Exact);
+        }
+        if starts_folded(hay, needle, ascii, &mut sc.fold) {
+            return Some(MatchClass::Prefix);
+        }
+        // It holds the word somewhere (it matched): at the start of a word, or inside one.
+        let word = if hay.is_ascii() {
+            ascii && find_word_ascii_ci(hay, needle.as_bytes())
+        } else {
+            sc.chars.clear();
+            sc.chars
+                .extend(std::str::from_utf8(hay).unwrap_or("").chars());
+            let typed: Vec<char> = needle.chars().collect();
+            find_word(&sc.chars, &typed)
+        };
+        Some(if word {
+            MatchClass::Word
+        } else {
+            MatchClass::Part
+        })
+    }
+
+    /// Where folder `f` sits: bit 0 = known, bit 1 = a noise folder is among its ancestors or it
+    /// is one, bits 2.. = its depth below the volume root (0..=63). Memoized in `m` (one
+    /// [`PathMemo`] per query); threads race benignly: every writer stores the same value.
+    fn folder_loc(&self, f: u32, m: &PathMemo, chain: &mut Vec<u32>) -> u8 {
+        use std::sync::atomic::Ordering::Relaxed;
+        const KNOWN: u8 = 1;
+        const NOISE: u8 = 2;
+        chain.clear();
+        let mut x = f;
+        // The verdict above the chain: a folder already settled, or nothing (the volume root).
+        let mut cur = 0u8;
+        loop {
+            let s = m[x as usize].load(Relaxed);
+            if s & KNOWN != 0 {
+                cur = s;
+                break;
+            }
+            chain.push(x);
+            let p = self.parent[x as usize];
+            if self.flags[x as usize] & F_ROOT != 0
+                || p == NONE
+                || p == x
+                || chain.len() >= MAX_DEPTH
+            {
+                break;
+            }
+            x = p;
+        }
+        for &c in chain.iter().rev() {
+            let root = self.flags[c as usize] & F_ROOT != 0;
+            let d = if root { 0 } else { (cur >> 2).min(62) + 1 };
+            let noise = !root && (cur & NOISE != 0 || is_noise_dir(self.name_bytes(c)));
+            cur = KNOWN | if noise { NOISE } else { 0 } | (d << 2);
+            m[c as usize].store(cur, Relaxed);
+        }
+        cur
+    }
+
+    /// Best-match sort keys for the matches `slots` of `q`, in `slots` order: the packed
+    /// [`rank_key`] (score, then name, then slot), so the biggest key is the best result. One
+    /// pass over the matches on all cores; `now_ft` is the clock as FILETIME (the recency weight).
+    pub fn rank_keys(&self, q: &Query, slots: &[u32], now_ft: i64) -> Vec<(i64, u32)> {
+        // Threads get at least this many matches each: a handful of matches stay on one thread.
+        const MIN_CHUNK: usize = 4096;
+        let view = self.order_view();
+        let memo = zeroed_memo(self.parent.len());
+        let (classed, typed_len) = q.classed_terms();
+        let mut out: Vec<(i64, u32)> = slots.iter().map(|&i| (0, i)).collect();
+        let hw = std::thread::available_parallelism()
+            .map(|x| x.get())
+            .unwrap_or(1);
+        let nt = hw.min(out.len() / MIN_CHUNK).max(1);
+        let chunk = out.len().div_ceil(nt).max(1); // no matches: one empty pass, not a zero-size chunk
+                                                   // shared by every thread: the verdicts and the view are read-only, the atomics race benignly
+        let (memo, classed, view) = (&memo, &classed, &view);
+        std::thread::scope(|s| {
+            for part in out.chunks_mut(chunk) {
+                s.spawn(move || {
+                    let (memo, classed, view) = (memo, classed, view);
+                    let mut sc = Scratch::default();
+                    let mut classes: Vec<MatchClass> = Vec::with_capacity(classed.len());
+                    for entry in part.iter_mut() {
+                        let i = entry.1;
+                        classes.clear();
+                        for &t in classed.iter() {
+                            if let Some(c) = self.name_class(i, &q.terms[t].cond, &mut sc) {
+                                classes.push(c);
+                            }
+                        }
+                        let p = self.parent[i as usize];
+                        let loc = if p == NONE {
+                            0
+                        } else {
+                            self.folder_loc(p, memo, &mut sc.up)
+                        };
+                        let score = rank_score(&RankFacts {
+                            classes: &classes,
+                            name_len: self.name_bytes(i).len(),
+                            typed_len,
+                            is_dir: self.is_dir(i),
+                            depth: u16::from(loc >> 2),
+                            noisy: loc & 2 != 0,
+                            age_days: self.mtime(i).map(|m| age_days(now_ft, m)),
+                        });
+                        entry.0 = rank_key(score, view.rank(i as usize), i);
+                    }
+                });
+            }
+        });
+        out
+    }
+
+    /// The matches `slots` of `q`, best first.
+    pub fn ranked_slots(&self, q: &Query, slots: &[u32], now_ft: i64) -> Vec<u32> {
+        Self::sort_pairs(self.rank_keys(q, slots, now_ft))
+    }
+
+    /// The first `k` of the matches `slots` of `q`, best first, without ordering the rest.
+    pub fn top_ranked_slots(&self, q: &Query, slots: &[u32], now_ft: i64, k: usize) -> Vec<u32> {
+        Self::top_pairs(self.rank_keys(q, slots, now_ft), k)
+    }
+
     /// Sort key of one record for a meta order. Records without metadata sort as size 0 /
     /// oldest. With `dirs` (see [`Index::folder_totals`]) a folder sorts by what it holds.
     fn meta_key(&self, key: MetaKey, i: u32, dirs: Option<&[u64]>) -> i64 {
@@ -1212,11 +1422,9 @@ impl Index {
         tot
     }
 
-    /// Sort matches newest / largest first (ties by slot, so the order is total). The
-    /// ascending orders are this list read backwards. Chunks sort on all cores; the final
-    /// stable sort only merges those runs.
-    pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey, dirs: Option<&[u64]>) -> Vec<u32> {
-        let mut pairs = self.sort_keys(&slots, key, dirs);
+    /// `(key, slot)` pairs ([`Index::sort_keys`], [`Index::rank_keys`]) by key, biggest first.
+    /// Chunks sort on all cores; the final stable sort only merges those runs.
+    pub fn sort_pairs(mut pairs: Vec<(i64, u32)>) -> Vec<u32> {
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let hw = std::thread::available_parallelism()
             .map(|x| x.get())
@@ -1236,15 +1444,8 @@ impl Index {
         pairs.into_iter().map(|(_, i)| i).collect()
     }
 
-    /// The first `k` rows of [`Index::sort_slots`] without sorting the rest.
-    pub fn top_slots(
-        &self,
-        slots: &[u32],
-        key: MetaKey,
-        k: usize,
-        dirs: Option<&[u64]>,
-    ) -> Vec<u32> {
-        let mut pairs = self.sort_keys(slots, key, dirs);
+    /// The first `k` of `(key, slot)` pairs by key, biggest first, without sorting the rest.
+    pub fn top_pairs(mut pairs: Vec<(i64, u32)>, k: usize) -> Vec<u32> {
         let cmp = |a: &(i64, u32), b: &(i64, u32)| b.0.cmp(&a.0).then(a.1.cmp(&b.1));
         let k = k.min(pairs.len());
         if k < pairs.len() && k > 0 {
@@ -1255,17 +1456,58 @@ impl Index {
         pairs.into_iter().map(|(_, i)| i).collect()
     }
 
+    /// Sort matches newest / largest first (ties by slot, so the order is total).
+    pub fn sort_slots(&self, slots: Vec<u32>, key: MetaKey, dirs: Option<&[u64]>) -> Vec<u32> {
+        Self::sort_pairs(self.sort_keys(&slots, key, dirs))
+    }
+
+    /// The first `k` rows of [`Index::sort_slots`] without sorting the rest.
+    pub fn top_slots(
+        &self,
+        slots: &[u32],
+        key: MetaKey,
+        k: usize,
+        dirs: Option<&[u64]>,
+    ) -> Vec<u32> {
+        Self::top_pairs(self.sort_keys(slots, key, dirs), k)
+    }
+
+    /// [`Self::search`] with [`Order::Relevance`], at the clock `now_ft` (FILETIME).
+    pub fn search_ranked(
+        &self,
+        q: &Query,
+        offset: usize,
+        limit: usize,
+        now_ft: i64,
+    ) -> SearchResult {
+        let slots = self.match_slots(q);
+        let total = slots.len();
+        let end = offset.saturating_add(limit).min(total);
+        let pairs = self.rank_keys(q, &slots, now_ft);
+        let mut items = if end < total {
+            Self::top_pairs(pairs, end)
+        } else {
+            Self::sort_pairs(pairs)
+        };
+        items.drain(..offset.min(end));
+        SearchResult { total, items }
+    }
+
     /// Execute a query for one window. The name orders give name-sorted results (ties by
     /// path, `NameDesc` reversed); the meta orders give newest / largest first (or the exact
-    /// reverse). The scan runs in storage order (sequential memory) over
-    /// `available_parallelism` chunks of slots. Works on a dirty index (merges pending
-    /// changes on the fly); call [`Index::refresh`] first for best latency.
+    /// reverse); [`Order::Relevance`] gives Best match first. The scan runs in storage order
+    /// (sequential memory) over `available_parallelism` chunks of slots. Works on a dirty
+    /// index (merges pending changes on the fly); call [`Index::refresh`] first for best latency.
     ///
     /// A caller that pages through one query should keep [`Index::name_matches`] /
-    /// [`Index::sort_slots`] instead: every further window is then free.
+    /// [`Index::sort_slots`] / [`Index::rank_keys`] instead: every further window is then free.
     pub fn search(&self, q: &Query, o: &SearchOptions) -> SearchResult {
         let (key, asc) = match o.order {
-            Order::NameAsc | Order::NameDesc => {
+            Order::Relevance if q.ranks_by_name() => {
+                return self.search_ranked(q, o.offset, o.limit, now_filetime());
+            }
+            // Relevance lands here with nothing typed to rank by (see `Query::ranks_by_name`).
+            Order::NameAsc | Order::NameDesc | Order::Relevance => {
                 let set = self.name_matches(q);
                 let items = self.name_page(&set, o.offset, o.limit, o.order == Order::NameDesc);
                 return SearchResult {

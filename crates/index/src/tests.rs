@@ -1517,3 +1517,280 @@ fn patched_live_matches_equal_a_fresh_scan() {
         }
     }
 }
+
+// ---- Best match (Order::Relevance) ----
+
+const DAY_FT: i64 = 86_400 * 10_000_000;
+/// The clock the Best match tests run at: 2023-11-14, as FILETIME.
+const NOW_FT: i64 = 116_444_736_000_000_000 + 1_700_000_000 * 10_000_000;
+/// Two years before the clock: every row of `awb_tree` is the same age, so only the class and
+/// the location decide.
+const OLD_FT: i64 = NOW_FT - 730 * DAY_FT;
+
+/// C:\ (frn 5)
+///   awb\                              exact, a folder
+///   awb.txt                           exact (a file's name without its extension)
+///   AWB notes.docx                    prefix
+///   notes 2024_awb.xlsx               word
+///   017 Drawbar Organ.fst             part
+///   Projects (10)
+///     awb\ (11)                       exact, deeper
+///     awb-old\ (12)                   prefix
+///     src (13)
+///       my_awb_notes.md               word, deeper
+///     target (14)
+///       debug (15)
+///         build_awb.log               word, under build folders
+///         116v371wd5eiq52h12nawbtgbo.o  part, under build folders
+///   AppData (20)
+///     Local (21)
+///       awb\ (22)                     exact, under AppData
+fn awb_tree() -> Index {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    // (frn, parent frn, name, is a folder); files come before their folder on purpose.
+    let rows: [(u64, u64, &str, bool); 17] = [
+        (101, 13, "my_awb_notes.md", false),
+        (151, 15, "build_awb.log", false),
+        (152, 15, "116v371wd5eiq52h12nawbtgbo.o", false),
+        (22, 21, "awb", true),
+        (100, 5, "awb", true),
+        (102, 5, "awb.txt", false),
+        (103, 5, "AWB notes.docx", false),
+        (104, 5, "notes 2024_awb.xlsx", false),
+        (105, 5, "017 Drawbar Organ.fst", false),
+        (11, 10, "awb", true),
+        (12, 10, "awb-old", true),
+        (13, 10, "src", true),
+        (10, 5, "Projects", true),
+        (14, 10, "target", true),
+        (15, 14, "debug", true),
+        (21, 20, "Local", true),
+        (20, 5, "AppData", true),
+    ];
+    for (frn, parent, name, dir) in rows {
+        b.push(C, frn, parent, name, dir, 7, OLD_FT);
+    }
+    b.finish()
+}
+
+/// Paths of a query's Best match window (a folder with a trailing `\`).
+fn ranked(ix: &Index, q: &str, offset: usize, limit: usize, now_ft: i64) -> (usize, Vec<String>) {
+    let r = ix.search_ranked(&Query::parse(q), offset, limit, now_ft);
+    let names = r
+        .items
+        .iter()
+        .map(|&i| {
+            format!(
+                "{}{}",
+                ix.full_path(i),
+                if ix.is_dir(i) { "\\" } else { "" }
+            )
+        })
+        .collect();
+    (r.total, names)
+}
+
+const AWB_BEST_FIRST: [&str; 11] = [
+    r"C:\awb\",
+    r"C:\Projects\awb\",
+    r"C:\awb.txt",
+    r"C:\AppData\Local\awb\",
+    r"C:\Projects\awb-old\",
+    r"C:\AWB notes.docx",
+    r"C:\notes 2024_awb.xlsx",
+    r"C:\Projects\src\my_awb_notes.md",
+    r"C:\Projects\target\debug\build_awb.log",
+    r"C:\017 Drawbar Organ.fst",
+    r"C:\Projects\target\debug\116v371wd5eiq52h12nawbtgbo.o",
+];
+
+/// Best match of `awb`: the whole name first, then the names that start with it, then the ones
+/// with a word that does, and the letters inside a word (`drawbar`, a hash) last. Alphabetical
+/// order put both of those on top (digits first). Inside a class folders lead, and a result costs
+/// for depth and for sitting under build / cache folders: the exact file at the surface
+/// (`awb.txt`) comes before the exact folder three levels down under AppData.
+#[test]
+fn best_match_puts_the_closest_names_first() {
+    let ix = awb_tree();
+    let (total, got) = ranked(&ix, "awb", 0, usize::MAX, NOW_FT);
+    assert_eq!(total, 11);
+    assert_eq!(got, AWB_BEST_FIRST);
+    // What the list used to be: A to Z, digits first.
+    let old = ix.search_str("awb", &SearchOptions::default());
+    assert_eq!(
+        (old.total, ix.full_path(old.items[0])),
+        (11, r"C:\017 Drawbar Organ.fst".to_string())
+    );
+    // The generic entry point is the same order.
+    let via_search = ix.search_str(
+        "awb",
+        &SearchOptions {
+            order: Order::Relevance,
+            ..Default::default()
+        },
+    );
+    let got: Vec<String> = via_search.items.iter().map(|&i| ix.full_path(i)).collect();
+    let flat: Vec<String> = AWB_BEST_FIRST
+        .iter()
+        .map(|p| p.trim_end_matches('\\').to_string())
+        .collect();
+    assert_eq!(got, flat);
+}
+
+/// Inside a class: a result changed lately comes before an older one, all else equal.
+#[test]
+fn best_match_prefers_what_changed_lately() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 1, 5, "report-z.txt", false, 1, NOW_FT - 400 * DAY_FT); // over a year old
+    b.push(C, 2, 5, "report-a.txt", false, 1, NOW_FT - DAY_FT / 2); // earlier today
+    let ix = b.finish();
+    let (_, got) = ranked(&ix, "report", 0, usize::MAX, NOW_FT);
+    assert_eq!(got, [r"C:\report-a.txt", r"C:\report-z.txt"]);
+}
+
+/// Windows of one Best match search tile the whole order: the pages in a row are the full list,
+/// and a window past the end is empty.
+#[test]
+fn best_match_pages_tile_the_whole_order() {
+    let ix = awb_tree();
+    let (_, all) = ranked(&ix, "awb", 0, usize::MAX, NOW_FT);
+    let mut tiled = Vec::new();
+    for off in [0, 3, 6, 9, 12, 30] {
+        let (_, page) = ranked(&ix, "awb", off, 3, NOW_FT);
+        assert!(page.len() <= 3);
+        tiled.extend(page);
+    }
+    assert_eq!(tiled, all);
+    // The first `k` without ordering the rest are the first `k` of the full order.
+    let q = Query::parse("awb");
+    let slots = ix.match_slots(&q);
+    for k in [0, 1, 5, 11, 40] {
+        let top: Vec<String> = ix
+            .top_ranked_slots(&q, &slots, NOW_FT, k)
+            .iter()
+            .map(|&i| ix.full_path(i))
+            .collect();
+        let full: Vec<String> = all
+            .iter()
+            .take(k)
+            .map(|p| p.trim_end_matches('\\').to_string())
+            .collect();
+        assert_eq!(top, full, "k = {k}");
+    }
+    assert_eq!(ix.ranked_slots(&q, &slots, NOW_FT).len(), 11);
+}
+
+/// Several typed words: the weakest placement decides the class (`awb notes`: `AWB notes.docx`
+/// starts with one word and holds the other as a word, so it is a word match like the rest).
+#[test]
+fn best_match_with_several_words_takes_the_weakest() {
+    let ix = awb_tree();
+    let (total, got) = ranked(&ix, "awb notes", 0, usize::MAX, NOW_FT);
+    assert_eq!(total, 3);
+    assert_eq!(
+        got,
+        [
+            r"C:\AWB notes.docx",
+            r"C:\notes 2024_awb.xlsx",
+            r"C:\Projects\src\my_awb_notes.md"
+        ]
+    );
+}
+
+/// `ws:` keeps its meaning (a word must start with the letters) and the rest of the order stands.
+#[test]
+fn best_match_honours_the_word_operator() {
+    let ix = awb_tree();
+    let (total, got) = ranked(&ix, "ws:awb", 0, usize::MAX, NOW_FT);
+    assert_eq!(total, 9);
+    assert_eq!(got.as_slice(), &AWB_BEST_FIRST[..9]);
+}
+
+/// Filters, a path term and negations narrow the list; the typed word still ranks what is left.
+#[test]
+fn best_match_with_filters_paths_and_negations() {
+    let ix = awb_tree();
+    let (total, got) = ranked(
+        &ix,
+        r"awb file: !ext:log;o Projects\",
+        0,
+        usize::MAX,
+        NOW_FT,
+    );
+    assert_eq!(total, 1);
+    assert_eq!(got, [r"C:\Projects\src\my_awb_notes.md"]);
+    let (total, got) = ranked(&ix, "awb folder:", 0, usize::MAX, NOW_FT);
+    assert_eq!(total, 4);
+    assert_eq!(
+        got,
+        [
+            AWB_BEST_FIRST[0],
+            AWB_BEST_FIRST[1],
+            AWB_BEST_FIRST[3],
+            AWB_BEST_FIRST[4]
+        ]
+    );
+}
+
+/// Nothing typed to rank by (a filter, a path, wildcards only, a lone negation): Best match is
+/// the name order it always was.
+#[test]
+fn best_match_without_a_typed_word_is_name_order() {
+    let ix = awb_tree();
+    let paths = |r: SearchResult| r.items.iter().map(|&i| ix.full_path(i)).collect::<Vec<_>>();
+    for q in [
+        "folder:",
+        "file:",
+        r"C:\Projects\",
+        "awb*",
+        "!awb",
+        "ext:log",
+        "",
+    ] {
+        let rel = ix.search_str(
+            q,
+            &SearchOptions {
+                order: Order::Relevance,
+                ..Default::default()
+            },
+        );
+        let name = ix.search_str(q, &SearchOptions::default());
+        assert_eq!((rel.total, paths(rel)), (name.total, paths(name)), "{q:?}");
+        assert!(!Query::parse(q).ranks_by_name(), "{q:?}");
+    }
+    for q in ["awb", "ws:awb", "!awb report", r"C:\x\ report", "a*.txt b"] {
+        assert!(Query::parse(q).ranks_by_name(), "{q:?}");
+    }
+}
+
+/// Names outside ASCII: folded equality is an exact match, and a letter of a script written
+/// without spaces starts a word.
+#[test]
+fn best_match_folds_and_finds_words_in_other_scripts() {
+    let ix = sample();
+    let names = |q: &str| ranked(&ix, q, 0, usize::MAX, NOW_FT).1;
+    assert_eq!(names("été"), [r"C:\Users\Alice\Été.txt"]);
+    assert_eq!(names("日本語"), [r"C:\日本語.doc"]);
+    assert_eq!(names("本語"), [r"C:\日本語.doc"]);
+    assert_eq!(names("مرحبا"), [r"C:\مرحبا.txt"]);
+    // `té` sits inside the word `Été`: still found, as always, and scored below the exact name.
+    let keys = |q: &str| {
+        let q = Query::parse(q);
+        let slots = ix.match_slots(&q);
+        ix.rank_keys(&q, &slots, NOW_FT).remove(0).0
+    };
+    assert_eq!(names("té"), [r"C:\Users\Alice\Été.txt"]);
+    assert!(keys("té") < keys("été"));
+}
+
+/// The Best match sees a record added since the last refresh.
+#[test]
+fn best_match_sees_records_added_since_the_last_refresh() {
+    let mut ix = awb_tree();
+    ix.insert(C, 900, 5, "awb", false, 0, OLD_FT);
+    let (_, got) = ranked(&ix, "awb", 0, usize::MAX, NOW_FT);
+    assert_eq!(got.len(), 12);
+    assert_eq!(got[0], r"C:\awb\");
+}
