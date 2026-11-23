@@ -173,7 +173,7 @@ function useListSource(sections: GallerySection[], key?: string): GallerySource 
  *  Rows come from `sections` (a loaded list) or from `source` (the timeline: months by count, rows by index on demand;
  *  `source={null}` is "still loading"). Indices: "effective" = what is on screen (folded months skipped), "absolute"
  *  = the whole list. `onMore`: the viewport reached the end of what is loaded (search results read more). */
-export function Gallery({ backend, sections, listKey, source, rail, actions, empty, extra, noun = "photo", view = "grid", onMore }: {
+export function Gallery({ backend, sections, listKey, source, rail, actions, empty, extra, noun = "photo", view = "grid", onMore, hideCount = false }: {
   backend: Backend;
   sections?: GallerySection[];
   /** With `sections`: what makes it the same list (a growing result list keeps its selection); default the array. */
@@ -189,6 +189,9 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
   /** Grid of tiles (default) or dense list rows. */
   view?: GalleryView;
   onMore?: () => void;
+  /** The owner already shows the count above (timeline header, search results strip); the bottom
+   *  bar drops it so the shortcut hints always fit on one line. */
+  hideCount?: boolean;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const root = useRef<HTMLDivElement>(null);
@@ -687,7 +690,7 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
           {scrubLabel && <div className="lg-scrub" style={{ top: scrubLabel.y }} aria-hidden="true">{scrubLabel.text}</div>}
         </div>
         <div className="lg-info" aria-live="polite">
-          <span>{effTotal.toLocaleString("en-US")} {noun}{effTotal === 1 ? "" : "s"}</span>
+          {!hideCount && <span>{effTotal.toLocaleString("en-US")} {noun}{effTotal === 1 ? "" : "s"}</span>}
           {cur && (
             <span className="lg-cur" title={cur.path}>
               {nameOf(cur)}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}

@@ -326,12 +326,12 @@ export default function Library({ backend, embedded = false, tab: tabProp, chrom
               <span className="sp" />
               <button className="btn sm secondary" onClick={() => setPhotoQ("")} title="Back to the timeline (clears the search)">Clear</button>
             </div>
-            <Gallery backend={backend} sections={results} listKey={`results|${search.query}`} actions={actions} view={gview} onMore={search.loadMore}
+            <Gallery backend={backend} sections={results} listKey={`results|${search.query}`} actions={actions} view={gview} onMore={search.loadMore} hideCount
                      empty={search.loading
                        ? <><span className="spin" aria-label="Searching" /><span>Searching…</span></>
                        : <><strong>{`Nothing matches “${search.query}”`}</strong><span>Try other words, or describe what the picture shows.</span></>} />
           </>
-        ) : <Gallery backend={backend} source={source} rail actions={actions} empty={emptyTimeline} view={gview} />)}
+        ) : <Gallery backend={backend} source={source} rail actions={actions} empty={emptyTimeline} view={gview} hideCount />)}
         {seen.collections && keep("collections", (
           <Collections backend={backend} images={personal} hidden={hidden} t1={t1} gen={gen} actions={actions} onError={fail} active={tab === "collections"} />
         ))}

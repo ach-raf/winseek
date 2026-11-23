@@ -52,11 +52,13 @@ html.lib-view.web #root { width: 100%; height: 100%; }
 .lg-row.sk { pointer-events: none; opacity: .55; background: linear-gradient(var(--bg3), var(--bg3)) 0 50% / 100% 20px no-repeat; }
 /* the keyboard's tile inside a multi-selection */
 .pt.lead.sel { outline-color: color-mix(in oklab, var(--acc) 70%, var(--fg)); }
-.lg-info { white-space: nowrap; display: flex; align-items: center; gap: var(--sp-3); height: 36px; padding: 0 var(--gut); flex: none; border-top: 1px solid var(--line); font-size: 0.78125rem; color: var(--fg3); background: var(--bg); overflow: hidden; }
-.lg-info { mask-image: linear-gradient(90deg, #000 calc(100% - var(--gut)), transparent); } /* overflowing hints fade out instead of being sliced mid-word */
+.lg-info { white-space: nowrap; display: flex; align-items: center; flex-wrap: wrap; gap: 3px var(--sp-3); min-height: 36px; padding: 4px var(--gut); flex: none; border-top: 1px solid var(--line); font-size: 0.78125rem; color: var(--fg3); background: var(--bg); overflow: hidden; }
 .lg-cur { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg2); }
-.lg-info .hints { display: inline-flex; gap: 12px; flex: none; }
+/* Hints right-hug on the file line and drop to their own line when the pane is too narrow —
+ * they never get clipped (the old fade mask dimmed the last hint even when everything fit). */
+.lg-info .hints { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; gap: 4px 8px; flex: 1 1 auto; min-width: 0; }
 .lg-info .hints span { display: inline-flex; align-items: center; gap: 6px; }
+.lg-info .hints kbd { min-width: 18px; padding: 0 4px; }
 .lg-empty { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; color: var(--fg3); text-align: center; padding: var(--sp-5); }
 .lg-empty strong { color: var(--fg2); font-weight: 600; font-size: 0.9375rem; }
 .lg-empty span { font-size: 0.78125rem; max-width: 420px; }
