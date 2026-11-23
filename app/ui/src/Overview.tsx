@@ -280,6 +280,24 @@ function Windowed({ scrollRef, count, className, style, render, onMore, onView }
   const [g, setG] = useState({ cols: 1, stride: 0, gap: 0, top: 0, viewH: 0 });
   const [scrollTop, setScrollTop] = useState(0);
   const on = count >= WIN_MIN;
+  // The spacers and what the last render drew, so a scroll event can re-place the rows on the spot (see `place`).
+  const padB = useRef<HTMLDivElement>(null);
+  const padA = useRef<HTMLDivElement>(null);
+  const drawn = useRef({ a: 0, b: 0, rows: 0, g, live: false });
+
+  /** The spacer heights for the exact scroll position `st`. A compressed list (a million pictures) moves its rows
+   *  at a different speed than the scrollbar, so the rows' offset must follow every scroll event: waiting for the
+   *  React render (a frame or more, longer while thumbnails stream) leaves the tiles at the native speed first and
+   *  snaps them to their own after, a visible shake on every wheel tick. */
+  const place = useCallback((st: number) => {
+    const d = drawn.current, gg = d.g;
+    if (!d.live || !gg.stride) return;
+    const real = st - gg.top;
+    const { y, h } = compress(real, d.rows * gg.stride - gg.gap, gg.viewH, (WIN_OVERSCAN + 2) * gg.stride);
+    const shift = real - y;
+    if (padB.current) padB.current.style.height = `${Math.max(0, d.a * gg.stride + shift - gg.gap)}px`;
+    if (padA.current) padA.current.style.height = `${Math.max(0, h - (d.b + 1) * gg.stride - shift)}px`;
+  }, []);
 
   const measure = useCallback(() => {
     const el = box.current, sc = scrollRef.current;
@@ -306,6 +324,7 @@ function Windowed({ scrollRef, count, className, style, render, onMore, onView }
     let raf = 0;
     const onScroll = () => {
       noteScroll(sc.scrollTop);
+      place(sc.scrollTop);
       if (raf === 0) raf = requestAnimationFrame(() => { raf = 0; setScrollTop(sc.scrollTop); }); // one update per frame
     };
     setScrollTop(sc.scrollTop);
@@ -314,7 +333,7 @@ function Windowed({ scrollRef, count, className, style, render, onMore, onView }
     ro.observe(sc);
     if (box.current) ro.observe(box.current);
     return () => { sc.removeEventListener("scroll", onScroll); cancelAnimationFrame(raf); ro.disconnect(); };
-  }, [scrollRef, on, measure]);
+  }, [scrollRef, on, measure, place]);
 
   let from = 0, to = count, before = 0, after = 0;
   let seenFrom = 0, seenTo = to;
@@ -333,18 +352,22 @@ function Windowed({ scrollRef, count, className, style, render, onMore, onView }
     const b = Math.max(a, Math.min(rows - 1, Math.ceil((y + g.viewH) / g.stride) + WIN_OVERSCAN));
     from = a * g.cols;
     to = Math.min(count, (b + 1) * g.cols);
+    drawn.current = { a, b, rows, g, live: true };
     // A spacer stands for whole rows; the gap after it is the grid's own.
     before = a * g.stride + shift - g.gap;
     after = h - (b + 1) * g.stride - shift;
   }
+  if (!(on && g.stride)) drawn.current.live = false;
+  // After every render the spacers follow the live scroll position, not the one the render was made from.
+  useLayoutEffect(() => { const sc = scrollRef.current; if (sc) place(sc.scrollTop); });
   const nearEnd = on && !!g.stride && to >= count - g.cols * 6;
   useEffect(() => { if (nearEnd) onMore?.(); }, [nearEnd, count, onMore]);
   useEffect(() => { onView?.(seenFrom, seenTo); }, [seenFrom, seenTo, onView]);
   return (
     <div ref={box} className={className + (on ? " win" : "")} style={style}>
-      {before > 0 && <div className="win-pad" style={{ height: before }} />}
+      {before > 0 && <div ref={padB} className="win-pad" style={{ height: before }} />}
       {render(from, to)}
-      {after > 0 && <div className="win-pad" style={{ height: after }} />}
+      {after > 0 && <div ref={padA} className="win-pad" style={{ height: after }} />}
     </div>
   );
 }
