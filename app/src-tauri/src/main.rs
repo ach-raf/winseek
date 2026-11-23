@@ -20,8 +20,8 @@ mod textdec;
 mod tier1;
 mod updates;
 mod view;
-mod winhk;
 mod watcher;
+mod winhk;
 
 use commands::AppState;
 use std::sync::atomic::Ordering;

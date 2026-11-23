@@ -59,7 +59,10 @@ pub fn parse(combo: &str) -> Option<Shortcut> {
     if !real && !is_function_key(key) {
         return None;
     }
-    Some(Shortcut { mods, vk: vk_of(key)? })
+    Some(Shortcut {
+        mods,
+        vk: vk_of(key)?,
+    })
 }
 
 fn is_function_key(key: &str) -> bool {
@@ -216,7 +219,10 @@ pub fn start(on_hotkey: impl Fn(Shortcut) + Send + 'static) {
         })
         .expect("spawn hotkey thread");
     if let Ok(tid) = ready_rx.recv() {
-        let _ = WORKER.set(Worker { tid, tx: Mutex::new(tx) });
+        let _ = WORKER.set(Worker {
+            tid,
+            tx: Mutex::new(tx),
+        });
     }
 }
 
@@ -254,7 +260,13 @@ mod tests {
 
     #[test]
     fn letters_and_named_keys_are_virtual_keys() {
-        assert_eq!(parse("Alt+W"), Some(Shortcut { mods: M_ALT, vk: 'W' as u32 }));
+        assert_eq!(
+            parse("Alt+W"),
+            Some(Shortcut {
+                mods: M_ALT,
+                vk: 'W' as u32
+            })
+        );
         assert_eq!(parse("Alt+Space").unwrap().vk, 0x20);
         assert_eq!(parse("Ctrl+Alt+Shift+F13").unwrap().vk, 0x7C);
         assert_eq!(parse("Ctrl+1").unwrap().vk, '1' as u32);
@@ -274,7 +286,11 @@ mod tests {
     fn rejects_unsafe_or_garbage() {
         assert_eq!(parse("Space"), None);
         assert_eq!(parse("A"), None);
-        assert_eq!(parse("Shift+A"), None, "a global Shift+A swallows capital A");
+        assert_eq!(
+            parse("Shift+A"),
+            None,
+            "a global Shift+A swallows capital A"
+        );
         assert_eq!(parse("Shift+F5"), None);
         assert_eq!(parse("Ctrl+"), None);
         assert_eq!(parse(""), None);

@@ -103,9 +103,7 @@ unsafe extern "system" fn menu_guard_proc(
     const SC_KEYMENU: usize = 0xF100;
     // Alt+<key> asks for the window menu via WM_SYSCOMMAND/SC_KEYMENU; lparam is the key's char
     // (' ' for Alt+Space). While recording, eat it so the keystroke stays the recorder's.
-    if msg == WM_SYSCOMMAND
-        && (wparam.0 & 0xFFF0) == SC_KEYMENU
-        && RECORDING.load(Ordering::SeqCst)
+    if msg == WM_SYSCOMMAND && (wparam.0 & 0xFFF0) == SC_KEYMENU && RECORDING.load(Ordering::SeqCst)
     {
         // WebView2 never hands Alt+Space to the page as a keydown, so report it ourselves.
         if lparam.0 == 0x20 {
