@@ -402,7 +402,11 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
   live.current = { pickAt, actions, itemAt: (k: number) => src.get(effToAbs(ix, k)) };
   const ev = useMemo<PicTileEvents>(() => ({
     onClick: (k, e) => {
-      if (live.current.pickAt(k, { ctrl: e.ctrlKey, shift: e.shiftKey })) { setSel(k); root.current?.focus({ preventScroll: true }); }
+      const plain = live.current.pickAt(k, { ctrl: e.ctrlKey, shift: e.shiftKey });
+      if (plain) setSel(k);
+      // Every click kind hands the keyboard back to the grid — Space (Quick Look) must work
+      // right after a Ctrl/Shift pick too, not only after a plain one.
+      root.current?.focus({ preventScroll: true });
     },
     onDoubleClick: (k) => { const it = live.current.itemAt(k); if (it) live.current.actions.open(it.path); },
     onContextMenu: (k, e) => {
@@ -704,6 +708,7 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
               </button>
             )}
             <span><kbd>↵</kbd> Open</span>
+            <span><kbd>Space</kbd> Preview</span>
             {!extra && <span><kbd>Ctrl ↵</kbd> Reveal</span>}
             <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
             <span><kbd>Shift F10</kbd> More</span>
