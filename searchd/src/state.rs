@@ -16,7 +16,7 @@ use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
-use winseek_index::{Index, MetaKey, Query, RankSet, Rollup, SlotSet, VolKind};
+use winseek_index::{now_filetime, Index, MetaKey, Query, RankSet, Rollup, SlotSet, VolKind};
 use winseek_ipc::{
     ChangeKind, Hit, Monitor, Response, Sort, UsageDetail, UsageEntry, UsageTree, UsageType,
     VolumeState, VolumeStatus,
@@ -43,6 +43,8 @@ const QUERY_CACHE_IDLE: Duration = Duration::from_secs(90);
 /// only the first `META_TOP` rows are (one select pass). A jump past them sorts the rest once.
 const META_FULL_SORT: usize = 1_000_000;
 const META_TOP: usize = 50_000;
+/// A Best match order slower than this is logged (a one-letter query over millions of names).
+const SLOW_RANK: Duration = Duration::from_millis(50);
 
 /// Folder sizes (bytes under each folder, all levels) are recomputed at most this often while
 /// the index keeps changing, and only while somebody is looking at folders.
@@ -91,9 +93,9 @@ impl FolderSizes {
 enum Cached {
     /// Name orders: asc and desc read the same set from either end.
     Names(RankSet),
-    /// Meta orders: every match, newest / largest first (asc reads it backwards).
+    /// Meta orders and Best match: every match in its order (asc reads a meta order backwards).
     Sorted(Vec<u32>),
-    /// Meta orders, huge result: only the leading rows are sorted so far.
+    /// Meta orders and Best match, huge result: only the leading rows are ordered so far.
     Top { total: usize, items: Vec<u32> },
 }
 
@@ -120,6 +122,9 @@ enum SortClass {
     Mtime,
     Size,
     Type,
+    /// Best match (`winseek_index::rank`): not kept live, it is ordered again on the next
+    /// request after the index changes (recency and folders move).
+    Relevance,
 }
 
 type CacheKey = (String, SortClass);
@@ -382,6 +387,9 @@ pub struct Stats {
     batch_us: AtomicU64,
     searches: AtomicU64,
     search_us: AtomicU64,
+    /// Best-match orders built (one per query and index change), and their time.
+    ranked: AtomicU64,
+    rank_ms: AtomicU64,
     usage_builds: AtomicU64,
     usage_ms: AtomicU64,
     folder_builds: AtomicU64,
@@ -393,6 +401,11 @@ impl Stats {
         self.searches.fetch_add(1, Ordering::Relaxed);
         self.search_us
             .fetch_add(d.as_micros() as u64, Ordering::Relaxed);
+    }
+    fn ranked(&self, d: Duration) {
+        self.ranked.fetch_add(1, Ordering::Relaxed);
+        self.rank_ms
+            .fetch_add(d.as_millis() as u64, Ordering::Relaxed);
     }
     fn batch(&self, changes: usize, d: Duration) {
         self.batches.fetch_add(1, Ordering::Relaxed);
@@ -417,11 +430,12 @@ impl Stats {
         let (s, sus) = (t(&self.searches), t(&self.search_us));
         let (ub, ums) = (t(&self.usage_builds), t(&self.usage_ms));
         let (fb, fms) = (t(&self.folder_builds), t(&self.folder_ms));
+        let (rk, rms) = (t(&self.ranked), t(&self.rank_ms));
         if b + s + ub + fb == 0 {
             return None;
         }
         Some(format!(
-            "writer: {b} batches / {ch} changes / {} ms; searches: {s} / {} ms; usage roll-ups: {ub} / {ums} ms; folder sizes: {fb} / {fms} ms",
+            "writer: {b} batches / {ch} changes / {} ms; searches: {s} / {} ms; usage roll-ups: {ub} / {ums} ms; folder sizes: {fb} / {fms} ms; best-match orders: {rk} / {rms} ms",
             bus / 1000,
             sus / 1000
         ))
@@ -949,6 +963,10 @@ pub fn search(
 /// The `exclude` paths are taken out of the stream first: `total` and every offset count only
 /// what remains, so a client can show some records elsewhere (the picture grid's meaning
 /// matches) and still address the rest by exact position.
+///
+/// `Sort::Relevance` is Best match (`winseek_index::rank`). A query with nothing typed to rank
+/// by (a filter tab with an empty box, a pasted path, wildcards only) is the name search it
+/// always was.
 pub fn search_excluding(
     sh: &Shared,
     query: &str,
@@ -958,7 +976,10 @@ pub fn search_excluding(
     exclude: &[String],
 ) -> (u64, Vec<Hit>, Option<&'static str>) {
     let ex = ExcludeSet::new(exclude);
+    let q = Query::parse(query);
     let (class, reverse, note) = match sort {
+        Sort::Relevance if q.ranks_by_name() => (SortClass::Relevance, false, None),
+        Sort::Relevance => (SortClass::Name, false, None),
         Sort::NameAsc => (SortClass::Name, false, None),
         Sort::NameDesc => (SortClass::Name, true, None),
         Sort::MtimeDesc => (SortClass::Mtime, false, None),
@@ -981,7 +1002,7 @@ pub fn search_excluding(
     let gen = sh.gen.load(Ordering::Relaxed);
     let cached = sh.qcache.lock().unwrap().get(gen, query, class, &ix);
     if lim == 0 && ex.is_empty() {
-        let total = cached.map_or_else(|| ix.count(&Query::parse(query)), |c| c.total());
+        let total = cached.map_or_else(|| ix.count(&q), |c| c.total());
         return (total as u64, Vec::new(), note);
     }
     // Can the cached result answer this window? (`Top` only covers its sorted prefix.)
@@ -991,7 +1012,6 @@ pub fn search_excluding(
         _ => true,
     });
     let data = usable.unwrap_or_else(|| {
-        let q = Query::parse(query);
         let mut live = None;
         let fresh = Arc::new(match class {
             // Every query but the empty one (all ranks, nothing to scan) is kept live.
@@ -1005,6 +1025,30 @@ pub fn search_excluding(
                 Cached::Names(ranks)
             }
             SortClass::Name => Cached::Names(ix.name_matches(&q)),
+            SortClass::Relevance => {
+                let t = Instant::now();
+                let slots = ix.match_slots(&q);
+                let keys = ix.rank_keys(&q, &slots, now_filetime());
+                let full = slots.len() <= META_FULL_SORT || off + lim > META_TOP || !ex.is_empty();
+                let data = if full {
+                    Cached::Sorted(Index::sort_pairs(keys))
+                } else {
+                    Cached::Top {
+                        total: slots.len(),
+                        items: Index::top_pairs(keys, META_TOP),
+                    }
+                };
+                let d = t.elapsed();
+                sh.stats.ranked(d);
+                if d > SLOW_RANK {
+                    info!(
+                        "best match: ordered {} matches for {query:?} in {} ms",
+                        slots.len(),
+                        d.as_millis()
+                    );
+                }
+                data
+            }
             SortClass::Mtime | SortClass::Size | SortClass::Type => {
                 let key = match class {
                     SortClass::Mtime => MetaKey::Mtime,
@@ -2003,6 +2047,113 @@ mod tests {
         // a window past the end is empty, the total stays
         assert_eq!(search(&sh, "txt", 99, 5, Sort::NameAsc).0, 6);
         assert!(search(&sh, "txt", 99, 5, Sort::MtimeDesc).1.is_empty());
+    }
+
+    /// Best match over the pipe protocol: the whole name first, then the names starting with
+    /// it, then a word inside, and the letters inside a word last; pages tile through the
+    /// cache, and the order is built again once the index changes.
+    #[test]
+    fn best_match_orders_pages_and_refreshes_through_the_cache() {
+        let sh = shared();
+        // A folder-watch volume carries explicit sizes/mtimes (USN records get theirs from a later stat).
+        let mut b = IndexBuilder::new(true);
+        b.add_volume(b'E', 5);
+        b.volume_mut(b'E').unwrap().kind = VolKind::Folder;
+        replace(&sh, b.finish());
+        // 2001-01-01 (unix ms): nothing is recent, so the class and the location decide.
+        let old = 978_307_200_000i64;
+        let up = |rel: &str, is_dir: bool| PathOp::Upsert {
+            rel: rel.into(),
+            is_dir,
+            size: if is_dir { 0 } else { 7 },
+            mtime: old,
+        };
+        apply_paths(
+            &sh,
+            b'E',
+            &[
+                up(r"Ph\017 drawbar organ.fst", false),
+                up(r"Ph\awb.txt", false),
+                up(r"Ph\awb", true),
+                up(r"Ph\target", true),
+                up(r"Ph\target\build_awb.log", false),
+                up(r"Ph\my awb notes.docx", false),
+            ],
+        );
+        let paths = |hits: &[Hit]| {
+            hits.iter()
+                .map(|h| format!("{}{}", h.path, if h.is_dir { "\\" } else { "" }))
+                .collect::<Vec<_>>()
+        };
+        let run = |q: &str, off: u32, lim: u32, sort: Sort| {
+            let (_, hits, note) = search(&sh, q, off, lim, sort);
+            (paths(&hits), note.is_none())
+        };
+        let best = [
+            r"E:\Ph\awb\",
+            r"E:\Ph\awb.txt",
+            r"E:\Ph\my awb notes.docx",
+            r"E:\Ph\target\build_awb.log",
+            r"E:\Ph\017 drawbar organ.fst",
+        ];
+        assert_eq!(run("awb", 0, 10, Sort::Relevance).0, best);
+        assert!(run("awb", 0, 10, Sort::Relevance).1, "no fallback note");
+        assert_eq!(search(&sh, "awb", 0, 10, Sort::Relevance).0, 5);
+        // Alphabetical put the digit-led name on top; that order is still one menu pick away.
+        assert_eq!(
+            run("awb", 0, 10, Sort::NameAsc).0[0],
+            r"E:\Ph\017 drawbar organ.fst"
+        );
+        // later windows answer from the cache and tile the same order
+        let mut tiled = Vec::new();
+        for off in [0, 2, 4, 6] {
+            tiled.extend(run("awb", off, 2, Sort::Relevance).0);
+        }
+        assert_eq!(tiled, best);
+        // Best match and the name order are two cached answers of the same query
+        assert_eq!(sh.qcache.lock().unwrap().map.len(), 2);
+        // a filter, a pasted path or wildcards only: nothing typed to rank by, so it is the
+        // name search (a typed word next to a path still ranks: `run` above)
+        for q in ["awb folder:", r"Ph\", "awb*"] {
+            assert_eq!(
+                run(q, 0, 10, Sort::Relevance),
+                run(q, 0, 10, Sort::NameAsc),
+                "{q}"
+            );
+        }
+        // limit 0 only counts
+        let (_, hits, _) = search(&sh, "awb", 0, 0, Sort::Relevance);
+        assert_eq!(search(&sh, "awb", 0, 0, Sort::Relevance).0, 5);
+        assert!(hits.is_empty());
+        // the index changes: the order is built again and the new file sits with its class
+        apply_paths(&sh, b'E', &[up(r"Ph\awb-old.txt", false)]);
+        let (hits, _) = run("awb", 0, 10, Sort::Relevance);
+        assert_eq!(hits.len(), 6);
+        assert_eq!(
+            hits[..4].to_vec(),
+            [best[0], best[1], r"E:\Ph\awb-old.txt", best[2]]
+        );
+        // an excluded path leaves the stream before the offsets apply
+        let (total, hits, _) = search_excluding(
+            &sh,
+            "awb",
+            0,
+            10,
+            Sort::Relevance,
+            &[r"E:\Ph\awb".to_string(), r"E:\Ph\awb.txt".to_string()],
+        );
+        assert_eq!(
+            (total, paths(&hits)),
+            (
+                4,
+                vec![
+                    r"E:\Ph\awb-old.txt".to_string(),
+                    best[2].to_string(),
+                    best[3].to_string(),
+                    best[4].to_string()
+                ]
+            )
+        );
     }
 
     #[test]

@@ -19,6 +19,10 @@ pub enum Sort {
     TypeAsc,
     /// Exact reverse of `TypeAsc`.
     TypeDesc,
+    /// Best match first: how the typed words sit in the name (whole name, its start, a word's
+    /// start, inside a word), then folders, recent, shallow, outside build and cache folders.
+    /// A query with nothing typed to rank by is answered in `NameAsc` order.
+    Relevance,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -286,6 +290,23 @@ mod tests {
         };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains(r#""exclude":["C:\\Pics\\a.jpg"]"#), "{s}");
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+    }
+
+    /// Best match is its own sort on the wire (`"relevance"`); an older daemon that does not
+    /// know it fails to parse the request instead of silently answering another order.
+    #[test]
+    fn best_match_is_its_own_sort() {
+        let r = Request::Search {
+            id: 5,
+            query: "awb".into(),
+            offset: 0,
+            limit: 400,
+            sort: Sort::Relevance,
+            exclude: Vec::new(),
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains(r#""sort":"relevance""#), "{s}");
         assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
     }
 
