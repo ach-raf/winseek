@@ -35,5 +35,9 @@ test("punctuation keys record as the physical key, on any layout", () => {
   assert.equal(eventToCombo(ev({ key: "<", code: "Backquote", altKey: true, shiftKey: true })), "Alt+Shift+`");
   // An AZERTY ; prints é on the Semicolon key; the combo is still the key, not the print.
   assert.equal(eventToCombo(ev({ key: "é", code: "Semicolon", ctrlKey: true })), "Ctrl+;");
+  // The AZERTY < is the ISO 102nd key (IntlBackslash) and < is its UNSHIFTED char — the shape
+  // 0.2.52 still rejected ("Alt+< is not a valid shortcut").
+  assert.equal(eventToCombo(ev({ key: "<", code: "IntlBackslash", altKey: true })), "Alt+<");
+  assert.equal(eventToCombo(ev({ key: ">", code: "IntlBackslash", altKey: true, shiftKey: true })), "Alt+Shift+<");
   assert.equal(eventToCombo(ev({ key: "5", code: "Numpad5", ctrlKey: true })), "Ctrl+Num5");
 });

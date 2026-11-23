@@ -41,7 +41,9 @@ test("arrows, pgup/pgdn, menu, comma", () => {
   assert.equal(matches(ev({ key: "ArrowRight", code: "ArrowRight", altKey: true }), "Alt+Right"), true);
   assert.equal(matches(ev({ key: "PageDown", code: "PageDown", ctrlKey: true }), "Ctrl+PgDn"), true);
   assert.equal(matches(ev({ key: "ContextMenu", code: "ContextMenu" }), "Menu"), true);
-  assert.equal(matches(ev({ key: ",", ctrlKey: true }), "Ctrl+,"), true);
+  assert.equal(matches(ev({ key: ",", ctrlKey: true }), "Ctrl+,") , true);
+  // the ISO 102nd key: AZERTY < (code IntlBackslash) matches the combo recorded from it
+  assert.equal(matches(ev({ key: "<", code: "IntlBackslash", altKey: true }), "Alt+<"), true);
   assert.equal(matches(ev({ key: "Backspace", code: "Backspace" }), "Backspace"), true);
 });
 

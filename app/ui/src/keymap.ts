@@ -118,6 +118,7 @@ function eventKey(e: Pick<KeyboardEvent, "key" | "code">): string {
   if (code === "BracketLeft") return "[";
   if (code === "BracketRight") return "]";
   if (code === "Backslash") return "\\";
+  if (code === "IntlBackslash") return "<"; // the ISO 102nd key: < > on AZERTY-family layouts (scancode 0x56)
   if (code === "Semicolon") return ";";
   if (code === "Quote") return "'";
   m = /^Numpad([0-9])$/.exec(code);

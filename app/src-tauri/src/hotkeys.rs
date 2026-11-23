@@ -240,6 +240,7 @@ fn code_name(key: &str) -> String {
         ";" => "Semicolon".into(),
         "'" => "Quote".into(),
         "*" => "NumpadMultiply".into(), // the numpad * key (Shift+8 types "8": it has Digit8's code)
+        "<" => "IntlBackslash".into(),  // the ISO 102nd key: < > on AZERTY-family layouts
         other => {
             // the numpad digits are stored as Num0..Num9 so "+" stays the only separator; the
             // numpad operators need no names — the keymap aliases them onto = - / . (their twins)
@@ -289,6 +290,7 @@ fn key_name(code: &Code) -> String {
         "NumpadDivide" => "/".into(),
         "NumpadDecimal" => ".".into(),
         "NumpadMultiply" => "*".into(),
+        "IntlBackslash" => "<".into(),
         other => {
             if let Some(d) = other
                 .strip_prefix("Numpad")
@@ -527,12 +529,16 @@ mod tests {
             "Ctrl+Shift+'",
             "Alt+.",
             "Ctrl+Shift+,",
+            "Alt+<",
         ] {
             assert_eq!(combo(&parse(c).unwrap()), c, "roundtrip {c}");
         }
-        // Alt+< : the US shape (Shift+Comma) and the ISO-key shape (German < on Backquote)
+        // Alt+< : the US shape (Shift+Comma), the German shape (Backquote code) and the AZERTY
+        // 102nd-key shape (IntlBackslash, < UNSHIFTED — the combo 0.2.52 still rejected)
         assert_eq!(parse("Alt+Shift+,").unwrap().key, Code::Comma);
         assert_eq!(parse("Alt+Shift+`").unwrap().key, Code::Backquote);
+        assert_eq!(parse("Alt+<").unwrap().key, Code::IntlBackslash);
+        assert_eq!(parse("Alt+Shift+<").unwrap().key, Code::IntlBackslash);
         // the numpad: digits carry their own names (Num0..Num9), the operators are twins of = - * .
         assert_eq!(parse("Ctrl+Num5").unwrap().key, Code::Numpad5);
         assert_eq!(combo(&parse("Ctrl+Num5").unwrap()), "Ctrl+Num5");
