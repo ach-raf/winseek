@@ -765,6 +765,9 @@ export interface Backend {
   /** Release (true) / restore (false) every global hotkey while the recorder is open. */
   hotkeysCapture(on: boolean): Promise<void>;
   /** Fired after any binding changed (also from another window). */
+  /** Alt+Space pressed while the recorder is open: WebView2 never delivers it as a keydown, so the
+   *  native side reports it (shift = Shift was held too). */
+  onSysSpace(cb: (shift: boolean) => void): Promise<() => void>;
   onHotkeysChanged(cb: (h: Hotkeys) => void): Promise<() => void>;
   /** The clipboard hotkey shows the popup with the clipboard text as the query. */
   onSetQuery(cb: (p: { query: string }) => void): Promise<() => void>;

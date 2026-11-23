@@ -688,6 +688,14 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
     void backend.hotkeysCapture(true).catch(() => {});
     return () => { void backend.hotkeysCapture(false).catch(() => {}); };
   }, [recOpen, backend]);
+  const recWhich = rec?.which;
+  useEffect(() => {
+    if (!recWhich) return;
+    let off: (() => void) | undefined, dead = false;
+    backend.onSysSpace((shift) => setRec({ which: recWhich, combo: shift ? "Alt+Shift+Space" : "Alt+Space" }))
+      .then((u) => (dead ? u() : (off = u)));
+    return () => { dead = true; off?.(); };
+  }, [recWhich, backend]);
   const save = async () => {
     if (!rec) return;
     try {

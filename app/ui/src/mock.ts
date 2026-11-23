@@ -1183,6 +1183,7 @@ export const mockBackend: Backend = {
     hotkeys = { ...hotkeys, [which]: combo };
     return { ...hotkeys };
   },
+  async onSysSpace() { return () => {}; },
   async onHotkeysChanged() { return () => {}; },
   async onSetQuery() { return () => {}; },
   async agentMcpPath(): Promise<McpPath> {

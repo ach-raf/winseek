@@ -86,10 +86,72 @@ pub fn sync(app: &AppHandle) {
     refresh_tray(app);
 }
 
+/// True while the Settings recorder is open.
+static RECORDING: AtomicBool = AtomicBool::new(false);
+static MENU_APP: std::sync::OnceLock<AppHandle> = std::sync::OnceLock::new();
+const MENU_GUARD_ID: usize = 0x5753_4B48; // "WSKH"
+
+unsafe extern "system" fn menu_guard_proc(
+    hwnd: windows::Win32::Foundation::HWND,
+    msg: u32,
+    wparam: windows::Win32::Foundation::WPARAM,
+    lparam: windows::Win32::Foundation::LPARAM,
+    _id: usize,
+    _ref: usize,
+) -> windows::Win32::Foundation::LRESULT {
+    use windows::Win32::UI::WindowsAndMessaging::WM_SYSCOMMAND;
+    const SC_KEYMENU: usize = 0xF100;
+    // Alt+<key> asks for the window menu via WM_SYSCOMMAND/SC_KEYMENU; lparam is the key's char
+    // (' ' for Alt+Space). While recording, eat it so the keystroke stays the recorder's.
+    if msg == WM_SYSCOMMAND
+        && (wparam.0 & 0xFFF0) == SC_KEYMENU
+        && RECORDING.load(Ordering::SeqCst)
+    {
+        // WebView2 never hands Alt+Space to the page as a keydown, so report it ourselves.
+        if lparam.0 == 0x20 {
+            use windows::Win32::UI::Input::KeyboardAndMouse::{GetKeyState, VK_SHIFT};
+            // SAFETY: plain key-state query.
+            let shift = unsafe { GetKeyState(VK_SHIFT.0 as i32) } < 0;
+            if let Some(app) = MENU_APP.get() {
+                let _ = app.emit("hotkey-sys-space", serde_json::json!({ "shift": shift }));
+            }
+        }
+        return windows::Win32::Foundation::LRESULT(0);
+    }
+    // SAFETY: standard fallthrough to the original window procedure.
+    unsafe { windows::Win32::UI::Shell::DefSubclassProc(hwnd, msg, wparam, lparam) }
+}
+
+/// Subclass the popup window (once; re-installing the same proc+id is a no-op update).
+fn install_menu_guard(app: &AppHandle) {
+    let _ = MENU_APP.set(app.clone());
+    let Ok((hwnd, _)) = crate::shell::popup_hwnd(app) else {
+        return;
+    };
+    let raw = hwnd.0 as isize;
+    let _ = crate::shell::on_main(app, move || {
+        let h = windows::Win32::Foundation::HWND(raw as *mut _);
+        // SAFETY: called on the thread that owns the window; the proc is a 'static fn.
+        unsafe {
+            let _ = windows::Win32::UI::Shell::SetWindowSubclass(
+                h,
+                Some(menu_guard_proc),
+                MENU_GUARD_ID,
+                0,
+            );
+        }
+        Ok(())
+    });
+}
+
 /// While the Settings recorder is open every global hotkey is released, so the keystroke the
 /// user presses (e.g. the current Alt+Space) reaches the recorder instead of triggering the
 /// popup. Turning it off re-registers whatever is wanted (honouring pause).
 pub fn capture(app: &AppHandle, on: bool) {
+    RECORDING.store(on, Ordering::SeqCst);
+    if on {
+        install_menu_guard(app);
+    }
     let _g = SYNC.lock().unwrap_or_else(|e| e.into_inner());
     let Some(st) = app.try_state::<Hotkeys>() else {
         return;

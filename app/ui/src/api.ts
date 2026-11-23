@@ -134,6 +134,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     hotkeysGet: () => inv<Hotkeys>("hotkeys_get"),
     hotkeysSet: (which, combo) => inv<Hotkeys>("hotkeys_set", { which, combo }),
     hotkeysCapture: (on) => inv<void>("hotkeys_capture", { on }),
+    onSysSpace: (cb) => t.event.listen<{ shift: boolean }>("hotkey-sys-space", (e) => cb(e.payload.shift)),
     onHotkeysChanged: (cb) => t.event.listen<Hotkeys>("hotkeys-changed", (e) => cb(e.payload)),
     onSetQuery: (cb) => t.event.listen<{ query: string }>("set-query", (e) => cb(e.payload)),
     openLibrary: () => inv("open_library"),
