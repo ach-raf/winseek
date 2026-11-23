@@ -7,7 +7,7 @@ import { StreamThumb } from "./StreamThumb";
 import { baseName } from "./Semantic";
 import { errText, formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
-import { qk } from "./qk";
+import { qk, BIG_FILES_N } from "./qk";
 import { IChevL, ICheck } from "./icons";
 import { NameFilter } from "./NameFilter";
 import { KeyHints } from "./Hint";
@@ -17,7 +17,6 @@ import { useFsDeltaListener } from "./useFsDelta";
 
 type View = "home" | "exact" | "similar" | "large" | "shots";
 const NEAR_THRESHOLD = 0.95;
-const BIG_N = 200;
 const HOME_ROWS = 6;
 
 /** Groups minus what was recycled this session; a group with fewer than two files left disappears. */
@@ -60,7 +59,7 @@ export function Cleanup({ backend, images, hidden, actions, epoch, onError, driv
   // The index lists, owned by react-query: cached across keep-alive (tab switches never refetch),
   // re-read when the Library invalidates them (reveal, undo, new embeddings).
   const dupsQ = useQuery({ queryKey: qk.libDups, queryFn: () => backend.libraryDupGroups() });
-  const bigQ = useQuery({ queryKey: qk.libBig, queryFn: () => backend.libraryBigFiles(BIG_N) });
+  const bigQ = useQuery({ queryKey: qk.libBig, queryFn: () => backend.libraryBigFiles(BIG_FILES_N) });
   useEffect(() => { if (dupsQ.error) onError(dupsQ.error); }, [dupsQ.error, onError]);
   useEffect(() => { if (bigQ.error) onError(bigQ.error); }, [bigQ.error, onError]);
   // The old effects answered [] on failure; keep that (an empty list renders the empty states).

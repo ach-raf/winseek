@@ -23,6 +23,9 @@ export function createQueryClient(): QueryClient {
   });
 }
 
+/** How many biggest files the Clean up list reads (shared by the screen and the startup warm-up). */
+export const BIG_FILES_N = 200;
+
 /** The query keys. */
 export const qk = {
   /** Semantic-layer status, polled (1 s with a setup panel open, 10 s otherwise). One shared entry
