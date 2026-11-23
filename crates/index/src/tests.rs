@@ -1794,3 +1794,43 @@ fn best_match_sees_records_added_since_the_last_refresh() {
     assert_eq!(got.len(), 12);
     assert_eq!(got[0], r"C:\awb\");
 }
+
+/// Recency outweighs depth inside a class: the same kind of match changed this week ten folders
+/// down comes before one a year old at the top of the drive. (With the first numbers the
+/// year-old file won by 4; the re-finding studies put recency first.)
+#[test]
+fn best_match_recency_outranks_depth() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    let mut parent = 5u64;
+    for k in 100..110u64 {
+        // ids from 100 up: the index normalises the low ones, which would merge the folders
+        b.push(C, k, parent, "lvl", true, 0, OLD_FT);
+        parent = k;
+    }
+    b.push(
+        C,
+        50,
+        parent,
+        "zzz-report.txt",
+        false,
+        1,
+        NOW_FT - 3 * DAY_FT,
+    ); // this week, 10 folders deep
+    b.push(C, 60, 5, "aaa-report.txt", false, 1, NOW_FT - 400 * DAY_FT); // over a year old, at the top
+    let ix = b.finish();
+    let (total, got) = ranked(&ix, "report", 0, usize::MAX, NOW_FT);
+    assert_eq!(total, 2);
+    assert!(
+        got[0].ends_with("zzz-report.txt"),
+        "the file changed this week must come first, got {got:?}"
+    );
+    // A folder still leads its class, whatever changed around it.
+    b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 1, 5, "report-z.txt", false, 1, NOW_FT - DAY_FT / 2); // earlier today
+    b.push(C, 2, 5, "report", true, 0, NOW_FT - 800 * DAY_FT); // a folder, over two years old
+    let ix = b.finish();
+    let (_, got) = ranked(&ix, "report", 0, usize::MAX, NOW_FT);
+    assert_eq!(got, [r"C:\report\", r"C:\report-z.txt"]);
+}
