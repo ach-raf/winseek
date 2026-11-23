@@ -4,6 +4,7 @@ import { SearchGuide } from "./SearchGuide";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { wordQuery } from "./pictureRank";
 import { pathQueryFromPaste } from "./pathNorm";
+import { fitMenuRect } from "./popupLogic";
 import { previewSelectionText } from "./previewLogic";
 import { calc } from "./calc.ts";
 import { FirstRun, type Summary } from "./FirstRun";
@@ -124,7 +125,8 @@ const EMPTY_SET: ReadonlySet<string> = new Set();
 /** Open/closed + outside-click/Escape dismissal + the viewport clamp, shared by the filter row's
  *  two chip menus (drive, sort) so the pair cannot drift apart. The menu hangs off the chip's
  *  right edge; on a narrow (scaled or wrapped) row the chip can sit near the left edge, where
- *  right-anchoring would clip the menu out of the window — nudge it back inside once per open
+ *  right-anchoring would clip the menu out of the window, and a long list can run off the
+ *  bottom — pull it fully inside once per open via fitMenuRect, the same clamp the ctx menu uses
  *  (the Filters popover solves the same problem from the other side). */
 function useChipMenu() {
   const [open, setOpen] = useState(false);
@@ -140,11 +142,13 @@ function useChipMenu() {
   }, [open]);
   useEffect(() => {
     if (!open) return;
-    const el = menuRef.current;
-    if (!el) return;
-    const r = el.getBoundingClientRect();
-    if (r.right > window.innerWidth - 8) { el.style.right = "8px"; el.style.left = "auto"; }
-    else if (r.left < 8) { el.style.left = "8px"; el.style.right = "auto"; }
+    const el = menuRef.current, wrap = wrapRef.current;
+    if (!el || !wrap) return;
+    const r = el.getBoundingClientRect(), wr = wrap.getBoundingClientRect();
+    const fit = fitMenuRect(r.left, r.top, r.width, r.height, window.innerWidth, window.innerHeight);
+    el.style.left = `${fit.left - wr.left}px`; // .dmenu is absolute inside .dpick: viewport → wrap coords
+    el.style.top = `${fit.top - wr.top}px`;
+    el.style.right = "auto";
   }, [open]);
   return { open, setOpen, wrapRef, menuRef };
 }

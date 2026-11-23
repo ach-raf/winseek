@@ -263,6 +263,7 @@ html.web.view-full .shell { border-radius: 0; border: 0; }
 @starting-style { .ctx-scrim { opacity: 0; } } /* entry only: the scrim unmounts with the menu, so its exit is instant */
 .ctx-menu {
   position: fixed; inset: auto; margin: 0; border: 0; z-index: 61; min-width: 190px; padding: 4px; border-radius: 10px;
+  max-height: calc(100vh - 16px); overflow-y: auto; /* shorter than the window: fitMenuRect can only slide, not shrink */
   background: var(--bg); box-shadow: var(--pop-shadow);
   display: flex; flex-direction: column;
 }

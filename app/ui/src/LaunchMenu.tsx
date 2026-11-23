@@ -1,4 +1,5 @@
-import { useEffect, useRef, type RefObject } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, type RefObject } from "react";
+import { fitMenuRect } from "./popupLogic";
 import type { LaunchHit } from "./types";
 
 /** The launcher context menu (PRD B5): full keyboard support — the first item is focused on
@@ -27,8 +28,18 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onRemove, onHide
     { id: "hide", label: "Hide from results", acc: "h", run: onHide },
   ];
   const refs = useRef<(HTMLButtonElement | null)[]>([]);
+  // Raw anchor first, replaced by the fitted position before the first paint (layout effect):
+  // near the window edge the menu slides fully inside instead of clipping.
+  const [pos, setPos] = useState({ left: menu.x, top: menu.y });
   useEffect(() => { refs.current[idx]?.focus(); }, [idx]);
-  useEffect(() => { listRef.current?.showPopover(); }, [listRef]); // light dismiss + Esc + top layer come from the popover
+  useLayoutEffect(() => {
+    const el = listRef.current;
+    if (!el) return;
+    el.showPopover(); // light dismiss + Esc + top layer come from the popover
+    const r = el.getBoundingClientRect();
+    const fit = fitMenuRect(menu.x, menu.y, r.width, r.height, window.innerWidth, window.innerHeight);
+    setPos((p) => (fit.left !== p.left || fit.top !== p.top ? fit : p));
+  }, [listRef, menu.x, menu.y]);
 
   const move = (to: number) => setIdx((to + items.length) % items.length);
   const onKey = (e: React.KeyboardEvent) => {
@@ -60,7 +71,7 @@ export function LaunchMenu({ menu, idx, setIdx, listRef, onRun, onRemove, onHide
           click from reaching the row underneath (a native context menu passes no click either). */}
       <div className="ctx-scrim" onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); }}
            onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onClose(); }} />
-      <div className="ctx-menu" popover="auto" style={{ left: menu.x, top: menu.y }} role="menu" aria-label="Launcher actions" ref={listRef}
+      <div className="ctx-menu" popover="auto" style={pos} role="menu" aria-label="Launcher actions" ref={listRef}
            onKeyDown={onKey} onToggle={(e) => { if (e.newState === "closed") onClose(); }}>
         {items.map((it, i) => (
           <button key={it.id + i} role="menuitem" tabIndex={i === idx ? 0 : -1}
