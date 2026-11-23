@@ -129,6 +129,7 @@ fn filter_clause(filter: &str) -> &'static str {
 
 fn sort_of(sort: &str) -> Sort {
     match sort {
+        "rel" => Sort::Relevance,
         "size" => Sort::SizeDesc,
         "size_asc" => Sort::SizeAsc,
         "date_asc" => Sort::MtimeAsc,
@@ -136,7 +137,7 @@ fn sort_of(sort: &str) -> Sort {
         "date" => Sort::MtimeDesc,
         "type" => Sort::TypeAsc,
         "type_desc" => Sort::TypeDesc,
-        _ => Sort::NameAsc, // "name" and "rel" (no relevance ranking in Tier 0)
+        _ => Sort::NameAsc, // "name"
     }
 }
 
@@ -147,6 +148,22 @@ fn hit(h: winseek_ipc::Hit) -> Hit {
         is_dir: h.is_dir,
         size: h.size,
         mtime: h.mtime,
+    }
+}
+
+fn search_result(r: io::Result<Response>) -> Option<SearchResult> {
+    match r {
+        Ok(Response::SearchResult {
+            total,
+            hits,
+            elapsed_us,
+            ..
+        }) => Some(SearchResult {
+            total,
+            hits: hits.into_iter().map(hit).collect(),
+            elapsed_us,
+        }),
+        _ => None,
     }
 }
 
@@ -200,31 +217,39 @@ impl NameSource for PipeSource {
         let q = format!("{query} {}", filter_clause(filter))
             .trim()
             .to_string();
-        let req = Request::Search {
+        let (offset, limit) = (
+            offset.min(u32::MAX as usize) as u32,
+            limit.min(u32::MAX as usize) as u32,
+        );
+        let sort = sort_of(sort);
+        let ask = |sort| Request::Search {
             id: self.id(),
-            query: q,
-            offset: offset.min(u32::MAX as usize) as u32,
-            limit: limit.min(u32::MAX as usize) as u32,
-            sort: sort_of(sort),
+            query: q.clone(),
+            offset,
+            limit,
+            sort,
             exclude: exclude.to_vec(),
         };
-        match self.call(&req) {
-            Ok(Response::SearchResult {
-                total,
-                hits,
-                elapsed_us,
-                ..
-            }) => SearchResult {
-                total,
-                hits: hits.into_iter().map(hit).collect(),
-                elapsed_us,
-            },
-            _ => SearchResult {
-                total: 0,
-                hits: vec![],
-                elapsed_us: 0,
-            },
+        let mut answer = self.call(&ask(sort));
+        // A name service older than this app does not know Best match and drops the request
+        // (a service that failed to update under a new app has happened). Ask again in name
+        // order, which is what its Best match was, instead of showing nothing.
+        if sort == Sort::Relevance && !matches!(&answer, Ok(Response::SearchResult { .. })) {
+            match &answer {
+                Err(e) => eprintln!(
+                    "winseek: the name service did not take a Best match search ({e}); asking in name order - is the service up to date?"
+                ),
+                Ok(other) => eprintln!(
+                    "winseek: the name service answered a Best match search with {other:?}; asking in name order - is the service up to date?"
+                ),
+            }
+            answer = self.call(&ask(Sort::NameAsc));
         }
+        search_result(answer).unwrap_or(SearchResult {
+            total: 0,
+            hits: vec![],
+            elapsed_us: 0,
+        })
     }
 
     fn status(&self) -> Vec<VolumeStatus> {
@@ -408,6 +433,100 @@ mod tests {
         assert_eq!(filter_clause("folders"), "folder:");
         assert_eq!(filter_clause("all"), "");
         assert!(filter_clause("images").starts_with("ext:"));
+    }
+
+    /// "Best match" asks the name service for its own ranking; every other sort is unchanged.
+    #[test]
+    fn best_match_asks_the_service_for_its_ranking() {
+        assert_eq!(sort_of("rel"), Sort::Relevance);
+        assert_eq!(sort_of("name"), Sort::NameAsc);
+        assert_eq!(sort_of("date"), Sort::MtimeDesc);
+    }
+
+    /// A searchd stand-in that answers each `Search` through `answer` (by sort), and closes the
+    /// connection on `None` - what a daemon does with a request it cannot parse.
+    fn spawn_searchd_by_sort(
+        name: &str,
+        answer: impl Fn(u64, Sort) -> Option<Response> + Send + Sync + 'static,
+    ) {
+        use std::sync::Arc;
+        use winseek_ipc::pipe::PipeServer;
+        let answer = Arc::new(answer);
+        let mut server = PipeServer::bind(name).unwrap();
+        std::thread::spawn(move || loop {
+            match server.accept() {
+                Ok(mut conn) => {
+                    let answer = Arc::clone(&answer);
+                    std::thread::spawn(move || loop {
+                        let req: Request = match read_message(&mut conn) {
+                            Ok(r) => r,
+                            Err(_) => return,
+                        };
+                        let Request::Search { id, sort, .. } = req else {
+                            return;
+                        };
+                        let Some(resp) = answer(id, sort) else {
+                            return;
+                        };
+                        if write_message(&mut conn, &resp).is_err() {
+                            return;
+                        }
+                    });
+                }
+                Err(_) => return,
+            }
+        });
+    }
+
+    /// A name service from before Best match drops the request: the app asks again in name order
+    /// and still shows results, instead of an empty list.
+    #[test]
+    fn an_old_name_service_still_gets_results_in_name_order() {
+        let name = format!(r"\\.\pipe\winseek-test-old-searchd-{}", std::process::id());
+        fn hit(label: &str) -> winseek_ipc::Hit {
+            winseek_ipc::Hit {
+                name: label.into(),
+                path: format!(r"C:\{label}.txt"),
+                is_dir: false,
+                size: Some(1),
+                mtime: Some(1),
+            }
+        }
+        spawn_searchd_by_sort(&name, |id, sort| {
+            (sort != Sort::Relevance).then(|| Response::SearchResult {
+                id,
+                total: 1,
+                hits: vec![hit("name_asc")],
+                elapsed_us: 1,
+            })
+        });
+        let src = PipeSource::connect_to(&name, Duration::from_secs(1)).unwrap();
+        let r = src.search("awb", "all", 0, 10, "rel");
+        assert_eq!(
+            (r.total, r.hits.len(), r.hits[0].name.as_str()),
+            (1, 1, "name_asc")
+        );
+        // and a current service's Best match answer is passed through as it is
+        let name = format!(r"\\.\pipe\winseek-test-new-searchd-{}", std::process::id());
+        spawn_searchd_by_sort(&name, |id, sort| {
+            Some(Response::SearchResult {
+                id,
+                total: 1,
+                hits: vec![hit(sort_wire_name(sort))],
+                elapsed_us: 2,
+            })
+        });
+        let src = PipeSource::connect_to(&name, Duration::from_secs(1)).unwrap();
+        let r = src.search("awb", "all", 0, 10, "rel");
+        assert_eq!((r.total, r.hits[0].name.as_str()), (1, "relevance"));
+    }
+
+    fn sort_wire_name(sort: Sort) -> &'static str {
+        match sort {
+            Sort::Relevance => "relevance",
+            Sort::NameAsc => "name_asc",
+            _ => "other",
+        }
     }
 
     /// A thread-per-connection accept loop shaped like searchd's `spawn_accept_loop`, answering
