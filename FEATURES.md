@@ -53,6 +53,7 @@ All terms must match (AND).
 ### Search box extras
 - **Type tabs with live counts** for the typed query: All, Apps, Settings, Images, Docs, Video, Audio, Folders (Tab / Shift+Tab or Alt+1…8).
 - **Sort** (Alt+S cycles): best match, name, size, date, type, path, each ascending/descending.
+- **Best match ranks files and folders by how useful they are** for what you typed, not A to Z. How the typed word sits in the name decides first: the whole name (`awb`, `awb.xlsx`), then names that start with it, then names with a word that does (`my awb notes.docx`), and the letters inside another word (`drawbar`, a hash) last. Inside each of those: folders before files, then what changed lately, then what sits closer to the top of the drive, and results under build, dependency and cache folders (`target`, `node_modules`, `.git`, `AppData`) cost. With several words typed, the weakest placement decides. Apps and Settings keep the launcher's own ranking (match plus how often and how recently you launched each). A query with nothing typed to rank by (a type tab with an empty box, a pasted path, wildcards) stays in name order.
 - **Drive switch**: limit to one drive or search all.
 - **Search history**: Alt+↑/↓ steps through earlier queries.
 - **Clipboard search**: a separate hotkey opens winseek with your clipboard text as the query.
