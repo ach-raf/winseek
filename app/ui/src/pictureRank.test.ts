@@ -137,6 +137,7 @@ test("chip, tab and section are one path: the same words through any of them giv
     const v = view(query, tabSel);
     return buildOverview({ names: pics, nameTotal: 2, sem: found, text: v.text, isImage, picNames: [pics[0]!], picTotal: 1, picNameTotal: 2, expand: v.scope === "images" ? "images" : null });
   };
-  assert.deepEqual(build("cat image", "all"), build("cat", "images"));
+  const data = (r: ReturnType<typeof build>) => ({ sections: r.sections, flat: r.flat }); // `nav` is functions over these
+  assert.deepEqual(data(build("cat image", "all")), data(build("cat", "images")));
   assert.deepEqual(build("cat", "images").sections.map((x) => [x.id, x.items.map((i) => i.hit.name)]), [["images", ["IMG_1.jpg", "cat.jpg"]], ["namepics", []]]);
 });

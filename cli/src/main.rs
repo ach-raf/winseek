@@ -595,6 +595,7 @@ fn run(cmd: Cmd, send: &mut Send, out: &mut dyn Write, err: &mut dyn Write) -> R
                 offset: 0,
                 limit,
                 sort,
+                exclude: Vec::new(),
             })
             .map_err(fail)?
             {

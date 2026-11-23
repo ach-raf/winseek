@@ -76,6 +76,7 @@ fn empty() -> SearchResult {
 }
 
 #[tauri::command]
+#[allow(clippy::too_many_arguments)] // a Tauri command's arguments are the UI's named fields
 pub async fn search(
     state: tauri::State<'_, AppState>,
     query: String,
@@ -84,11 +85,18 @@ pub async fn search(
     sort: Option<String>,
     filter: Option<String>,
     stream: Option<String>,
+    exclude: Option<Vec<String>>,
 ) -> Result<SearchResult, String> {
     let src = state.source();
     let filter = filter.unwrap_or_else(|| "all".into());
     let sort = sort.unwrap_or_else(|| "rel".into());
-    let key = format!("{query}\u{1}{filter}\u{1}{sort}");
+    let exclude = exclude.unwrap_or_default();
+    // Windows of one stream with another exclude list address another sequence: a newer list
+    // supersedes the queued windows of the old one, like a newer query does.
+    let key = format!(
+        "{query}\u{1}{filter}\u{1}{sort}\u{1}{:x}",
+        exclude_fingerprint(&exclude)
+    );
     lock(&state.latest_search).begin(stream.as_deref(), &key);
     let latest = state.latest_search.clone();
     let gate = stream.as_deref().map(|s| {
@@ -106,9 +114,16 @@ pub async fn search(
         if lock(&latest).superseded(stream.as_deref(), &key) {
             return empty();
         }
-        src.search(&query, &filter, offset, limit.min(5000), &sort)
+        src.search_excluding(&query, &filter, offset, limit.min(5000), &sort, &exclude)
     })
     .await
+}
+
+fn exclude_fingerprint(exclude: &[String]) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    exclude.hash(&mut h);
+    h.finish()
 }
 
 /// Totals of the query per type chip, in the order of `kinds` — one searchd call for all of them.

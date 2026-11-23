@@ -30,6 +30,12 @@ pub enum Request {
         offset: u32,
         limit: u32,
         sort: Sort,
+        /// Full paths left out of the stream before `offset`/`limit` and `total` apply, so
+        /// offsets stay exact over what remains (the picture grid shows its meaning matches
+        /// first and pages the name matches without them). Compared case-insensitively, `/` or
+        /// `\`. An older daemon ignores the field.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        exclude: Vec<String>,
     },
     Status {
         id: u64,
@@ -252,10 +258,34 @@ mod tests {
             offset: 0,
             limit: 10,
             sort: Sort::MtimeDesc,
+            exclude: Vec::new(),
         };
         let s = serde_json::to_string(&r).unwrap();
         assert!(s.contains(r#""type":"search""#), "{s}");
         assert!(s.contains(r#""sort":"mtime_desc""#), "{s}");
+        // An empty exclude list is not sent, so an older daemon sees the old shape.
+        assert!(!s.contains("exclude"), "{s}");
+        assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
+    }
+
+    #[test]
+    fn search_exclude_is_optional_both_ways() {
+        // A request from an older app (no field) still parses.
+        let old = r#"{"type":"search","id":3,"query":"a","offset":0,"limit":5,"sort":"name_asc"}"#;
+        match serde_json::from_str::<Request>(old).unwrap() {
+            Request::Search { exclude, .. } => assert!(exclude.is_empty()),
+            r => panic!("{r:?}"),
+        }
+        let r = Request::Search {
+            id: 4,
+            query: "a".into(),
+            offset: 500,
+            limit: 500,
+            sort: Sort::NameAsc,
+            exclude: vec![r"C:\Pics\a.jpg".into()],
+        };
+        let s = serde_json::to_string(&r).unwrap();
+        assert!(s.contains(r#""exclude":["C:\\Pics\\a.jpg"]"#), "{s}");
         assert_eq!(serde_json::from_str::<Request>(&s).unwrap(), r);
     }
 

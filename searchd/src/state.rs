@@ -10,7 +10,7 @@
 //! exits, the next start reloads the snapshot — beats silently answering from broken state.
 //! Deliberate; do not add poison recovery or swap in `parking_lot`.
 
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, RwLock};
@@ -123,6 +123,100 @@ enum SortClass {
 }
 
 type CacheKey = (String, SortClass);
+
+/// The paths a search leaves out, ready to test records against. Most records are rejected on
+/// the name's byte length alone; only a record whose lowercase name is one of the excluded
+/// names has its full path built and compared.
+struct ExcludeSet {
+    /// Normalised full paths (lowercase, `\`, no trailing separator), sorted: also the cache key.
+    paths: Vec<String>,
+    names: HashSet<String>,
+    /// Byte lengths of the excluded names as written and lowercased (they differ only for a
+    /// few non-ASCII letters), so a name of any other length is skipped without folding.
+    lens: HashSet<usize>,
+}
+
+impl ExcludeSet {
+    fn new(raw: &[String]) -> Self {
+        let mut paths: Vec<String> = raw
+            .iter()
+            .map(|p| normalize_root(p))
+            .filter(|p| !p.is_empty())
+            .collect();
+        paths.sort_unstable();
+        paths.dedup();
+        let mut names = HashSet::new();
+        let mut lens = HashSet::new();
+        for p in raw {
+            let p = p.trim_end_matches(['\\', '/']);
+            let name = p.rsplit(['\\', '/']).next().unwrap_or(p);
+            lens.insert(name.len());
+            let lower = name.to_lowercase();
+            lens.insert(lower.len());
+            names.insert(lower);
+        }
+        ExcludeSet { paths, names, lens }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.paths.is_empty()
+    }
+
+    fn holds(&self, ix: &Index, i: u32) -> bool {
+        let name = ix.name(i);
+        self.lens.contains(&name.len())
+            && self.names.contains(&name.to_lowercase())
+            && self
+                .paths
+                .binary_search(&normalize_root(&ix.full_path(i)))
+                .is_ok()
+    }
+}
+
+/// Positions (ascending, in the stream read forwards) of the excluded records in one cached
+/// result, kept for the next window: the picture grid pages chunk after chunk of the same
+/// stream with the same exclude list, and finding them is a pass over every match.
+struct Excluded {
+    gen: u64,
+    query: String,
+    class: SortClass,
+    paths: Vec<String>,
+    at: Arc<Vec<usize>>,
+}
+
+/// Rows read per step while scanning a name result for excluded records (bounds the scratch).
+const EXCLUDE_SCAN_PAGE: usize = 1 << 16;
+
+fn excluded_positions(ix: &Index, data: &Cached, ex: &ExcludeSet) -> Vec<usize> {
+    let mut at = Vec::new();
+    match data {
+        Cached::Names(set) => {
+            let mut base = 0;
+            while base < set.total() {
+                let page = ix.name_page(set, base, EXCLUDE_SCAN_PAGE, false);
+                if page.is_empty() {
+                    break;
+                }
+                at.extend(
+                    page.iter()
+                        .enumerate()
+                        .filter(|&(_, &i)| ex.holds(ix, i))
+                        .map(|(p, _)| base + p),
+                );
+                base += page.len();
+            }
+        }
+        Cached::Sorted(v) | Cached::Top { items: v, .. } => {
+            at.extend(
+                v.iter()
+                    .enumerate()
+                    .filter(|&(_, &i)| ex.holds(ix, i))
+                    .map(|(p, _)| p),
+            );
+        }
+    }
+    at
+}
 
 struct CacheEntry {
     /// Index generation the result answers for: any mutation bumps the generation, so a
@@ -272,6 +366,8 @@ pub struct Shared {
     usage_cache: Mutex<Option<Arc<UsageCache>>>,
     usage_build: Mutex<()>,
     usage_seen: AtomicU64,
+    /// Where the last exclude list sits in its result stream (see [`search_excluding`]).
+    excluded: Mutex<Option<Excluded>>,
     /// Per-task work counters, logged and reset by the main loop every minute.
     pub stats: Stats,
 }
@@ -356,6 +452,7 @@ impl Shared {
             usage_cache: Mutex::new(None),
             usage_build: Mutex::new(()),
             usage_seen: AtomicU64::new(0),
+            excluded: Mutex::new(None),
             stats: Stats::default(),
         }
     }
@@ -830,12 +927,8 @@ pub fn kind_counts(sh: &Shared, query: &str, kinds: &[String]) -> Vec<u64> {
         .collect()
 }
 
-/// Returns (total, hits, note). Every protocol sort is a real order; `PathAsc` is the one
-/// gap and answers in name order with a note (logged server-side, once).
-///
-/// The first request of a query computes its match set once and caches it; every further
-/// window - the next page or a scrollbar jump to row 8,000,000 - is a lookup, whatever the
-/// size of the result. `limit == 0` only counts (the type-chip counters) and caches nothing.
+/// [`search_excluding`] with nothing excluded (the tests' entry point).
+#[cfg(test)]
 pub fn search(
     sh: &Shared,
     query: &str,
@@ -843,6 +936,28 @@ pub fn search(
     limit: u32,
     sort: Sort,
 ) -> (u64, Vec<Hit>, Option<&'static str>) {
+    search_excluding(sh, query, offset, limit, sort, &[])
+}
+
+/// Returns (total, hits, note). Every protocol sort is a real order; `PathAsc` is the one
+/// gap and answers in name order with a note (logged server-side, once).
+///
+/// The first request of a query computes its match set once and caches it; every further
+/// window - the next page or a scrollbar jump to row 8,000,000 - is a lookup, whatever the
+/// size of the result. `limit == 0` only counts (the type-chip counters) and caches nothing.
+///
+/// The `exclude` paths are taken out of the stream first: `total` and every offset count only
+/// what remains, so a client can show some records elsewhere (the picture grid's meaning
+/// matches) and still address the rest by exact position.
+pub fn search_excluding(
+    sh: &Shared,
+    query: &str,
+    offset: u32,
+    limit: u32,
+    sort: Sort,
+    exclude: &[String],
+) -> (u64, Vec<Hit>, Option<&'static str>) {
+    let ex = ExcludeSet::new(exclude);
     let (class, reverse, note) = match sort {
         Sort::NameAsc => (SortClass::Name, false, None),
         Sort::NameDesc => (SortClass::Name, true, None),
@@ -865,13 +980,14 @@ pub fn search(
     // this scan is about to see (the writer bumps only after a mutation is done).
     let gen = sh.gen.load(Ordering::Relaxed);
     let cached = sh.qcache.lock().unwrap().get(gen, query, class, &ix);
-    if lim == 0 {
+    if lim == 0 && ex.is_empty() {
         let total = cached.map_or_else(|| ix.count(&Query::parse(query)), |c| c.total());
         return (total as u64, Vec::new(), note);
     }
     // Can the cached result answer this window? (`Top` only covers its sorted prefix.)
     let usable = cached.filter(|c| match &**c {
-        Cached::Top { items, .. } => !reverse && off + lim <= items.len(),
+        // Excluded records may sit past the sorted prefix, so an exclude needs the full order.
+        Cached::Top { items, .. } => ex.is_empty() && !reverse && off + lim <= items.len(),
         _ => true,
     });
     let data = usable.unwrap_or_else(|| {
@@ -905,7 +1021,11 @@ pub fn search(
                         Some(Arc::new(FolderSizes::build(&ix, t, gen)));
                 }
                 let dirs = totals.as_deref();
-                if slots.len() <= META_FULL_SORT || reverse || off + lim > META_TOP {
+                if slots.len() <= META_FULL_SORT
+                    || reverse
+                    || off + lim > META_TOP
+                    || !ex.is_empty()
+                {
                     Cached::Sorted(ix.sort_slots(slots, key, dirs))
                 } else {
                     Cached::Top {
@@ -921,20 +1041,56 @@ pub fn search(
             .put(gen, query, class, fresh.clone(), live);
         fresh
     });
-    let slots: Vec<u32> = match &*data {
-        Cached::Names(set) => ix.name_page(set, off, lim, reverse),
-        Cached::Sorted(v) | Cached::Top { items: v, .. } => {
-            if reverse {
-                let hi = v.len().saturating_sub(off);
-                v[hi.saturating_sub(lim)..hi]
-                    .iter()
-                    .rev()
-                    .copied()
-                    .collect()
-            } else {
-                v[off.min(v.len())..(off + lim).min(v.len())].to_vec()
+    let page = |off: usize, lim: usize| -> Vec<u32> {
+        match &*data {
+            Cached::Names(set) => ix.name_page(set, off, lim, reverse),
+            Cached::Sorted(v) | Cached::Top { items: v, .. } => {
+                if reverse {
+                    let hi = v.len().saturating_sub(off);
+                    v[hi.saturating_sub(lim)..hi]
+                        .iter()
+                        .rev()
+                        .copied()
+                        .collect()
+                } else {
+                    v[off.min(v.len())..(off + lim).min(v.len())].to_vec()
+                }
             }
         }
+    };
+    let (total, slots) = if ex.is_empty() {
+        (data.total(), page(off, lim))
+    } else {
+        let n = data.total();
+        let at = exclusion_at(sh, &ix, gen, query, class, &data, &ex);
+        // Positions in the direction being read, ascending.
+        let at: Vec<usize> = if reverse {
+            at.iter().rev().map(|&p| n - 1 - p).collect()
+        } else {
+            at.to_vec()
+        };
+        // The raw position of the `off`-th kept row: every excluded row at or before it
+        // pushes it one further.
+        let mut raw = off;
+        let mut k = 0;
+        while k < at.len() && at[k] <= raw {
+            raw += 1;
+            k += 1;
+        }
+        let ahead = &at[k..];
+        let slots = if lim == 0 {
+            Vec::new()
+        } else {
+            // Read enough raw rows to cover the excluded ones still ahead, then drop them.
+            page(raw, lim + ahead.len())
+                .into_iter()
+                .enumerate()
+                .filter(|&(j, _)| ahead.binary_search(&(raw + j)).is_err())
+                .map(|(_, i)| i)
+                .take(lim)
+                .collect()
+        };
+        (n.saturating_sub(at.len()), slots)
     };
     let has_dirs = slots.iter().any(|&i| ix.is_dir(i));
     let mut sizes = None;
@@ -953,7 +1109,37 @@ pub fn search(
         .into_iter()
         .map(|i| hit_sized(&ix, i, sizes.as_deref()))
         .collect();
-    (data.total() as u64, hits, note)
+    (total as u64, hits, note)
+}
+
+/// The excluded records' positions in `data`: from the last request when it asked the same
+/// thing of the same index state, else one scan of the result (kept for the next window).
+fn exclusion_at(
+    sh: &Shared,
+    ix: &Index,
+    gen: u64,
+    query: &str,
+    class: SortClass,
+    data: &Cached,
+    ex: &ExcludeSet,
+) -> Arc<Vec<usize>> {
+    {
+        let last = sh.excluded.lock().unwrap();
+        if let Some(e) = &*last {
+            if e.gen == gen && e.class == class && e.query == query && e.paths == ex.paths {
+                return e.at.clone();
+            }
+        }
+    }
+    let at = Arc::new(excluded_positions(ix, data, ex));
+    *sh.excluded.lock().unwrap() = Some(Excluded {
+        gen,
+        query: query.to_string(),
+        class,
+        paths: ex.paths.clone(),
+        at: at.clone(),
+    });
+    at
 }
 
 pub fn status(sh: &Shared) -> Vec<VolumeStatus> {
@@ -1656,6 +1842,79 @@ mod tests {
         );
         let (_, hits, _) = search(&sh, "x.txt", 0, 10, Sort::NameAsc);
         assert_eq!(hits[0].path, r"R:\Big\x.txt");
+    }
+
+    #[test]
+    fn excluded_paths_leave_the_stream_before_paging() {
+        let sh = shared();
+        let mut b = IndexBuilder::new(true);
+        b.add_volume(b'E', 5);
+        b.volume_mut(b'E').unwrap().kind = VolKind::Folder;
+        replace(&sh, b.finish());
+        let up = |rel: &str, size: u64, mtime: i64| PathOp::Upsert {
+            rel: rel.into(),
+            is_dir: false,
+            size,
+            mtime,
+        };
+        let files: Vec<PathOp> = (0..10)
+            .map(|k| up(&format!(r"Ph\p{k}.jpg"), 10 + k, 100 + k as i64))
+            .chain([up(r"Other\p3.jpg", 1, 1)]) // same name as an excluded one, other folder
+            .collect();
+        apply_paths(&sh, b'E', &files);
+        let names = |hits: Vec<Hit>| {
+            hits.iter()
+                .map(|h| h.path.as_str().to_string())
+                .collect::<Vec<_>>()
+        };
+        let (total, all, _) = search(&sh, "jpg", 0, 100, Sort::NameAsc);
+        assert_eq!(total, 11);
+        let all = names(all);
+        let path_of = |n: &str| all.iter().find(|p| p.ends_with(n)).unwrap().clone();
+        // Case and slash direction do not matter; a path that matches nothing is harmless.
+        let ex: Vec<String> = vec![
+            path_of(r"Ph\p3.jpg").to_uppercase().replace('\\', "/"),
+            path_of(r"Ph\p7.jpg"),
+            path_of(r"Ph\p0.jpg") + "\\",
+            r"E:\nowhere\p5.jpg".into(),
+        ];
+        let kept: Vec<String> = all
+            .iter()
+            .filter(|p| {
+                !p.ends_with(r"Ph\p3.jpg") && !p.ends_with("p7.jpg") && !p.ends_with("p0.jpg")
+            })
+            .cloned()
+            .collect();
+        assert_eq!(kept.len(), 8);
+        assert!(kept.iter().any(|p| p.ends_with(r"Other\p3.jpg")));
+
+        for sort in [
+            Sort::NameAsc,
+            Sort::NameDesc,
+            Sort::MtimeDesc,
+            Sort::SizeAsc,
+        ] {
+            let (_, full, _) = search(&sh, "jpg", 0, 100, sort);
+            let expect: Vec<String> = names(full)
+                .into_iter()
+                .filter(|p| kept.contains(p))
+                .collect();
+            let (total, hits, _) = search_excluding(&sh, "jpg", 0, 100, sort, &ex);
+            assert_eq!((total, names(hits)), (8, expect.clone()), "{sort:?}");
+            // Every window of 3 tiles the remaining stream exactly, whatever offset.
+            for off in 0..9 {
+                let (t, page, _) = search_excluding(&sh, "jpg", off, 3, sort, &ex);
+                let want: Vec<String> = expect.iter().skip(off as usize).take(3).cloned().collect();
+                assert_eq!((t, names(page)), (8, want), "{sort:?} @{off}");
+            }
+            // A count-only request applies the exclude too.
+            assert_eq!(search_excluding(&sh, "jpg", 0, 0, sort, &ex).0, 8);
+        }
+        // A change to the index re-finds the excluded rows (the remembered positions are per state).
+        apply_paths(&sh, b'E', &[up(r"Ph\a.jpg", 5, 5)]);
+        let (total, hits, _) = search_excluding(&sh, "jpg", 0, 2, Sort::NameAsc, &ex);
+        assert_eq!(total, 9);
+        assert!(names(hits)[0].ends_with(r"Ph\a.jpg"));
     }
 
     #[test]

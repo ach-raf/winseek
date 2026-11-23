@@ -1,20 +1,14 @@
 import { useEffect, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { makeMatcher } from "./fsDelta";
 import { fsDeltaBus } from "./fsDeltaPatch";
-import { bumpThumbs, iconUrlPath, lowThumbs, thumbs } from "./thumbQueue";
+import { bumpThumbs } from "./thumbQueue";
 import { CountWatchdog } from "./fsWatchdog";
 import { qk } from "./qk";
 import type { Backend, FsDelta, VolumeStatus } from "./types";
 
-/** Thumbnails follow a delta: gone files' queued / cached loads are dropped, changed (or re-created) files re-request. */
+/** Pictures follow a delta: changed (or re-created) files are read again under a new version. Gone files need
+ *  nothing: their tiles leave, and the stream's pool lets their pictures go with the least recently shown. */
 function thumbsFollow(d: FsDelta) {
-  const m = makeMatcher(d);
-  if (!m.idle) {
-    const gone = (u: string) => { const p = iconUrlPath(u); return p !== null && (m.isGone(p) || m.rewrite(p) !== p); };
-    thumbs.forget(gone);
-    lowThumbs.forget(gone);
-  }
   bumpThumbs([...d.modified, ...d.added, ...d.renamed.map((r) => r.to)]);
 }
 

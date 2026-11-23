@@ -81,6 +81,21 @@ export function nameMatch(name: string, words: string[]): NameMatch {
   return worst;
 }
 
+/** Would the name index list this file for the typed words? Each plain word sits somewhere in the name (it
+ *  matches letters anywhere, as the type-chip counts do). No words: nothing to tell by the name. */
+export function nameHolds(name: string, words: string[]): boolean {
+  if (!words.length) return false;
+  const low = name.toLowerCase();
+  return words.every((w) => low.includes(w));
+}
+
+/** Terms that keep only the names holding the letters inside another word, when the index can say so: one plain
+ *  word `cat` gives `!ws:cat` (the name has no word starting with it). Several words have no such query (null). */
+export function partQuery(nameQ: string): string | null {
+  const plain = nameQ.split(/\s+/).filter((t) => /^[^!":\\/*?]+$/.test(t));
+  return plain.length === 1 ? `!ws:${plain[0]}` : null;
+}
+
 /** The words as an index query: each plain word must start a word of the name (`ws:`), the rest stays as typed. */
 export function wordQuery(nameQ: string): string {
   return nameQ.split(/\s+/).filter(Boolean).map((t) => (/^[^!":\\/*?]+$/.test(t) ? `ws:${t}` : t)).join(" ");
@@ -118,9 +133,9 @@ export function rankPictures(o: { sem: SemanticHit[]; names: { hit: Hit; idx?: n
     const k = lowerKey(h.path);
     if (by.has(k)) continue;
     // "part" only when the name list would have matched it too (every word is somewhere in the name).
-    const base = baseName(h.path), lowBase = base.toLowerCase();
+    const base = baseName(h.path);
     const cls = words.length ? nameMatch(base, words) : null;
-    const name = cls === "part" && !words.every((w) => lowBase.includes(w)) ? null : cls;
+    const name = cls === "part" && !nameHolds(base, words) ? null : cls;
     by.set(k, { hit: semHit(h), sem: h, name, score: semRank(h) + boost(name), pct: null });
   }
   const tail: Pic[] = [];

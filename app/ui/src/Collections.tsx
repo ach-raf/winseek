@@ -10,8 +10,7 @@ import { freshIdeas, nameMatches, parseGalleryView, type GalleryView } from "./l
 import { useDebouncedValue, useStoredValue } from "./hooks";
 import { qk } from "./qk";
 import { IChevL, IPlus } from "./icons";
-import { ThumbImg } from "./ThumbImg";
-import { LOW_PX, thumbUrl } from "./thumbSize";
+import { StreamThumb } from "./StreamThumb";
 import { usePictureSearch } from "./usePictureSearch";
 
 interface Eval {
@@ -443,10 +442,7 @@ export function Collections({ backend, images, hidden, t1, gen, actions, onError
   );
 }
 
-/** A card's quarter: the shared thumbnail pipeline at 128 px (placeholder tier first), nothing when it fails. */
-const CARD_PX = 128;
-function CollThumb({ backend, item }: { backend: Backend; item: GridItem }) {
-  const src = thumbUrl(backend, item.path, CARD_PX, item.mtime);
-  if (!src) return null;
-  return <ThumbImg src={src} low={thumbUrl(backend, item.path, LOW_PX, item.mtime)} bad={null} path={item.path} />;
+/** A card's quarter: the streamed picture (thumbStream) at the quarter's size, nothing when it fails. */
+function CollThumb({ item }: { backend: Backend; item: GridItem }) {
+  return <StreamThumb path={item.path} mtime={item.mtime} bad={null} />;
 }

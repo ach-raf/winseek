@@ -75,6 +75,7 @@ mod tests {
             offset: 1,
             limit: 2,
             sort: Sort::NameAsc,
+            exclude: Vec::new(),
         };
         let mut buf = Vec::new();
         write_message(&mut buf, &m).unwrap();

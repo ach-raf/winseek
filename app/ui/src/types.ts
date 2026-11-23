@@ -106,7 +106,7 @@ export interface ParsedDoc {
   cached: boolean;
 }
 /** Searches of one stream supersede each other (typing on); different streams never do. No stream = never superseded. */
-export type SearchStream = "list" | "pics" | "tail";
+export type SearchStream = "list" | "pics" | "tail" | "picgrid";
 
 export interface SemanticResult {
   state: string;
@@ -564,7 +564,9 @@ export interface NearState {
 }
 
 export interface Backend {
-  search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter; stream?: SearchStream }): Promise<SearchResult>;
+  /** `exclude`: full paths taken out of the stream before `offset` / `limit` and `total` apply (the picture
+   *  grid lists its meaning matches first and pages the name matches without them, by exact offset). */
+  search(a: { query: string; offset: number; limit: number; sort: Sort; filter: Filter; stream?: SearchStream; exclude?: string[] }): Promise<SearchResult>;
 
   status(): Promise<VolumeStatus[]>;
   /** The app's own version (Settings › General); null in the browser mock. */
@@ -594,6 +596,13 @@ export interface Backend {
   minimize(): Promise<void>;
   /** Shell icon/thumbnail URL, or null when unavailable (mock) -> SVG glyph. */
   iconUrl(path: string, isDir: boolean, thumb: boolean, size?: number): string | null;
+  /** Picture streaming for the tile grids (thumbStream.ts): opens this window's stream, returns its generation.
+   *  Batches arrive on `onBatch`; their pixels are in the window's shared buffers (or `data`, in the mock). */
+  thumbsOpen(onBatch: (b: ThumbBatch) => void): Promise<number>;
+  /** The tiles wanted now, in priority order (replaces the previous list). */
+  thumbsWant(gen: number, items: ThumbWant[]): Promise<void>;
+  /** Shared buffer `b` was copied out and can be written again. */
+  thumbsAck(gen: number, b: number): Promise<void>;
   hide(): Promise<void>;
   onShown(cb: () => void): Promise<() => void>;
   serviceState(): Promise<ServiceState>;
@@ -782,3 +791,12 @@ export interface DiskUsage {
   drives: DriveSpace[];
 }
 export interface UsageDetail { path: string; types: UsageType[]; biggest: Hit[]; fresh?: boolean }
+
+/** One tile the grid wants: `[key, path, width px, height px, need, visible]`. `need` bit 1 = the instant level
+ *  (what the disk already has), bit 2 = the picture decoded at tile size; `visible` 1 = on screen, 0 = just beyond. */
+export type ThumbWant = [key: string, path: string, w: number, h: number, need: number, visible: 0 | 1];
+/** One finished picture: level `l` (1 instant, 2 decoded), `w` x `h` RGBA at byte `o` (`n` bytes) of the batch's
+ *  buffer; `f` = 1: no picture at this level. */
+export interface ThumbItem { k: string; l: 1 | 2; w: number; h: number; o: number; n: number; f: 0 | 1 }
+/** Pictures in shared buffer `b` of stream generation `g` (`data`: the pixels inline, mock only). */
+export interface ThumbBatch { g: number; b: number; items: ThumbItem[]; data?: ArrayBuffer }

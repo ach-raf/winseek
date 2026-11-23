@@ -68,6 +68,20 @@ pub trait NameSource: Send + Sync {
         offset: usize,
         limit: usize,
         sort: &str,
+    ) -> SearchResult {
+        self.search_excluding(query, filter, offset, limit, sort, &[])
+    }
+    /// [`NameSource::search`] with the `exclude` paths (full paths, any case, `/` or `\`) taken
+    /// out of the stream before `offset`/`limit` and `total` apply, so offsets stay exact over
+    /// what remains.
+    fn search_excluding(
+        &self,
+        query: &str,
+        filter: &str,
+        offset: usize,
+        limit: usize,
+        sort: &str,
+        exclude: &[String],
     ) -> SearchResult;
     fn status(&self) -> Vec<VolumeStatus>;
     fn recent(&self, limit: usize) -> Vec<Hit>;
@@ -316,16 +330,34 @@ fn matches_filter(e: &Entry, filter: &str) -> bool {
     }
 }
 
+/// A path as the exclude list compares it: lowercase, backslashes, no trailing separator.
+fn norm_path(p: &str) -> String {
+    p.trim_end_matches(['\\', '/'])
+        .replace('/', "\\")
+        .to_lowercase()
+}
+
 impl NameSource for MockSource {
-    fn search(
+    fn search_excluding(
         &self,
         query: &str,
         filter: &str,
         offset: usize,
         limit: usize,
         sort: &str,
+        exclude: &[String],
     ) -> SearchResult {
         let t = Instant::now();
+        // Names first: only an entry whose name is excluded somewhere has its path built.
+        let ex_paths: std::collections::HashSet<String> =
+            exclude.iter().map(|p| norm_path(p)).collect();
+        let ex_names: std::collections::HashSet<String> = ex_paths
+            .iter()
+            .map(|p| p.rsplit('\\').next().unwrap_or(p).to_string())
+            .collect();
+        let excluded = |e: &Entry| {
+            ex_names.contains(&e.lower) && ex_paths.contains(&norm_path(&self.hit(e).path))
+        };
         let all: Vec<String> = query
             .to_lowercase()
             .split_whitespace()
@@ -377,6 +409,7 @@ impl NameSource for MockSource {
                     Some(w) => has_word(&e.lower, w),
                     None => e.lower.contains(t.as_str()),
                 })
+                && !excluded(e)
             {
                 idx.push(i as u32);
             }
@@ -502,5 +535,36 @@ impl NameSource for MockSource {
         idx.truncate(n);
         idx.sort_by_key(|a| std::cmp::Reverse(a.mtime));
         idx.into_iter().map(|e| self.hit(e)).collect()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_exclude_drops_paths_before_paging() {
+        let m = MockSource::generate(2_000);
+        let all = m.search("jpg", "all", 0, 5000, "name");
+        assert!(all.total >= 10, "demo data has pictures");
+        let paths: Vec<String> = all.hits.iter().map(|h| h.path.clone()).collect();
+        let ex = vec![paths[1].to_uppercase(), paths[4].replace('\\', "/")];
+        let kept: Vec<&String> = paths.iter().filter(|p| !ex_has(&ex, p)).collect();
+        let r = m.search_excluding("jpg", "all", 0, 5000, "name", &ex);
+        assert_eq!(r.total, all.total - 2);
+        // Same set (ties in the name sort may come in another order).
+        let mut got: Vec<&String> = r.hits.iter().map(|h| &h.path).collect();
+        let mut want = kept.clone();
+        got.sort();
+        want.sort();
+        assert_eq!(got, want);
+        // A window is that same remaining stream, offset exactly.
+        let page = m.search_excluding("jpg", "all", 3, 2, "name", &ex);
+        let paths_of = |hits: &[Hit]| hits.iter().map(|h| h.path.clone()).collect::<Vec<_>>();
+        assert_eq!(paths_of(&page.hits), paths_of(&r.hits[3..5]));
+    }
+
+    fn ex_has(ex: &[String], p: &str) -> bool {
+        ex.iter().any(|e| norm_path(e) == norm_path(p))
     }
 }

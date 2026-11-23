@@ -10,6 +10,7 @@ import { loadTheme, watchSystemTheme } from "./theme";
 import { applyThemeChoice } from "./themeChoice";
 import { applyOpacity, loadOpacity } from "./transparency";
 import { loadBackend, inTauri } from "./api";
+import { thumbStream } from "./thumbStream";
 import "@fontsource-variable/figtree";
 import "@fontsource/ibm-plex-mono/400.css";
 import "@fontsource/ibm-plex-mono/500.css";
@@ -53,6 +54,8 @@ window.addEventListener("storage", (e) => {
 watchSystemTheme(() => { if (loadTheme() === "system") applyThemeChoice("system"); });
 
 loadBackend().then((backend) => {
+  // The picture stream opens with the window: list rows and tiles draw from it from the first frame.
+  thumbStream.attach(backend);
   // One client per window: the popup and the library window are separate JS contexts.
   const queryClient = createQueryClient();
   // Web-only verify hook: drop the shared statusPage answer so a jump into Status starts cold,

@@ -5203,6 +5203,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "tempfile",
  "ureq",
+ "webview2-com",
  "windows",
  "winseek-folder",
  "winseek-ipc",

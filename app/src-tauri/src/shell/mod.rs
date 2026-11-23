@@ -7,6 +7,7 @@ mod drag;
 mod fileop;
 pub mod icons;
 mod menu;
+pub mod thumbstream;
 
 use std::sync::mpsc;
 use tauri::{AppHandle, WebviewWindow};

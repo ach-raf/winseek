@@ -2,10 +2,9 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import type { Backend, Hit, HitBox } from "./types";
 import { Preview } from "./Preview";
 import { FileIcon } from "./FileIcon";
-import { ThumbImg } from "./ThumbImg";
+import { StreamThumb } from "./StreamThumb";
 import { PicTile, type PicTileEvents } from "./PicTile";
-import { noteScroll, warm } from "./thumbQueue";
-import { thumbPx, thumbUrl } from "./thumbSize";
+import { noteScroll } from "./thumbQueue";
 import { baseName } from "./overviewLogic";
 import { IGrid, IRows } from "./icons";
 import { formatDate, formatSize, kindOf, splitDir } from "./format";
@@ -28,12 +27,9 @@ const OVERSCAN_ROWS = 2;
 /** The scroll position the window is computed from snaps down to this many px: the tiles re-render when the
  *  visible range can change (about twice per row), not on every scroll event. */
 const QUANT = 64;
-/** Idle prefetch: how far past the viewport (in viewports) the backend renders thumbnails ahead of time. */
-const AHEAD = 1.5;
 /** Row height of the list view. */
 const LIST_H = 32;
 /** Thumbnail of a list row (a 22 px box). */
-const LIST_PX = thumbPx(22);
 
 const FOLDS_KEY = "winseek.monthfolds";
 /** Folded month keys from storage; anything that is not a list of keys is dropped (not cast). */
@@ -95,11 +91,9 @@ const isDocTile = (name: string) => {
   return k !== "image" && k !== "video";
 };
 
-const RowThumb = memo(function RowThumb({ backend, path, name, mtime }: { backend: Backend; path: string; name: string; mtime: number | null }) {
-  const src = thumbUrl(backend, path, LIST_PX, mtime);
+const RowThumb = memo(function RowThumb({ path, name, mtime }: { backend: Backend; path: string; name: string; mtime: number | null }) {
   const ph = <span className="lg-ph"><FileIcon name={name} isDir={false} src={null} /></span>;
-  if (!src) return ph;
-  return <ThumbImg src={src} bad={ph} path={path} />;
+  return <StreamThumb path={path} mtime={mtime} bad={ph} />;
 });
 
 /** A grid tile at its arithmetic spot. Primitive props only, so the memo holds across scroll steps. */
@@ -578,33 +572,7 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
     });
   }, [armUnpin]);
 
-  // Idle prefetch (grid view): once scrolling settles, the thumbnails just past the viewport are rendered into
-  // the backend's caches, nearest first; the page decodes nothing until a tile really scrolls in.
-  useEffect(() => {
-    if (view !== "grid" || isEmpty) return;
-    const timer = window.setTimeout(() => {
-      const ahead = size.h * AHEAD;
-      const y0 = scrollTop - ahead, y1 = scrollTop + size.h + ahead;
-      const px = thumbPx(tileW, tileH);
-      const below: string[] = [], above: string[] = [];
-      ix.effCount.forEach((n, si) => {
-        const top = metrics.top[si] ?? 0, h = metrics.h[si] ?? 0;
-        if (n === 0 || top + h < y0 || top > y1) return;
-        const first = top + (heads[si] ?? NO_HEAD);
-        const [from, to] = bandOf(si, y0, y1);
-        for (let j = from; j < to; j++) {
-          const y = first + rowOf(j, cols) * stride;
-          if (y + tileH >= lo && y <= hi) continue; // already drawn
-          const it = src.get((ix.absStart[si] ?? 0) + j);
-          if (!it) continue; // not fetched yet: the viewport's own fetch comes first
-          const u = thumbUrl(backend, it.path, px, it.mtime);
-          if (u) (y > scrollTop ? below : above).push(u);
-        }
-      });
-      warm([...below, ...above.reverse()]);
-    }, 180);
-    return () => window.clearTimeout(timer);
-  }, [view, isEmpty, scrollTop, size.h, ix, metrics, heads, src, cols, stride, tileW, tileH, lo, hi, bandOf, backend]);
+  // No idle prefetch here: thumbnails are streamed for what the viewport shows, and a prefetch would compete.
 
   // `scrollTop` is floored to QUANT: add the step back so a month jumped to exactly at its top reads as current.
   const activeKey = pinKey ?? secs[activeSection(lay.top, scrollTop + QUANT - 1)]?.key;

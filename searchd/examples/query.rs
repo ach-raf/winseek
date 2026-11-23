@@ -53,6 +53,7 @@ fn main() {
                     offset,
                     limit: lim,
                     sort: Sort::NameAsc,
+                    exclude: Vec::new(),
                 }) {
                     Response::SearchResult { total: t, hits, .. } => {
                         if query == "--count" {
@@ -98,6 +99,7 @@ fn main() {
         offset: 0,
         limit,
         sort: Sort::NameAsc,
+        exclude: Vec::new(),
     }) {
         Response::SearchResult {
             total,

@@ -1,8 +1,12 @@
 import { parseMode, type ViewMode, type ViewState } from "./viewMode";
-import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, FsDelta, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, TlPick, TlRow, TlSummary, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
+import type { Backend, DiskUsage, UsageDetail, AgentConfig, AgentLogEntry, AgentPathState, Collection, DupGroup, Hit, HitBox, Hotkeys, IgnoreList, LaunchCfg, LaunchCounts, LaunchHit, LibImage, McpPath, NearState, ParsedDoc, PreviewInfo, ModelsDone, FsDelta, ModelsPlan, ModelsProgress, Profile, RerankSet, SemanticResult, ServiceState, ThumbBatch, TlPick, TlRow, TlSummary, StatusPage, Tier1Status, FolderEstimate, Opened, UpdateState } from "./types";
 
 interface TauriGlobal {
-  core: { invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T> };
+  core: {
+    invoke<T>(cmd: string, args?: Record<string, unknown>): Promise<T>;
+    /** A message pipe from Rust (the picture streamer's batches). */
+    Channel: new <T>() => { onmessage: (m: T) => void };
+  };
   event: { listen<T = unknown>(ev: string, cb: (e: { payload: T }) => void): Promise<() => void> };
   window: { getCurrentWindow(): { hide(): Promise<void> } };
 }
@@ -47,6 +51,13 @@ function tauriBackend(t: TauriGlobal): Backend {
     showProperties: (path) => inv("show_properties", { path }),
     openTerminal: (dir) => inv("open_terminal", { dir }),
     startDrag: (paths) => inv("start_drag", { paths }),
+    thumbsOpen: (onBatch) => {
+      const ch = new t.core.Channel<ThumbBatch>();
+      ch.onmessage = onBatch;
+      return inv<number>("thumbs_open", { onBatch: ch });
+    },
+    thumbsWant: (gen, items) => inv("thumbs_want", { gen, items }),
+    thumbsAck: (gen, b) => inv("thumbs_ack", { gen, b }),
     iconUrl: (path, isDir, thumb, size) =>
       `http://wsicon.localhost/?p=${encodeURIComponent(path)}&d=${isDir ? 1 : 0}&s=${size ?? (thumb ? 40 : 32)}&t=${thumb ? 1 : 0}`,
     hide: () => t.window.getCurrentWindow().hide(),

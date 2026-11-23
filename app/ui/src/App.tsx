@@ -2,7 +2,8 @@ import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, use
 import type { Backend, DriveSpace, Filter, FsDelta, Hit, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
 import { SearchGuide } from "./SearchGuide";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
-import { wordQuery } from "./pictureRank";
+import { partQuery, wordQuery } from "./pictureRank";
+import { usePicChunks } from "./usePicChunks";
 import { pathQueryFromPaste } from "./pathNorm";
 import { fitMenuRect } from "./popupLogic";
 import { previewSelectionText } from "./previewLogic";
@@ -16,7 +17,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { buildHome, buildOverview, bumpMru, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, removeMru, restoreMru, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { baseName, buildHome, buildOverview, bumpMru, meaningOnly, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, removeMru, restoreMru, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IFilter, IGear, IMag, IX } from "./icons";
@@ -49,7 +50,8 @@ const OVERSCAN = 6;
 const PAGE_CAP = 60;
 // Pictures whose name has the typed word, read for the overview's grid (two rows; the rest is "Show all").
 const PIC_HEAD = 60;
-// How far "Show all" reads ahead of the scroll (read in pages of PIC_SEARCH_PAGE, capped at PIC_SEARCH_CAP).
+// How far the opened "Other names containing" fold reads ahead of its scroll (pages of PIC_SEARCH_PAGE, capped
+// at PIC_SEARCH_CAP). The opened grid itself reads by chunk near the viewport (usePicChunks), never ahead.
 const PIC_PAGE = 2000;
 
 const FILTERS: { id: Filter; label: string }[] = [
@@ -409,29 +411,34 @@ export default function App({ backend }: { backend: Backend }) {
   const picsOpen = ovExpand === "images";
   // The pictures whose name has the typed words as words ("cat.jpg", "my cat 2021.png", not "intricate.png"):
   // the index answers that exactly (`ws:` terms), so the grid never pages through mid-word matches to find them.
-  // The overview reads the first of them; the opened list reads them all, in pages, and fills as they arrive.
+  // The overview reads the first of them; the opened grid reads them by position, a chunk at a time near the
+  // viewport (usePicChunks), after the meaning matches it leaves out of that stream (`picExclude`).
   const picQ = `${scopeDrive(wordQuery(nameQ), drive)} ${rangeClause(parsed)}`.trim();
   const picWords = picQ !== scopedQ;
   const picsWanted = !isRecent && !settingsScope && effSort === "rel" && (effFilter === "all" || effFilter === "images");
-  // Culling: the opened grid holds only as many pictures as the scroll has reached (a page at a time, `picLimit`),
-  // never the whole library; scrolling near the end of what is loaded raises the limit (`morePics`).
-  const [picLimit, setPicLimit] = useState(PIC_PAGE);
-  const morePics = useCallback(() => setPicLimit((n) => n + PIC_PAGE), []);
-  useEffect(() => { setPicLimit(PIC_PAGE); }, [picQ, scopedQ, picsOpen, epoch]);
+  // The meaning matches lead the opened grid (ranked), so the name stream is paged without them: offsets stay exact.
+  // Keyed by content: a new array of the same paths must not re-read the grid.
+  const picExcludeKey = picsOpen ? semHits.filter((h) => kindOf(baseName(h.path), false) === "image").map((h) => h.path).join("\n") : "";
+  const picExclude = useMemo(() => (picExcludeKey ? Array.from(new Set(picExcludeKey.split("\n"))) : []), [picExcludeKey]);
+  const picGrid = usePicChunks(backend, { query: picQ, exclude: picExclude, on: picsOpen && picsWanted, epoch });
+  // The fold under the opened grid reads as far as its own scroll has reached (`tailLimit`), never the whole library.
+  const [tailLimit, setTailLimit] = useState(PIC_PAGE);
+  const moreTail = useCallback(() => setTailLimit((n) => n + PIC_PAGE), []);
+  useEffect(() => { setTailLimit(PIC_PAGE); }, [scopedQ, picsOpen, epoch]);
   const picAcc = useRef<{ key: string; hits: Hit[]; total: number }>({ key: "", hits: [], total: -1 });
   const [picNames, setPicNames] = useState<{ q: string; hits: Hit[]; total: number; done: boolean } | null>(null);
   useEffect(() => {
-    if (!picsWanted) { setPicNames(null); return; }
+    // The opened grid has its own reader; only the overview's first rows are read here.
+    if (!picsWanted || picsOpen) { setPicNames(null); return; }
     let dead = false;
     const t = window.setTimeout(async () => {
       try {
-        const key = `${picQ}|${epoch}|${picsOpen}`;
+        const key = `${picQ}|${epoch}`;
         if (picAcc.current.key !== key) picAcc.current = { key, hits: [], total: -1 };
-        const acc = picAcc.current; // survives a raised limit: the next pages are appended, nothing is re-read
-        // The shared reader (pictureSearch): pages of 400, capped, one hand-off per burst of pages (not per page),
-        // so the overview is rebuilt once per burst.
+        const acc = picAcc.current;
+        // The shared reader (pictureSearch), one page.
         await readPictureNames(backend, {
-          query: picQ, stream: "pics", acc, limit: picsOpen ? picLimit : PIC_HEAD, page: picsOpen ? PIC_SEARCH_PAGE : PIC_HEAD,
+          query: picQ, stream: "pics", acc, limit: PIC_HEAD, page: PIC_HEAD,
           live: () => !dead,
           emit: (s) => setPicNames({ q: picQ, hits: acc.hits.slice(), total: s.total, done: s.done }),
         });
@@ -439,31 +446,33 @@ export default function App({ backend }: { backend: Backend }) {
         if (!dead) setPicNames((p) => p && { ...p, done: true });
         console.error(e);
       }
-    }, picsOpen ? 0 : 120);
+    }, 120);
     return () => { dead = true; window.clearTimeout(t); };
-  }, [backend, picsWanted, picsOpen, picQ, epoch, picLimit]);
+  }, [backend, picsWanted, picsOpen, picQ, epoch]);
   const picNamesNow = picNames?.q === picQ ? picNames : null;
   // The names that only hold the letters inside another word are read when their fold is opened, or when the
-  // word search found nothing at all (then they are all there is to show).
-  const tailWanted = picsOpen && picWords && (weakOpen || (!!picNamesNow && picNamesNow.done && picNamesNow.total === 0));
+  // word search found nothing at all (then they are all there is to show). One typed word asks the index for
+  // exactly those (`!ws:`), so a library of word matches is not read through to find them.
+  const tailWanted = picsOpen && picWords && (weakOpen || picGrid.total === 0);
+  const tailQ = `${scopedQ} ${partQuery(nameQ) ?? ""}`.trim();
   const [picTail, setPicTail] = useState<{ hits: Hit[]; done: boolean } | null>(null);
   const tailAcc = useRef<{ key: string; hits: Hit[]; total: number }>({ key: "", hits: [], total: -1 });
   useEffect(() => {
     if (!tailWanted) { setPicTail(null); return; }
     let dead = false;
     (async () => {
-      const key = `${scopedQ}|${epoch}`;
+      const key = `${tailQ}|${epoch}`;
       if (tailAcc.current.key !== key) tailAcc.current = { key, hits: [], total: -1 };
       const acc = tailAcc.current;
       await readPictureNames(backend, {
-        query: scopedQ, stream: "tail", acc, limit: picLimit,
+        query: tailQ, stream: "tail", acc, limit: tailLimit, page: PIC_SEARCH_PAGE,
         live: () => !dead,
         emit: (s) => setPicTail({ hits: acc.hits.slice(), done: s.done }),
       });
     })().catch((e) => { if (!dead) setPicTail((p) => p && { ...p, done: true }); console.error(e); });
     return () => { dead = true; };
-  }, [backend, tailWanted, scopedQ, epoch, picLimit]);
-  const picsBusy = (picsOpen && !!picNames && !picNames.done) || (!!picTail && !picTail.done);
+  }, [backend, tailWanted, tailQ, epoch, tailLimit]);
+  const picsBusy = (picsOpen && picGrid.busy) || (!!picTail && !picTail.done);
   // What the overview sections are built from: every row of a fully loaded list, else the first page. (The
   // paged row store is sparse and can span millions of indexes; nothing may loop over it.)
   const headRows = useMemo(
@@ -509,14 +518,19 @@ export default function App({ backend }: { backend: Backend }) {
         picNames: picNames?.hits, picTotal: picNamesNow?.total, picTail: picTail?.hits, picNameTotal: effFilter === "images" ? data.total : nameCounts?.images,
         expand: ovExpand, isImage: (n) => kindOf(n, false) === "image", launch: launchSel, portable, calc: calcResult ?? undefined,
         photoCols: gridCols.images, weakOpen, groupByKind, kindFolds,
+        picGrid: picsOpen && picsWanted ? { total: picGrid.total, at: picGrid.at, view: picGrid.view } : undefined,
       })),
-    [isRecent, mruHits, gridCols, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds],
+    [isRecent, mruHits, gridCols, headRows, picNames, picNamesNow, picTail, effFilter, nameCounts, data.total, semHits, sem.more, sem.reranked, parsed.text, ovExpand, launchSel, portable, calcResult, settingsScope, meaningScope, weakOpen, groupByKind, kindFolds, picsOpen, picsWanted, picGrid.total, picGrid.at, picGrid.view],
   );
+  // The meaning matches the name index does not count, for the type chips (any view, not just the opened grid).
+  const byMeaning = useMemo(() => (isRecent || settingsScope ? { picsByMeaning: 0, docsByMeaning: 0 } : meaningOnly(semHits, parsed.text, (n) => kindOf(n, false) === "image")),
+    [isRecent, settingsScope, semHits, parsed.text]);
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
   useEffect(() => { setOselKey(null); }, [query, filter, expand, drive]);
-  const osel = Math.max(0, oselKey ? ov.flat.findIndex((x) => x.key === oselKey) : 0);
-  const ovItem: OvItem | undefined = overview ? ov.flat[osel] : undefined;
+  const osel = Math.max(0, oselKey ? ov.nav.indexOf(oselKey) : 0);
+  // undefined also for a picture-grid position whose chunk is not in yet: nothing to preview or act on.
+  const ovItem: OvItem | undefined = overview ? ov.nav.at(osel) : undefined;
 
   // ---- data loading --------------------------------------------------------
   const scopeRef = useRef<string | null>(null);
@@ -1089,6 +1103,8 @@ export default function App({ backend }: { backend: Backend }) {
       picAcc.current = { ...picAcc.current, hits: prune(picAcc.current.hits) };
       tailAcc.current = { ...tailAcc.current, hits: prune(tailAcc.current.hits) };
       setPicNames((p) => { if (!p) return p; const hits = prune(p.hits); return hits === p.hits ? p : { ...p, hits, total: Math.max(0, p.total - (p.hits.length - hits.length)) }; });
+      // The opened grid's chunks are read again once the index has the change (its positions moved).
+      if (picsOpen) window.setTimeout(picGrid.refresh, 1500);
       setPicTail((p) => { if (!p) return p; const hits = prune(p.hits); return hits === p.hits ? p : { ...p, hits }; });
       // The overview's selected item left (or moved): the selection goes to whatever takes its place.
       const sp = overview ? ovItem?.hit?.path : undefined;
@@ -1112,8 +1128,8 @@ export default function App({ backend }: { backend: Backend }) {
     const at = reselectAt.current;
     if (at === null) return;
     reselectAt.current = null;
-    setOselKey(ov.flat[Math.min(at, ov.flat.length - 1)]?.key ?? null);
-  }, [ov.flat]);
+    setOselKey(ov.nav.keyAt(Math.min(at, ov.nav.length - 1)) ?? null);
+  }, [ov.nav]);
   // The app's own recycle: every list in this window drops the files at once (the backend's delta follows and is a no-op).
   const ownRemoved = useCallback((paths: string[]) => pushLocalDelta(qc, fsDelta({ removed: paths })), [qc]);
 
@@ -1257,7 +1273,7 @@ export default function App({ backend }: { backend: Backend }) {
   }, [overview, osel, oselKey]);
   // Opening or leaving "Show all" starts at the top of the new list, wherever the old one was scrolled to.
   useEffect(() => { ovRef.current?.scrollTo({ top: 0 }); }, [expand]);
-  const ovGo = useCallback((i: number) => { const it = ov.flat[i]; if (it) setOselKey(it.key); }, [ov.flat]);
+  const ovGo = useCallback((i: number) => { const key = ov.nav.keyAt(i); if (key) setOselKey(key); }, [ov.nav]);
 
   const openSemMenu = useCallback(async (path: string, x: number, y: number) => {
     try {
@@ -1293,7 +1309,7 @@ export default function App({ backend }: { backend: Backend }) {
         void openMenu(sel, r.left + 120, r.top + 4 + sel * rowH - voffRef.current + rowH / 2);
       };
       menuAtRef.current = menuAtSelection;
-      const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.flat, osel, dir, gridCols)); };
+      const ovStep = (dir: Parameters<typeof ovMove>[2]) => { e.preventDefault(); navigated.current = true; ovGo(ovMove(ov.nav, osel, dir, gridCols)); };
       // The cheat sheet is its own layer: F1 / Ctrl+/ toggles it, Esc closes it first of all.
       if (combos("popup.cheatsheet").some((c) => matchesKey(e, c))) { e.preventDefault(); setCheat((v) => !v); return; }
       if (e.key === "Escape" && guide) { e.preventDefault(); setGuide(false); return; }
@@ -1505,7 +1521,7 @@ export default function App({ backend }: { backend: Backend }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.flat, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, effSort, recordQuery, full, page, gridCols, setSort, cycleSort, parsed.kind, rowH]);
+  }, [move, sel, viewH, act, current, curIdx, query, pvOpen, filter, selCount, goPage, setQuickLook, backend, renaming, flash, fail, doRecycle, doUndo, openMenu, openSemMenu, ownRemoved, refreshT1, refocus, openLibrary, overview, ov.nav, osel, ovItem, ovGo, expand, pushUndo, launchAct, armed, delArm, armDel, disarmDel, launchMenu, cheat, guide, openStatus, parsed.chips, dropChip, sort, effSort, recordQuery, full, page, gridCols, setSort, cycleSort, parsed.kind, rowH]);
 
   useEffect(() => {
     const noMenu = (e: Event) => e.preventDefault();
@@ -1659,7 +1675,7 @@ export default function App({ backend }: { backend: Backend }) {
       refocus();
     },
     onOpen: (i) => {
-      const it = ov.flat[i];
+      const it = ov.nav.at(i);
       if (it?.calc !== undefined) { void backend.copyTextHtml(it.calc).then(() => backend.hide()).catch(fail); return; }
       // Launch rows never drag, so a stale drag flag must not swallow their click; one launch per id covers click + dblclick.
       if (it?.launch) { if (launchOnce(it.launch.item.id)) void launchAct(it.launch, "open"); return; }
@@ -1668,23 +1684,25 @@ export default function App({ backend }: { backend: Backend }) {
     },
     onMenu: (i, e) => {
       e.preventDefault();
-      const it = ov.flat[i];
+      const it = ov.nav.at(i);
       if (!it || it.calc !== undefined) return;
       ovGo(i);
       if (it.launch) { setLaunchMenu({ hit: it.launch, x: e.clientX, y: e.clientY, home: it.section === "mostused" }); return; }
       if (it.nameIdx !== undefined) void openMenu(it.nameIdx, e.clientX, e.clientY); else void openSemMenu(it.hit.path, e.clientX, e.clientY);
     },
-    onDown: (i, e) => { const it = ov.flat[i]; if (!it) return; if (it.launch) suppressClick.current = false; else onRowDown(e, it.hit); }, // launch rows do not drag
-    onRenameCommit: (i, n) => { const idx = ov.flat[i]?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
+    onDown: (i, e) => { const it = ov.nav.at(i); if (!it) return; if (it.launch) suppressClick.current = false; else onRowDown(e, it.hit); }, // launch rows do not drag
+    onRenameCommit: (i, n) => { const idx = ov.nav.at(i)?.nameIdx; if (idx !== undefined) void doRename(idx, n); },
     onRenameCancel: () => { setRenaming(false); refocus(); },
-  }), [ov.flat, ovGo, act, launchAct, launchOnce, openMenu, openSemMenu, onRowDown, doRename, refocus, backend, fail]);
+  }), [ov.nav, ovGo, act, launchAct, launchOnce, openMenu, openSemMenu, onRowDown, doRename, refocus, backend, fail]);
   const showList = !overview;
   const waitingSem = overview && sem.query !== parsed.text.trim() && parsed.text.trim().length >= 2 && !!t1 && t1.state !== "unavailable";
   const pvPane = !showPanel && !!pv && !!current;
   const quickLook = pvOpen && pvPane;
 
   // Result stat in the search bar: "N results · 0.4 ms" (not on home).
-  const statTotal = overview ? ov.sections.reduce((a, x) => a + x.total, 0) : data.total;
+  // The opened picture grid's heading already counts its fold ("Other names containing"): not twice.
+  const foldCounted = ov.sections.some((x) => x.sparse);
+  const statTotal = overview ? ov.sections.reduce((a, x) => a + (foldCounted && x.id === "namepics" ? 0 : x.total), 0) : data.total;
   // The slot is always there (fixed width, see .stat) so the search box never resizes as the count comes and goes.
   const statShown = !isRecent && loaded && !pending;
   const statEl = !showPanel ? (
@@ -1778,7 +1796,7 @@ export default function App({ backend }: { backend: Backend }) {
         </button>
       </div>
       )}
-      {loaded && ov.flat.length === 0 && defaultHits && (
+      {loaded && ov.nav.length === 0 && defaultHits && (
         <div className="none qnone"><b>Nothing here yet</b>Start typing to search.</div>
       )}
     </div>
@@ -1791,9 +1809,13 @@ export default function App({ backend }: { backend: Backend }) {
     if (!nameCounts) return undefined;
     const lc = (k: string) => (drive ? 0 : launch.filter((h) => h.item.kind === k).length);
     switch (f) {
-      case "all": return (nameCounts.all ?? 0) + (drive ? 0 : launch.length);
+      case "all": return (nameCounts.all ?? 0) + (drive ? 0 : launch.length) + byMeaning.picsByMeaning + byMeaning.docsByMeaning;
       case "apps": return (drive ? 0 : launch.length) + portable.length; // matches launchForFilter("apps")
       case "settings": return lc("setting");
+      // A chip counts what its list shows: the index's name matches plus the meaning matches it does not count
+      // (the opened Pictures heading is the same sum).
+      case "images": return (nameCounts.images ?? 0) + byMeaning.picsByMeaning;
+      case "docs": return (nameCounts.docs ?? 0) + byMeaning.docsByMeaning;
       default: return nameCounts[f];
     }
   };
@@ -2105,8 +2127,8 @@ export default function App({ backend }: { backend: Backend }) {
               <div className="list ov" /> // a scope switch is being fetched: blank beats the old scope's rows under the new tab
               // "Empty" is a data verdict, never a fold one: a collapsed kind group still reports total > 0 and keeps its
               // reopenable heading, so folds can never produce the dead "No results" screen (folds persist in storage).
-            ) : ov.flat.length > 0 || ov.sections.some((s) => s.total > 0) || isRecent ? (
-              <Overview onMore={morePics} onGridCols={setPicCols} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
+            ) : ov.nav.length > 0 || ov.sections.some((s) => s.total > 0) || isRecent ? (
+              <Overview onMore={moreTail} onGridCols={setPicCols} sections={ov.sections} sel={osel} renaming={renaming} query={parsed.text} backend={backend} expanded={!!expand} loading={sem.loading || picsBusy}
                         handlers={ovHandlers} onExpand={(id) => { if (id !== "top") setExpand(id as Expand); refocus(); }} onBack={() => { setExpand(null); refocus(); }} onToggleWeak={() => { setWeakOpen((o) => !o); refocus(); }} onToggleFold={(id) => { toggleKindFold(id.slice(2)); refocus(); }} scrollRef={ovRef} armed={armed} lead={qsug} />
             ) : loaded && !waitingSem ? (
               <div className="none">

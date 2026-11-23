@@ -28,6 +28,7 @@ fn main() -> std::io::Result<()> {
             offset: 0,
             limit: 5,
             sort: Sort::NameAsc,
+            exclude: Vec::new(),
         },
     )?;
     match read_message::<_, Response>(&mut c)? {

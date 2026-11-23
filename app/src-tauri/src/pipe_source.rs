@@ -188,13 +188,14 @@ fn offline() -> Vec<VolumeStatus> {
 }
 
 impl NameSource for PipeSource {
-    fn search(
+    fn search_excluding(
         &self,
         query: &str,
         filter: &str,
         offset: usize,
         limit: usize,
         sort: &str,
+        exclude: &[String],
     ) -> SearchResult {
         let q = format!("{query} {}", filter_clause(filter))
             .trim()
@@ -205,6 +206,7 @@ impl NameSource for PipeSource {
             offset: offset.min(u32::MAX as usize) as u32,
             limit: limit.min(u32::MAX as usize) as u32,
             sort: sort_of(sort),
+            exclude: exclude.to_vec(),
         };
         match self.call(&req) {
             Ok(Response::SearchResult {

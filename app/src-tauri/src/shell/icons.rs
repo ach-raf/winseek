@@ -522,22 +522,17 @@ fn mem_key(path: &str, aumid: Option<&str>, is_dir: bool, size: u32, thumb: bool
     }
 }
 
-/// Cached answer without COM or extraction: the memory cache, then (thumbnails) the disk cache. Runs on the
-/// protocol thread, so cache hits never queue behind slow extractions.
+/// Cached answer without COM, extraction or disk: the memory cache only. Runs on the protocol thread, which is
+/// WebView2's UI thread — a stat and a file read per request there froze the window while lists filled. Misses
+/// (disk cache included, see `thumb_bytes_in`) are the workers' job.
 fn fast_lookup(r: &Req) -> Option<Arc<Vec<u8>>> {
-    let key = mem_key(&r.path, r.aumid.as_deref(), r.is_dir, r.size, r.thumb);
-    if let Some(hit) = cache_get(&key) {
-        return Some(hit);
-    }
-    // Disk: one stat of the picture and one small read. Skipped for network paths, where a stat can stall.
-    if !r.thumb || r.size > 512 || r.path.starts_with(r"\\") {
-        return None;
-    }
-    let b = Arc::new(disk_get(thumb_dir()?, &r.path, r.size)?);
-    if r.size <= 256 {
-        cache_put(key, b.clone());
-    }
-    Some(b)
+    cache_get(&mem_key(
+        &r.path,
+        r.aumid.as_deref(),
+        r.is_dir,
+        r.size,
+        r.thumb,
+    ))
 }
 
 pub fn handle(req: Request<Vec<u8>>, responder: UriSchemeResponder) {
@@ -662,12 +657,15 @@ fn path_icon_px(path: &str, size: u32, thumb: bool) -> Option<(u32, u32, Vec<u8>
 }
 
 #[derive(Clone, Copy, PartialEq)]
-enum Shot {
+pub(super) enum Shot {
     Icon,
     /// Thumbnail, extracted if Windows' cache does not have it (falls back to the icon).
     Thumb,
     /// Thumbnail only if Windows' thumbnail cache already holds it: never extracts, never waits.
     ThumbCached,
+    /// Thumbnail, extracted if needed, never an icon in its place (the picture streamer: a grid tile shows its own
+    /// placeholder when a file has no picture).
+    ThumbOnly,
 }
 
 fn shot_flags(shot: Shot) -> SIIGBF {
@@ -675,10 +673,12 @@ fn shot_flags(shot: Shot) -> SIIGBF {
         Shot::Icon => SIIGBF_RESIZETOFIT | SIIGBF_ICONONLY,
         Shot::Thumb => SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY,
         Shot::ThumbCached => SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY | SIIGBF_INCACHEONLY,
+        Shot::ThumbOnly => SIIGBF_RESIZETOFIT | SIIGBF_THUMBNAILONLY,
     }
 }
 
-fn shell_px(path: &str, size: u32, shot: Shot) -> Option<(u32, u32, Vec<u8>)> {
+/// The shell's picture of `path` fitted in `size` x `size`, as straight-alpha RGBA.
+pub(super) fn shell_px(path: &str, size: u32, shot: Shot) -> Option<(u32, u32, Vec<u8>)> {
     let item = shell_item(path).ok()?;
     let f: IShellItemImageFactory = item.cast().ok()?;
     let sz = SIZE {
@@ -941,6 +941,7 @@ fn read_nonempty(f: &Path) -> Option<Vec<u8>> {
 }
 
 /// Disk-cache hit only (no COM, no decode).
+#[cfg(test)]
 fn disk_get(dir: &Path, path: &str, px: u32) -> Option<Vec<u8>> {
     read_nonempty(&cache_file(dir, path, file_stamp(path)?, px))
 }

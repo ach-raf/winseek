@@ -183,6 +183,9 @@ fn main() {
             launch::launch_clear_history,
             launch::launch_counts,
             launch::launch_copy,
+            shell::thumbstream::thumbs_open,
+            shell::thumbstream::thumbs_want,
+            shell::thumbstream::thumbs_ack,
             launch::launch_reveal
         ])
         .register_asynchronous_uri_scheme_protocol("wsicon", |_ctx, req, responder| {

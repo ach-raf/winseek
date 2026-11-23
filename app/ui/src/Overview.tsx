@@ -2,11 +2,12 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { noteScroll } from "./thumbQueue";
 import { PicTile, type PicTileEvents } from "./PicTile";
 import { gridMetrics, type GridMetrics } from "./gridLogic";
+import { compress } from "./sparseGrid";
 import { extOf } from "./previewLogic";
 import type { Backend, Hit, LaunchHit, LaunchItem } from "./types";
 import type { OvItem, OvSection, SectionId } from "./overviewLogic";
 import { Hint } from "./Hint";
-import { matchPct, nicePath, reasonOf } from "./overviewLogic";
+import { gridKey, matchPct, nicePath, reasonOf, secAt, secSize } from "./overviewLogic";
 import { picBadge } from "./pictureRank";
 import { launchPath } from "./launchLogic";
 import { FileIcon } from "./FileIcon";
@@ -236,6 +237,12 @@ ${reason}` : it.hit.path}
   );
 });
 
+/** A sparse grid's position whose chunk is not in yet: the tile's box and nothing else (no thumbnail asked for,
+ *  no text), so the grid keeps its shape and a later answer only fills it in. */
+const WaitTile = memo(function WaitTile({ i, sel, g }: { i: number; sel: boolean; g: GridMetrics }) {
+  return <div className={"pt" + (sel ? " sel" : "")} data-i={i} data-sel={sel ? "1" : undefined} aria-hidden="true" style={{ width: g.tileW, height: g.tileH }} />;
+});
+
 /** The calculator result card (replaces the Top result row). */
 function CalcCard({ it, i, sel, expr, h }: { it: OvItem; i: number; sel: boolean; expr: string; h: ItemHandlers }) {
   return (
@@ -261,11 +268,13 @@ const WIN_OVERSCAN = 4;
  * The row height and the column count are read from the drawn items (the CSS stays in charge of
  * the layout); every item must carry `data-i` and all rows must be equally tall.
  */
-function Windowed({ scrollRef, count, className, style, render, onMore }: {
+function Windowed({ scrollRef, count, className, style, render, onMore, onView }: {
   scrollRef: React.RefObject<HTMLDivElement | null>; count: number; className: string; style?: CSSProperties;
   render: (from: number, to: number) => ReactNode;
   /** The window reached the last loaded rows: the owner may read more. */
   onMore?: () => void;
+  /** The items on screen now, `[from, to)` without the overscan (a sparse grid reads its data near them). */
+  onView?: (from: number, to: number) => void;
 }) {
   const box = useRef<HTMLDivElement>(null);
   const [g, setG] = useState({ cols: 1, stride: 0, gap: 0, top: 0, viewH: 0 });
@@ -308,20 +317,29 @@ function Windowed({ scrollRef, count, className, style, render, onMore }: {
   }, [scrollRef, on, measure]);
 
   let from = 0, to = count, before = 0, after = 0;
-  if (on && !g.stride) to = Math.min(count, WIN_FIRST);
+  let seenFrom = 0, seenTo = to;
+  if (on && !g.stride) to = seenTo = Math.min(count, WIN_FIRST);
   else if (on) {
     const rows = Math.ceil(count / g.cols);
-    const y = scrollTop - g.top;
+    // A list taller than the browser draws (a million pictures) is drawn compressed (sparseGrid's compress):
+    // `y` is the list offset the viewport shows, `shift` how far the drawn rows sit from their own offset.
+    const real = scrollTop - g.top;
+    const { y, h } = compress(real, rows * g.stride - g.gap, g.viewH, (WIN_OVERSCAN + 2) * g.stride);
+    const shift = real - y;
+    const r0 = Math.max(0, Math.min(rows - 1, Math.floor(y / g.stride)));
+    seenFrom = r0 * g.cols;
+    seenTo = Math.min(count, Math.max(r0 + 1, Math.ceil((y + g.viewH) / g.stride)) * g.cols);
     const a = Math.max(0, Math.min(rows - 1, Math.floor(y / g.stride) - WIN_OVERSCAN));
     const b = Math.max(a, Math.min(rows - 1, Math.ceil((y + g.viewH) / g.stride) + WIN_OVERSCAN));
     from = a * g.cols;
     to = Math.min(count, (b + 1) * g.cols);
     // A spacer stands for whole rows; the gap after it is the grid's own.
-    before = a * g.stride - g.gap;
-    after = (rows - 1 - b) * g.stride - g.gap;
+    before = a * g.stride + shift - g.gap;
+    after = h - (b + 1) * g.stride - shift;
   }
   const nearEnd = on && !!g.stride && to >= count - g.cols * 6;
   useEffect(() => { if (nearEnd) onMore?.(); }, [nearEnd, count, onMore]);
+  useEffect(() => { onView?.(seenFrom, seenTo); }, [seenFrom, seenTo, onView]);
   return (
     <div ref={box} className={className + (on ? " win" : "")} style={style}>
       {before > 0 && <div className="win-pad" style={{ height: before }} />}
@@ -389,7 +407,8 @@ function useGridInner(scrollRef: React.RefObject<HTMLDivElement | null>, active:
 }
 
 export function Overview({ onMore, onGridCols, sections, sel, renaming, query, backend, expanded, loading, handlers, onExpand, onBack, onToggleWeak, onToggleFold, scrollRef, armed, lead }: {
-  /** The pictures grid scrolled near the end of what is loaded. */
+  /** A plain picture grid (the "Other names containing" fold) scrolled near the end of what is loaded. A sparse
+   *  grid never asks: it has every position from the start and reads by chunk itself (`sparse.view`). */
   onMore?: () => void;
   /** The pictures grid's column count (gridMetrics of its measured width) changed: keyboard moves follow it. */
   onGridCols?: (cols: number) => void;
@@ -407,7 +426,7 @@ export function Overview({ onMore, onGridCols, sections, sel, renaming, query, b
   // render-phase write the React compiler can't prove (and would flag).
   const starts: number[] = [];
   let acc = 0;
-  for (const s of sections) { starts.push(acc); acc += s.items.length; }
+  for (const s of sections) { starts.push(acc); acc += secSize(s); }
   // The shared picture grid: exact-size tiles, as many columns as fit (gridMetrics), the same tile as the Library's.
   const hasPics = sections.some((s) => s.id === "images" || s.id === "namepics");
   const innerW = useGridInner(scrollRef, hasPics);
@@ -435,8 +454,18 @@ export function Overview({ onMore, onGridCols, sections, sel, renaming, query, b
           <section key={s.id} className={"ov-sec s-" + s.id} aria-label={s.title}>
             <SectionHead s={s} expanded={expanded} loading={!!loading && (expanded || !!s.count)} onBack={onBack} onExpand={onExpand} onToggleWeak={onToggleWeak} onToggleFold={onToggleFold} />
             {s.fold && !s.items.length ? null : s.id === "images" || s.id === "namepics" ? (
-              <Windowed scrollRef={scrollRef} count={s.items.length} className="grid photos picgrid" style={gridStyle} onMore={onMore} render={(from, to) =>
-                s.items.slice(from, to).map((it, j) => <Tile key={it.key} it={it} i={start + from + j} sel={start + from + j === sel} query={query} backend={backend} ev={picEv} g={gm} />)} />
+              // A sparse grid has its full length from the start; its data comes by chunk near the view (onView).
+              <Windowed scrollRef={scrollRef} count={secSize(s)} className="grid photos picgrid" style={gridStyle}
+                        onMore={s.sparse ? undefined : onMore} onView={s.sparse?.view} render={(from, to) => {
+                const out: ReactNode[] = [];
+                for (let j = from; j < to; j++) {
+                  const it = secAt(s, j), i = start + j;
+                  out.push(it
+                    ? <Tile key={it.key} it={it} i={i} sel={i === sel} query={query} backend={backend} ev={picEv} g={gm} />
+                    : <WaitTile key={gridKey(j - s.items.length)} i={i} sel={i === sel} g={gm} />);
+                }
+                return out;
+              }} />
             ) : s.id === "mostused" ? (
               <div className="grid apps">
                 {s.items.map((it, j) => <AppTile key={it.key} it={it} i={start + j} sel={start + j === sel} backend={backend} h={handlers} />)}

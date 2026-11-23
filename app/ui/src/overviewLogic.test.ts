@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, matchPct, nicePath, onDrive, ovMove, removeMru, restoreMru, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, gridKey, matchPct, meaningOnly, nicePath, onDrive, ovMove, removeMru, restoreMru, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
 import { chipCount, relDate } from "./format.ts";
 import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
@@ -348,4 +348,58 @@ test("home examples: static, generic, and every one exercises the parser", () =>
   assert.deepEqual(labels(EXAMPLE_QUERIES[3]!), ["Documents", "This month"]);
   assert.equal(parseQuery(EXAMPLE_QUERIES[1]!, { now }).text, "invoice");
   assert.equal(parseQuery(EXAMPLE_QUERIES[2]!, { now }).text, "project plan");
+});
+
+test("one count: the Pictures chip and the opened grid's heading are the name count plus the meaning-only pictures", () => {
+  const found = [sem("anime 1.jpg"), sem("sketch.png"), sem("animeart.jpg"), sem("notes.pdf"), sem("anime notes.pdf"), sem("sketch.png")];
+  // Meaning hits whose name does not hold the typed words are what the index's counts lack (a path counts once).
+  assert.deepEqual(meaningOnly(found, "anime", isImage), { picsByMeaning: 1, docsByMeaning: 1 });
+  assert.deepEqual(meaningOnly(found, "", isImage), { picsByMeaning: 3, docsByMeaning: 2 }, "no words: nothing is told by the name");
+  const N = 1_000_000;
+  const picNameTotal = N + 2 + 3; // the index's image count: the grid's name matches, the 2 named meaning matches, 3 fold names
+  const r = buildOverview({
+    names: [], nameTotal: 0, sem: found, text: "anime", expand: "images", isImage, photoCols: 4,
+    picTail: [hit("lanimek.jpg")], picNameTotal,
+    picGrid: { total: N, at: (n) => (n < 500 ? hit(`anime ${n}.jpg`) : undefined) },
+  });
+  const chip = picNameTotal + r.picsByMeaning;
+  const grid = r.sections.find((s) => s.id === "images")!;
+  const fold = r.sections.find((s) => s.id === "namepics")!;
+  assert.equal(grid.items.length, 3, "the meaning matches lead, ranked");
+  assert.equal(grid.sparse?.size, 3 + N);
+  assert.equal(fold.total, 3, "the fold is counted from the totals before it is read");
+  assert.equal(grid.total, chip, "heading = chip");
+  assert.equal(grid.total, grid.sparse!.size + fold.total, "heading = the grid and its fold");
+  // Before the stream's first answer the grid is the meaning matches alone, and nothing is double counted.
+  const early = buildOverview({ names: [], nameTotal: 0, sem: found, text: "anime", expand: "images", isImage, picNameTotal, picGrid: { total: null, at: () => undefined } });
+  assert.equal(early.sections.find((s) => s.id === "images")?.sparse?.size, 3);
+});
+
+test("sparse grid: every position is addressable, placeholders are selectable positions, keys survive their data", () => {
+  const N = 1_000_000;
+  const r = buildOverview({
+    names: [], nameTotal: 0, sem: [sem("anime 1.jpg"), sem("sketch.png")], text: "anime", expand: "images", isImage,
+    picGrid: { total: N, at: (n) => (n < 500 ? hit(`anime ${n}.jpg`) : undefined) },
+  });
+  const nav = r.nav;
+  assert.equal(nav.length, 2 + N);
+  assert.equal(r.flat.length, 2, "only the held items are in the flat list");
+  assert.equal(nav.at(2)?.hit.name, "anime 0.jpg");
+  assert.equal(nav.at(2)?.key, gridKey(0));
+  assert.equal(nav.at(2)?.named, "word");
+  assert.equal(nav.at(700_002), undefined, "not loaded: a placeholder");
+  assert.equal(nav.keyAt(700_002), gridKey(700_000));
+  assert.equal(nav.indexOf(gridKey(700_000)), 700_002);
+  assert.equal(nav.indexOf(gridKey(N)), -1, "past the end");
+  assert.equal(nav.indexOf("g:x"), -1);
+  assert.equal(nav.indexOf(nav.keyAt(0)!), 0);
+  // Keyboard moves over placeholders: by grid rows and tiles, never NaN, never off the list.
+  const C = { images: 4 };
+  assert.equal(ovMove(nav, 700_002, "down", C), 700_006);
+  assert.equal(ovMove(nav, 700_002, "right", C), 700_003);
+  assert.equal(ovMove(nav, 700_006, "up", C), 700_002);
+  assert.equal(ovMove(nav, 2 + N - 1, "down", C), 2 + N - 1, "the last tile stays");
+  assert.equal(ovMove(nav, 700_002, "prev", C), 0);
+  assert.equal(ovMove(nav, 700_002, "next", C), 700_002, "no section after it");
+  for (const d of ["up", "down", "left", "right", "next", "prev"] as const) assert.ok(Number.isInteger(ovMove(nav, 123_457, d, C)), d);
 });

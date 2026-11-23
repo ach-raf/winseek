@@ -420,8 +420,6 @@ button.su-car:hover { background: var(--bg3); color: var(--fg); }
 .su-mh .su-legend span { flex: none; }
 .su-map .su-tm { flex: 1; min-height: 0; }
 
-/* queued thumbnails in the mosaic (ThumbImg) */
-
 /* ---- T10: month folds + list view -------------------------------------------------------------------------- */
 
 /* The month heading is a fold: same look as before, now with the ▾/▸ glyph and the count inside the button. */

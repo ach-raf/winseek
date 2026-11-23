@@ -408,6 +408,7 @@ mod tests {
                 offset: 0,
                 limit: 10,
                 sort: Sort::NameAsc,
+                exclude: Vec::new(),
             };
             write_message(&mut c, &q).unwrap();
             let r: Response = read_message(&mut c).unwrap();

@@ -1,8 +1,7 @@
 import { memo, type CSSProperties, type ReactNode } from "react";
 import type { Backend } from "./types";
-import { ThumbImg } from "./ThumbImg";
+import { StreamThumb } from "./StreamThumb";
 import { FileIcon } from "./FileIcon";
-import { thumbPair } from "./thumbSize";
 
 /** What a tile does when used; `i` is the tile's index in its grid. The functions must be stable (the tile is
  *  memoised: a scroll step re-renders the window, not every tile in it). */
@@ -14,11 +13,11 @@ export interface PicTileEvents {
 }
 
 /**
- * The one picture tile (search Pictures, Timeline, Collections): an exact-size 4:3 box with the two-tier thumbnail
- * (blurred 32 px placeholder, then sharp), a caption that fades in on hover / selection, an optional badge, and the
+ * The one picture tile (search Pictures, Timeline, Collections): an exact-size 4:3 box with the streamed picture
+ * (StreamThumb: what the disk already has at once, then the picture decoded at the tile's size), a caption that fades in on hover / selection, an optional badge, and the
  * shared selection ring. `tileW` x `tileH` is the box (gridMetrics); `style` adds the position for absolute grids.
  */
-export const PicTile = memo(function PicTile({ backend, i, path, name, mtime, tileW, tileH, sel = false, lead = false, named = false, doc = false, badge, caption, title, style, ev, label }: {
+export const PicTile = memo(function PicTile({ i, path, name, mtime, tileW, tileH, sel = false, lead = false, named = false, doc = false, badge, caption, title, style, ev, label }: {
   backend: Backend;
   i: number;
   path: string;
@@ -41,7 +40,6 @@ export const PicTile = memo(function PicTile({ backend, i, path, name, mtime, ti
   ev: PicTileEvents;
   label?: string;
 }) {
-  const { src, low } = thumbPair(backend, path, tileW, tileH, mtime);
   const ph = <span className="pt-ph"><FileIcon name={name} isDir={false} src={null} /></span>;
   return (
     <div
@@ -58,7 +56,7 @@ export const PicTile = memo(function PicTile({ backend, i, path, name, mtime, ti
       onContextMenu={ev.onContextMenu && ((e) => ev.onContextMenu!(i, e))}
       onPointerDown={ev.onPointerDown && ((e) => ev.onPointerDown!(i, e))}
     >
-      {src ? <ThumbImg src={src} low={low} bad={ph} path={path} /> : ph}
+      <StreamThumb path={path} mtime={mtime} tileW={tileW} tileH={tileH} bad={ph} />
       {badge}
       <span className="pt-cap" dir="auto">{caption ?? name}</span>
     </div>

@@ -1,5 +1,6 @@
 // Browser-preview backend (used when not running inside Tauri): mirrors the Rust
 // MockSource shapes so `npm run dev` in a normal browser shows a working popup.
+import { mockThumbStream } from "./mockThumbs";
 import { buildLibrary, tileUrl, type LibFile } from "./mockLibrary";
 import { buildSynth, synthIndex } from "./mockSynth";
 import { mockDiskUsage, mockUsageDetail } from "./mockUsage";
@@ -749,13 +750,64 @@ const tlBaseFromLib = (): TlBase => {
 };
 const tlBaseFromSynth = (): TlBase => ({ n: SYNTH!.n, path: (i) => SYNTH!.path(i), size: (i) => SYNTH!.size[i]!, mtime: (i) => SYNTH!.mtime[i]!, cls: (i) => SYNTH!.className(i) });
 
+// ---- the million-picture test word ------------------------------------------------------------------
+// A search for "anime" (any form the app sends: `anime`, `ws:anime`, with a drive or `ext:` term) also matches
+// ANIME_N synthetic pictures, made from their position on demand (never held as a list), so the picture grid
+// can be tried at a million matches in the browser. They come after the ordinary mock rows, in name order,
+// whatever the sort. `?anime=N` sets how many (0 = none). A few dozen of them, and some pictures whose name
+// does not say "anime", are also meaning hits for the query, so the grid has meaning matches to lead with.
+const ANIME_N = Math.max(0, Number(params.get("anime") ?? 1_000_000));
+const ANIME_DIR = "C:\\Users\\demo\\Pictures\\Anime";
+const animeName = (n: number) => `anime ${String(n).padStart(7, "0")}.jpg`;
+const animePath = (n: number) => `${ANIME_DIR}\\batch ${String(Math.floor(n / 1000)).padStart(4, "0")}\\${animeName(n)}`;
+const animeHit = (n: number): Hit => ({ name: animeName(n), path: animePath(n), is_dir: false, size: 180_000 + ((n * 7919) % 3_200_000), mtime: Date.UTC(2025, 0, 1) - n * 60_000 });
+/** The position a path names among the synthetic pictures, or -1. */
+const animeAt = (lowPath: string): number => {
+  const m = /\\batch \d{4}\\anime (\d{7})\.jpg$/.exec(lowPath);
+  const n = m ? Number(m[1]) : -1;
+  return m && lowPath.startsWith(ANIME_DIR.toLowerCase() + "\\") && n < ANIME_N && lowPath === animePath(n).toLowerCase() ? n : -1;
+};
+/** A path as an exclude list compares it (the name index's rule): lower case, backslashes, no trailing separator. */
+const normPath = (p: string) => p.replace(/\//g, "\\").replace(/\\+$/, "").toLowerCase();
+/** Do the synthetic pictures answer these (lower-case, range-free) terms? Only when one of them asks for "anime". */
+function animeMatches(terms: string[], exts: string[], filter: Filter): boolean {
+  if (!ANIME_N || !(filter === "all" || filter === "files" || filter === "images")) return false;
+  if (exts.length && !exts.includes("jpg")) return false;
+  const name = "anime 0000000.jpg", path = animePath(0).toLowerCase();
+  const ok = (t: string): boolean => (t.startsWith("!") ? !ok(t.slice(1))
+    : t.startsWith("ws:") ? hasWord(name, t.slice(3))
+    : (t.includes("\\") ? path : name).includes(t));
+  return terms.some((t) => !t.startsWith("!") && t.includes("anime")) && terms.every(ok);
+}
+/** Synthetic pictures `offset..offset+limit` with the `skip` positions (ascending) taken out first. */
+function animeWindow(offset: number, limit: number, skip: number[]): Hit[] {
+  let raw = offset, k = 0;
+  while (k < skip.length && skip[k]! <= raw) { raw++; k++; } // every left-out row at or before it pushes it on
+  const out: Hit[] = [];
+  for (let n = raw; n < ANIME_N && out.length < limit; n++) {
+    if (k < skip.length && skip[k] === n) { k++; continue; }
+    out.push(animeHit(n));
+  }
+  return out;
+}
+/** The meaning hits the synthetic pictures add for an "anime" query: some named anime, some not. */
+function animeMeaning(q: string): SemanticHit[] {
+  if (!ANIME_N || !q.split(/\s+/).includes("anime")) return [];
+  const named = [3, 41, 777, 12_345, 250_000, 499_999, 500_000, 754_321, 999_999].filter((n) => n < ANIME_N)
+    .map((n, i): SemanticHit => ({ path: animePath(n), score: 0.7 - i * 0.03, size: animeHit(n).size, mtime: animeHit(n).mtime, source: "meaning" }));
+  const unnamed = Array.from({ length: 12 }, (_, i): SemanticHit => ({
+    path: `C:\\Users\\demo\\Pictures\\Fan art\\sketch ${String(i + 1).padStart(3, "0")}.png`, score: 0.62 - i * 0.02, size: 640_000 + i * 1000, mtime: Date.UTC(2025, 5, 1) - i * 86_400_000, source: "meaning",
+  }));
+  return [...named, ...unnamed];
+}
+
 export const mockBackend: Backend = {
   async kindCounts(query, kinds) {
     return Promise.all(
       kinds.map(async (f) => (await this.search({ query, offset: 0, limit: 0, sort: "rel", filter: f })).total)
     );
   },
-  async search({ query, offset, limit, sort, filter }) {
+  async search({ query, offset, limit, sort, filter, exclude }) {
     const t0 = performance.now();
     // ?big=9000000: every typed search matches that many synthetic rows (row N is "file 000000N"), to exercise
     // the huge-list path (scrollbar jumps, paging, eviction) without a real index.
@@ -775,7 +827,7 @@ export const mockBackend: Backend = {
     const exts = all.filter((t) => t.startsWith("ext:")).flatMap((t) => t.slice(4).split(/[;,]/)); // Tier 0 `ext:pdf`
     const terms = all.filter((t) => !t.startsWith("ext:") && !isRangeTerm(t));
     const inRange = rangeTerms(all);
-    const m = DB.filter((e) => inRange(e) && okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.startsWith("ws:") ? hasWord(e.lower, t.slice(3)) : (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t)))); // a term with a backslash is a path match (the drive scope)
+    const m = DB.filter((e) => inRange(e) && okFilter(e, filter) && (!exts.length || exts.some((x) => e.lower.endsWith("." + x))) && terms.every((t) => (t.startsWith("!ws:") ? !hasWord(e.lower, t.slice(4)) : t.startsWith("ws:") ? hasWord(e.lower, t.slice(3)) : (t.includes("\\") ? e.path.toLowerCase() : e.lower).includes(t)))); // a term with a backslash is a path match (the drive scope)
     const s: Sort = sort === "rel" && terms.length === 0 ? "date" : sort;
     if (s === "name") m.sort((a, b) => a.lower.localeCompare(b.lower));
     else if (s === "name_desc") m.sort((a, b) => b.lower.localeCompare(a.lower));
@@ -788,8 +840,15 @@ export const mockBackend: Backend = {
       m.sort((a, b) => (ty(a).localeCompare(ty(b)) || a.lower.localeCompare(b.lower)) * (s === "type" ? 1 : -1));
     }
     else m.sort((a, b) => Number(b.lower.startsWith(terms[0] ?? "")) - Number(a.lower.startsWith(terms[0] ?? "")) || a.lower.length - b.lower.length); // "rel" only gets here with terms (empty became "date" above)
+    // `exclude` leaves paths out before the window and the total, like the name index.
+    const ex = new Set((exclude ?? []).map(normPath));
+    const rows = ex.size ? m.filter((e) => !ex.has(normPath(e.path))) : m;
+    const syn = !all.some(isRangeTerm) && animeMatches(terms, exts, filter) // not with size / date chips
+      ? Array.from(ex, animeAt).filter((n) => n >= 0).sort((a, b) => a - b) : null;
+    const head = rows.slice(offset, offset + limit).map(toHit);
+    const hits = syn ? head.concat(animeWindow(Math.max(0, offset - rows.length), limit - head.length, syn)) : head;
     await sleep(Number(params.get("slow") ?? 8)); // ?slow=ms makes the index answer slowly (jank tests)
-    return { total: m.length, hits: m.slice(offset, offset + limit).map(toHit), elapsed_us: Math.round((performance.now() - t0) * 1000) };
+    return { total: rows.length + (syn ? ANIME_N - syn.length : 0), hits, elapsed_us: Math.round((performance.now() - t0) * 1000) };
   },
   async driveSpace(letters) {
     const GB = 1024 ** 3;
@@ -906,6 +965,7 @@ export const mockBackend: Backend = {
   },
   async onLaunchCatalogChanged(cb) { launchCbs.add(cb); return () => { launchCbs.delete(cb); }; },
   appIconUrl() { return null; }, // the mock has no shell: icons fall back to the glyph/initial
+  ...mockThumbStream(),
   iconUrl(path, _isDir, thumb, size) {
     // three sizes like the real cache: the 32 px placeholder tier, 256, 512
     const px = size && size <= 48 ? 32 : size && size > 300 ? 512 : 256;
@@ -1017,6 +1077,7 @@ export const mockBackend: Backend = {
         };
       })
       .concat(textHits().map((h) => ({ ...h, score: 0.2 + 0.25 * hash01(h.path), source: "meaning" as const })))
+      .concat(animeMeaning(q))
       // Like the app's calibrated gate: only what clearly stands out is returned, never "the least unrelated".
       .filter((h) => h.score >= 0.297)
       .sort((a, b) => b.score - a.score)

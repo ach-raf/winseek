@@ -3,8 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { Backend, DupGroup, DupMember, Hit, LibImage, NearState } from "./types";
 import type { LibActions } from "./Gallery";
 import { FileIcon } from "./FileIcon";
-import { ThumbImg } from "./ThumbImg";
-import { LOW_PX, thumbPair, thumbUrl } from "./thumbSize";
+import { StreamThumb } from "./StreamThumb";
 import { baseName } from "./Semantic";
 import { errText, formatDate, formatSize, splitDir } from "./format";
 import { OLD_SHOT_DAYS, freedBytes, nameMatches, oldScreenshots, pickKeeper, totalReclaimable, uniformRange } from "./libraryLogic";
@@ -588,12 +587,11 @@ function GroupReview({ backend, groups, actions, kind, header, emptyBar, empty, 
   );
 }
 
-/** A Clean up thumbnail: its own box (`size` x `h` css px, the row's structure), the shared thumbnail pipeline
- *  (placeholder tier first, the queue, the bucket from the css size, the mtime in the url) and tile radius. */
-function GrThumb({ backend, m, size, h = size, cls, fit }: { backend: Backend; m: DupMember; size: number; h?: number; cls: string; fit?: "contain" }) {
-  const { src, low } = thumbPair(backend, m.path, size, h, m.mtime || null);
+/** A Clean up thumbnail: its own box (`size` x `h` css px, the row's structure), the streamed picture
+ *  (thumbStream) and tile radius. */
+function GrThumb({ m, size, h = size, cls, fit }: { backend: Backend; m: DupMember; size: number; h?: number; cls: string; fit?: "contain" }) {
   const ph = <FileIcon name={baseName(m.path)} isDir={false} src={null} />;
-  return <span className={cls + (src ? "" : " ph")}>{src ? <ThumbImg src={src} low={low} bad={ph} path={m.path} fit={fit} /> : ph}</span>;
+  return <span className={cls}><StreamThumb path={m.path} mtime={m.mtime || null} tileW={size} tileH={h} bad={ph} fit={fit} /></span>;
 }
 
 function GroupDetail({ backend, group, kind, actions }: { backend: Backend; group: DupGroup; kind: "exact" | "near"; actions: LibActions }) {
@@ -682,7 +680,7 @@ function GroupDetail({ backend, group, kind, actions }: { backend: Backend; grou
   );
 }
 
-function Pane({ backend, c, role, badge, other, actions }: {
+function Pane({ c, role, badge, other, actions }: {
   backend: Backend; c: DupMember & { width: number | null; height: number | null }; role: string; badge: string;
   other: (DupMember & { width: number | null; height: number | null }) | undefined; actions: LibActions;
 }) {
@@ -691,13 +689,11 @@ function Pane({ backend, c, role, badge, other, actions }: {
   const heavier = !!other && c.size > other.size;
   const newer = !!other && c.mtime > other.mtime;
   const { head, tail } = splitDir(c.path);
-  const src = thumbUrl(backend, c.path, 512, c.mtime || null);
-  const low = thumbUrl(backend, c.path, LOW_PX, c.mtime || null);
   const ph = <FileIcon name={baseName(c.path)} isDir={false} src={null} />;
   return (
     <figure className="gd-pane">
       <figcaption><b>{role}</b><span className="gd-badge">{badge}</span></figcaption>
-      <div className="gd-img" role="img" aria-label={baseName(c.path)}>{src ? <ThumbImg src={src} low={low} bad={ph} path={c.path} fit="contain" /> : ph}</div>
+      <div className="gd-img" role="img" aria-label={baseName(c.path)}><StreamThumb path={c.path} mtime={c.mtime || null} bad={ph} fit="contain" /></div>
       <div className="gd-facts">
         <div className="gd-fn" title={c.path}>{baseName(c.path)}</div>
         <div className="gd-path" title={c.path}>{head}{tail}</div>

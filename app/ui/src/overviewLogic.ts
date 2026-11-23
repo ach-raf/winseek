@@ -1,6 +1,6 @@
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types";
 import { pickTop } from "./launchLogic.ts";
-import { picReason, queryWords, rankPictures, type NameMatch, type Pic } from "./pictureRank.ts";
+import { NAME_START, NAME_WORD, nameHolds, nameMatch, picReason, queryWords, rankPictures, type NameMatch, type Pic } from "./pictureRank.ts";
 import { kindOf } from "./format.ts";
 import { gridStep } from "./gridLogic.ts";
 
@@ -57,6 +57,87 @@ export interface OvSection {
   open?: boolean;
   /** The optional refiner re-checked this section's top hits (a quiet cue next to the title). */
   refined?: boolean;
+  /** A sparse grid (the opened Pictures): `size` positions, `items` only the first of them (the meaning
+   *  matches), the rest read by chunk near the viewport. Never looped over: a million positions are normal. */
+  sparse?: OvSparse;
+}
+
+export interface OvSparse {
+  size: number;
+  /** The item at position `j` of the section, once its data is in (undefined: an empty placeholder tile). */
+  at: (j: number) => OvItem | undefined;
+  /** The grid draws positions `[from, to)` of the section now. */
+  view?: (from: number, to: number) => void;
+}
+
+/** Positions of a section (a sparse grid counts every position, loaded or not). */
+export const secSize = (s: OvSection): number => (s.sparse ? s.sparse.size : s.items.length);
+/** The item at position `j` of a section, if it is in. */
+export const secAt = (s: OvSection, j: number): OvItem | undefined => (s.sparse ? s.sparse.at(j) : s.items[j]);
+
+/** Selection key of a sparse grid's name-matched position `n` (counted after its meaning matches): by position,
+ *  so the selection survives its chunk being let go and is there before its data arrives. */
+export const gridKey = (n: number): string => "g:" + n;
+
+/**
+ * The overview's positions, in order, for selection and keyboard movement. Not an array: a sparse grid has a
+ * position for every match and data for only a few thousand of them.
+ */
+export interface OvNav {
+  readonly length: number;
+  at(i: number): OvItem | undefined;
+  /** The key that selects position `i`: its item's, or the position's own while its data is not in. */
+  keyAt(i: number): string | undefined;
+  /** Position of a selection key; -1 when it is not in the list. */
+  indexOf(key: string): number;
+  /** The sections' runs of positions, in order (empty sections left out). */
+  readonly spans: readonly NavSpan[];
+}
+export interface NavSpan { id: SectionId; start: number; size: number }
+
+/** Positions of the given sections. */
+export function navOf(sections: OvSection[]): OvNav {
+  const runs: (NavSpan & { s: OvSection })[] = [];
+  const keys = new Map<string, number>();
+  let length = 0;
+  for (const s of sections) {
+    const size = secSize(s);
+    if (!size) continue;
+    runs.push({ id: s.id, start: length, size, s });
+    s.items.forEach((it, j) => { if (!keys.has(it.key)) keys.set(it.key, length + j); });
+    length += size;
+  }
+  const runOf = (i: number) => runs.find((r) => i >= r.start && i < r.start + r.size);
+  return {
+    length,
+    spans: runs,
+    at: (i) => { const r = runOf(i); return r && secAt(r.s, i - r.start); },
+    keyAt: (i) => {
+      const r = runOf(i);
+      if (!r) return undefined;
+      const j = i - r.start;
+      return secAt(r.s, j)?.key ?? (r.s.sparse && j >= r.s.items.length ? gridKey(j - r.s.items.length) : undefined);
+    },
+    indexOf: (key) => {
+      const at = keys.get(key);
+      if (at !== undefined) return at;
+      const n = key.startsWith("g:") ? Number(key.slice(2)) : NaN;
+      if (!Number.isInteger(n) || n < 0) return -1;
+      const r = runs.find((x) => x.s.sparse);
+      return r && r.s.items.length + n < r.size ? r.start + r.s.items.length + n : -1;
+    },
+  };
+}
+
+/** Positions of a plain item list (consecutive items of one section form its run). */
+function navOfItems(flat: OvItem[]): OvNav {
+  const spans: NavSpan[] = [];
+  flat.forEach((x, i) => {
+    const last = spans[spans.length - 1];
+    if (last && last.id === x.section) last.size++;
+    else spans.push({ id: x.section, start: i, size: 1 });
+  });
+  return { length: flat.length, spans, at: (i) => flat[i], keyAt: (i) => flat[i]?.key, indexOf: (k) => flat.findIndex((x) => x.key === k) };
 }
 
 /** Photo grid columns in the compact popup (the full window shows 5, the app grid 6 / 8). */
@@ -172,7 +253,10 @@ export function buildOverview(opts: {
   groupByKind?: boolean;
   /** Kind groups that are collapsed; keys are the SectionId minus the "k:" prefix. */
   kindFolds?: Partial<Record<string, boolean>>;
-}): { sections: OvSection[]; flat: OvItem[] } {
+  /** The opened Pictures read their name matches by position (usePicChunks over the `ws:` stream, the meaning
+   *  matches excluded): the grid is the meaning matches, then `total` name matches. Without it: a plain list. */
+  picGrid?: { total: number | null; at: (n: number) => Hit | undefined; view?: (from: number, to: number) => void };
+}): OverviewModel {
   const { names, nameTotal, sem, text, expand, isImage } = opts;
   const launch = opts.launch ?? [];
   const portable = opts.portable ?? [];
@@ -180,6 +264,7 @@ export function buildOverview(opts: {
   const sections: OvSection[] = [];
   const shownPaths = new Set<string>();
   const k = (p: string) => p.toLowerCase();
+  const { picsByMeaning, docsByMeaning } = meaningOnly(sem, text, isImage);
 
   // Top result: a pure-arithmetic query shows "= result"; else the best launcher item over
   // TOP_MIN (history folded into its score), else an obvious name match, else the best
@@ -251,7 +336,10 @@ export function buildOverview(opts: {
     const h = names[i];
     if (h && !shownPaths.has(k(h.path)) && isImage(baseName(h.path))) picSrc.push({ hit: h, idx: i });
   }
-  for (const h of opts.picNames ?? []) if (!shownPaths.has(k(h.path))) picSrc.push({ hit: h });
+  // The sparse grid ranks only its meaning matches (name rows still lend them their row) and the fold's names;
+  // its name matches come by position instead.
+  const sparse = expand === "images" && opts.picGrid ? opts.picGrid : null;
+  if (!sparse) for (const h of opts.picNames ?? []) if (!shownPaths.has(k(h.path))) picSrc.push({ hit: h });
   for (const h of opts.picTail ?? []) if (!shownPaths.has(k(h.path))) picSrc.push({ hit: h });
   const pics = rankPictures({ sem: imgs, names: picSrc, text });
   const inGrid = new Set(pics.ranked.map((p) => k(p.hit.path)));
@@ -300,7 +388,9 @@ export function buildOverview(opts: {
     }
   }
 
-  if (!expand || expand === "images") {
+  if (sparse) {
+    sections.push(...sparsePictures(pics, sparse, { text, photoCols, picNameTotal: opts.picNameTotal, weakOpen: !!opts.weakOpen, picItem }));
+  } else if (!expand || expand === "images") {
     // "Show all" is this same list, complete; the grid draws only the tiles near the viewport (Overview's Windowed).
     const list = pics.ranked;
     const cap = expand ? list.length : Math.min(list.length, photoCols * GRID_ROWS);
@@ -367,7 +457,91 @@ export function buildOverview(opts: {
     }
   }
 
-  return { sections, flat: sections.flatMap((s) => s.items) };
+  return { sections, flat: sections.flatMap((s) => s.items), nav: navOf(sections), picsByMeaning, docsByMeaning };
+}
+
+export interface OverviewModel {
+  sections: OvSection[];
+  /** The items held, in order (a sparse grid adds only its meaning matches); `nav` has every position. */
+  flat: OvItem[];
+  nav: OvNav;
+  /** Meaning matches the name index does not count (their name does not hold the typed words): what the type
+   *  chips add to the index's counts, so a chip says what its list shows. */
+  picsByMeaning: number;
+  docsByMeaning: number;
+}
+
+/** How many meaning hits (pictures / documents) the name index would not list for `text`: the same rule that
+ *  gives a ranked picture no name class (pictureRank's `nameHolds`). */
+export function meaningOnly(sem: SemanticHit[], text: string, isImage: (name: string) => boolean): { picsByMeaning: number; docsByMeaning: number } {
+  const words = queryWords(text);
+  const seen = new Set<string>();
+  let picsByMeaning = 0, docsByMeaning = 0;
+  for (const h of sem) {
+    const key = h.path.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const name = baseName(h.path);
+    if (nameHolds(name, words)) continue;
+    if (isImage(name)) picsByMeaning++;
+    else if (kindOf(name, false) === "doc") docsByMeaning++;
+  }
+  return { picsByMeaning, docsByMeaning };
+}
+
+/**
+ * The opened Pictures as a sparse grid: the meaning matches (ranked, `items`), then every `ws:` name match by
+ * position (`picGrid`, the meaning matches already left out by the index). The heading counts the grid and the
+ * "Other names containing" fold below it, so it says the same as the Pictures chip: the index's name count
+ * plus the meaning matches it does not count.
+ */
+function sparsePictures(
+  pics: { ranked: Pic[]; tail: Pic[] },
+  grid: NonNullable<Parameters<typeof buildOverview>[0]["picGrid"]>,
+  o: { text: string; photoCols: number; picNameTotal?: number; weakOpen: boolean; picItem: (s: SectionId) => (p: Pic, i: number) => OvItem },
+): OvSection[] {
+  const words = queryWords(o.text);
+  const part1 = pics.ranked.filter((p) => p.sem);
+  const items = part1.map(o.picItem("images"));
+  const named = part1.filter((p) => p.name !== null).length; // the index counts these by name as well
+  const nameTotal = grid.total ?? 0;
+  const size = items.length + nameTotal;
+  // A name match scores its name boost, on the meaning matches' scale (rankPictures' pct).
+  const top = Math.max(part1[0]?.score ?? 0, words.length ? NAME_WORD : 0);
+  const built = new Map<Hit, OvItem>();
+  const at = (j: number): OvItem | undefined => {
+    if (j < items.length) return items[j];
+    const n = j - items.length;
+    const hit = n < nameTotal ? grid.at(n) : undefined;
+    if (!hit) return undefined;
+    let it = built.get(hit);
+    if (!it) {
+      const name = nameMatch(hit.name, words);
+      const score = !words.length ? 0 : name === "word" ? NAME_WORD : name === "start" ? NAME_START : 0;
+      const pct = top > 0 && score > 0 ? Math.max(1, Math.min(100, Math.round((score / top) * 100))) : null;
+      const p: Pic = { hit, name, score, pct };
+      it = { ...o.picItem("images")(p, j), key: gridKey(n) };
+      built.set(hit, it);
+    }
+    return it;
+  };
+  const view = grid.view && ((from: number, to: number) => grid.view?.(Math.max(0, from - items.length), Math.max(0, to - items.length)));
+  // The fold: names holding the letters inside another word, counted from the index totals (before they are read).
+  const tailTotal = !words.length ? 0
+    : o.picNameTotal !== undefined && grid.total !== null ? Math.max(pics.tail.length, o.picNameTotal - nameTotal - named)
+    : pics.tail.length;
+  const out: OvSection[] = [];
+  if (size) {
+    out.push({ id: "images", title: "Pictures", items, total: size + tailTotal, more: false, count: true, sparse: { size, at, view } });
+  }
+  if (tailTotal > 0) {
+    const open = o.weakOpen || !size; // nothing better to show: do not hide the only results
+    out.push({
+      id: "namepics", title: `Other names containing “${words.join(" ")}” (${tailTotal.toLocaleString("en-US")})`, total: tailTotal, more: false, fold: { open },
+      items: open ? pics.tail.map(o.picItem("namepics")) : [],
+    });
+  }
+  return out;
 }
 
 // ---- home: "Most used" apps + settings (a stored launch count); a drive-scoped home lists that drive's recent files ----
@@ -403,7 +577,7 @@ export function restoreMru(list: MruEntry[], back: MruEntry[]): MruEntry[] {
  *  home passes `recent`: that drive's recently changed files follow as rows. */
 export function buildHome(opts: {
   mru: LaunchHit[]; recent?: (Hit | undefined)[]; maxTiles: number; recentCap?: number;
-}): { sections: OvSection[]; flat: OvItem[] } {
+}): { sections: OvSection[]; flat: OvItem[]; nav: OvNav } {
   const sections: OvSection[] = [];
   const seen = new Set<string>();
   const apps = opts.mru.filter((h) => !seen.has(h.item.id) && seen.add(h.item.id)).slice(0, Math.max(1, opts.maxTiles));
@@ -420,7 +594,7 @@ export function buildHome(opts: {
     if (h) files.push({ key: "n" + i, section: "recent", hit: h, nameIdx: i });
   }
   if (files.length) sections.push({ id: "recent", title: "Recent files", items: files, total: files.length, more: false });
-  return { sections, flat: sections.flatMap((x) => x.items) };
+  return { sections, flat: sections.flatMap((x) => x.items), nav: navOf(sections) };
 }
 
 /** Well-known, generic launcher queries for a home with no history yet (never personal). */
@@ -461,41 +635,34 @@ export const onDrive = (path: string, drive: string): boolean => !drive || path.
  * they move a whole grid row (leaving the grid at its edges), left / right move one tile. `next` / `prev` jump
  * a section. `cols` = the columns of each grid section as currently laid out.
  */
-export function ovMove(flat: OvItem[], i: number, dir: "up" | "down" | "left" | "right" | "next" | "prev", cols: GridCols = DEFAULT_COLS): number {
-  if (!flat.length) return 0;
-  const cur = flat[Math.max(0, Math.min(i, flat.length - 1))]!; // clamped into the non-empty list above
-  const clamp = (n: number) => Math.max(0, Math.min(flat.length - 1, n));
-  if (dir === "next" || dir === "prev") {
-    if (dir === "next") { const j = flat.findIndex((x, n) => n > i && x.section !== cur.section); return j < 0 ? i : j; }
-    let j = i;
-    while (j > 0 && flat[j - 1]?.section === cur.section) j--; // start of this section
-    if (j !== i) return j;
-    if (j === 0) return 0;
-    const prevSec = flat[j - 1]?.section;
-    while (j > 0 && flat[j - 1]?.section === prevSec) j--;
-    return j;
-  }
+export function ovMove(list: OvItem[] | OvNav, i: number, dir: "up" | "down" | "left" | "right" | "next" | "prev", cols: GridCols = DEFAULT_COLS): number {
+  // By runs of positions, never by items: a sparse grid's position may have no data yet, and walking a
+  // million positions one by one per key press is not an option.
+  const nav = Array.isArray(list) ? navOfItems(list) : list;
+  if (!nav.length) return 0;
+  const spans = nav.spans;
+  const clamp = (n: number) => Math.max(0, Math.min(nav.length - 1, n));
+  const c = clamp(i);
+  const si = Math.max(0, spans.findIndex((r) => c >= r.start && c < r.start + r.size));
+  const cur = spans[si]!; // a non-empty list has a run holding every clamped position
+  if (dir === "next") return spans[si + 1]?.start ?? i;
+  if (dir === "prev") return c !== cur.start ? cur.start : si === 0 ? 0 : spans[si - 1]!.start;
   const colsOf = (sec: SectionId) => Math.max(1, cols[sec] ?? 1);
-  if (!isGrid(cur.section)) {
+  if (!isGrid(cur.id)) {
     if (dir === "left" || dir === "right") return i;
     if (dir === "down") return clamp(i + 1);
     // Up into a grid lands on the tile in the first column of its last row.
     const p = clamp(i - 1);
-    const sec = flat[p]?.section;
-    if (sec && isGrid(sec) && p !== i) {
-      let s = p;
-      while (s > 0 && flat[s - 1]?.section === sec) s--;
-      return s + Math.floor((p - s) / colsOf(sec)) * colsOf(sec);
+    const prev = p < cur.start ? spans[si - 1] : undefined;
+    if (prev && isGrid(prev.id) && p !== i) {
+      const n = colsOf(prev.id);
+      return prev.start + Math.floor((p - prev.start) / n) * n;
     }
     return p;
   }
-  const sec = cur.section, n = colsOf(sec);
-  let s = i;
-  while (s > 0 && flat[s - 1]?.section === sec) s--;
-  let e = i;
-  while (e < flat.length - 1 && flat[e + 1]?.section === sec) e++;
+  const s = cur.start, e = cur.start + cur.size - 1;
   // The same step every picture grid takes (gridLogic); leaving the grid continues in the rows around it.
-  const t = gridStep(i - s, e - s + 1, n, dir);
+  const t = gridStep(c - s, cur.size, colsOf(cur.id), dir);
   if (t < 0) return clamp(s - 1);
   if (t > e - s) return clamp(e + 1);
   return s + t;
