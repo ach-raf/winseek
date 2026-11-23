@@ -7,7 +7,6 @@ description = "winseek desktop app (popup + library UI)"
 
 [dependencies]
 tauri = { version = "2", features = ["tray-icon"] }
-tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 # The picture streamer posts WebView2 shared buffers (same version tauri/wry use)
 webview2-com = "0.39"

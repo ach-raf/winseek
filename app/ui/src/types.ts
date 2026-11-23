@@ -762,6 +762,8 @@ export interface Backend {
   /** Registers the new combination (or unbinds with null); rejects with a user-facing message
    *  when another app owns it — the previous shortcut keeps working. */
   hotkeysSet(which: "popup" | "library" | "clipboard", combo: string | null): Promise<Hotkeys>;
+  /** Release (true) / restore (false) every global hotkey while the recorder is open. */
+  hotkeysCapture(on: boolean): Promise<void>;
   /** Fired after any binding changed (also from another window). */
   onHotkeysChanged(cb: (h: Hotkeys) => void): Promise<() => void>;
   /** The clipboard hotkey shows the popup with the clipboard text as the query. */

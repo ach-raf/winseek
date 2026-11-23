@@ -1176,6 +1176,7 @@ export const mockBackend: Backend = {
   },
   async agentClearLog() { await sleep(20); agentLogRows = []; },
   async hotkeysGet(): Promise<Hotkeys> { await sleep(10); return { ...hotkeys }; },
+  async hotkeysCapture(): Promise<void> {},
   async hotkeysSet(which, combo): Promise<Hotkeys> {
     await sleep(60);
     if (combo && combo === hotkeys.popup && which !== "popup") throw new Error("That shortcut is taken by another app. The previous shortcut still works.");

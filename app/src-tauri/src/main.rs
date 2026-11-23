@@ -20,6 +20,7 @@ mod textdec;
 mod tier1;
 mod updates;
 mod view;
+mod winhk;
 mod watcher;
 
 use commands::AppState;
@@ -29,7 +30,6 @@ use std::time::Duration;
 use tauri::menu::{MenuBuilder, MenuItemBuilder};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{Emitter, Manager, WindowEvent};
-use tauri_plugin_global_shortcut::ShortcutState;
 
 /// Prefer the real index (searchd); fall back to generated demo data when it is not running.
 fn pick_source() -> Arc<dyn source::NameSource> {
@@ -54,31 +54,6 @@ fn main() {
                 popup::show(app);
             }
         }))
-        .plugin(
-            tauri_plugin_global_shortcut::Builder::new()
-                // The handler reads the CURRENT bindings, never a captured constant: Settings can
-                // rebind while the app runs (PRD RB4).
-                .with_handler(|app, sc, ev| {
-                    if ev.state() != ShortcutState::Pressed {
-                        return;
-                    }
-                    let Some(b) = app.try_state::<hotkeys::Hotkeys>() else {
-                        return;
-                    };
-                    let combo = hotkeys::combo(sc);
-                    let b = b.current();
-                    if b.popup.as_deref() == Some(combo.as_str()) {
-                        popup::toggle(app);
-                    } else if b.library.as_deref() == Some(combo.as_str()) {
-                        if let Err(e) = libwindow::open(app) {
-                            eprintln!("winseek: could not open the library: {e}");
-                        }
-                    } else if b.clipboard.as_deref() == Some(combo.as_str()) {
-                        hotkeys::show_with_clipboard(app);
-                    }
-                })
-                .build(),
-        )
         .manage(models::Models::default())
         .manage(tier1::library::LibState::default())
         .manage(tier1::timeline::TimelineState::default())
@@ -172,6 +147,7 @@ fn main() {
             autostart::autostart_set,
             hotkeys::hotkeys_get,
             hotkeys::hotkeys_set,
+            hotkeys::hotkeys_capture,
             launch::launch_search,
             launch::launch_run,
             launch::launch_record,

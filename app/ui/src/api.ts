@@ -133,6 +133,7 @@ function tauriBackend(t: TauriGlobal): Backend {
     onViewChanged: (cb) => t.event.listen<ViewMode>("view-changed", (e) => cb(parseMode(e.payload))),
     hotkeysGet: () => inv<Hotkeys>("hotkeys_get"),
     hotkeysSet: (which, combo) => inv<Hotkeys>("hotkeys_set", { which, combo }),
+    hotkeysCapture: (on) => inv<void>("hotkeys_capture", { on }),
     onHotkeysChanged: (cb) => t.event.listen<Hotkeys>("hotkeys-changed", (e) => cb(e.payload)),
     onSetQuery: (cb) => t.event.listen<{ query: string }>("set-query", (e) => cb(e.payload)),
     openLibrary: () => inv("open_library"),

@@ -680,6 +680,14 @@ function ShortcutsBlock({ backend, onError }: { backend: Backend; onError: (e: u
     backend.onHotkeysChanged((h) => setHk(h)).then((u) => (dead ? u() : (off = u)));
     return () => { dead = true; off?.(); window.clearTimeout(flashT.current); };
   }, [backend, onError]);
+  // Global hotkeys are released while the recorder is open (else the current combo would fire
+  // instead of being captured) and restored when it closes or Settings unmounts.
+  const recOpen = rec !== null;
+  useEffect(() => {
+    if (!recOpen) return;
+    void backend.hotkeysCapture(true).catch(() => {});
+    return () => { void backend.hotkeysCapture(false).catch(() => {}); };
+  }, [recOpen, backend]);
   const save = async () => {
     if (!rec) return;
     try {

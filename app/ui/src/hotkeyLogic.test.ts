@@ -28,16 +28,17 @@ test("Shift alone cannot be a global shortcut (Flow.Launcher's rule)", () => {
   assert.equal(eventToCombo(ev({ key: "F24", code: "F24", shiftKey: true })), "Shift+F24", "F13-F24 stay free");
 });
 
-test("punctuation keys record as the physical key, on any layout", () => {
-  // The user's ask: Alt+< must bind. US shape: < is Shift+Comma.
-  assert.equal(eventToCombo(ev({ key: "<", code: "Comma", altKey: true, shiftKey: true })), "Alt+Shift+,");
-  // German shape: < sits on the ISO extra key whose code is Backquote — stored as the key it is.
-  assert.equal(eventToCombo(ev({ key: "<", code: "Backquote", altKey: true, shiftKey: true })), "Alt+Shift+`");
-  // An AZERTY ; prints é on the Semicolon key; the combo is still the key, not the print.
-  assert.equal(eventToCombo(ev({ key: "é", code: "Semicolon", ctrlKey: true })), "Ctrl+;");
-  // The AZERTY < is the ISO 102nd key (IntlBackslash) and < is its UNSHIFTED char — the shape
-  // 0.2.52 still rejected ("Alt+< is not a valid shortcut").
+test("combos name the keycap, so AZERTY's W key is Alt+W (not its physical KeyZ)", () => {
+  assert.equal(eventToCombo(ev({ key: "w", code: "KeyZ", altKey: true })), "Alt+W");
+  assert.equal(eventToCombo(ev({ key: "z", code: "KeyW", altKey: true })), "Alt+Z");
+  assert.equal(eventToCombo(ev({ key: "a", code: "KeyQ", ctrlKey: true })), "Ctrl+A");
+});
+
+test("punctuation records as the printed character; the backend maps it through the layout", () => {
+  assert.equal(eventToCombo(ev({ key: "<", code: "Comma", altKey: true, shiftKey: true })), "Alt+Shift+<");
   assert.equal(eventToCombo(ev({ key: "<", code: "IntlBackslash", altKey: true })), "Alt+<");
-  assert.equal(eventToCombo(ev({ key: ">", code: "IntlBackslash", altKey: true, shiftKey: true })), "Alt+Shift+<");
+  assert.equal(eventToCombo(ev({ key: ">", code: "IntlBackslash", altKey: true, shiftKey: true })), "Alt+Shift+>");
+  // a non-ASCII print (AZERTY é) falls back to the positional name
+  assert.equal(eventToCombo(ev({ key: "é", code: "Semicolon", ctrlKey: true })), "Ctrl+;");
   assert.equal(eventToCombo(ev({ key: "5", code: "Numpad5", ctrlKey: true })), "Ctrl+Num5");
 });

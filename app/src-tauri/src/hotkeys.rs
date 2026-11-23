@@ -1,15 +1,13 @@
 //! Rebindable global hotkeys (PRD RB4): `%LOCALAPPDATA%\winseek\hotkeys.json`
 //! `{ popup, library, clipboard }`, each a canonical combo string ("Ctrl+Alt+Space") or null.
 //! The strings are the single source of truth; they are parsed to `Shortcut`s only to talk to
-//! the global-shortcut plugin, and the handler compares against the *current* bindings.
+//! `winhk` (RegisterHotKey), and the handler compares against the *current* bindings.
 
-use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut};
 
 use crate::tier1;
 
@@ -77,7 +75,7 @@ pub fn sync(app: &AppHandle) {
         let Some(sc) = field(&b, which).as_deref().and_then(parse) else {
             continue;
         };
-        let gs = app.global_shortcut();
+        let gs = gs();
         if want {
             let _ = gs.unregister(sc);
         } else if let Err(e) = gs.register(sc) {
@@ -86,6 +84,29 @@ pub fn sync(app: &AppHandle) {
     }
     RELEASED.store(want, Ordering::SeqCst);
     refresh_tray(app);
+}
+
+/// While the Settings recorder is open every global hotkey is released, so the keystroke the
+/// user presses (e.g. the current Alt+Space) reaches the recorder instead of triggering the
+/// popup. Turning it off re-registers whatever is wanted (honouring pause).
+pub fn capture(app: &AppHandle, on: bool) {
+    let _g = SYNC.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(st) = app.try_state::<Hotkeys>() else {
+        return;
+    };
+    let b = st.current();
+    let gs = gs();
+    for which in WHICH {
+        let Some(sc) = field(&b, which).as_deref().and_then(parse) else {
+            continue;
+        };
+        let _ = gs.unregister(sc);
+        if !on && (which == "library" || !is_released()) {
+            if let Err(e) = gs.register(sc) {
+                eprintln!("winseek: could not re-register {which} hotkey after capture ({e})");
+            }
+        }
+    }
 }
 
 /// Flip the user's pause (tray). Returns the new state.
@@ -179,160 +200,40 @@ pub fn save_to(root: &std::path::Path, b: &Bindings) -> Result<(), String> {
     std::fs::write(path(root), json).map_err(|e| e.to_string())
 }
 
-/// "Ctrl+Alt+Space" -> Shortcut. Key names follow the UI keymap (Up, PgUp, Esc, and the whole
-/// punctuation row: , . / ; ' [ ] ` \\ = - with the numpad twins). Ctrl/Alt/Win is required
-/// unless the key is F13-F24 (which nothing else claims) — Shift alone would swallow the key
-/// while typing everywhere, so it is not enough (Flow.Launcher's rule).
-pub fn parse(combo: &str) -> Option<Shortcut> {
-    let mut parts = combo.split('+');
-    let mut mods = Modifiers::empty();
-    let mut key = None;
-    for part in parts.by_ref() {
-        match part {
-            "Ctrl" => mods |= Modifiers::CONTROL,
-            "Alt" => mods |= Modifiers::ALT,
-            "Shift" => mods |= Modifiers::SHIFT,
-            "Win" => mods |= Modifiers::SUPER,
-            _ => {
-                key = Some(part);
-                break;
-            }
+pub use crate::winhk::{parse, Shortcut};
+
+/// OS-level (un)registration, via [`crate::winhk`].
+struct Gs;
+impl Gs {
+    fn register(&self, sc: Shortcut) -> Result<(), String> {
+        crate::winhk::register(sc)
+    }
+    fn unregister(&self, sc: Shortcut) -> Result<(), String> {
+        crate::winhk::unregister(sc);
+        Ok(())
+    }
+}
+fn gs() -> Gs {
+    Gs
+}
+
+/// A hotkey press: run whichever binding it matches. Reads the CURRENT bindings, never a
+/// captured constant — Settings can rebind while the app runs (PRD RB4).
+pub fn dispatch(app: &AppHandle, sc: Shortcut) {
+    let Some(st) = app.try_state::<Hotkeys>() else {
+        return;
+    };
+    let b = st.current();
+    let is = |c: &Option<String>| c.as_deref().and_then(parse) == Some(sc);
+    if is(&b.popup) {
+        crate::popup::toggle(app);
+    } else if is(&b.library) {
+        if let Err(e) = crate::libwindow::open(app) {
+            eprintln!("winseek: could not open the library: {e}");
         }
+    } else if is(&b.clipboard) {
+        show_with_clipboard(app);
     }
-    let key = key?;
-    if parts.next().is_some() {
-        return None; // two keys after the modifiers
-    }
-    let real = mods.intersects(Modifiers::CONTROL | Modifiers::ALT | Modifiers::SUPER);
-    if !real && !is_function_key(key) {
-        return None;
-    }
-    let code = Code::from_str(&code_name(key)).ok()?;
-    Some(Shortcut::new(Some(mods), code))
-}
-
-fn is_function_key(key: &str) -> bool {
-    key.strip_prefix('F')
-        .and_then(|n| n.parse::<u8>().ok())
-        .is_some_and(|n| (13..=24).contains(&n))
-}
-
-/// Keymap name -> keyboard_types `Code` name ("Up" -> "ArrowUp", "A" -> "KeyA", "," -> "Comma").
-fn code_name(key: &str) -> String {
-    match key {
-        "Esc" => "Escape".into(),
-        "Up" => "ArrowUp".into(),
-        "Down" => "ArrowDown".into(),
-        "Left" => "ArrowLeft".into(),
-        "Right" => "ArrowRight".into(),
-        "PgUp" => "PageUp".into(),
-        "PgDn" => "PageDown".into(),
-        "Menu" => "ContextMenu".into(),
-        "/" => "Slash".into(),
-        "," => "Comma".into(),
-        "=" => "Equal".into(),
-        "-" => "Minus".into(),
-        "." => "Period".into(),
-        "`" => "Backquote".into(),
-        "[" => "BracketLeft".into(),
-        "]" => "BracketRight".into(),
-        "\\" => "Backslash".into(),
-        ";" => "Semicolon".into(),
-        "'" => "Quote".into(),
-        "*" => "NumpadMultiply".into(), // the numpad * key (Shift+8 types "8": it has Digit8's code)
-        "<" => "IntlBackslash".into(),  // the ISO 102nd key: < > on AZERTY-family layouts
-        other => {
-            // the numpad digits are stored as Num0..Num9 so "+" stays the only separator; the
-            // numpad operators need no names — the keymap aliases them onto = - / . (their twins)
-            if let Some(d) = other.strip_prefix("Num").and_then(|r| r.parse::<u8>().ok()) {
-                if d <= 9 {
-                    return format!("Numpad{d}");
-                }
-            }
-            if let Some(c) = other.chars().next() {
-                if other.len() == 1 && c.is_ascii_uppercase() {
-                    return format!("Key{c}");
-                }
-                if c.is_ascii_digit() && other.len() == 1 {
-                    return format!("Digit{c}");
-                }
-            }
-            other.into()
-        }
-    }
-}
-
-/// The canonical keymap name of a shortcut's key ("KeyA" -> "A", "ArrowUp" -> "Up", "Comma" -> ",").
-fn key_name(code: &Code) -> String {
-    let n = code.to_string();
-    match n.as_str() {
-        "Escape" => "Esc".into(),
-        "ArrowUp" => "Up".into(),
-        "ArrowDown" => "Down".into(),
-        "ArrowLeft" => "Left".into(),
-        "ArrowRight" => "Right".into(),
-        "PageUp" => "PgUp".into(),
-        "PageDown" => "PgDn".into(),
-        "ContextMenu" => "Menu".into(),
-        "Slash" => "/".into(),
-        "Comma" => ",".into(),
-        "Equal" => "=".into(),
-        "Minus" => "-".into(),
-        "Period" => ".".into(),
-        "Backquote" => "`".into(),
-        "BracketLeft" => "[".into(),
-        "BracketRight" => "]".into(),
-        "Backslash" => "\\".into(),
-        "Semicolon" => ";".into(),
-        "Quote" => "'".into(),
-        "NumpadAdd" => "=".into(), // the keymap's numpad twins of = - / .
-        "NumpadSubtract" => "-".into(),
-        "NumpadDivide" => "/".into(),
-        "NumpadDecimal" => ".".into(),
-        "NumpadMultiply" => "*".into(),
-        "IntlBackslash" => "<".into(),
-        other => {
-            if let Some(d) = other
-                .strip_prefix("Numpad")
-                .and_then(|r| r.parse::<u8>().ok())
-            {
-                if d <= 9 {
-                    return format!("Num{d}");
-                }
-            }
-            if let Some(c) = other.strip_prefix("Key") {
-                if c.len() == 1 {
-                    return c.into();
-                }
-            }
-            if let Some(c) = other.strip_prefix("Digit") {
-                if c.len() == 1 {
-                    return c.into();
-                }
-            }
-            other.into()
-        }
-    }
-}
-
-/// Shortcut -> the canonical combo string, the twin of [`parse`].
-pub fn combo(sc: &Shortcut) -> String {
-    let mut out = String::new();
-    let m = sc.mods;
-    if m.contains(Modifiers::CONTROL) {
-        out.push_str("Ctrl+");
-    }
-    if m.contains(Modifiers::ALT) {
-        out.push_str("Alt+");
-    }
-    if m.contains(Modifiers::SHIFT) {
-        out.push_str("Shift+");
-    }
-    if m.contains(Modifiers::SUPER) {
-        out.push_str("Win+");
-    }
-    out.push_str(&key_name(&sc.key));
-    out
 }
 
 const WHICH: [&str; 3] = ["popup", "library", "clipboard"];
@@ -340,6 +241,8 @@ const WHICH: [&str; 3] = ["popup", "library", "clipboard"];
 /// Load, manage and register. A saved combo that fails to register falls back to the default
 /// (logged): the popup hotkey is the only way in, it must keep working.
 pub fn init(app: &AppHandle) {
+    let handle = app.clone();
+    crate::winhk::start(move |sc| dispatch(&handle, sc));
     let mut b = load();
     for which in WHICH {
         let Some(combo_str) = field(&b, which).clone() else {
@@ -352,12 +255,12 @@ pub fn init(app: &AppHandle) {
                 continue;
             }
         };
-        if let Err(e) = app.global_shortcut().register(sc) {
+        if let Err(e) = gs().register(sc) {
             eprintln!("winseek: could not register {which} hotkey {combo_str:?} ({e})");
             if which == "popup" {
                 let default = Bindings::default().popup.unwrap();
                 match parse(&default) {
-                    Some(sc) if app.global_shortcut().register(sc).is_ok() => {
+                    Some(sc) if gs().register(sc).is_ok() => {
                         eprintln!("winseek: fell back to the default popup hotkey ({default})");
                         b.popup = Some(default);
                     }
@@ -429,19 +332,19 @@ pub fn set(app: &AppHandle, which: &str, combo_str: Option<String>) -> Result<Bi
     let live = which == "library" || !is_released();
     if let Some(old_str) = old.as_ref().filter(|_| live) {
         if let Some(sc) = parse(old_str) {
-            let _ = app.global_shortcut().unregister(sc);
+            let _ = gs().unregister(sc);
         }
     }
     if let Some(sc) = new_sc.as_ref().filter(|_| live) {
-        if let Err(e) = app.global_shortcut().register(*sc) {
+        if let Err(e) = gs().register(*sc) {
             // Put the old one back before reporting.
             if let Some(old_str) = &old {
                 if let Some(sc) = parse(old_str) {
-                    let _ = app.global_shortcut().register(sc);
+                    let _ = gs().register(sc);
                 }
             }
             return Err(format!(
-                "That shortcut is taken by another app ({e}). The previous shortcut still works."
+                "That shortcut is already taken by another app or by Windows ({e}). The previous shortcut still works."
             ));
         }
     }
@@ -475,6 +378,13 @@ pub async fn hotkeys_get(app: AppHandle) -> Result<Bindings, String> {
 }
 
 #[tauri::command]
+pub async fn hotkeys_capture(app: AppHandle, on: bool) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || capture(&app, on))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn hotkeys_set(
     app: AppHandle,
     which: String,
@@ -490,64 +400,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_valid() {
-        let sc = parse("Alt+Space").unwrap();
-        assert_eq!(sc.mods, Modifiers::ALT);
-        assert_eq!(sc.key, Code::Space);
-        let sc = parse("Ctrl+Alt+Shift+F13").unwrap();
-        assert_eq!(sc.key, Code::F13);
-        // letters and digits by keymap name
-        assert_eq!(parse("Ctrl+L").unwrap().key, Code::KeyL);
-        assert_eq!(parse("Ctrl+1").unwrap().key, Code::Digit1);
-    }
-
-    #[test]
-    fn parse_rejects() {
-        // no modifier, not an F13+ key
-        assert_eq!(parse("Space"), None);
-        assert_eq!(parse("A"), None);
-        // Shift alone is not enough (Flow.Launcher's rule): a global Shift+A swallows capital A
-        assert_eq!(parse("Shift+A"), None);
-        assert_eq!(parse("Shift+F5"), None);
-        // garbage
-        assert_eq!(parse("Ctrl+"), None);
-        assert_eq!(parse(""), None);
-        assert_eq!(parse("Ctrl+Alt"), None, "modifiers only");
-        assert_eq!(parse("Ctrl+1+2"), None, "two main keys");
-        // F13-F24 are legal bare
-        assert!(parse("F13").is_some());
-    }
-
-    #[test]
-    fn parse_oem_and_numpad_keys() {
-        // every punctuation key the UI keymap can emit roundtrips through combo()
-        for c in [
-            "Ctrl+;",
-            "Alt+[",
-            "Ctrl+]",
-            "Win+\\",
-            "Ctrl+Shift+'",
-            "Alt+.",
-            "Ctrl+Shift+,",
-            "Alt+<",
-        ] {
-            assert_eq!(combo(&parse(c).unwrap()), c, "roundtrip {c}");
-        }
-        // Alt+< : the US shape (Shift+Comma), the German shape (Backquote code) and the AZERTY
-        // 102nd-key shape (IntlBackslash, < UNSHIFTED — the combo 0.2.52 still rejected)
-        assert_eq!(parse("Alt+Shift+,").unwrap().key, Code::Comma);
-        assert_eq!(parse("Alt+Shift+`").unwrap().key, Code::Backquote);
-        assert_eq!(parse("Alt+<").unwrap().key, Code::IntlBackslash);
-        assert_eq!(parse("Alt+Shift+<").unwrap().key, Code::IntlBackslash);
-        // the numpad: digits carry their own names (Num0..Num9), the operators are twins of = - * .
-        assert_eq!(parse("Ctrl+Num5").unwrap().key, Code::Numpad5);
-        assert_eq!(combo(&parse("Ctrl+Num5").unwrap()), "Ctrl+Num5");
-        assert_eq!(parse("Ctrl+*").unwrap().key, Code::NumpadMultiply);
-        assert_eq!(combo(&parse("Ctrl+*").unwrap()), "Ctrl+*");
-        assert_eq!(parse("Ctrl+-").unwrap().key, Code::Minus);
-    }
-
-    #[test]
     fn old_hotkeys_json_without_pause_field_loads_with_it_off() {
         let b: Bindings =
             serde_json::from_str(r#"{"popup":"Alt+Space","library":null,"clipboard":null}"#)
@@ -555,19 +407,6 @@ mod tests {
         assert!(!b.pause_in_games);
         assert_eq!(pause_label(true), "Resume popup hotkey");
         assert_eq!(pause_label(false), "Pause popup hotkey");
-    }
-
-    #[test]
-    fn roundtrip_through_combo() {
-        for c in [
-            "Alt+Space",
-            "Ctrl+Alt+P",
-            "Ctrl+Shift+F24",
-            "Win+Space",
-            "Ctrl+,",
-        ] {
-            assert_eq!(combo(&parse(c).unwrap()), c);
-        }
     }
 
     #[test]
