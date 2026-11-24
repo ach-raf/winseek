@@ -1834,3 +1834,37 @@ fn best_match_recency_outranks_depth() {
     let (_, got) = ranked(&ix, "report", 0, usize::MAX, NOW_FT);
     assert_eq!(got, [r"C:\report\", r"C:\report-z.txt"]);
 }
+
+/// A separator typed in the query must not change the class a name earns: `easy rename`,
+/// `easy-rename` and `easy_rename` are one name to a person, so all three spellings class
+/// `easy-rename.txt` Exactly and keep one Best-match order (the space spelling used to fall
+/// behind the literal-prefix `...-setup.exe`, the dash one ahead of it — same intent, two answers).
+#[test]
+fn separator_of_the_query_does_not_change_the_best_match() {
+    let mut b = IndexBuilder::new(true);
+    b.add_volume(C, 5);
+    b.push(C, 1, 5, "easy-rename.txt", false, 7, 9);
+    b.push(C, 2, 5, "easy_rename.txt", false, 7, 9);
+    b.push(C, 3, 5, "easy rename.txt", false, 7, 9);
+    b.push(C, 4, 5, "easy rename_0.1.0-setup.exe", false, 7, 9);
+    b.push(C, 30, 5, "easy rename", true, 0, 9);
+    let ix = b.finish();
+    let (_, dash) = ranked(&ix, "easy-rename", 0, usize::MAX, NOW_FT);
+    let (_, space) = ranked(&ix, "easy rename", 0, usize::MAX, NOW_FT);
+    let (_, under) = ranked(&ix, "easy_rename", 0, usize::MAX, NOW_FT);
+    // One intent, one order — the exact-class names lead (storage order among equals), the
+    // literal-prefix setup file and anything looser follows, whatever separator was typed.
+    assert_eq!(dash, space, "dash vs space");
+    assert_eq!(space, under, "space vs underscore");
+    assert_eq!(
+        space,
+        [
+            r"C:\easy rename\",
+            r"C:\easy rename.txt",
+            r"C:\easy-rename.txt",
+            r"C:\easy_rename.txt",
+            r"C:\easy rename_0.1.0-setup.exe",
+        ],
+        "exact class first, prefix last, one order for every spelling"
+    );
+}

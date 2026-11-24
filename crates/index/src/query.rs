@@ -613,6 +613,8 @@ struct Scratch {
     chars: Vec<char>,
     chain: Vec<u32>,
     up: Vec<u32>,
+    sq_n: String,
+    sq_h: String,
 }
 
 /// Per-query folder verdicts of one path substring term, indexed by slot: 0 unknown, 1 the
@@ -732,6 +734,85 @@ fn stem_of(name: &[u8]) -> &[u8] {
     match name.iter().rposition(|&b| b == b'.') {
         Some(d) if d > 0 && d + 1 < name.len() => &name[..d],
         _ => name,
+    }
+}
+
+/// Characters that carry no meaning inside a file name to a person: `easy-rename`, `easy_rename`
+/// and `easy rename` are one name typed three ways. Folded away on both sides of the Exact /
+/// Prefix class ladder, so the query picks the same class whatever separator it used.
+fn is_name_sep(c: char) -> bool {
+    matches!(c, '-' | '_' | '.' | ' ')
+}
+
+/// `s` without its [`is_name_sep`] characters (the input is already case-folded).
+fn squash_into(s: &str, out: &mut String) {
+    out.clear();
+    out.extend(s.chars().filter(|&c| !is_name_sep(c)));
+}
+
+/// [`squash_into`] for stored (UTF-8) name bytes.
+fn squash_bytes(s: &[u8], out: &mut String) {
+    out.clear();
+    match std::str::from_utf8(s) {
+        Ok(v) => out.extend(v.chars().filter(|&c| !is_name_sep(c))),
+        Err(_) => out.extend(s.iter().map(|&b| b as char).filter(|&c| !is_name_sep(c))),
+    }
+}
+
+/// Separator-blind `contains`: the needle (already squashed) must sit in the name counting only
+/// its letters — separators on either side are skipped. The allocation-free twin of
+/// `squash(name).contains(needle)`, so the scan can afford it on every name a separator-holding
+/// needle passes over. An empty needle (the term was separators only) matches nothing, like any
+/// other junk term.
+fn text_has_sep_blind(hay: &[u8], needle: &str, fold: &mut String) -> bool {
+    if needle.is_empty() {
+        return false;
+    }
+    if needle.is_ascii() {
+        let w = needle.as_bytes();
+        'start: for s in 0..hay.len() {
+            let mut j = 0usize;
+            let mut k = s;
+            while k < hay.len() {
+                let fc = ASCII_FOLD[hay[k] as usize];
+                if fc == b'-' || fc == b'_' || fc == b'.' || fc == b' ' {
+                    k += 1; // the name's separator: passes over, consumes no letter
+                } else if fc == w[j] {
+                    j += 1;
+                    k += 1;
+                    if j == w.len() {
+                        return true;
+                    }
+                } else {
+                    continue 'start; // the next start position
+                }
+            }
+            // ran off the end mid-needle from this start: try the next one
+        }
+        false
+    } else {
+        // Rare (a non-ASCII needle with a separator in it): the decoded, folded route —
+        // the same cost tier as the plain non-ASCII path one line up.
+        fold_into(std::str::from_utf8(hay).unwrap_or(""), fold);
+        let w: Vec<char> = needle.chars().collect();
+        let hc: Vec<char> = fold.chars().collect();
+        for s in 0..hc.len() {
+            let mut j = 0usize;
+            for &c in &hc[s..] {
+                if is_name_sep(c) {
+                    continue;
+                }
+                if c == w[j] {
+                    j += 1;
+                    if j == w.len() {
+                        return true;
+                    }
+                } else {
+                    break;
+                }
+            }
+        }
+        false
     }
 }
 
@@ -885,8 +966,19 @@ impl Index {
                         if *path {
                             self.write_path(i, &mut sc.path);
                             text_has(&sc.path, needle, *ascii, &mut sc.fold)
+                        } else if text_has(self.name_bytes(i), needle, *ascii, &mut sc.fold) {
+                            true
+                        } else if needle.chars().any(|c| is_name_sep(c) && c != ' ') {
+                            // The same name typed with another separator is the same search:
+                            // `easy-rename` must also find `easy_rename.txt`, not fork the
+                            // result set by which separator was typed. A space is left out —
+                            // a needle with a space is a quoted phrase, and a phrase stays
+                            // literal ("report txt" is not "report.txt"). Separator-blind
+                            // walk, no allocation on the scan path.
+                            squash_into(needle, &mut sc.sq_n);
+                            text_has_sep_blind(self.name_bytes(i), &sc.sq_n, &mut sc.fold)
                         } else {
-                            text_has(self.name_bytes(i), needle, *ascii, &mut sc.fold)
+                            false
                         }
                     }
                 }
@@ -1195,6 +1287,31 @@ impl Index {
         }
         if starts_folded(hay, needle, ascii, &mut sc.fold) {
             return Some(MatchClass::Prefix);
+        }
+        // The same ladder with separators folded away on both sides: `easy rename` must class
+        // `easy-rename.exe` / `easy_rename.txt` exactly like `easy-rename` does, not land a full
+        // class below it because it typed a space where the file has a dash. Only the top two
+        // classes get the second chance — the word / inside-a-word verdicts below are already
+        // separator-blind (they walk letters).
+        if needle.chars().any(is_name_sep) {
+            squash_into(needle, &mut sc.sq_n);
+            squash_bytes(hay, &mut sc.sq_h);
+            let (sq_n, sq_h) = (std::mem::take(&mut sc.sq_n), std::mem::take(&mut sc.sq_h));
+            let asc = sq_n.is_ascii();
+            let stem = stem_of(hay);
+            let exact = eq_folded(sq_h.as_bytes(), &sq_n, asc, &mut sc.fold)
+                || (stem.len() != hay.len() && !self.is_dir(i) && {
+                    squash_bytes(stem, &mut sc.sq_h);
+                    let sq_stem = std::mem::take(&mut sc.sq_h);
+                    eq_folded(sq_stem.as_bytes(), &sq_n, asc, &mut sc.fold)
+                });
+            let prefix = starts_folded(sq_h.as_bytes(), &sq_n, asc, &mut sc.fold);
+            if exact {
+                return Some(MatchClass::Exact);
+            }
+            if prefix {
+                return Some(MatchClass::Prefix);
+            }
         }
         // It holds the word somewhere (it matched): at the start of a word, or inside one.
         let word = if hay.is_ascii() {
