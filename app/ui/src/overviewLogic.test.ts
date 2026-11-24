@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, gridKey, matchPct, meaningOnly, nicePath, onDrive, ovMove, removeMru, restoreMru, scopeDrive, strongName, type OvItem } from "./overviewLogic.ts";
+import { buildHome, buildOverview, bumpMru, EXAMPLE_QUERIES, MRU_MAX, expandable, fmtMs, gridKey, matchPct, meaningOnly, nicePath, onDrive, ovKeyNear, ovMove, removeMru, restoreMru, scopeDrive, strongName, navOf, type OvItem } from "./overviewLogic.ts";
 import { chipCount, relDate } from "./format.ts";
 import { parseQuery } from "./filters.ts";
 import type { Hit, LaunchHit, LaunchItem, SemanticHit } from "./types.ts";
@@ -402,4 +402,17 @@ test("sparse grid: every position is addressable, placeholders are selectable po
   assert.equal(ovMove(nav, 700_002, "prev", C), 0);
   assert.equal(ovMove(nav, 700_002, "next", C), 700_002, "no section after it");
   for (const d of ["up", "down", "left", "right", "next", "prev"] as const) assert.ok(Number.isInteger(ovMove(nav, 123_457, d, C)), d);
+});
+
+test("ovKeyNear lands on the asked position or the nearest one with a key - a press never dies", () => {
+  const mk = (section: OvItem["section"], n: number): OvItem[] => Array.from({ length: n }, (_, i) => ({ key: section + i, section, hit: hit("f" + i) }));
+  const nav = navOf([mk("top", 1), ...[]].length ? [{ id: "top", title: "Top result", total: 1, more: false, items: mk("top", 1) }, { id: "files", title: "Files", total: 3, more: false, items: mk("files", 3) }] : []);
+  assert.equal(nav.keyAt(2), "files1");
+  assert.equal(ovKeyNear(nav, 2), "files1");
+  assert.equal(ovKeyNear(nav, 99), "files2", "past the end clamps to the nearest keyed row");
+  assert.equal(ovKeyNear(nav, -5), "top0");
+  // Every position of a bigger nav answers something: no hole swallows a press.
+  const big = navOf([{ id: "files", title: "Files", total: 50, more: false, items: mk("files", 50) }]);
+  for (let i = 0; i < 50; i++) assert.ok(ovKeyNear(big, i), "position " + i);
+  assert.equal(ovKeyNear(navOf([]), 3), undefined, "an empty overview stays empty");
 });

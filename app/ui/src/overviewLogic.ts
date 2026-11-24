@@ -667,3 +667,19 @@ export function ovMove(list: OvItem[] | OvNav, i: number, dir: "up" | "down" | "
   if (t > e - s) return clamp(e + 1);
   return s + t;
 }
+
+/** The selection key at `i`, or the nearest one that has a key (walked out in both directions).
+ *  An arrow press must never die on a position whose key is not there right now (a sparse chunk
+ *  not read yet, a list the live index is rebuilding mid-press): the press lands on the closest
+ *  row that can hold the selection instead of being swallowed. */
+export function ovKeyNear(nav: OvNav, i: number): string | undefined {
+  const n = nav.length;
+  if (!n) return undefined;
+  const c = Math.max(0, Math.min(n - 1, i));
+  for (let d = 0; d < n; d++) {
+    const key = nav.keyAt(c - d) ?? (c + d < n ? nav.keyAt(c + d) : undefined);
+    if (key) return key;
+  }
+  return undefined;
+}
+

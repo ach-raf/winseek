@@ -1,5 +1,5 @@
 import { Fragment, startTransition, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { Backend, DriveSpace, Filter, FsDelta, Hit, Hotkeys, LaunchCfg, LaunchHit, ServiceState, Sort } from "./types";
+import type { Backend, DriveSpace, Filter, FsDelta, Hit, Hotkeys, LaunchCfg, LaunchHit, LaunchItem, ServiceState, Sort } from "./types";
 import { SearchGuide } from "./SearchGuide";
 import { backspaceDropsChip, hasRanges, kindScope, nameQuery, parseQuery, rangeClause } from "./filters";
 import { partQuery, wordQuery } from "./pictureRank";
@@ -17,7 +17,7 @@ import { LaunchMenu } from "./LaunchMenu";
 import { KeyHints } from "./Hint";
 import { SemanticHint, pathKey, semAccepts, whyName } from "./Semantic";
 import { HitRow, Overview, LaunchPreview, launchVerb, type ItemHandlers } from "./Overview";
-import { baseName, buildHome, buildOverview, bumpMru, meaningOnly, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovMove, removeMru, restoreMru, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
+import { baseName, buildHome, buildOverview, bumpMru, meaningOnly, DEFAULT_HOME_QUERIES, EXAMPLE_QUERIES, HOME_ROWS, expandable, fmtMs, isGrid, matchPct, onDrive, ovKeyNear, ovMove, removeMru, restoreMru, scopeDrive, type Expand, type GridCols, type MruEntry, type OvItem } from "./overviewLogic";
 import Library from "./Library";
 import { Sidebar, WindowControls, type Page } from "./Sidebar";
 import { IChevL, IExpand, IFilter, IGear, IMag, IX } from "./icons";
@@ -528,7 +528,13 @@ export default function App({ backend }: { backend: Backend }) {
   // The overview selection is kept by item key so results arriving later (meaning hits) do not move it.
   const [oselKey, setOselKey] = useState<string | null>(null);
   useEffect(() => { setOselKey(null); }, [query, filter, expand, drive]);
-  const osel = Math.max(0, oselKey ? ov.nav.indexOf(oselKey) : 0);
+  // A key that no longer resolves (rows left or moved while the live index updated) keeps its
+  // POSITION instead of snapping to the top: on a busy index the next answer used to eat the
+  // arrow press the user had just made, and the keyboard looked dead while stuck on row 0.
+  const oselAt = useRef(0);
+  const oselIdx = oselKey ? ov.nav.indexOf(oselKey) : -1;
+  const osel = Math.max(0, oselIdx >= 0 ? oselIdx : Math.min(oselAt.current, ov.nav.length - 1));
+  useEffect(() => { oselAt.current = osel; }, [osel]);
   // undefined also for a picture-grid position whose chunk is not in yet: nothing to preview or act on.
   const ovItem: OvItem | undefined = overview ? ov.nav.at(osel) : undefined;
 
@@ -970,24 +976,6 @@ export default function App({ backend }: { backend: Backend }) {
   }));
   useEffect(() => { navigated.current = false; }, [query]);
 
-  const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
-    if (!h) return;
-    recordQuery();
-    try {
-      if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
-      if (kind === "open") {
-        // A PDF hit found on a page opens on that page when the viewer can be steered; a code hit
-        // with a line opens there (VS Code / Notepad++); anything else opens the plain way.
-        const pg = /\.pdf$/i.test(h.path) ? pageRef.current : null;
-        const ln = pg ? null : lineRef.current;
-        if (pg && pg > 0) await backend.openAt(h.path, { page: pg });
-        else if (ln && ln > 0) await backend.openAt(h.path, { line: ln });
-        else await backend.openPath(h.path);
-      } else await backend.revealPath(h.path);
-      await backend.hide();
-    } catch (e) { fail(e); }
-  }, [backend, flash, fail, recordQuery]);
-
   const armTimer = useRef<number | undefined>(undefined);
   const armConfirm = useCallback((id: string) => {
     window.clearTimeout(armTimer.current);
@@ -1027,11 +1015,56 @@ export default function App({ backend }: { backend: Backend }) {
       if (mode === "copy") { await backend.launchCopy(id); flash("Target copied"); return; }
       if (mode === "reveal") { await backend.launchReveal(id); await backend.hide(); return; }
       if (h.confirm && armed !== id) { armConfirm(id); return; } // second Enter confirms
+      // A Most-used tile for a file-backed app the catalog no longer holds (moved / removed
+      // since): open its path directly instead of failing on an unknown id.
+      const tp = h.item.target;
+      if (tp.t === "path" && !launch.some((l) => l.item.id === id)) {
+        void backend.launchRecord(id, q);
+        if (h.item.kind === "app" || h.item.kind === "setting") setMru(bumpMru(mru, h.item, Date.now()));
+        await backend.openPath(tp.path);
+        await backend.hide();
+        return;
+      }
       await backend.launchRun(id, q, mode === "admin");
       if (h.item.kind === "app" || h.item.kind === "setting" || (h.item.kind === "command" && !h.confirm)) setMru(bumpMru(mru, h.item, Date.now())); // "Most used" on home
       await backend.hide();
     } catch (e) { fail(e); }
-  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, setMru]);
+  }, [backend, parsed.text, armed, armConfirm, flash, fail, openLibrary, recordQuery, mru, setMru, launch]);
+
+  const act = useCallback(async (kind: "open" | "reveal" | "copy", h: Hit | undefined) => {
+    if (!h) return;
+    recordQuery();
+    try {
+      if (kind === "copy") { await backend.copyPath(h.path); flash("Path copied"); return; }
+      if (kind === "open") {
+        // An .exe opened from results is an app being launched, so it takes the app path: the
+        // launcher catalog's entry (same id as the backend's portable scan, `app:<path>`) goes
+        // through launchAct — launch history, frecency and "Most used" — and an exe the catalog
+        // does not hold yet is recorded under that same id, so the next scan knows the habit
+        // and the tile shows up. Every open (Enter, double-click, Open button) lands here.
+        if (/\.exe$/i.test(h.name)) {
+          const cat = launch.find((l) => l.item.target.t === "path" && l.item.target.path.toLowerCase() === h.path.toLowerCase());
+          if (cat) { await launchAct(cat, "open"); return; }
+          const stem = h.name.replace(/\.exe$/i, "");
+          const item: LaunchItem = {
+            id: "app:" + h.path.toLowerCase(), kind: "app", title: stem,
+            subtitle: "Portable · " + h.path, keywords: [stem.toLowerCase()],
+            target: { t: "path", path: h.path, args: null }, icon: null, admin_ok: true,
+          };
+          setMru(bumpMru(mru, item, Date.now())); // "Most used" on home
+          void backend.launchRecord(item.id, parsed.text);
+        }
+        // A PDF hit found on a page opens on that page when the viewer can be steered; a code hit
+        // with a line opens there (VS Code / Notepad++); anything else opens the plain way.
+        const pg = /\.pdf$/i.test(h.path) ? pageRef.current : null;
+        const ln = pg ? null : lineRef.current;
+        if (pg && pg > 0) await backend.openAt(h.path, { page: pg });
+        else if (ln && ln > 0) await backend.openAt(h.path, { line: ln });
+        else await backend.openPath(h.path);
+      } else await backend.revealPath(h.path);
+      await backend.hide();
+    } catch (e) { fail(e); }
+  }, [backend, flash, fail, recordQuery, launch, launchAct, mru, setMru, parsed.text]);
 
   const enter = (ctrl: boolean, shift: boolean) => {
     if (ovItem?.calc !== undefined) { // calculator result: Enter copies it
@@ -1273,7 +1306,7 @@ export default function App({ backend }: { backend: Backend }) {
   }, [overview, osel, oselKey]);
   // Opening or leaving "Show all" starts at the top of the new list, wherever the old one was scrolled to.
   useEffect(() => { ovRef.current?.scrollTo({ top: 0 }); }, [expand]);
-  const ovGo = useCallback((i: number) => { const key = ov.nav.keyAt(i); if (key) setOselKey(key); }, [ov.nav]);
+  const ovGo = useCallback((i: number) => { const key = ovKeyNear(ov.nav, i); if (key) setOselKey(key); }, [ov.nav]);
 
   const openSemMenu = useCallback(async (path: string, x: number, y: number) => {
     try {
