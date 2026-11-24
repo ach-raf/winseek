@@ -693,29 +693,6 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
           )}
           {scrubLabel && <div className="lg-scrub" style={{ top: scrubLabel.y }} aria-hidden="true">{scrubLabel.text}</div>}
         </div>
-        <div className="lg-info" aria-live="polite">
-          {!hideCount && <span>{effTotal.toLocaleString("en-US")} {noun}{effTotal === 1 ? "" : "s"}</span>}
-          {cur && (
-            <span className="lg-cur" title={cur.path}>
-              {nameOf(cur)}{cur.size !== null ? ` · ${formatSize(cur.size)}` : ""}{cur.mtime ? ` · ${formatDate(cur.mtime)}` : ""}
-            </span>
-          )}
-          <span className="sp" />
-          <span className="hints">
-            {extra && cur && (
-              <button className="lg-act" tabIndex={-1} onClick={() => { extra.run(cur); root.current?.focus({ preventScroll: true }); }}>
-                <kbd>{extra.key.toUpperCase()}</kbd> {extra.label}
-              </button>
-            )}
-            <span><kbd>↵</kbd> Open</span>
-            <span><kbd>Space</kbd> Preview</span>
-            {!extra && <span><kbd>Ctrl ↵</kbd> Reveal</span>}
-            <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
-            <span><kbd>Shift F10</kbd> More</span>
-            <span><kbd>Del</kbd> Recycle</span>
-            <span><kbd>Ctrl·Click</kbd> Select many</span>
-          </span>
-        </div>
         {/* The batch lives in the same bottom selection bar the Clean up suggestions use. */}
         {batch && (
           <div className="selbar" role="region" aria-label="Selection">
@@ -738,6 +715,26 @@ export function Gallery({ backend, sections, listKey, source, rail, actions, emp
           <span>Pick a photo or document to see it here.</span>
         </aside>
       )}
+      {/* The hints bar spans the whole window (grid + preview column) on ONE line — the preview
+       * panel already shows the picked file's name/size/date, so the bar carries only shortcuts. */}
+      <div className="lg-info" aria-live="polite">
+        {!hideCount && <span>{effTotal.toLocaleString("en-US")} {noun}{effTotal === 1 ? "" : "s"}</span>}
+        <span className="sp" />
+        <span className="hints">
+          {extra && cur && (
+            <button className="lg-act" tabIndex={-1} onClick={() => { extra.run(cur); root.current?.focus({ preventScroll: true }); }}>
+              <kbd>{extra.key.toUpperCase()}</kbd> {extra.label}
+            </button>
+          )}
+          <span><kbd>↵</kbd> Open</span>
+          <span><kbd>Space</kbd> Preview</span>
+          {!extra && <span><kbd>Ctrl ↵</kbd> Reveal</span>}
+          <span><kbd>Ctrl ⇧ C</kbd> Copy path</span>
+          <span><kbd>Shift F10</kbd> More</span>
+          <span><kbd>Del</kbd> Recycle</span>
+          <span><kbd>Ctrl·Click</kbd> Select many</span>
+        </span>
+      </div>
     </div>
   );
 }
